@@ -79,7 +79,12 @@ from app.document.create_plane import (
     resolve_create_plane,
     resolve_external_vertex_position,
     resolve_point_ref_position,
+    align_basis,
+    aligned_anchor_basis,
+    anchor_basis_unoriented,
+    resolve_alignment_direction,
     resolve_sketch_origin_point,
+    sketch_alignment_is_upstream,
     sketch_origin_is_upstream,
 )
 from app.document.sketch_origin import auto_sketch_origin
@@ -395,6 +400,7 @@ from app.document.schemas import (
     SketchFeatureResponse,
     SketchOrEdgeRefSchema,
     SketchOriginSchema,
+    SketchAlignmentUpdate,
     SketchOriginUpdate,
     SolidFromSurfacesFeatureCreate,
     SolidFromSurfacesFeatureResponse,
@@ -424,7 +430,7 @@ from app.document.store import get_document, get_part_or_404, replace_document
 from app.session_context import bind_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.reference_signature import ReferenceStatus
-from app.sketch.profile import Profile, ProfileStatus, detect_profile
+from app.sketch.profile import OpenChainStatus, Profile, ProfileStatus, detect_open_chain, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
 from app.sketch.store import all_sketches, create_sketch, delete_sketch, get_sketch_or_404, replace_all_sketches
 
@@ -1049,6 +1055,13 @@ def _feature_response(part: Part, feature: Feature) -> FeatureResponse:
         response.moved_references = state.moved
         response.followed_references = state.followed
         response.reference_reasons = {**response.reference_reasons, **state.reasons}
+    if isinstance(feature, SketchFeature) and feature.x_axis_ref is not None and not _sketch_alignment_resolves(part, feature):
+        # An alignment that does not resolve (a deleted Sketch Line, a lost or curved edge, one that became parallel to the plane normal): the frame is the unaligned one.
+        path = "x_axis_ref.edge_ref" if feature.x_axis_ref.edge_ref is not None else "x_axis_ref.sketch_entity_ref"
+        if path not in response.lost_references:
+            response.lost_references = [*response.lost_references, path]
+            response.reference_reasons = {**response.reference_reasons, path: "alignment_unresolved"}
+        response.has_lost_reference = True
     if isinstance(feature, SketchFeature) and feature.origin is not None and response.resolved_origin is None:
         # An origin that does not resolve (a deleted Sketch Point, or anything the Body-reference walk above could not say): reported like any lost reference.
         path = _sketch_origin_origin_path(feature.origin)
@@ -1065,6 +1078,51 @@ def _sketch_origin_origin_path(origin: SketchOrigin) -> str:
         return "origin.circle_centre_ref"
     assert origin.point_ref is not None
     return "origin.point_ref.vertex_ref" if origin.point_ref.vertex_ref is not None else "origin.point_ref.sketch_point_ref"
+
+
+def _sketch_alignment_resolves(part: Part, feature: SketchFeature) -> bool:
+    """Whether `feature.x_axis_ref` currently gives a usable direction (the Sketch is then aligned; otherwise it sits in the unaligned frame)."""
+    try:
+        excluded = excluded_feature_ids_after(part, feature.id)
+        bodies = compute_part_bodies(part, excluded)
+        sketch = get_sketch_or_404(feature.sketch_id)
+        base = anchor_basis_unoriented(part, sketch, bodies, excluded)
+        align_basis(base, resolve_alignment_direction(part, feature, bodies, excluded))
+        return True
+    except HTTPException:
+        return False
+
+
+def _aligned_anchor_axes(part: Part, feature: SketchFeature) -> tuple[tuple, tuple] | None:
+    """The anchor plane's `(x_axis, y_axis)` after the alignment, before flip / turns (see `SketchFeatureResponse.aligned_x_axis`); None when it cannot be worked out."""
+    try:
+        sketch = get_sketch_or_404(feature.sketch_id)
+        if feature.plane_feature_id is None and feature.x_axis_ref is None:
+            bodies, excluded = {}, frozenset()
+        else:
+            excluded = excluded_feature_ids_after(part, feature.id)
+            bodies = compute_part_bodies(part, excluded)
+        base = anchor_basis_unoriented(part, sketch, bodies, excluded)
+        aligned = aligned_anchor_basis(part, feature, base, bodies, excluded)
+        return (tuple(aligned.x_axis), tuple(aligned.y_axis))
+    except HTTPException:
+        return None
+
+
+def _resolved_sketch_frame(part: Part, feature: SketchFeature) -> tuple[tuple, tuple, tuple, tuple] | None:
+    """`(origin, x_axis, y_axis, normal)` of the Sketch's whole frame in the world, as `basis_for_sketch` builds it (anchor -> alignment -> flip / turns -> origin); None
+    when it cannot be worked out (the response must never fail because of it)."""
+    try:
+        sketch = get_sketch_or_404(feature.sketch_id)
+        if feature.plane_feature_id is None and feature.origin is None and feature.x_axis_ref is None:
+            bodies, excluded = {}, frozenset()  # a fixed plane needs no Bodies
+        else:
+            excluded = excluded_feature_ids_after(part, feature.id)
+            bodies = compute_part_bodies(part, excluded)
+        basis = basis_for_sketch(part, sketch, bodies, excluded)
+        return (tuple(basis.origin), tuple(basis.x_axis), tuple(basis.y_axis), tuple(basis.normal))
+    except HTTPException:
+        return None
 
 
 def _resolved_sketch_origin(part: Part, feature: SketchFeature) -> tuple[float, float, float] | None:
@@ -1085,12 +1143,21 @@ def _resolved_sketch_origin(part: Part, feature: SketchFeature) -> tuple[float, 
 def _feature_response_unflagged(part: Part, feature: Feature) -> FeatureResponse:
     if isinstance(feature, SketchFeature):
         resolved_origin = _resolved_sketch_origin(part, feature)
+        frame = _resolved_sketch_frame(part, feature)
+        aligned = _aligned_anchor_axes(part, feature)
         return SketchFeatureResponse(
             id=feature.id,
             sketch_id=feature.sketch_id,
             plane_feature_id=feature.plane_feature_id,
             origin=_sketch_origin_to_schema(feature.origin) if feature.origin is not None else None,
             resolved_origin=resolved_origin,
+            x_axis_ref=_sketch_or_edge_ref_to_schema(feature.x_axis_ref) if feature.x_axis_ref is not None else None,
+            resolved_frame_origin=frame[0] if frame else None,
+            resolved_x_axis=frame[1] if frame else None,
+            resolved_y_axis=frame[2] if frame else None,
+            resolved_normal=frame[3] if frame else None,
+            aligned_x_axis=aligned[0] if aligned else None,
+            aligned_y_axis=aligned[1] if aligned else None,
             **_sketch_reference_state(part, feature),
             locked=part.is_locked(feature.id),
             produces=feature.produces,
@@ -1221,6 +1288,8 @@ def _feature_response_unflagged(part: Part, feature: Feature) -> FeatureResponse
             locked=part.is_locked(feature.id),
             target_body_ids=feature.target_body_ids,
             profile_refs=[_sketch_entity_ref_to_schema(ref) for ref in feature.profile_refs],
+            thickness=feature.thickness,
+            thickness_direction=feature.thickness_direction,
             produces=feature.produces,
         )
     if isinstance(feature, SweepFeature):
@@ -2672,6 +2741,24 @@ def _require_closed_sketch_feature(part: Part, sketch_feature_id: str) -> Sketch
             detail=f"Sketch does not contain a closed profile (status: {result.status.value})",
         )
     return feature
+
+
+def _require_revolvable_sketch_feature(part: Part, sketch_feature_id: str, *, thin: bool) -> SketchFeature:
+    """`_require_closed_sketch_feature` for a Revolve: a thin one (`thickness` set) may also revolve a Sketch with no closed profile
+    but a single open chain (a cup, bowl or bell wall); a solid one still needs a closed profile. A closed profile always wins."""
+    feature = part.get_feature(sketch_feature_id)
+    if thin and isinstance(feature, SketchFeature):
+        sketch = get_sketch_or_404(feature.sketch_id)
+        if detect_profile(sketch).status not in (ProfileStatus.CLOSED_LOOP, ProfileStatus.MULTIPLE_LOOPS):
+            if detect_open_chain(sketch).status == OpenChainStatus.SINGLE_CHAIN:
+                return feature
+    return _require_closed_sketch_feature(part, sketch_feature_id)
+
+
+def _validate_thin_revolve_thickness(thickness: float | None) -> None:
+    """A thin Revolve's `thickness`, when set, is a magnitude: > 0 (its side is `thickness_direction`, never the sign)."""
+    if thickness is not None and not thickness > 0:
+        raise HTTPException(status_code=400, detail="thickness must be greater than 0")
 
 
 def _validate_profile_refs(sketch_feature: SketchFeature, profile_refs: list[SketchEntityRef]) -> list[Profile]:
@@ -5347,6 +5434,40 @@ def update_sketch_origin(part_id: str, feature_id: str, payload: SketchOriginUpd
     return _feature_response(part, feature)
 
 
+def _validate_sketch_alignment(part: Part, feature: SketchFeature, ref: SketchOrEdgeRef) -> None:
+    """Payload shape and reachability of a Sketch alignment (see `SketchFeature.x_axis_ref`). 422 `alignment_edge_not_straight` for a curved edge or a Sketch entity that is
+    not a Line, `alignment_reference_not_upstream` for a Line of this Sketch or a later one, `alignment_edge_parallel_to_normal` for an edge along the plane's normal, the
+    usual `missing_reference` when the reference does not resolve now."""
+    if (ref.sketch_entity_ref is None) == (ref.edge_ref is None) or ref.curve_feature_id is not None:
+        raise HTTPException(status_code=422, detail="x_axis_ref must have exactly one of sketch_entity_ref or edge_ref")
+    if ref.edge_ref is not None and ref.edge_ref.shape_type != SubShapeType.EDGE:
+        raise HTTPException(status_code=422, detail="x_axis_ref.edge_ref must have shape_type=EDGE")
+    candidate = dataclasses.replace(feature, x_axis_ref=ref)
+    if ref.sketch_entity_ref is not None:
+        if sketch_feature_id_for_sketch(part, ref.sketch_entity_ref.sketch_id) is None or not sketch_alignment_is_upstream(part, candidate):
+            raise HTTPException(status_code=422, detail={"type": "alignment_reference_not_upstream"})
+    excluded = excluded_feature_ids_after(part, feature.id)
+    bodies = compute_part_bodies(part, excluded)
+    direction = resolve_alignment_direction(part, candidate, bodies, excluded)
+    align_basis(anchor_basis_unoriented(part, get_sketch_or_404(feature.sketch_id), bodies, excluded), direction)
+
+
+@router.patch("/parts/{part_id}/features/{feature_id}/sketch-alignment", response_model=SketchFeatureResponse)
+def update_sketch_alignment(part_id: str, feature_id: str, payload: SketchAlignmentUpdate) -> SketchFeatureResponse:
+    """Aligns a Sketch's +X axis to a straight Body edge or Sketch Line (of an earlier Sketch), or (null) goes back to the anchor plane's own axes. The reference is live (it
+    follows the edge as the model changes). Flip and rotate then act relative to the edge; existing geometry keeps its LOCAL coordinates, so it turns with the frame, as
+    with flip / rotate. With an "auto" origin the client sends "auto" to `.../sketch-origin` again afterwards."""
+    part = get_part_or_404(part_id)
+    feature = _get_sketch_feature_or_404(part, feature_id)
+    if payload.x_axis_ref is None:
+        feature.x_axis_ref = None
+    else:
+        ref = _sketch_or_edge_ref_to_domain(payload.x_axis_ref)
+        _validate_sketch_alignment(part, feature, ref)
+        feature.x_axis_ref = ref
+    return _feature_response(part, feature)
+
+
 def _get_sketch_feature_or_404(part: Part, feature_id: str) -> SketchFeature:
     feature = part.get_feature(feature_id)
     if not isinstance(feature, SketchFeature):
@@ -7487,8 +7608,9 @@ def create_revolve_feature(part_id: str, payload: RevolveFeatureCreate) -> Revol
     `revolve_failed`/`missing_reference` rather than ever persisting an
     unresolvable Revolve."""
     part = get_part_or_404(part_id)
-    _require_closed_sketch_feature(part, payload.sketch_feature_id)
+    _require_revolvable_sketch_feature(part, payload.sketch_feature_id, thin=payload.thickness is not None)
     _validate_revolve_angle(payload.angle)
+    _validate_thin_revolve_thickness(payload.thickness)
     _validate_target_body_ids(part, payload.mode == RevolveMode.CUT, payload.target_body_ids)
     feature = RevolveFeature(
         id=str(uuid.uuid4()),
@@ -7498,6 +7620,8 @@ def create_revolve_feature(part_id: str, payload: RevolveFeatureCreate) -> Revol
         mode=payload.mode,
         target_body_ids=list(payload.target_body_ids),
         profile_refs=[_sketch_entity_ref_to_domain(ref) for ref in payload.profile_refs],
+        thickness=payload.thickness,
+        thickness_direction=payload.thickness_direction,
     )
     # Prompt G: profile_refs' own validity (invalid_profile_ref) is checked
     # as part of this same resolve - resolve_revolve_from_bodies calls
@@ -7543,7 +7667,14 @@ def update_revolve_feature(
         if payload.profile_refs is not None
         else feature.profile_refs
     )
+    # `thickness`: omitted keeps the current value, an explicit null goes back to a solid revolve (Extrude's convention).
+    new_thickness = payload.thickness if "thickness" in payload.model_fields_set else feature.thickness
+    new_thickness_direction = (
+        payload.thickness_direction if payload.thickness_direction is not None else feature.thickness_direction
+    )
+    _require_revolvable_sketch_feature(part, feature.sketch_feature_id, thin=new_thickness is not None)
     _validate_revolve_angle(new_angle)
+    _validate_thin_revolve_thickness(new_thickness)
     _validate_target_body_ids(part, new_mode == RevolveMode.CUT, new_target_body_ids)
 
     candidate = RevolveFeature(
@@ -7554,6 +7685,8 @@ def update_revolve_feature(
         mode=new_mode,
         target_body_ids=list(new_target_body_ids),
         profile_refs=new_profile_refs,
+        thickness=new_thickness,
+        thickness_direction=new_thickness_direction,
     )
     resolve_revolve(part, candidate)  # raises on an unresolvable reference
 
@@ -7562,6 +7695,8 @@ def update_revolve_feature(
     feature.mode = candidate.mode
     feature.target_body_ids = candidate.target_body_ids
     feature.profile_refs = candidate.profile_refs
+    feature.thickness = candidate.thickness
+    feature.thickness_direction = candidate.thickness_direction
     return _feature_response(part, feature)
 
 

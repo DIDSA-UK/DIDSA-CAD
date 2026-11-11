@@ -45,8 +45,8 @@ Update this table with every milestone.
   file that was placed here. Use it anyway?". A pick is applied in the open session (`relocateOccurrenceInDocument`, the existing Locate
   path), not by re-opening, so unsaved work is kept. Found-by-id makes the session unsaved from the start. The assembly tree's missing-file
   badge opens the sheet for an Occurrence the open reported; otherwise it keeps its old confirm-and-pick flow.
-- **Not built:** reports for references inside a file brought in with Add Component or a Locate pick (their composes find moves by id and
-  use them, but are not listed); a report is not restored if the assembly is re-opened without going through Open.
+- **Built 2026-11-11 (item 1a):** reports for references inside a file brought in with Add Component, Use or Locate... now join the Review sheet
+  (re-minted ids mapped). **Not built:** a report is not restored if the assembly is re-opened without going through Open.
 - **Tests:** `test/file_lookup_rule_test.dart`, `test/moved_files_composer_test.dart` (composer cases mirroring DIDSA-VR's
   `tests/moved_files.gd`, the index, save-time id stamping, Save All order), `test/references_sheet_test.dart`, and a banner / sheet case
   in `test/part_screen_test.dart`. `test/live/moved_files_live_test.dart` runs against a real backend and real files (skipped unless
@@ -120,6 +120,13 @@ When an assembly is composed, each reference is looked up in this order:
    automatically; offered as a suggestion ("A file called Frame A.didsa is in parts/old/. Use it?").
 4. **Nothing found:** unresolved as today, listed, with **Locate...** to pick the file by hand. A picked file whose id differs from
    the stored one gets a warning ("This is not the file that was placed here. Use it anyway?"), never a silent swap.
+
+**Step 2b, the folder shift (added 2026-11-11, `docs/flutter-testing-feedback-2026-11-11-plan.md` item 1):** changing the project
+folder adds or removes the same leading folders on every stored path. For a reference with **no stored id**, exactly one file whose
+path equals the stored path once leading folders are dropped from one of the two (at least the file's folder and name agree, `k >= 2`)
+is **`likely`**: never used by the rule itself; the client asks first ("N files look like they moved with the project folder": Use them /
+Not now / Don't ask again this session, in memory only; DIDSA-VR: a Files > References header row). A learned shift from a reference found
+by id or by folder is tried first on later misses. Ties, a name-only match, or a stored id the file does not carry stay suggestions.
 
 **Never guess silently** (D11): a file that doesn't match by id is only ever used after the user says so. The flat app's
 stale-cache fallback moves to after step 3. A cached copy is still shown when nothing is found, marked stale as today.

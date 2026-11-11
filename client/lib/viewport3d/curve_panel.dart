@@ -5,13 +5,10 @@ import 'package:material_ui/material_ui.dart';
 import 'keyboard_shortcuts.dart';
 import 'resizable_tool_panel.dart';
 
-/// Which of the two `CurveFeature` construction methods [CurvePanel] shows -
-/// mirrors [CreatePlaneMode]'s own "picked by PartScreen before the panel
-/// opens" convention, though for a Curve feature the mode is chosen by the
-/// user directly (a segmented toggle at the top of the panel), not derived
-/// from an ambient selection - a Helix and an Intersection curve have no
-/// natural "already selected something in the viewport" trigger the way
-/// Create Plane's face-selection-driven modes do.
+/// Which of the two `CurveFeature` construction methods [CurvePanel] shows. It is the caller's choice
+/// (the Add picker has a separate entry for each, and an edit opens the type the feature already is):
+/// the panel has no toggle, since the type never changes after creation and switching it mid-form used
+/// to close the sheet without making anything (Flutter-testing feedback 2026-11-11, item 3).
 enum CurveMode { helix, intersection }
 
 /// How a Helix's diameter changes along it: not at all, to an end diameter, or by a taper angle (the
@@ -61,6 +58,14 @@ class HelixInitialValues {
   });
 }
 
+/// An existing Intersection curve's stored Sketches, to open [CurvePanel] for editing it.
+class IntersectionInitialValues {
+  final String sketchFeatureIdA;
+  final String sketchFeatureIdB;
+
+  const IntersectionInitialValues({required this.sketchFeatureIdA, required this.sketchFeatureIdB});
+}
+
 /// A named Sketch feature, for the two dropdown pickers
 /// [CurvePanel.intersection] uses - kept minimal (just what the dropdown
 /// needs to display and identify a choice) rather than depending on this
@@ -82,6 +87,8 @@ class SketchFeatureChoice {
 /// the viewport (neither a Body edge nor an existing Curve feature is a
 /// selectable/tappable entity yet).
 class CurvePanel extends StatefulWidget {
+  /// Which form this panel is: a Helix's numbers or an Intersection curve's two Sketches.
+  final CurveMode mode;
   final String title;
   final List<SketchFeatureChoice> sketchFeatureChoices;
 
@@ -116,20 +123,24 @@ class CurvePanel extends StatefulWidget {
   final String? preSelectedAxisLabel;
 
   /// Opens the Helix form on an existing Helix's values (editing it); null starts from the defaults.
-  /// Also hides the Helix / Intersection toggle: a Curve feature's type never changes on edit.
   final HelixInitialValues? initialHelix;
+
+  /// Opens the Intersection form on an existing curve's two Sketches (editing it).
+  final IntersectionInitialValues? initialIntersection;
 
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
   const CurvePanel({
     super.key,
+    required this.mode,
     this.title = 'Curve',
     this.sketchFeatureChoices = const [],
     this.onHelixChanged,
     this.onIntersectionChanged,
     this.preSelectedAxisLabel,
     this.initialHelix,
+    this.initialIntersection,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -169,7 +180,7 @@ class _SegmentRow {
 }
 
 class _CurvePanelState extends State<CurvePanel> {
-  CurveMode _mode = CurveMode.helix;
+  CurveMode get _mode => widget.mode;
 
   String _axisPlane = 'XY';
   bool _rightHanded = true;
@@ -208,6 +219,13 @@ class _CurvePanelState extends State<CurvePanel> {
       _pitchPoints = points;
     }
     _rightHanded = initial?.rightHanded ?? true;
+    final initialIntersection = widget.initialIntersection;
+    if (initialIntersection != null) {
+      final known = {for (final c in widget.sketchFeatureChoices) c.featureId};
+      // A stored Sketch the choice list no longer offers (it would be refused) leaves its dropdown empty.
+      if (known.contains(initialIntersection.sketchFeatureIdA)) _sketchFeatureIdA = initialIntersection.sketchFeatureIdA;
+      if (known.contains(initialIntersection.sketchFeatureIdB)) _sketchFeatureIdB = initialIntersection.sketchFeatureIdB;
+    }
   }
 
   /// A stored number as the user would type it: no trailing ".0", no float noise.
@@ -385,17 +403,6 @@ class _CurvePanelState extends State<CurvePanel> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            if (widget.initialHelix == null) ...[
-              SegmentedButton<CurveMode>(
-                segments: const [
-                  ButtonSegment(value: CurveMode.helix, label: Text('Helix')),
-                  ButtonSegment(value: CurveMode.intersection, label: Text('Intersection')),
-                ],
-                selected: {_mode},
-                onSelectionChanged: (selection) => setState(() => _mode = selection.first),
-              ),
-              const SizedBox(height: 12),
-            ],
             if (_mode == CurveMode.helix) ..._buildHelixFields() else ..._buildIntersectionFields(),
             const SizedBox(height: 12),
             Row(

@@ -50,7 +50,7 @@ from app.sketch.models import (
     _signed_point_line_distance,
 )
 from app.sketch.point_merge import MergeRefused, merge_points
-from app.sketch.profile import Profile, detect_profile
+from app.sketch.profile import OpenChainStatus, Profile, ProfileStatus, detect_open_chain, detect_profile
 from app.sketch.schemas import (
     MergePointsRequest,
     MergePointsResponse,
@@ -1607,6 +1607,10 @@ def _profile_detection_response(sketch: Sketch) -> ProfileDetectionResponse:
         profile=_profile_response(result.profile) if result.profile else None,
         branch_point_ids=result.branch_point_ids,
         loops=[_profile_response(loop) for loop in result.loops],
+        open_chain=(
+            result.status not in (ProfileStatus.CLOSED_LOOP, ProfileStatus.MULTIPLE_LOOPS)
+            and detect_open_chain(sketch).status == OpenChainStatus.SINGLE_CHAIN
+        ),
     )
 
 

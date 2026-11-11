@@ -4,6 +4,7 @@ import '../api/document_api_client.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'assembly_graph_composer.dart';
+import 'project_file_index.dart';
 import 'reference_report.dart';
 import 'remint_identity.dart';
 import 'save_all.dart';
@@ -95,6 +96,9 @@ class AssemblyDocumentClient {
   final DocumentApiClient _documentApiClient;
   final AssemblyGraphComposer _composer;
 
+  /// The project-folder index the composer looks moved files up in (the Review sheet's folder-change offer reads it too).
+  ProjectFileIndex get fileIndex => _composer.fileIndex;
+
   /// Resolves [rootRelativePath] and everything it references under [root]
   /// (`AssemblyGraphComposer.compose`), then imports the whole composed
   /// graph into the backend session in one call
@@ -102,8 +106,12 @@ class AssemblyDocumentClient {
   /// plain single-file Part today). Throws [AssemblyGraphCycleException]
   /// for a genuine reference cycle, or [StorageException] if the root file
   /// itself can't be read.
-  Future<OpenedAssembly> openAssembly(ProjectRoot root, String rootRelativePath) async {
-    final composed = await _composer.compose(root, rootRelativePath);
+  Future<OpenedAssembly> openAssembly(ProjectRoot root, String rootRelativePath, {bool acceptLikely = false}) async =>
+      importComposed(await _composer.compose(root, rootRelativePath, acceptLikely: acceptLikely));
+
+  /// Imports an already composed graph ([composeGraph]): the second half of [openAssembly], for a caller that looks at the
+  /// compose's `references` (and asks the user about the likely ones) before importing.
+  Future<OpenedAssembly> importComposed(ComposedAssemblyGraph composed) async {
     await _documentApiClient.importNative(composed.documentPayload);
     return OpenedAssembly(
       rootPartId: composed.rootPartId,
@@ -117,8 +125,13 @@ class AssemblyDocumentClient {
   /// Composes [relativePath] and everything it references under [root] into
   /// one payload *without* importing it - what "Add Component" folds into the
   /// open session so the inserted file's own sub-components arrive resolved.
-  Future<ComposedAssemblyGraph> composeGraph(ProjectRoot root, String relativePath) =>
-      _composer.compose(root, relativePath);
+  Future<ComposedAssemblyGraph> composeGraph(
+    ProjectRoot root,
+    String relativePath, {
+    bool acceptLikely = false,
+    void Function()? onSearching,
+  }) =>
+      _composer.compose(root, relativePath, acceptLikely: acceptLikely, onSearching: onSearching);
 
   /// `GET /parts/{partId}/assembly-mesh` - everything visible in
   /// `partId`'s own assembly scene. Requires [openAssembly] (or an

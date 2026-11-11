@@ -31,6 +31,10 @@ import '../api/sketch_api_client.dart'
         SketchApiClient,
         TextContourDto;
 import '../assembly/add_component.dart';
+import '../assembly/compose_for_open.dart';
+import '../assembly/folder_match_dialog.dart';
+import '../assembly/folder_match_session_choice.dart';
+import '../assembly/folder_shift.dart';
 import '../assembly/assembly_document_client.dart';
 import '../assembly/assembly_graph_composer.dart' show AssemblyGraphCycleException, ComposedAssemblyGraph;
 import '../assembly/pattern_copy_pose.dart';
@@ -48,6 +52,7 @@ import 'assembly_component_selection_drawer.dart';
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
+import 'edge_fade_scroll_row.dart';
 import '../connection_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
@@ -3087,6 +3092,11 @@ class _PartScreenState extends State<PartScreen> {
       unawaited(_onSketchOriginPicked(entity));
       return;
     }
+    // ... and its Align: a straight edge or a sketch line sets the Sketch's X axis.
+    if (_pickingSketchAlignment) {
+      unawaited(_onSketchAlignmentPicked(entity));
+      return;
+    }
     // New Sketch's "tap a reference plane": in Selection mode a tap arrives
     // here rather than at [_onPlaneTap], so it has to start the sketch from
     // here too - it must not just select the plane.
@@ -3968,6 +3978,12 @@ class _PartScreenState extends State<PartScreen> {
   /// Finding moved files: the references still to review (see [PartScreen.initialReferenceReports]); the Review sheet listens
   /// to it, and an entry goes when it is used, located or left missing.
   final ValueNotifier<List<ReferenceReport>> _referenceReports = ValueNotifier(const []);
+
+  /// Item 1a: why the Review sheet's list grew ("Found 3 more references inside Sub.didsa"), and item 1c: how many other open
+  /// references the folder change from the last Use / Locate... would also fix (with the matches themselves).
+  final ValueNotifier<String?> _referencesNotice = ValueNotifier(null);
+  final ValueNotifier<int> _folderChangeOffer = ValueNotifier(0);
+  List<({ReferenceReport report, String path})> _folderChangeMatches = const [];
 
   /// Prompt D: true while the Feature tree is acting as a Sketch picker for
   /// a pending Extrude - entered by [_extrudeSelectedFeature] when no
@@ -7489,10 +7505,19 @@ class _PartScreenState extends State<PartScreen> {
     SketchEntityRefDto axisRef,
     List<String> targetBodyIds,
     List<SketchEntityRefDto> profileRefs,
+    double? thickness,
+    ThicknessDirection thicknessDirection,
   })? _revolveEditSnapshot;
 
   RevolveMode _revolveMode = RevolveMode.boss;
   double _revolveAngle = 180.0;
+
+  /// Thin revolve (item 5 of the 2026-11-11 feedback): the wall thickness (null: a solid revolve) and its direction, mirrored from
+  /// [RevolvePanel.onChanged]; [_revolveOpenProfile] is true while the Sketch has no closed profile but one open chain (Thin is then
+  /// locked on and the direction reads against the axis).
+  double? _revolveThickness;
+  ThicknessDirection _revolveThicknessDirection = ThicknessDirection.outward;
+  bool _revolveOpenProfile = false;
 
   /// Prompt G: mirrors [_extrudeProfileRefs] exactly - which outer
   /// profile(s) of [_revolveSketchFeature] to use.
@@ -7659,7 +7684,7 @@ class _PartScreenState extends State<PartScreen> {
       for (final loop in profile?.fillableLoops ?? const <ProfileLoopDto>[]) loop.lineIds.toSet(),
     ];
     if (loops.length <= 1) {
-      _openPanelForTarget(sketchFeature, target, const []);
+      _openPanelForTarget(sketchFeature, target, const [], openProfile: profile != null && !profile.isExtrudable && profile.openChain);
       return;
     }
     _startProfilePicker(sketchFeature, target, loops);
@@ -7668,13 +7693,14 @@ class _PartScreenState extends State<PartScreen> {
   void _openPanelForTarget(
     FeatureDto sketchFeature,
     _ProfilePickerTarget target,
-    List<SketchEntityRefDto> profileRefs,
-  ) {
+    List<SketchEntityRefDto> profileRefs, {
+    bool openProfile = false,
+  }) {
     switch (target) {
       case _ProfilePickerTarget.extrude:
         _openExtrudePanel(sketchFeature, profileRefs: profileRefs);
       case _ProfilePickerTarget.revolve:
-        _openRevolvePanel(sketchFeature, profileRefs: profileRefs);
+        _openRevolvePanel(sketchFeature, profileRefs: profileRefs, openProfile: openProfile);
       case _ProfilePickerTarget.sweep:
         // Unlike Extrude/Revolve, a Sweep's path is mandatory and picked
         // once, up front - never live while its own panel is open (see
@@ -11266,14 +11292,24 @@ class _PartScreenState extends State<PartScreen> {
     // The Sketch's own origin (Item 3 of `docs/view-override-edit-alone-sketch-origin-plan.md`): the axes are the plane's, the origin may have been moved.
     final origin = _sketchOriginOf(feature);
     if (planeFeatureId != null) {
-      final raw = _customPlaneBasis(planeFeatureId);
+      final raw = _alignedRawBasis(feature, _customPlaneBasis(planeFeatureId));
       return raw?.withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns).withOrigin(origin);
     }
     final plane = referencePlaneKindFromApiValue(sketch.plane);
     return plane == null
         ? null
-        : SketchPlaneBasis.oriented(plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns)
+        : _alignedRawBasis(feature, SketchPlaneBasis.fixed(plane))!
+            .withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns)
             .withOrigin(origin);
+  }
+
+  /// [plain] (the anchor plane's own basis, before flip / turns) with its X / Y axes replaced by the backend's alignment result when the Sketch is aligned to an edge or
+  /// line (`FeatureDto.alignedSketchXAxis` / `YAxis`: the anchor axes after the alignment and BEFORE flip / turns, so [SketchPlaneBasis.withOrientation] still applies
+  /// the Sketch's own flip and turns on top, as the backend does). [plain] unchanged for an unaligned Sketch or an older backend; null stays null.
+  SketchPlaneBasis? _alignedRawBasis(FeatureDto feature, SketchPlaneBasis? plain) {
+    final x = feature.alignedSketchXAxis, y = feature.alignedSketchYAxis;
+    if (plain == null || feature.sketchXAxisRef == null || x == null || y == null || x.length != 3 || y.length != 3) return plain;
+    return SketchPlaneBasis(origin: plain.origin, xAxis: vm.Vector3(x[0], x[1], x[2]), yAxis: vm.Vector3(y[0], y[1], y[2]), normal: plain.normal);
   }
 
   /// [feature]'s resolved Sketch origin as a world point, or null when it has none (or a lost one: the backend then used the plane's own origin too).
@@ -12549,7 +12585,14 @@ class _PartScreenState extends State<PartScreen> {
     OpenedAssembly? opened;
     await _runGuarded(() async {
       try {
-        opened = await _assemblyDocumentClient.openAssembly(root, relativePath);
+        final composed = await composeForOpen(
+          _assemblyDocumentClient,
+          root,
+          relativePath,
+          ask: (likely) => mounted ? showFolderMatchDialog(context, likely) : Future.value(null),
+          onSearching: _showSearchingProjectFolder,
+        );
+        opened = await _assemblyDocumentClient.importComposed(composed);
       } on StorageException catch (e) {
         setState(() => _errorMessage = e.message);
       } on AssemblyGraphCycleException catch (e) {
@@ -12682,6 +12725,8 @@ class _PartScreenState extends State<PartScreen> {
   @override
   void dispose() {
     _referenceReports.dispose();
+    _referencesNotice.dispose();
+    _folderChangeOffer.dispose();
     _extrudeDebounce?.cancel();
     _surfaceDebounce?.cancel();
     _sectionPreviewDebounce?.cancel();
@@ -12786,7 +12831,12 @@ class _PartScreenState extends State<PartScreen> {
       setState(() {
         _isDirty = false;
         // A reference found by id already holds its corrected path in the session; it reaches disk with the next Save.
-        if (widget.initialReferenceReports.any((report) => !report.needsYou)) _markPartDirty(part.id);
+        // The corrected `external_ref` sits on the Part that holds the Occurrence, at any level, so every such Part is unsaved
+        // (not just the root): Save All writes those child files too.
+        for (final report in widget.initialReferenceReports.where((report) => !report.needsYou)) {
+          _markPartDirty(report.parentPartId);
+          _markPartDirty(part.id);
+        }
       });
     });
   }
@@ -14029,6 +14079,12 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationOriginalOrigin = null;
       _pendingOrientationHasExternalRefs = false;
       _pickingSketchOrigin = false;
+      _pendingOrientationPlainBasis = rawBasis;
+      _pendingOrientationAlignRef = null;
+      _pendingOrientationOriginalAlignRef = null;
+      _pendingOrientationAlignTouched = false;
+      _pickingSketchAlignment = false;
+      _sketchAlignmentNote = null;
       _pendingOrientationMode = _PendingOrientationMode.newSketch;
       _pendingOrientationFixedPlaneKind = fixedPlane;
       // On-device feedback: judging a pending orientation needs free orbit
@@ -14073,6 +14129,8 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     if (rawBasis == null || !mounted) return;
+    final plainBasis = rawBasis;
+    rawBasis = _alignedRawBasis(feature, plainBasis); // an aligned Sketch starts from its aligned axes
     // Moving the origin of a Sketch that holds points pinned to the part leaves those points where they are in the world.
     final hasExternalRefs = feature.sketchId != null && await _sketchApi.countExternalReferences(_focusPartId, feature.id) > 0;
     if (!mounted) return;
@@ -14098,6 +14156,12 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationOriginalOrigin = feature.sketchOrigin;
       _pendingOrientationHasExternalRefs = hasExternalRefs;
       _pickingSketchOrigin = false;
+      _pendingOrientationPlainBasis = plainBasis;
+      _pendingOrientationAlignRef = feature.sketchXAxisRef;
+      _pendingOrientationOriginalAlignRef = feature.sketchXAxisRef;
+      _pendingOrientationAlignTouched = false;
+      _pickingSketchAlignment = false;
+      _sketchAlignmentNote = null;
       _pendingOrientationMode = _PendingOrientationMode.redefine;
       // Irrelevant to redefine (only _addSketchFeature's new-sketch camera
       // sequence reads this) - cleared rather than left stale from a
@@ -14131,6 +14195,126 @@ class _PartScreenState extends State<PartScreen> {
   /// True while the Pick origin sub-step is open (a [PickerRibbon] replaces the orientation pill, and a corner, point or circle tap sets the origin).
   bool _pickingSketchOrigin = false;
   String? _sketchOriginNote;
+
+  /// Sketch alignment, in the orientation step (item 2 of `docs/flutter-testing-feedback-2026-11-11-plan.md`): the anchor plane's own basis (before any alignment, flip or
+  /// turns), the alignment the Sketch has now and had when the step started (Cancel of a redefine puts the old one back), whether it was changed this step, and the
+  /// Align sub-step (a [PickerRibbon] replaces the pill; a tap on a straight edge or a sketch line sets the alignment).
+  SketchPlaneBasis? _pendingOrientationPlainBasis;
+  PathRefDto? _pendingOrientationAlignRef;
+  PathRefDto? _pendingOrientationOriginalAlignRef;
+  bool _pendingOrientationAlignTouched = false;
+  bool _pickingSketchAlignment = false;
+  String? _sketchAlignmentNote;
+
+  static const _sketchAlignmentPickFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  /// Opens the Align sub-step: a tap on a straight Body edge or a Sketch Line of an earlier Sketch makes its direction the Sketch's +X axis (Flip and Rotate then
+  /// refine). Like [_startPickSketchOrigin], this turns selection mode on for the pick and [_endPickSketchAlignment] puts it back.
+  void _startPickSketchAlignment() {
+    if (!_confirmingSketchOrientation || _pickingSketchOrigin || _pickingSketchAlignment || _busy) return;
+    setState(() {
+      _pickingSketchAlignment = true;
+      _sketchAlignmentNote = null;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_sketchAlignmentPickFilter);
+      _selectionMode = true;
+    });
+  }
+
+  void _endPickSketchAlignment() {
+    if (!_pickingSketchAlignment) return;
+    setState(() {
+      _pickingSketchAlignment = false;
+      _sketchAlignmentNote = null;
+      _selectedEntities = {};
+      _selectionFilterOverrides.pop();
+      _selectionMode = false;
+    });
+  }
+
+  /// Sends a new alignment for the pending Sketch (a [PathRefDto] or null = the plane's own axes) and, when it is accepted, turns the orientation axes to it and leaves
+  /// the sub-step. A refusal (a curve, a line of a later Sketch, an edge along the plane's normal) keeps it open with the reason. With the "auto" origin still on, the
+  /// origin is asked for again, as after a flip or rotate.
+  Future<void> _applySketchAlignment(PathRefDto? ref) async {
+    final feature = _pendingOrientationFeature;
+    if (feature == null || _busy) return;
+    FeatureDto? updated;
+    FeatureDto? reAsked;
+    await _runGuarded(() async {
+      updated = await _api.updateSketchAlignment(_focusPartId, feature.id, ref);
+      if (_pendingOrientationOriginAuto && feature.planeFeatureId != null) {
+        reAsked = await _api.updateSketchOrigin(_focusPartId, feature.id, SketchOriginDto.auto);
+      }
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    final done = updated;
+    if (done == null) {
+      final message = _errorMessage ?? '';
+      String? note;
+      if (message.contains('alignment_edge_not_straight')) {
+        note = 'That is not straight: pick a straight edge or a line';
+      } else if (message.contains('alignment_reference_not_upstream')) {
+        note = 'That line belongs to this sketch or a later one: pick something that exists before it';
+      } else if (message.contains('alignment_edge_parallel_to_normal')) {
+        note = 'That edge runs along the sketch plane\'s normal: pick one that lies along the plane';
+      }
+      if (note != null) {
+        setState(() {
+          _errorMessage = null;
+          _sketchAlignmentNote = note;
+        });
+      }
+      return;
+    }
+    final fresh = _featureById(feature.id) ?? done;
+    setState(() {
+      _pendingOrientationRawBasis = _alignedRawBasis(fresh, _pendingOrientationPlainBasis) ?? _pendingOrientationRawBasis;
+      _pendingOrientationAlignRef = done.sketchXAxisRef;
+      _pendingOrientationAlignTouched = true;
+      final origin = reAsked;
+      if (origin != null) {
+        _pendingOrientationOrigin = _sketchOriginOf(origin);
+        _pendingOrientationOriginTouched = true;
+      }
+    });
+    _endPickSketchAlignment();
+  }
+
+  /// A tap while the Align sub-step is open: a Body edge or a Sketch Line of an EARLIER Sketch. Anything else is ignored with a hint (the backend refuses a curved edge).
+  Future<void> _onSketchAlignmentPicked(SelectionEntityRef entity) async {
+    final pending = _pendingOrientationFeature;
+    if (pending == null || _busy) return;
+    switch (entity.kind) {
+      case SelectionEntityKind.edge:
+        await _applySketchAlignment(PathRefDto.edge(SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id)));
+      case SelectionEntityKind.sketchLine:
+        final own = _features.indexWhere((f) => f.id == pending.id);
+        final other = _features.indexWhere((f) => f.id == entity.sketchFeatureId);
+        if (own < 0 || other < 0 || other >= own) {
+          setState(() => _sketchAlignmentNote = 'That line belongs to this sketch or a later one: pick something that exists before it');
+          return;
+        }
+        final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+        if (sketchId == null) return;
+        await _applySketchAlignment(PathRefDto.sketchEntity(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId));
+      default:
+        setState(() => _sketchAlignmentNote = 'Tap a straight edge or a sketch line');
+    }
+  }
 
   static const _sketchOriginPickFilter = SelectionFilterState(
     vertex: true,
@@ -14345,9 +14529,12 @@ class _PartScreenState extends State<PartScreen> {
     final flip = _pendingOrientationFlip;
     final rotation = _pendingOrientationRotation;
     if (_pickingSketchOrigin) _endPickSketchOrigin();
+    if (_pickingSketchAlignment) _endPickSketchAlignment();
     setState(() {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
+      _pendingOrientationPlainBasis = null;
+      _pendingOrientationAlignRef = null;
       _pendingOrientationFixedPlaneKind = null;
       _pendingOrientationOrigin = null;
       _pendingOrientationOriginAuto = false;
@@ -14403,9 +14590,14 @@ class _PartScreenState extends State<PartScreen> {
     final originalRotation = _pendingOrientationOriginalRotation;
     final originalOrigin = _pendingOrientationOriginalOrigin;
     final originTouched = _pendingOrientationOriginTouched;
+    final originalAlignRef = _pendingOrientationOriginalAlignRef;
+    final alignTouched = _pendingOrientationAlignTouched;
     if (_pickingSketchOrigin) _endPickSketchOrigin();
+    if (_pickingSketchAlignment) _endPickSketchAlignment();
     setState(() {
       _pendingOrientationFeature = null;
+      _pendingOrientationPlainBasis = null;
+      _pendingOrientationAlignRef = null;
       _pendingOrientationRawBasis = null;
       _pendingOrientationFixedPlaneKind = null;
       _pendingOrientationOrigin = null;
@@ -14428,7 +14620,8 @@ class _PartScreenState extends State<PartScreen> {
           flip: originalFlip,
           rotationQuarterTurns: originalRotation,
         );
-        // The origin the Sketch had when the step started (only if it was changed here).
+        // The alignment, then the origin the Sketch had when the step started (only if they were changed here).
+        if (alignTouched) await _api.updateSketchAlignment(_focusPartId, feature.id, originalAlignRef);
         if (originTouched) await _api.updateSketchOrigin(_focusPartId, feature.id, originalOrigin);
         await _refreshFeatures();
         await _refreshSketchGeometries();
@@ -14771,6 +14964,8 @@ class _PartScreenState extends State<PartScreen> {
     await _runGuarded(() async {
       final currentPayload = await _api.exportNative();
       Map<String, dynamic> merged;
+      var idMap = const <String, String>{};
+      var reused = false;
       try {
         merged = mergeComponentIntoDocument(
           currentPayload: currentPayload,
@@ -14779,6 +14974,10 @@ class _PartScreenState extends State<PartScreen> {
           occurrenceId: const Uuid().v4(),
           externalRef: picked.relativePath,
           relativePathByPartId: _relativePathByPartId,
+          onPrepared: (map, reusedExisting) {
+            idMap = map;
+            reused = reusedExisting;
+          },
         );
       } on AddComponentException catch (e) {
         setState(() => _errorMessage = e.message);
@@ -14786,9 +14985,33 @@ class _PartScreenState extends State<PartScreen> {
       }
       await _api.importNative(merged);
       _learnRelativePaths(merged);
+      _addNestedReports(picked, idMap, reused);
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
+  }
+
+  /// Item 1a: the references the composer reported **inside** a file just brought into the session (Add Component, Use, Locate...)
+  /// join the Review sheet's list, with each report's `parentPartId` rewritten when the heal re-minted the file's ids. A file
+  /// already in the session ([reusedExistingPart]) had its nested reports handled when it first came in: none are added.
+  void _addNestedReports(
+    ({ComposedAssemblyGraph graph, String relativePath}) picked,
+    Map<String, String> idMap,
+    bool reusedExistingPart,
+  ) {
+    if (reusedExistingPart || picked.graph.references.isEmpty) return;
+    final nested = [
+      for (final report in picked.graph.references)
+        idMap.isEmpty ? report : report.withParentPartId(idMap[report.parentPartId] ?? report.parentPartId),
+    ];
+    for (final report in nested) {
+      if (!report.needsYou) _markPartDirty(report.parentPartId);
+    }
+    _referenceReports.value = [..._referenceReports.value, ...nested];
+    final name = picked.relativePath.replaceAll(r'\', '/').split('/').last;
+    _referencesNotice.value = 'Found ${nested.length} more ${nested.length == 1 ? 'reference' : 'references'} inside $name'
+        '${nested.any((r) => !r.needsYou) ? '. Save All to record these files\' ids, so future moves are found automatically' : ''}';
+    if (_referencesSheetContext == null && nested.any((r) => r.needsYou)) _showReferencesBanner();
   }
 
   /// Picks a native file inside the project folder (the same listing-backed
@@ -14825,7 +15048,9 @@ class _PartScreenState extends State<PartScreen> {
     ComposedAssemblyGraph? graph;
     await _runGuarded(() async {
       try {
-        graph = await _assemblyDocumentClient.composeGraph(root, relativePath);
+        graph = await _assemblyDocumentClient.composeGraph(root, relativePath,
+            acceptLikely: FolderMatchSessionChoice.instance.answer == true,
+            onSearching: _showSearchingProjectFolder);
       } on StorageException catch (e) {
         setState(() => _errorMessage = e.message);
       } on AssemblyGraphCycleException catch (e) {
@@ -14908,31 +15133,62 @@ class _PartScreenState extends State<PartScreen> {
     String partId,
     String occurrenceId,
     ({ComposedAssemblyGraph graph, String relativePath}) picked,
+  ) =>
+      _relinkMany([(partId: partId, occurrenceId: occurrenceId, picked: picked)]);
+
+  /// [_relinkOccurrence] for several Occurrences in **one** merge and one `importNative` (item 1c: one import per relink is far too
+  /// slow on a phone). Each picked file's nested reports join the Review sheet (item 1a). Returns whether it worked.
+  Future<bool> _relinkMany(
+    List<({String partId, String occurrenceId, ({ComposedAssemblyGraph graph, String relativePath}) picked})> items,
   ) async {
     var relinked = false;
     await _runGuarded(() async {
-      final currentPayload = await _api.exportNative();
-      Map<String, dynamic> merged;
+      var merged = await _api.exportNative();
+      final nestedJobs = <({({ComposedAssemblyGraph graph, String relativePath}) picked, Map<String, String> idMap, bool reused})>[];
       try {
-        merged = relocateOccurrenceInDocument(
-          currentPayload: currentPayload,
-          componentPayload: picked.graph.documentPayload,
-          rootPartId: partId,
-          occurrenceId: occurrenceId,
-          newExternalRef: picked.relativePath,
-          relativePathByPartId: _relativePathByPartId,
-        );
+        for (final item in items) {
+          var idMap = const <String, String>{};
+          var reused = false;
+          merged = relocateOccurrenceInDocument(
+            currentPayload: merged,
+            componentPayload: item.picked.graph.documentPayload,
+            rootPartId: item.partId,
+            occurrenceId: item.occurrenceId,
+            newExternalRef: item.picked.relativePath,
+            relativePathByPartId: _relativePathByPartId,
+            onPrepared: (map, reusedExisting) {
+              idMap = map;
+              reused = reusedExisting;
+            },
+          );
+          nestedJobs.add((picked: item.picked, idMap: idMap, reused: reused));
+        }
       } on AddComponentException catch (e) {
         setState(() => _errorMessage = e.message);
         return;
       }
       await _api.importNative(merged);
       _learnRelativePaths(merged);
+      for (final item in items) {
+        _markPartDirty(item.partId); // the corrected external_ref is on the Part that holds the Occurrence, at any level
+      }
+      for (final job in nestedJobs) {
+        _addNestedReports(job.picked, job.idMap, job.reused);
+      }
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
       relinked = true;
     });
     return relinked;
+  }
+
+  /// "Searching the project folder...": the composer is about to list the project folder because a reference missed (on a phone
+  /// the SAF walk can take seconds on a big folder).
+  void _showSearchingProjectFolder() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(const SnackBar(content: Text('Searching the project folder...'), duration: Duration(seconds: 3)));
   }
 
   /// Finding moved files: the banner shown once when the open found references in new places or could not resolve some.
@@ -14947,7 +15203,14 @@ class _PartScreenState extends State<PartScreen> {
         key: const Key('references-banner'),
         backgroundColor: (needsYou ? Colors.amber : Colors.green).withValues(alpha: 0.15),
         leading: Icon(needsYou ? Icons.link_off : Icons.check_circle_outline, color: needsYou ? Colors.amber : Colors.green),
-        content: Text(summary[0].toUpperCase() + summary.substring(1)),
+        content: Text(
+          summary[0].toUpperCase() +
+              summary.substring(1) +
+              // Item 1d: files found by folder (or relinked by name) have no recorded id yet; Save All writes it.
+              (_referenceReports.value.any((report) => report.outcome == ReferenceOutcome.foundByFolder)
+                  ? '. Save All to record these files\' ids, so future moves are found automatically'
+                  : ''),
+        ),
         actions: [
           TextButton(
             onPressed: () {
@@ -14973,12 +15236,21 @@ class _PartScreenState extends State<PartScreen> {
         _referencesSheetContext = sheetContext;
         return ReferencesSheet(
           reports: _referenceReports,
+          notice: _referencesNotice,
+          folderChangeOffer: _folderChangeOffer,
+          onApplyFolderChange: _applyFolderChange,
+          onUseAllSingle: _useAllSingleSuggestions,
+          sessionChoice: FolderMatchSessionChoice.instance,
           onUse: (report, path) => _useReferenceFile(report, path, sheetContext),
           onLocate: (report) => _locateReferenceFile(report, sheetContext),
           onLeaveMissing: _dropReferenceReport,
         );
       },
-    ).whenComplete(() => _referencesSheetContext = null);
+    ).whenComplete(() {
+      _referencesSheetContext = null;
+      _referencesNotice.value = null;
+      _folderChangeOffer.value = 0;
+    });
   }
 
   /// The Review sheet's own context while it is open (null otherwise), so it - and never this screen's route - is what closes.
@@ -14999,7 +15271,10 @@ class _PartScreenState extends State<PartScreen> {
     if (root == null || !mounted) return;
     final picked = await _composeProjectFile(root, relativePath);
     if (picked == null || !mounted) return;
-    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) _dropReferenceReport(report);
+    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) {
+      _dropReferenceReport(report);
+      await _offerFolderChange(root, report, relativePath);
+    }
   }
 
   /// The Review sheet's Locate...: the usual file prompt, with a confirmation when the file picked is not the part that was
@@ -15012,8 +15287,76 @@ class _PartScreenState extends State<PartScreen> {
       // ignore: use_build_context_synchronously
       if (!await ReferencesSheet.confirmDifferentFile(sheetContext, picked.relativePath)) return;
     }
-    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) _dropReferenceReport(report);
+    if (await _relinkOccurrence(report.parentPartId, report.occurrenceId, picked)) {
+      _dropReferenceReport(report);
+      final root = _projectRoot;
+      if (root != null) await _offerFolderChange(root, report, picked.relativePath);
+    }
   }
+
+  /// Item 1c: after a Use or Locate... for [report], works out the folder change it made (`stored path -> picked path`) and which
+  /// other open references would resolve with it (a file at the shifted path that is the stored part, or any file for a
+  /// reference with no stored id). The sheet then offers one action for all of them.
+  Future<void> _offerFolderChange(ProjectRoot root, ReferenceReport report, String pickedPath) async {
+    final shift = FolderShift.between(report.requestedPath, pickedPath);
+    if (shift == null || !mounted) {
+      _folderChangeMatches = const [];
+      _folderChangeOffer.value = 0;
+      return;
+    }
+    final index = await _assemblyDocumentClient.fileIndex.build(root);
+    final matches = <({ReferenceReport report, String path})>[];
+    for (final other in _referenceReports.value) {
+      if (!other.needsYou || other.outcome == ReferenceOutcome.ask) continue;
+      final shifted = shift.apply(other.requestedPath);
+      if (shifted == null) continue;
+      for (final file in FolderShift.filesAt(shifted, index)) {
+        if (other.storedPartId == null || file.partId == other.storedPartId) {
+          matches.add((report: other, path: file.path));
+          break;
+        }
+      }
+    }
+    _folderChangeMatches = matches;
+    if (mounted) _folderChangeOffer.value = matches.length;
+  }
+
+  /// "Apply the same folder change to N other references": one compose per file, then one merge and one import for all.
+  Future<void> _applyFolderChange() async {
+    final matches = _folderChangeMatches;
+    if (matches.isEmpty) return;
+    final done = await _relinkReports([for (final m in matches) (report: m.report, path: m.path)]);
+    _folderChangeMatches = const [];
+    _folderChangeOffer.value = 0;
+    if (done > 0 && _referencesNotice.value == null) {
+      _referencesNotice.value = 'Applied the folder change to $done ${done == 1 ? 'reference' : 'references'}';
+    }
+  }
+
+  /// "Use all single suggestions": every open reference with exactly one candidate, relinked in one merge.
+  Future<void> _useAllSingleSuggestions(List<ReferenceReport> reports) => _relinkReports(
+        [for (final r in reports) (report: r, path: r.candidates.single)],
+      );
+
+  /// Composes each [pairs] path, relinks them all in one [_relinkMany], drops the reports that worked. Returns how many.
+  Future<int> _relinkReports(List<({ReferenceReport report, String path})> pairs) async {
+    final root = await _ensureProjectRoot();
+    if (root == null || !mounted) return 0;
+    final items = <({String partId, String occurrenceId, ({ComposedAssemblyGraph graph, String relativePath}) picked})>[];
+    final used = <ReferenceReport>[];
+    for (final pair in pairs) {
+      final picked = await _composeProjectFile(root, pair.path);
+      if (picked == null || !mounted) continue;
+      items.add((partId: pair.report.parentPartId, occurrenceId: pair.report.occurrenceId, picked: picked));
+      used.add(pair.report);
+    }
+    if (items.isEmpty || !await _relinkMany(items)) return 0;
+    for (final report in used) {
+      _dropReferenceReport(report);
+    }
+    return used.length;
+  }
+
   /// Assembly support Phase 15 (`docs/assembly-scope.md` §6): lazily
   /// acquires [_projectRoot] the first time "Save All"/"Create Component…"
   /// needs one. Phase 16 (§2s) fix: tries [StorageService.lastUsedProjectRoot]
@@ -15403,6 +15746,7 @@ class _PartScreenState extends State<PartScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.helix,
         title: 'Create Helix',
         preSelectedAxisLabel: preSelectedAxisLabel,
         onHelixChanged: ({
@@ -15473,6 +15817,7 @@ class _PartScreenState extends State<PartScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.helix,
         title: 'Edit Helix',
         preSelectedAxisLabel: _describeHelixAxis(feature.helixAxisRef),
         initialHelix: HelixInitialValues(
@@ -15515,6 +15860,59 @@ class _PartScreenState extends State<PartScreen> {
         segments: [for (final s in newSegments) (pitch: s.pitch, turns: s.turns)],
         pitchPoints: [for (final p in newPitchPoints) (at: p.at, pitch: p.pitch)],
         rightHanded: newRightHanded,
+      );
+      await _refreshFeatures();
+      await _refreshMesh();
+    });
+  }
+
+  /// The Sketch features an Intersection curve at feature index [curveIndex] may use: only Sketches
+  /// that come **before** it in the history (a curve cannot depend on something downstream of itself).
+  /// A new curve ([curveIndex] null) sits at the end, so every Sketch qualifies.
+  List<SketchFeatureChoice> _intersectionSketchChoices({int? curveIndex}) {
+    final limit = curveIndex ?? _features.length;
+    return [
+      for (var i = 0; i < limit && i < _features.length; i++)
+        if (_features[i].type == 'sketch')
+          SketchFeatureChoice(featureId: _features[i].id, label: featureDisplayName(_features, i)),
+    ];
+  }
+
+  /// [_onFeatureTap]'s Intersection-curve branch (Flutter-testing feedback 2026-11-11, item 3): the
+  /// two-Sketch form opened on [feature]'s stored Sketches, PATCHed on Confirm. Re-picking a Sketch
+  /// clears that side's profile refs (Create never sets them either: whole Sketches).
+  Future<void> _openIntersectionCurveForEdit(FeatureDto feature) async {
+    final storedA = feature.curveSketchFeatureIdA, storedB = feature.curveSketchFeatureIdB;
+    if (storedA == null || storedB == null) return;
+    final choices = _intersectionSketchChoices(curveIndex: _features.indexWhere((f) => f.id == feature.id));
+    var newA = storedA, newB = storedB;
+    final confirmed = await showAdaptiveSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.intersection,
+        title: 'Edit Intersection Curve',
+        sketchFeatureChoices: choices,
+        initialIntersection: IntersectionInitialValues(sketchFeatureIdA: storedA, sketchFeatureIdB: storedB),
+        onIntersectionChanged: ({required String sketchFeatureIdA, required String sketchFeatureIdB}) {
+          newA = sketchFeatureIdA;
+          newB = sketchFeatureIdB;
+        },
+        onConfirm: () => Navigator.of(sheetContext).pop(true),
+        onCancel: () => Navigator.of(sheetContext).pop(false),
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    if (newA == storedA && newB == storedB) return;
+    await _runGuarded(() async {
+      await _api.updateCurveFeature(
+        _focusPartId,
+        feature.id,
+        sketchFeatureIdA: newA,
+        sketchFeatureIdB: newB,
+        clearProfileRefsA: newA != storedA,
+        clearProfileRefsB: newB != storedB,
       );
       await _refreshFeatures();
       await _refreshMesh();
@@ -15590,13 +15988,7 @@ class _PartScreenState extends State<PartScreen> {
   /// this Part (see [CurvePanel]'s own doc comment for why, not a 3D-
   /// viewport tap).
   Future<void> _startIntersectionCurve() async {
-    final sketchChoices = _features
-        .where((f) => f.type == 'sketch')
-        .map((f) => SketchFeatureChoice(
-              featureId: f.id,
-              label: featureDisplayName(_features, _features.indexOf(f)),
-            ))
-        .toList();
+    final sketchChoices = _intersectionSketchChoices();
     if (sketchChoices.length < 2) {
       _showSnack('Need at least two sketches to intersect');
       return;
@@ -15608,6 +16000,7 @@ class _PartScreenState extends State<PartScreen> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (sheetContext) => CurvePanel(
+        mode: CurveMode.intersection,
         title: 'Create Intersection Curve',
         sketchFeatureChoices: sketchChoices,
         onIntersectionChanged: ({required String sketchFeatureIdA, required String sketchFeatureIdB}) {
@@ -16082,7 +16475,7 @@ class _PartScreenState extends State<PartScreen> {
     final featureId = _selectedFeatureId;
     final feature = featureId == null ? null : _featureById(featureId);
     if (feature != null && feature.type == 'sketch') {
-      final reason = await _checkExtrudeEligibility(feature);
+      final reason = await _checkRevolveEligibility(feature);
       if (!mounted) return;
       if (reason == null) {
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.revolve);
@@ -16109,7 +16502,7 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _refreshPickableRevolveSketchIds() async {
     final sketchFeatures = _features.where((f) => f.type == 'sketch').toList();
     final results = await Future.wait(sketchFeatures.map((feature) async {
-      final reason = await _checkExtrudeEligibility(feature);
+      final reason = await _checkRevolveEligibility(feature);
       return MapEntry(feature.id, reason == null);
     }));
     if (!mounted || !_revolveSketchPickerActive) return;
@@ -16120,10 +16513,10 @@ class _PartScreenState extends State<PartScreen> {
 
   /// Mirrors [_onSketchPicked] exactly, for the Revolve picker.
   Future<void> _onRevolveSketchPicked(FeatureDto feature) async {
-    final reason = await _checkExtrudeEligibility(feature);
+    final reason = await _checkRevolveEligibility(feature);
     if (!mounted || !_revolveSketchPickerActive) return;
     if (reason != null) {
-      _showSnack('This sketch has no closed profile — add more lines or close the loop first');
+      _showSnack('This sketch has no closed profile or single open line chain — add more lines or close the loop first');
       return;
     }
     setState(() {
@@ -16372,6 +16765,12 @@ class _PartScreenState extends State<PartScreen> {
       // values. A modal sheet like the create flow, so (like the Sketch/gear branches) rollback ends
       // once it closes; any Sweep using the Helix rebuilds against the new curve.
       await _openHelixForEdit(feature);
+      if (!mounted) return;
+      await _endRollback();
+    } else if (feature.type == 'curve' && feature.curveType == 'intersection') {
+      // Flutter-testing feedback 2026-11-11 (item 3): the Intersection curve's own Edit, the two-Sketch form
+      // on its stored Sketches. A modal sheet like the Helix one, so rollback ends once it closes.
+      await _openIntersectionCurveForEdit(feature);
       if (!mounted) return;
       await _endRollback();
     } else if (_gearFamilyFeatureTypes.contains(feature.type)) {
@@ -17167,7 +17566,12 @@ class _PartScreenState extends State<PartScreen> {
     // doc comment) - reused directly rather than re-run separately. Sweep's
     // own Profile eligibility mirrors both the same way (its path is
     // checked live during path-picking, not here).
-    final canRevolve = canExtrude;
+    //
+    // Item 5 (thin Revolve): the one exception - a Sketch with no closed profile but one open chain can be revolved as a thin wall.
+    final revolveDisabledReason = !isSketchFeature
+        ? null
+        : (extrudeDisabledReason == null ? null : await _checkRevolveEligibility(feature));
+    final canRevolve = isSketchFeature && revolveDisabledReason == null;
     final canSweep = canExtrude;
     // Pattern/Mirror scoping's Phase 6 (on-device feedback: "user should
     // now be able to start pattern from long press a feature in the
@@ -17197,7 +17601,7 @@ class _PartScreenState extends State<PartScreen> {
       extrudeDisabledReason: extrudeDisabledReason,
       showRevolve: isSketchFeature,
       canRevolve: canRevolve,
-      revolveDisabledReason: extrudeDisabledReason,
+      revolveDisabledReason: revolveDisabledReason,
       showSweep: isSketchFeature,
       canSweep: canSweep,
       sweepDisabledReason: extrudeDisabledReason,
@@ -17260,6 +17664,17 @@ class _PartScreenState extends State<PartScreen> {
     try {
       final profile = await _sketchApi.getProfile(feature.sketchId!);
       return profile.isExtrudable ? null : 'Sketch does not contain a closed profile';
+    } catch (_) {
+      return 'Sketch does not contain a closed profile';
+    }
+  }
+
+  /// [_checkExtrudeEligibility] for Revolve: a Sketch with no closed profile but one open chain is also fine (it can be revolved as a
+  /// thin wall, item 5 of the 2026-11-11 feedback). Returns null when eligible, otherwise the reason.
+  Future<String?> _checkRevolveEligibility(FeatureDto feature) async {
+    try {
+      final profile = await _sketchApi.getProfile(feature.sketchId!);
+      return profile.isExtrudable || profile.openChain ? null : 'Sketch does not contain a closed profile';
     } catch (_) {
       return 'Sketch does not contain a closed profile';
     }
@@ -17738,13 +18153,21 @@ class _PartScreenState extends State<PartScreen> {
   /// Mirrors [_openExtrudePanel] exactly, substituting Revolve's own state
   /// fields/filter - pushes [_revolveSelectionFilter] (axis + target-body,
   /// not bodies-only) instead of Extrude's own override.
-  void _openRevolvePanel(FeatureDto sketchFeature, {List<SketchEntityRefDto> profileRefs = const []}) {
+  void _openRevolvePanel(
+    FeatureDto sketchFeature, {
+    List<SketchEntityRefDto> profileRefs = const [],
+    bool openProfile = false,
+  }) {
     setState(() {
       _revolveSketchFeature = sketchFeature;
       _previewRevolveFeatureId = null;
       _meshBeforeRevolve = _bodies;
       _revolveMode = RevolveMode.boss;
       _revolveAngle = 180.0;
+      // An open profile can only be revolved as a thin wall: the panel opens with Thin on (its postFrame emit sets the thickness).
+      _revolveOpenProfile = openProfile;
+      _revolveThickness = null;
+      _revolveThicknessDirection = ThicknessDirection.outward;
       _revolveProfileRefs = profileRefs;
       _entitiesBeforeRevolve = _selectedEntities;
       _selectedEntities = {};
@@ -17784,10 +18207,15 @@ class _PartScreenState extends State<PartScreen> {
         axisRef: axisRef,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: feature.thickness,
+        thicknessDirection: ThicknessDirection.fromApiValue(feature.thicknessDirection),
       );
       _meshBeforeRevolve = _bodies;
       _revolveMode = mode;
       _revolveAngle = angle;
+      _revolveThickness = feature.thickness;
+      _revolveThicknessDirection = ThicknessDirection.fromApiValue(feature.thicknessDirection);
+      _revolveOpenProfile = false;
       _revolveProfileRefs = profileRefs;
       _entitiesBeforeRevolve = _selectedEntities;
       _selectedEntities = {
@@ -17803,7 +18231,23 @@ class _PartScreenState extends State<PartScreen> {
       _selectionMode = true;
       _selectionFilterOverrides.push(_revolveSelectionFilter);
     });
+    if (feature.thickness != null) unawaited(_refreshRevolveOpenProfile(sketchFeature));
     return true;
+  }
+
+  /// Editing a thin Revolve: whether its Sketch has no closed profile but one open chain (the panel then locks Thin on and labels the
+  /// direction against the axis). Fetched after the panel opens; the panel is rebuilt (its key includes the flag) when it turns out true.
+  Future<void> _refreshRevolveOpenProfile(FeatureDto sketchFeature) async {
+    final sketchId = sketchFeature.sketchId;
+    if (sketchId == null) return;
+    try {
+      final profile = await _sketchApi.getProfile(sketchId);
+      if (!mounted || _revolveSketchFeature?.id != sketchFeature.id) return;
+      final open = !profile.isExtrudable && profile.openChain;
+      if (open != _revolveOpenProfile) setState(() => _revolveOpenProfile = open);
+    } catch (_) {
+      // Defensive: the panel simply stays a plain thin revolve.
+    }
   }
 
   /// Mirrors [_ensureExtrudeFeatureExists] exactly (the simple pattern - no
@@ -17820,6 +18264,7 @@ class _PartScreenState extends State<PartScreen> {
     final sketchFeature = _revolveSketchFeature;
     if (part == null || sketchFeature == null) return;
 
+    final thickness = _revolveThickness;
     final existingId = _previewRevolveFeatureId;
     if (existingId == null) {
       final created = await _api.createRevolveFeature(
@@ -17830,6 +18275,8 @@ class _PartScreenState extends State<PartScreen> {
         mode: mode.apiValue,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: thickness,
+        thicknessDirection: _revolveThicknessDirection.apiValue,
       );
       _previewRevolveFeatureId = created.id;
     } else {
@@ -17841,15 +18288,20 @@ class _PartScreenState extends State<PartScreen> {
         mode: mode.apiValue,
         targetBodyIds: targetBodyIds,
         profileRefs: profileRefs,
+        thickness: thickness,
+        thicknessDirection: _revolveThicknessDirection.apiValue,
+        clearThickness: thickness == null,
       );
     }
     await _refreshMesh();
   }
 
   /// [RevolvePanel.onChanged] - mirrors [_onExtrudeValuesChanged].
-  void _onRevolveValuesChanged(RevolveMode mode, double angle) {
+  void _onRevolveValuesChanged(RevolveMode mode, double angle, double? thickness, ThicknessDirection thicknessDirection) {
     _revolveMode = mode;
     _revolveAngle = angle;
+    _revolveThickness = thickness;
+    _revolveThicknessDirection = thicknessDirection;
     _scheduleRevolvePreview();
   }
 
@@ -17958,6 +18410,9 @@ class _PartScreenState extends State<PartScreen> {
             mode: editSnapshot.mode.apiValue,
             targetBodyIds: editSnapshot.targetBodyIds,
             profileRefs: editSnapshot.profileRefs,
+            thickness: editSnapshot.thickness,
+            thicknessDirection: editSnapshot.thicknessDirection.apiValue,
+            clearThickness: editSnapshot.thickness == null,
           );
           await _refreshFeatures();
         });
@@ -25382,6 +25837,8 @@ class _PartScreenState extends State<PartScreen> {
       _exitMultiSelect();
     } else if (_pickingSketchOrigin) {
       _endPickSketchOrigin();
+    } else if (_pickingSketchAlignment) {
+      _endPickSketchAlignment();
     } else if (_confirmingSketchOrientation) {
       _cancelPendingOrientation();
     } else if (_sketchPickerActive) {
@@ -27789,11 +28246,14 @@ class _PartScreenState extends State<PartScreen> {
                     // key reasoning exactly, above.
                     key: const ValueKey('revolve-panel-slot'),
                     child: RevolvePanel(
-                      key: ValueKey(_editingRevolveFeatureId ?? _revolveSketchFeature!.id),
+                      key: ValueKey('${_editingRevolveFeatureId ?? _revolveSketchFeature!.id}-$_revolveOpenProfile'),
                       title: _editingRevolveFeatureId != null ? 'Edit Revolve' : 'Revolve',
                       tooltip: _revolvePickerBannerText(),
                       initialMode: _revolveMode,
                       initialAngle: _revolveAngle,
+                      initialThickness: _revolveThickness,
+                      initialThicknessDirection: _revolveThicknessDirection,
+                      openProfile: _revolveOpenProfile,
                       hasAxis: _revolveAxisEntity != null,
                       targetBodyCount: _currentRevolveTargetBodyIds().length,
                       onChanged: _onRevolveValuesChanged,
@@ -28217,7 +28677,26 @@ class _PartScreenState extends State<PartScreen> {
                       ],
                     ),
                   ),
-                if (_confirmingSketchOrientation && !_pickingSketchOrigin)
+                if (_confirmingSketchOrientation && _pickingSketchAlignment)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Align sketch',
+                      tooltip: _sketchAlignmentNote ??
+                          (_pendingOrientationHasExternalRefs
+                              ? 'Tap a straight edge or line to align the sketch X axis. Points pinned to the part stay where they are, so a sketch that mixes free and pinned geometry can distort.'
+                              : 'Tap a straight edge or line to align the sketch X axis'),
+                      onCancel: _endPickSketchAlignment,
+                      extraActions: [
+                        PickerRibbonAction(
+                          key: const ValueKey('sketch-alignment-clear'),
+                          label: 'Clear alignment',
+                          icon: Icons.layers_clear,
+                          onPressed: _busy ? null : () => unawaited(_applySketchAlignment(null)),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_confirmingSketchOrientation && !_pickingSketchOrigin && !_pickingSketchAlignment)
                   Positioned(
                     bottom: 8,
                     left: 8,
@@ -28227,7 +28706,12 @@ class _PartScreenState extends State<PartScreen> {
                       child: Center(
                         child: Material(
                           elevation: 4,
-                          borderRadius: BorderRadius.circular(24),
+                          // Flutter-testing feedback 2026-11-11 (item 4): Material's clipBehavior is Clip.none by
+                          // default, so a row wider than the screen drew its buttons past the pill's rounded ends.
+                          // A stadium shape plus an anti-aliased clip keeps them inside; EdgeFadeScrollRow fades the
+                          // end that has more content, so it reads as scrollable rather than cut off.
+                          shape: const StadiumBorder(),
+                          clipBehavior: Clip.antiAlias,
                           // Bug fix: this row of controls used to overflow
                           // on a narrow screen (no scroll fallback) - it
                           // also used to sit right underneath the
@@ -28237,13 +28721,12 @@ class _PartScreenState extends State<PartScreen> {
                           // above for that half of the fix). Wrapped in a
                           // horizontal scroll view as a hard guarantee
                           // against overflow on any screen width.
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
+                          child: EdgeFadeScrollRow(
+                            key: const ValueKey('sketch-orientation-pill-row'),
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            children: [
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   // Bug fix: swapped - on-device feedback
                                   // reported these two felt reversed
                                   // (rotate_left visually rotated the
@@ -28255,6 +28738,7 @@ class _PartScreenState extends State<PartScreen> {
                                       : () => _adjustPendingOrientation(rotationDelta: 1),
                                 ),
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   tooltip: 'Rotate 90° clockwise',
                                   icon: const Icon(Icons.rotate_right),
                                   onPressed: _busy
@@ -28262,6 +28746,7 @@ class _PartScreenState extends State<PartScreen> {
                                       : () => _adjustPendingOrientation(rotationDelta: -1),
                                 ),
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   tooltip: _pendingOrientationFlip ? 'Un-flip' : 'Flip',
                                   icon: const Icon(Icons.flip),
                                   isSelected: _pendingOrientationFlip,
@@ -28270,16 +28755,35 @@ class _PartScreenState extends State<PartScreen> {
                                       : () => _adjustPendingOrientation(flip: !_pendingOrientationFlip),
                                 ),
                                 IconButton(
+                                  visualDensity: VisualDensity.compact,
+                                  key: const ValueKey('sketch-orientation-align'),
+                                  tooltip: 'Align the sketch X axis to an edge or line',
+                                  icon: const Icon(Icons.straighten),
+                                  isSelected: _pendingOrientationAlignRef != null,
+                                  onPressed: _busy ? null : _startPickSketchAlignment,
+                                ),
+                                IconButton(
+                                  visualDensity: VisualDensity.compact,
                                   key: const ValueKey('sketch-orientation-pick-origin'),
                                   tooltip: 'Pick a point for the sketch origin',
                                   icon: const Icon(Icons.my_location),
                                   onPressed: _busy ? null : _startPickSketchOrigin,
                                 ),
                                 const SizedBox(width: 4),
-                                TextButton(
-                                  onPressed: _busy ? null : _cancelPendingOrientation,
-                                  child: const Text('Cancel'),
-                                ),
+                                if (MediaQuery.sizeOf(context).width < 400)
+                                  IconButton(
+                                    key: const ValueKey('sketch-orientation-cancel'),
+                                    visualDensity: VisualDensity.compact,
+                                    tooltip: 'Cancel',
+                                    icon: const Icon(Icons.close),
+                                    onPressed: _busy ? null : _cancelPendingOrientation,
+                                  )
+                                else
+                                  TextButton(
+                                    key: const ValueKey('sketch-orientation-cancel'),
+                                    onPressed: _busy ? null : _cancelPendingOrientation,
+                                    child: const Text('Cancel'),
+                                  ),
                                 const SizedBox(width: 4),
                                 FilledButton(
                                   onPressed: _busy ? null : _confirmPendingOrientation,
@@ -28290,7 +28794,6 @@ class _PartScreenState extends State<PartScreen> {
                                   ),
                                 ),
                               ],
-                            ),
                           ),
                         ),
                       ),

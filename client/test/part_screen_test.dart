@@ -42,6 +42,7 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 import 'package:didsa_cad_client/viewport3d/part_toolbar.dart';
 import 'package:didsa_cad_client/viewport3d/view_appearance_override.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
+import 'package:didsa_cad_client/viewport3d/curve_panel.dart' show CurveMode;
 import 'package:didsa_cad_client/viewport3d/pattern_panel.dart';
 import 'package:didsa_cad_client/viewport3d/presentation_mode.dart';
 import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
@@ -123,6 +124,13 @@ class _FakeDocumentBackend {
   /// answers with: [autoStored] / [autoResolved] for `'auto'` (null = "no origin", the plane's own), [pickResolved] for a concrete origin.
   final List<Map<String, dynamic>> sketchCreateBodies = [];
   final List<Object?> originPatches = [];
+
+  /// Sketch alignment (item 2 of the 2026-11-11 feedback): every `x_axis_ref` a `PATCH .../sketch-alignment` sent (a map, or null), the aligned anchor axes the fake answers a
+  /// concrete alignment with, and an optional refusal (the 422 `type`).
+  final List<Object?> alignmentPatches = [];
+  List<double> alignedX = const [0.0, 1.0, 0.0];
+  List<double> alignedY = const [-1.0, 0.0, 0.0];
+  String? alignmentError;
   Map<String, dynamic>? autoStored;
   List<double>? autoResolved;
   List<double> pickResolved = const [11.0, 12.0, 13.0];
@@ -140,6 +148,9 @@ class _FakeDocumentBackend {
 
   /// Every Curve feature PATCH body, in order (the Helix edit test).
   final List<Map<String, dynamic>> curvePatchBodies = [];
+
+  /// Every Curve feature POST body, in order (the Helix / Intersection create tests).
+  final List<Map<String, dynamic>> curveCreateBodies = [];
 
   /// Every Spring feature POST / PATCH body, in order (the Spring tests).
   final List<Map<String, dynamic>> springBodies = [];
@@ -594,6 +605,26 @@ class _FakeDocumentBackend {
       return _json(feature, 200);
     }
 
+    final alignmentMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)/sketch-alignment$').firstMatch(path);
+    if (alignmentMatch != null && method == 'PATCH') {
+      final feature = features.firstWhere((f) => f['id'] == alignmentMatch.group(1));
+      final ref = body['x_axis_ref'];
+      alignmentPatches.add(ref);
+      if (alignmentError != null) {
+        return http.Response(jsonEncode({'detail': {'type': alignmentError}}), 422);
+      }
+      if (ref == null) {
+        feature.remove('x_axis_ref');
+        feature.remove('aligned_x_axis');
+        feature.remove('aligned_y_axis');
+      } else {
+        feature['x_axis_ref'] = ref;
+        feature['aligned_x_axis'] = alignedX;
+        feature['aligned_y_axis'] = alignedY;
+      }
+      return _json(feature, 200);
+    }
+
     final cascadePreviewMatch =
         RegExp(r'^/document/parts/part-1/features/([^/]+)/cascade-preview$').firstMatch(path);
     if (cascadePreviewMatch != null && method == 'GET') {
@@ -752,13 +783,24 @@ class _FakeDocumentBackend {
       return _json(feature, 200);
     }
 
+    if (path == '/document/parts/part-1/curve-features' && method == 'POST') {
+      curveCreateBodies.add(Map<String, dynamic>.from(body));
+      final feature = {
+        'type': 'curve',
+        'id': 'curve-${curveCreateBodies.length}',
+        'locked': false,
+        ...body,
+      };
+      features.add(feature);
+      return _json(feature, 201);
+    }
     final curvePatchMatch = RegExp(r'^/document/parts/part-1/curve-features/([^/]+)$').firstMatch(path);
     if (curvePatchMatch != null && method == 'PATCH') {
       final featureId = curvePatchMatch.group(1);
       final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
       if (feature.isEmpty) return http.Response('not found: feature', 404);
       curvePatchBodies.add(Map<String, dynamic>.from(body));
-      for (final key in ['radius', 'end_radius', 'segments', 'right_handed']) {
+      for (final key in ['radius', 'end_radius', 'segments', 'right_handed', 'sketch_feature_id_a', 'sketch_feature_id_b']) {
         if (body.containsKey(key)) feature[key] = body[key];
       }
       return _json(feature, 200);
@@ -1059,7 +1101,10 @@ class _FakeSketchBackend {
   /// tests), overridden by the one test that exercises the disabled case.
   final String profileStatus;
 
-  _FakeSketchBackend({this.profileStatus = 'closed_loop'});
+  /// The profile response's `open_chain` (no closed profile, one open chain: a thin Revolve can use it).
+  final bool openChain;
+
+  _FakeSketchBackend({this.profileStatus = 'closed_loop', this.openChain = false});
 
   /// Every `PATCH .../orientation`: `(flip, rotation_quarter_turns)`.
   final List<(bool, int)> orientationPatches = [];
@@ -1083,7 +1128,7 @@ class _FakeSketchBackend {
     final profileMatch = RegExp(r'^/sketch/sketches/([^/]+)/profile$').firstMatch(request.url.path);
     if (profileMatch != null && request.method == 'GET') {
       return http.Response(
-        jsonEncode({'status': profileStatus, 'detail': 'fake', 'branch_point_ids': [], 'loops': []}),
+        jsonEncode({'status': profileStatus, 'detail': 'fake', 'branch_point_ids': [], 'loops': [], 'open_chain': openChain}),
         200,
       );
     }
@@ -3416,6 +3461,112 @@ void main() {
     ]);
   });
 
+  // Flutter-testing feedback 2026-11-11, item 3: Helix and Intersection are two forms, not a toggle.
+  Map<String, dynamic> sk(String id) => {'type': 'sketch', 'id': id, 'sketch_id': 's-$id', 'locked': false};
+
+  Future<void> pumpPart(WidgetTester tester, _FakeDocumentBackend backend) async {
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+  }
+
+  testWidgets('item 3: the Intersection Curve entry opens the intersection form (no toggle) and Confirm creates an intersection curve',
+      (tester) async {
+    final backend = _FakeDocumentBackend(seedFeatures: [sk('sk-a'), sk('sk-b')]);
+    await pumpPart(tester, backend);
+    await tapStartCommand(tester, 'Intersection Curve');
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Create Intersection Curve'), findsOneWidget);
+    expect(find.text('Sketch A'), findsOneWidget);
+    expect(find.byKey(const ValueKey('helix-diameter-field')), findsNothing, reason: 'opens on the intersection form, not the Helix one');
+    expect(find.byType(SegmentedButton<CurveMode>), findsNothing, reason: 'no Helix / Intersection toggle');
+
+    Future<void> pick(String label, String option) async {
+      await tester.tap(find.text(label));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text(option).last);
+      await tester.pump(const Duration(milliseconds: 300));
+    }
+
+    await pick('Sketch A', 'Sketch 1');
+    await pick('Sketch B', 'Sketch 2');
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.curveCreateBodies.isNotEmpty);
+    expect(backend.curveCreateBodies.single['curve_type'], 'intersection');
+    expect(backend.curveCreateBodies.single['sketch_feature_id_a'], 'sk-a');
+    expect(backend.curveCreateBodies.single['sketch_feature_id_b'], 'sk-b');
+  });
+
+  testWidgets('item 3: the Helix entry opens the Helix form and Confirm creates a helix', (tester) async {
+    final backend = _FakeDocumentBackend();
+    await pumpPart(tester, backend);
+    await tapStartCommand(tester, 'Helix');
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Create Helix'), findsOneWidget);
+    expect(find.byType(SegmentedButton<CurveMode>), findsNothing);
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.curveCreateBodies.isNotEmpty);
+    expect(backend.curveCreateBodies.single['curve_type'], 'helix');
+  });
+
+  testWidgets('item 3: Edit on an Intersection curve opens on its two Sketches and PATCHes the new ids, clearing that side\'s profile refs',
+      (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        sk('sk-a'),
+        sk('sk-b'),
+        sk('sk-c'),
+        {
+          'type': 'curve',
+          'id': 'curve-x',
+          'curve_type': 'intersection',
+          'sketch_feature_id_a': 'sk-a',
+          'sketch_feature_id_b': 'sk-b',
+          'profile_refs_a': <dynamic>[],
+          'profile_refs_b': <dynamic>[],
+          'locked': false,
+        },
+        sk('sk-late'), // after the curve: must not be offered
+      ],
+    );
+    await pumpPart(tester, backend);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Intersection Curve 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.text('Edit Intersection Curve'), findsOneWidget);
+    expect(find.text('Sketch 1'), findsWidgets, reason: 'Sketch A opens on the stored Sketch');
+    expect(find.text('Sketch 2'), findsWidgets);
+
+    await tester.ensureVisible(find.byType(DropdownButtonFormField<String>).first);
+    await tester.tap(find.byType(DropdownButtonFormField<String>).first);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.descendant(of: find.byType(DropdownMenuItem<String>), matching: find.text('Sketch 4')), findsNothing,
+        reason: 'a Sketch after the curve is not offered');
+    await tester.tap(find.descendant(of: find.byType(DropdownMenuItem<String>), matching: find.text('Sketch 3')).last);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    await tester.tap(find.widgetWithText(FilledButton, 'Confirm'));
+    await _pumpUntil(tester, () => backend.curvePatchBodies.isNotEmpty);
+    final patch = backend.curvePatchBodies.single;
+    expect(patch['sketch_feature_id_a'], 'sk-c');
+    expect(patch['sketch_feature_id_b'], 'sk-b');
+    expect(patch['profile_refs_a'], isEmpty, reason: 're-picking a Sketch clears its profile refs');
+    expect(patch.containsKey('profile_refs_b'), isFalse);
+  });
+
   testWidgets(
       'Bug fix: confirming a Fillet edit re-fetches the Feature list, so it '
       'still shows in the Build Tree afterward (identical latent gap to the '
@@ -4833,6 +4984,44 @@ void main() {
       expect(tester.takeException(), isNull);
     },
   );
+
+  // Item 5 (thin Revolve of an open profile): a Sketch with no closed profile but one open chain is not refused by Revolve.
+  testWidgets('item 5: Revolve on an open-chain Sketch is enabled (Extrude stays disabled) and opens the panel with Thin locked on', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend(profileStatus: 'no_loop', openChain: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.longPress(find.text('Sketch 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Extrude')).enabled, isFalse);
+    expect(tester.widget<ListTile>(find.widgetWithText(ListTile, 'Revolve')).enabled, isTrue);
+    await tester.tap(find.widgetWithText(ListTile, 'Revolve'));
+    await _pumpUntil(tester, () => find.text('An open profile revolves as a thin wall').evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('An open profile revolves as a thin wall'), findsOneWidget);
+    expect(find.text('Away from axis'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1)); // the panel's debounced preview timer (no axis picked: it does nothing)
+  });
 
   testWidgets(
     "long-pressing a SketchFeature with a MultiProfile (C2's disjoint-outer-loops "
@@ -9151,6 +9340,193 @@ void main() {
     expect(find.byKey(const Key('reference-o-frame')), findsOneWidget);
   });
 
+  // Item 1a (Flutter-testing feedback 2026-11-11): Use on a level-1 reference adds the references found INSIDE that file to the sheet.
+  testWidgets('Use on a level-1 reference adds its nested (level-2) references to the open Review sheet', (tester) async {
+    tester.view.physicalSize = const Size(1200, 2400);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    Uint8List native(String id, {List<Map<String, dynamic>> occurrences = const []}) => Uint8List.fromList(utf8.encode(jsonEncode({
+          'schema_version': 1,
+          'document': {
+            'id': 'doc-$id',
+            'root_part_id': id,
+            'parts': [
+              {'id': id, 'name': id, 'features': [], 'occurrences': occurrences, 'mates': []},
+            ],
+          },
+          'sketches': [],
+        })));
+    final storage = _FakeStorageService()
+      ..presetLastUsedRoot = const DesktopProjectRoot('/fake/project')
+      ..files['proj/parts/Sub.didsa'] = native('sub', occurrences: [
+        {'id': 'o-leaf', 'external_ref': 'parts/Leaf.didsa', 'transform': null, 'suppressed': false, 'hidden': false},
+      ])
+      ..files['proj/parts/Leaf.didsa'] = native('leaf');
+    final backend = _FakeDocumentBackend(seedOccurrences: [
+      {
+        'id': 'o-sub',
+        'external_ref': 'parts/Sub.didsa',
+        'resolved_part_id': null,
+        'name_override': null,
+        'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+        'suppressed': false,
+        'hidden': false,
+        'fixed': false,
+      },
+    ]);
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          storageService: storage,
+          assemblyDocumentClient: AssemblyDocumentClient(
+            storageService: storage,
+            documentApiClient: documentApi,
+            composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
+          ),
+          initialProjectRoot: const DesktopProjectRoot('/fake/project'),
+          initialReferenceReports: const [
+            ReferenceReport(
+              parentPartId: 'part-1',
+              parentPath: 'proj/root.didsa',
+              occurrenceId: 'o-sub',
+              requestedPath: 'parts/Sub.didsa',
+              storedPartId: null,
+              outcome: ReferenceOutcome.likely,
+              foundPath: 'proj/parts/Sub.didsa',
+              candidates: ['proj/parts/Sub.didsa'],
+            ),
+          ],
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await _pumpUntil(tester, () => find.byKey(const Key('references-banner')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 500));
+    await tester.tap(find.text('Review'));
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-sub')).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 500));
+    expect(find.byKey(const Key('reference-o-leaf')), findsNothing, reason: 'level 2 is not in the list before Use');
+
+    await tester.tap(find.byKey(const Key('use-o-sub-proj/parts/Sub.didsa')));
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-leaf')).evaluate().isNotEmpty);
+    await _pumpUntil(tester, () => find.byKey(const Key('reference-o-sub')).evaluate().isEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const Key('reference-o-sub')), findsNothing, reason: 'the level-1 row is dealt with');
+    expect(find.byKey(const Key('reference-o-leaf')), findsOneWidget, reason: 'its own reference joined the list');
+    expect(find.text('in Sub.didsa'), findsOneWidget);
+    expect(find.textContaining('Found 1 more reference inside Sub.didsa'), findsOneWidget);
+    expect(find.byKey(Key('use-o-leaf-proj/parts/Leaf.didsa')), findsOneWidget);
+  });
+
+  group('item 1c: bulk actions in the Review sheet relink in one merge', () {
+    Uint8List native(String id) => Uint8List.fromList(utf8.encode(jsonEncode({
+          'schema_version': 1,
+          'document': {
+            'id': 'doc-$id',
+            'root_part_id': id,
+            'parts': [
+              {'id': id, 'name': id, 'features': [], 'occurrences': [], 'mates': []},
+            ],
+          },
+          'sketches': [],
+        })));
+    Map<String, dynamic> occ(String id, String ref) => {
+          'id': id,
+          'external_ref': ref,
+          'resolved_part_id': null,
+          'name_override': null,
+          'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+          'suppressed': false,
+          'hidden': false,
+          'fixed': false,
+        };
+    ReferenceReport report(String letter, ReferenceOutcome outcome) => ReferenceReport(
+          parentPartId: 'part-1',
+          parentPath: 'proj/root.didsa',
+          occurrenceId: 'o-$letter',
+          requestedPath: 'parts/$letter.didsa',
+          storedPartId: null,
+          outcome: outcome,
+          foundPath: 'proj/parts/$letter.didsa',
+          candidates: ['proj/parts/$letter.didsa'],
+        );
+
+    Future<int Function()> pump(WidgetTester tester, List<ReferenceReport> reports) async {
+      tester.view.physicalSize = const Size(1200, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final storage = _FakeStorageService()..presetLastUsedRoot = const DesktopProjectRoot('/fake/project');
+      for (final letter in ['A', 'B', 'C']) {
+        storage.files['proj/parts/$letter.didsa'] = native(letter.toLowerCase());
+      }
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('o-A', 'parts/A.didsa'), occ('o-B', 'parts/B.didsa'), occ('o-C', 'parts/C.didsa')]);
+      var imports = 0;
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async {
+        if (request.url.path == '/document/import/native') imports++;
+        return backend.handle(request);
+      }));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            storageService: storage,
+            assemblyDocumentClient: AssemblyDocumentClient(
+              storageService: storage,
+              documentApiClient: documentApi,
+              composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
+            ),
+            initialProjectRoot: const DesktopProjectRoot('/fake/project'),
+            initialReferenceReports: reports,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await _pumpUntil(tester, () => find.byKey(const Key('references-banner')).evaluate().isNotEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('Review'));
+      await _pumpUntil(tester, () => find.byKey(const Key('reference-o-A')).evaluate().isNotEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      return () => imports;
+    }
+
+    testWidgets('Use all single suggestions relinks every one-candidate row with one import', (tester) async {
+      final imports = await pump(tester, [
+        report('A', ReferenceOutcome.likely),
+        report('B', ReferenceOutcome.likely),
+        report('C', ReferenceOutcome.likely),
+      ]);
+      final before = imports();
+      expect(find.text('Use all single suggestions (3)'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('use-all-single')));
+      await _pumpUntil(tester, () => find.byKey(const Key('reference-o-A')).evaluate().isEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(imports() - before, 1, reason: 'three relinks, one merge, one importNative');
+      expect(find.byKey(const Key('reference-o-B')), findsNothing);
+      expect(find.byKey(const Key('reference-o-C')), findsNothing);
+    });
+
+    testWidgets('Use on one row offers the same folder change for the others, applied in one import', (tester) async {
+      final imports = await pump(tester, [
+        report('A', ReferenceOutcome.likely),
+        report('B', ReferenceOutcome.missing),
+        report('C', ReferenceOutcome.missing),
+      ]);
+      await tester.tap(find.byKey(const Key('use-o-A-proj/parts/A.didsa')));
+      await _pumpUntil(tester, () => find.byKey(const Key('apply-folder-change')).evaluate().isNotEmpty);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.text('Apply the same folder change to 2 other references'), findsOneWidget);
+      final before = imports();
+      await tester.tap(find.byKey(const Key('apply-folder-change')));
+      await _pumpUntil(tester, () => find.byKey(const Key('reference-o-B')).evaluate().isEmpty);
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(imports() - before, 1);
+      expect(find.byKey(const Key('reference-o-C')), findsNothing);
+    });
+  });
+
   testWidgets('leaving every reference closes the Review sheet, never the screen under it', (tester) async {
     tester.view.physicalSize = const Size(1200, 2400);
     tester.view.devicePixelRatio = 1.0;
@@ -9662,6 +10038,31 @@ void main() {
 
     PartViewport viewport(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport));
 
+    // Flutter-testing feedback 2026-11-11, item 4: the pill's row scrolled past its rounded ends.
+    testWidgets('on a 360 dp phone the orientation pill clips its row, every control is reachable, and Continue taps', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final backend = _FakeDocumentBackend(seedFeatures: [planeFeature]);
+      await pump(tester, backend, _FakeSketchBackend());
+      await newSketchOnPlane(tester);
+
+      final pill = find.ancestor(of: find.byKey(const ValueKey('sketch-orientation-pill-row')), matching: find.byType(Material)).first;
+      final material = tester.widget<Material>(pill);
+      expect(material.clipBehavior, isNot(Clip.none), reason: 'scrolled buttons must not draw past the rounded ends');
+      expect(material.shape, isA<StadiumBorder>());
+      expect(find.byKey(const ValueKey('sketch-orientation-cancel')), findsOneWidget);
+      expect(find.byKey(const ValueKey('sketch-orientation-cancel')).evaluate().single.widget, isA<IconButton>(),
+          reason: 'below 400 dp Cancel is an icon button');
+
+      // Everything is reachable by scrolling; Continue ends up tappable.
+      await tester.ensureVisible(find.text('Continue'));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.tap(find.text('Continue'));
+      await settle(tester);
+      expect(find.text('Continue'), findsNothing, reason: 'the orientation step ended');
+    });
+
     testWidgets('a new Sketch sends origin auto and the pill has Pick origin; the axes sit at the resolved origin', (tester) async {
       final backend = _FakeDocumentBackend(seedFeatures: [planeFeature])
         ..autoStored = {'point_ref': {'vertex_ref': {'body_id': 'b', 'shape_type': 'vertex', 'index': 1}}}
@@ -9757,6 +10158,147 @@ void main() {
       await settle(tester);
       expect(backend.originPatches, isEmpty);
       expect(find.textContaining('this sketch or a later one'), findsOneWidget);
+    });
+
+    // Item 2 of the 2026-11-11 feedback: align a sketch axis to an edge or line in the orientation step.
+    group('Align (sketch X axis to an edge or line)', () {
+      final alignButton = find.byKey(const ValueKey('sketch-orientation-align'));
+      final earlierSketch = {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false};
+
+      Future<_FakeDocumentBackend> openNew(WidgetTester tester, {bool earlier = false}) async {
+        final backend = _FakeDocumentBackend(seedFeatures: [if (earlier) ...[earlierSketch, {...earlierSketch, 'id': 'feature-2', 'sketch_id': 'sketch-2'}], planeFeature]);
+        await pump(tester, backend, _FakeSketchBackend());
+        await newSketchOnPlane(tester);
+        return backend;
+      }
+
+      testWidgets('the pill has Align in a new Sketch\'s step and in an existing one\'s', (tester) async {
+        await openNew(tester);
+        expect(alignButton, findsOneWidget);
+        expect(find.byTooltip('Align the sketch X axis to an edge or line'), findsOneWidget);
+        await tester.tap(find.text('Cancel'));
+        await settle(tester);
+
+        final backend = _FakeDocumentBackend(seedFeatures: [earlierSketch]);
+        await tester.pumpWidget(const SizedBox());
+        await pump(tester, backend, _FakeSketchBackend());
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        await tester.longPress(find.text('Sketch 1'));
+        await settle(tester);
+        await tester.tap(find.byTooltip('More actions'));
+        await settle(tester);
+        await tester.tap(find.text('Sketch Orientation'));
+        await _pumpUntil(tester, () => alignButton.evaluate().isNotEmpty);
+        expect(find.text('Done'), findsOneWidget);
+        expect(alignButton, findsOneWidget);
+      });
+
+      testWidgets('picking a sketch line of an earlier sketch sends the reference and turns the orientation axes; flip afterwards keeps it', (tester) async {
+        final backend = await openNew(tester, earlier: true);
+        await tester.tap(alignButton);
+        await settle(tester);
+        expect(find.text('Align sketch'), findsOneWidget);
+        expect(find.byKey(const ValueKey('sketch-alignment-clear')), findsOneWidget);
+        viewport(tester).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.sketchLine, sketchFeatureId: 'feature-1', sketchEntityId: 'line-9'),
+        );
+        await settle(tester);
+        expect(backend.alignmentPatches.single, {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'line-9'});
+        final basis = viewport(tester).sketchOrientationBasis!;
+        expect((basis.xAxis.x, basis.xAxis.y), (0.0, 1.0), reason: 'the orientation axes use the backend\'s aligned axes');
+        expect((basis.yAxis.x, basis.yAxis.y), (-1.0, 0.0));
+        expect(find.text('Align sketch'), findsNothing, reason: 'back to the pill');
+        expect(tester.widget<IconButton>(alignButton).isSelected, isTrue);
+
+        await tester.tap(find.byTooltip('Flip'));
+        await settle(tester);
+        expect(backend.alignmentPatches, hasLength(1), reason: 'flip refines the aligned frame, it does not touch the reference');
+        expect(viewport(tester).sketchOrientationBasis!.xAxis.y, -1.0, reason: 'flip reverses X relative to the edge');
+      });
+
+      testWidgets('a Body edge sends an edge_ref', (tester) async {
+        final backend = await openNew(tester);
+        await tester.tap(alignButton);
+        await settle(tester);
+        viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: 'b', id: 5));
+        await settle(tester);
+        expect(backend.alignmentPatches.single, {
+          'edge_ref': {'body_id': 'b', 'shape_type': 'edge', 'index': 5},
+        });
+      });
+
+      testWidgets('Clear alignment sends null', (tester) async {
+        final backend = await openNew(tester);
+        await tester.tap(alignButton);
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('sketch-alignment-clear')));
+        await settle(tester);
+        expect(backend.alignmentPatches.single, isNull);
+        expect(find.text('Align sketch'), findsNothing);
+      });
+
+      testWidgets('a line of this or a later sketch is refused with a note and nothing is sent; a curved edge shows the backend refusal', (tester) async {
+        final backend = await openNew(tester);
+        await tester.tap(alignButton);
+        await settle(tester);
+        final own = backend.features.last['id'] as String;
+        viewport(tester).onSelectionToggle!(SelectionEntityRef(kind: SelectionEntityKind.sketchLine, sketchFeatureId: own, sketchEntityId: 'l1'));
+        await settle(tester);
+        expect(backend.alignmentPatches, isEmpty);
+        expect(find.textContaining('this sketch or a later one'), findsOneWidget);
+
+        backend.alignmentError = 'alignment_edge_not_straight';
+        viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: 'b', id: 7));
+        await settle(tester);
+        expect(backend.alignmentPatches, hasLength(1));
+        expect(find.textContaining('not straight'), findsOneWidget);
+        expect(find.text('Align sketch'), findsOneWidget, reason: 'the sub-step stays open');
+      });
+
+      testWidgets('editing an aligned Sketch starts from its aligned axes; Cancel puts the old alignment back', (tester) async {
+        final stored = {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'old-line'};
+        final backend = _FakeDocumentBackend(
+          seedFeatures: [
+            earlierSketch,
+            {
+              'type': 'sketch',
+              'id': 'feature-2',
+              'sketch_id': 'sketch-2',
+              'locked': false,
+              'x_axis_ref': stored,
+              'aligned_x_axis': [0.0, 1.0, 0.0],
+              'aligned_y_axis': [-1.0, 0.0, 0.0],
+            },
+          ],
+        );
+        final sketchBackend = _FakeSketchBackend();
+        await pump(tester, backend, sketchBackend);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        await tester.longPress(find.text('Sketch 2'));
+        await settle(tester);
+        await tester.tap(find.byTooltip('More actions'));
+        await settle(tester);
+        await tester.tap(find.text('Sketch Orientation'));
+        await _pumpUntil(tester, () => alignButton.evaluate().isNotEmpty);
+        expect(tester.widget<IconButton>(alignButton).isSelected, isTrue, reason: 'it is aligned now');
+        final basis = viewport(tester).sketchOrientationBasis!;
+        expect((basis.xAxis.x, basis.xAxis.y), (0.0, 1.0), reason: 'the axes start from the aligned frame');
+
+        backend.alignedX = const [1.0, 1.0, 0.0];
+        await tester.tap(alignButton);
+        await settle(tester);
+        viewport(tester).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.sketchLine, sketchFeatureId: 'feature-1', sketchEntityId: 'new-line'),
+        );
+        await settle(tester);
+        expect(backend.alignmentPatches.single, {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'new-line'});
+
+        await tester.tap(find.text('Cancel'));
+        await settle(tester);
+        expect(backend.alignmentPatches.last, stored, reason: 'Cancel restores the alignment the Sketch had');
+      });
     });
 
     testWidgets('editing an existing Sketch\'s orientation has Pick origin too; Cancel puts the old origin back', (tester) async {

@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart';
 
+import 'folder_match_session_choice.dart';
 import 'reference_report.dart';
 
 /// Finding moved files (`docs/moved-files-scope.md` section 4): the Review sheet behind the "files were found in new places"
@@ -15,7 +16,26 @@ class ReferencesSheet extends StatefulWidget {
     required this.onUse,
     required this.onLocate,
     required this.onLeaveMissing,
+    this.notice,
+    this.folderChangeOffer,
+    this.onApplyFolderChange,
+    this.onUseAllSingle,
+    this.sessionChoice,
   });
+
+  /// A short line shown under the summary ("Found 3 more references inside Sub.didsa"): why the list grew (item 1a).
+  final ValueListenable<String?>? notice;
+
+  /// How many other open references the folder change just made (by a Use or Locate...) would also fix, and the action that
+  /// applies it to them all in one merge (item 1c). Null count / zero hides the button.
+  final ValueListenable<int>? folderChangeOffer;
+  final Future<void> Function()? onApplyFolderChange;
+
+  /// "Use all single suggestions" (item 1c): relinks every open reference with exactly one candidate, in one merge.
+  final Future<void> Function(List<ReferenceReport> reports)? onUseAllSingle;
+
+  /// The app-wide answer to the folder-match question, shown with Ask again (item 1b).
+  final FolderMatchSessionChoice? sessionChoice;
 
   /// The references still to show; the parent removes one as it is dealt with.
   final ValueListenable<List<ReferenceReport>> reports;
@@ -81,6 +101,18 @@ class _ReferencesSheetState extends State<ReferencesSheet> {
                     style: Theme.of(context).textTheme.titleMedium,
                   ),
                 ),
+                if (widget.notice != null)
+                  ValueListenableBuilder<String?>(
+                    valueListenable: widget.notice!,
+                    builder: (context, text, _) => text == null
+                        ? const SizedBox.shrink()
+                        : Padding(
+                            key: const Key('references-notice'),
+                            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                            child: Text(text, style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic)),
+                          ),
+                  ),
+                ..._header(context, list),
                 const Divider(),
                 Flexible(
                   child: ListView(
@@ -106,6 +138,73 @@ class _ReferencesSheetState extends State<ReferencesSheet> {
     );
   }
 
+  /// The sheet's bulk actions and the stored folder-match answer.
+  List<Widget> _header(BuildContext context, List<ReferenceReport> list) {
+    final single = [
+      for (final r in list)
+        if ((r.outcome == ReferenceOutcome.suggest || r.outcome == ReferenceOutcome.likely) && r.candidates.length == 1) r,
+    ];
+    final choice = widget.sessionChoice;
+    return [
+      if (choice != null)
+        ListenableBuilder(
+          listenable: choice,
+          builder: (context, _) {
+            final answer = choice.answer;
+            if (answer == null) return const SizedBox.shrink();
+            return Padding(
+              key: const Key('folder-match-session-line'),
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      answer ? 'Folder matches: used automatically this session' : 'Folder matches: left as suggestions this session',
+                      style: const TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  TextButton(
+                    key: const Key('folder-match-ask-again'),
+                    onPressed: choice.clear,
+                    child: const Text('Ask again'),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      if (widget.folderChangeOffer != null)
+        ValueListenableBuilder<int>(
+          valueListenable: widget.folderChangeOffer!,
+          builder: (context, count, _) => count <= 0 || widget.onApplyFolderChange == null
+              ? const SizedBox.shrink()
+              : Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.tonal(
+                      key: const Key('apply-folder-change'),
+                      onPressed: _busy ? null : () => _run(widget.onApplyFolderChange!),
+                      child: Text('Apply the same folder change to $count other ${count == 1 ? 'reference' : 'references'}'),
+                    ),
+                  ),
+                ),
+        ),
+      if (widget.onUseAllSingle != null && single.length > 1)
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              key: const Key('use-all-single'),
+              onPressed: _busy ? null : () => _run(() => widget.onUseAllSingle!(single)),
+              child: Text('Use all single suggestions (${single.length})'),
+            ),
+          ),
+        ),
+    ];
+  }
+
   Widget _row(BuildContext context, ReferenceReport report) {
     final scheme = Theme.of(context).colorScheme;
     final (IconData icon, Color color, String why) = switch (report.outcome) {
@@ -113,6 +212,16 @@ class _ReferencesSheetState extends State<ReferencesSheet> {
           Icons.check_circle_outline,
           Colors.green,
           'Found by its part id in ${report.foundPath}. The path is corrected; save to keep it.',
+        ),
+      ReferenceOutcome.foundByFolder => (
+          Icons.check_circle_outline,
+          Colors.green,
+          'Found by folder in ${report.foundPath}. The path is corrected; save to keep it.',
+        ),
+      ReferenceOutcome.likely => (
+          Icons.drive_file_move_outline,
+          Colors.amber,
+          'Probably moved with the project folder. Nothing is loaded until you use it:',
         ),
       ReferenceOutcome.ask => (
           Icons.help_outline,
@@ -142,6 +251,10 @@ class _ReferencesSheetState extends State<ReferencesSheet> {
                 child: Text(report.fileName, style: const TextStyle(fontWeight: FontWeight.w600)),
               ),
             ],
+          ),
+          Padding(
+            padding: const EdgeInsets.only(left: 28, top: 2),
+            child: Text('in ${_baseName(report.parentPath)}', key: Key('level-${report.occurrenceId}'), style: const TextStyle(fontSize: 11)),
           ),
           Padding(
             padding: const EdgeInsets.only(left: 28, top: 2),
@@ -200,4 +313,9 @@ class _ReferencesSheetState extends State<ReferencesSheet> {
       ),
     );
   }
+}
+
+String _baseName(String path) {
+  final normalised = path.replaceAll(r'\', '/');
+  return normalised.substring(normalised.lastIndexOf('/') + 1);
 }

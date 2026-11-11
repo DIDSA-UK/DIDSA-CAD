@@ -922,6 +922,18 @@ class FeatureDto {
   /// no origin, for a lost one (the backend fell back to the plane's origin), and from an older backend that sends neither key.
   final List<double>? resolvedSketchOrigin;
 
+  /// Sketch alignment (item 2 of the 2026-11-11 feedback): the straight Body edge or Sketch Line whose direction is this Sketch's +X axis (null: the plane's own axes),
+  /// and the Sketch's whole resolved frame in world coordinates (the exact vectors the backend builds the Sketch with: `frameOrigin + u * xAxis + v * yAxis`, flip and
+  /// turns and origin included; a flipped Sketch's frame is left-handed). [alignedSketchXAxis] / [alignedSketchYAxis] are the anchor plane's axes after the alignment
+  /// but BEFORE flip / turns, which is what the orientation step starts from.
+  final PathRefDto? sketchXAxisRef;
+  final List<double>? resolvedSketchFrameOrigin;
+  final List<double>? resolvedSketchXAxis;
+  final List<double>? resolvedSketchYAxis;
+  final List<double>? resolvedSketchNormal;
+  final List<double>? alignedSketchXAxis;
+  final List<double>? alignedSketchYAxis;
+
   /// C3: the plane's own in-plane basis (see the backend's `ResolvedPlane.
   /// x_axis`/`y_axis`) - the exact orientation a Sketch anchored to this
   /// Plane embeds its local (x, y) geometry through, and what the viewport
@@ -1203,6 +1215,10 @@ class FeatureDto {
   final bool helixRightHanded;
   final PlaneRefDto? helixAxisRef;
 
+  /// Intersection curve only: the two Sketch features it intersects.
+  final String? curveSketchFeatureIdA;
+  final String? curveSketchFeatureIdB;
+
   /// Variable-pitch Helix: its pitch at axial distances from the start (`{at, pitch}`, the backend's
   /// `pitch_points`), empty when its pitch is [helixSegments] instead.
   final List<({double at, double pitch})> helixPitchPoints;
@@ -1373,6 +1389,13 @@ class FeatureDto {
     this.origin,
     this.sketchOrigin,
     this.resolvedSketchOrigin,
+    this.sketchXAxisRef,
+    this.resolvedSketchFrameOrigin,
+    this.resolvedSketchXAxis,
+    this.resolvedSketchYAxis,
+    this.resolvedSketchNormal,
+    this.alignedSketchXAxis,
+    this.alignedSketchYAxis,
     this.normal,
     this.xAxis,
     this.yAxis,
@@ -1430,6 +1453,8 @@ class FeatureDto {
     this.helixSegments = const [],
     this.helixRightHanded = true,
     this.helixAxisRef,
+    this.curveSketchFeatureIdA,
+    this.curveSketchFeatureIdB,
     this.helixPitchPoints = const [],
     this.spring,
     this.toolBodyIds = const [],
@@ -1490,6 +1515,13 @@ class FeatureDto {
         origin: json['origin'] is List ? (json['origin'] as List).map((v) => (v as num).toDouble()).toList() : null,
         sketchOrigin: json['origin'] is Map ? SketchOriginDto.fromJson(json['origin'] as Map<String, dynamic>) : null,
         resolvedSketchOrigin: (json['resolved_origin'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        sketchXAxisRef: json['x_axis_ref'] is Map<String, dynamic> ? PathRefDto.fromJson(json['x_axis_ref'] as Map<String, dynamic>) : null,
+        resolvedSketchFrameOrigin: _doubleList(json['resolved_frame_origin']),
+        resolvedSketchXAxis: _doubleList(json['resolved_x_axis']),
+        resolvedSketchYAxis: _doubleList(json['resolved_y_axis']),
+        resolvedSketchNormal: _doubleList(json['resolved_normal']),
+        alignedSketchXAxis: _doubleList(json['aligned_x_axis']),
+        alignedSketchYAxis: _doubleList(json['aligned_y_axis']),
         normal: (json['normal'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         xAxis: (json['x_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         yAxis: (json['y_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
@@ -1589,6 +1621,8 @@ class FeatureDto {
         helixAxisRef: json['curve_type'] == 'helix' && json['axis_ref'] is Map<String, dynamic>
             ? PlaneRefDto.fromJson(json['axis_ref'] as Map<String, dynamic>)
             : null,
+        curveSketchFeatureIdA: json['curve_type'] == 'intersection' ? json['sketch_feature_id_a'] as String? : null,
+        curveSketchFeatureIdB: json['curve_type'] == 'intersection' ? json['sketch_feature_id_b'] as String? : null,
         helixPitchPoints: json['curve_type'] == 'helix'
             ? [
                 for (final p in (json['pitch_points'] as List? ?? const []).cast<Map<String, dynamic>>())
@@ -3657,6 +3691,18 @@ class DocumentApiClient {
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
 
+  /// Aligns an existing Sketch's +X axis to a straight Body edge or a Sketch Line of an EARLIER Sketch (`PATCH .../features/{featureId}/sketch-alignment`), or `null` to
+  /// go back to the plane's own axes. A live reference. 422 `alignment_edge_not_straight` (a curve), `alignment_reference_not_upstream` (a Line of this Sketch or a
+  /// later one), `alignment_edge_parallel_to_normal`. Returns the Sketch's Feature row with its new resolved frame; existing geometry keeps its local coordinates.
+  Future<FeatureDto> updateSketchAlignment(String partId, String featureId, PathRefDto? ref) => _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/features/$featureId/sketch-alignment'),
+              headers: _headers,
+              body: jsonEncode({'x_axis_ref': ref?.toJson()}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
   /// Prompt A4: [targetBodyIds] names which existing Body/Bodies (by id)
   /// this Extrude combines with - see A1's `ExtrudeFeatureCreate.target_body_ids`
   /// docstring (Boss: empty starts a brand-new Body; Cut: must be non-empty).
@@ -4671,6 +4717,8 @@ class DocumentApiClient {
     required String mode,
     List<String> targetBodyIds = const [],
     List<SketchEntityRefDto> profileRefs = const [],
+    double? thickness,
+    String? thicknessDirection,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4683,6 +4731,9 @@ class DocumentApiClient {
                 'mode': mode,
                 'target_body_ids': targetBodyIds,
                 'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+                // Thin revolve: a wall of this thickness; omitted is the ordinary solid revolve.
+                if (thickness != null) 'thickness': thickness,
+                if (thickness != null && thicknessDirection != null) 'thickness_direction': thicknessDirection,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4700,6 +4751,10 @@ class DocumentApiClient {
     String? mode,
     List<String>? targetBodyIds,
     List<SketchEntityRefDto>? profileRefs,
+    double? thickness,
+    String? thicknessDirection,
+    // Back to a solid revolve: sends an explicit `thickness: null` (omitted keeps the stored value).
+    bool clearThickness = false,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4712,6 +4767,8 @@ class DocumentApiClient {
                 if (targetBodyIds != null) 'target_body_ids': targetBodyIds,
                 if (profileRefs != null)
                   'profile_refs': profileRefs.map((r) => r.toJson()).toList(),
+                if (thickness != null || clearThickness) 'thickness': thickness,
+                if (thicknessDirection != null) 'thickness_direction': thicknessDirection,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -5470,6 +5527,9 @@ class DocumentApiClient {
     bool clearEndRadius = false,
     String? sketchFeatureIdA,
     String? sketchFeatureIdB,
+    // Intersection: a re-picked Sketch drops that side's old profile refs (they named entities of the old Sketch).
+    bool clearProfileRefsA = false,
+    bool clearProfileRefsB = false,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -5491,6 +5551,8 @@ class DocumentApiClient {
                 if (rightHanded != null) 'right_handed': rightHanded,
                 if (sketchFeatureIdA != null) 'sketch_feature_id_a': sketchFeatureIdA,
                 if (sketchFeatureIdB != null) 'sketch_feature_id_b': sketchFeatureIdB,
+                if (clearProfileRefsA) 'profile_refs_a': const [],
+                if (clearProfileRefsB) 'profile_refs_b': const [],
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -7329,3 +7391,5 @@ class DocumentApiClient {
 
   void close() => _httpClient.close();
 }
+
+List<double>? _doubleList(Object? value) => value is List ? [for (final v in value) (v as num).toDouble()] : null;

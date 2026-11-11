@@ -44,6 +44,8 @@ class ComponentSelectionToolbar extends StatelessWidget {
       child: Material(
         elevation: 2,
         borderRadius: BorderRadius.circular(12),
+        // Material's clipBehavior is Clip.none: a row wider than the screen must not draw past the rounded ends.
+        clipBehavior: Clip.antiAlias,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
           child: SingleChildScrollView(

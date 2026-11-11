@@ -65,12 +65,21 @@ Map<String, dynamic> remintNativeIdentity(
   Map<String, dynamic> payload, {
   Set<String>? onlyIds,
   String Function()? idGenerator,
+}) =>
+    remintNativeIdentityWithMap(payload, onlyIds: onlyIds, idGenerator: idGenerator).payload;
+
+/// [remintNativeIdentity] that also returns the old id -> new id map it applied (the Review sheet rewrites the `parentPartId`
+/// of the nested reports of a file brought in under new ids).
+({Map<String, dynamic> payload, Map<String, String> idMap}) remintNativeIdentityWithMap(
+  Map<String, dynamic> payload, {
+  Set<String>? onlyIds,
+  String Function()? idGenerator,
 }) {
   var candidates = collectNativeIdentityIds(payload);
   if (onlyIds != null) candidates = candidates.intersection(onlyIds);
   final generate = idGenerator ?? () => const Uuid().v4();
   final mapping = {for (final old in candidates) old: generate()};
-  return _replace(payload, mapping) as Map<String, dynamic>;
+  return (payload: _replace(payload, mapping) as Map<String, dynamic>, idMap: mapping);
 }
 
 Object? _replace(Object? node, Map<String, String> mapping) {

@@ -4,6 +4,7 @@ import '../storage/file_cache.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'file_lookup_rule.dart';
+import 'folder_shift.dart';
 import 'project_file_index.dart';
 import 'reference_report.dart';
 import 'relative_path.dart';
@@ -116,7 +117,17 @@ class AssemblyGraphComposer {
   /// own `staleRelativePaths`/silently-unresolved-Occurrence handling,
   /// mirroring the backend's own `assembly-mesh` endpoint skipping an
   /// unresolved Occurrence rather than failing the whole response).
-  Future<ComposedAssemblyGraph> compose(ProjectRoot root, String rootRelativePath) async {
+  ///
+  /// [acceptLikely] (Flutter-testing feedback 2026-11-11, item 1b): with false, a reference with no stored id whose file moved with
+  /// the project folder ([LookupResult.likely]) is left unresolved and reported as [ReferenceOutcome.likely], its children not
+  /// visited. With true it is used as if found ([ReferenceOutcome.foundByFolder]), its children composed (they can be
+  /// [LookupResult.likely] too), and the corrected path is an unsaved change. The caller asks the user before passing true.
+  Future<ComposedAssemblyGraph> compose(
+    ProjectRoot root,
+    String rootRelativePath, {
+    bool acceptLikely = false,
+    void Function()? onSearching,
+  }) async {
     final resolvedByPath = <String, Map<String, dynamic>>{};
     final partIdByPath = <String, String>{};
     final sketchesById = <String, Map<String, dynamic>>{};
@@ -187,6 +198,28 @@ class AssemblyGraphComposer {
       return found;
     }
 
+    // Item 1c: the folder shifts learned from references found by id or by folder (`oldPrefix -> newPrefix`, segments as stored),
+    // newest first. A later miss tries its shifted path before the index.
+    final shifts = <FolderShift>[];
+
+    void learnShift(String storedPath, String foundPath) {
+      final shift = FolderShift.between(storedPath, foundPath);
+      if (shift != null && !shifts.any(shift.sameAs)) shifts.insert(0, shift);
+    }
+
+    // The learned shifts applied to [storedPath]: the files in [index] at a shifted path, in shift order.
+    List<IndexedFile> shiftedCandidates(String storedPath, List<IndexedFile> index) {
+      final found = <IndexedFile>[];
+      for (final shift in shifts) {
+        final shifted = shift.apply(storedPath);
+        if (shifted == null) continue;
+        for (final entry in FolderShift.filesAt(shifted, index)) {
+          if (!found.contains(entry)) found.add(entry);
+        }
+      }
+      return found;
+    }
+
     // The project-folder index, built the first time a reference misses (or a file at its path is not the placed part) and
     // then shared by the rest of this compose.
     List<IndexedFile>? index;
@@ -223,17 +256,37 @@ class AssemblyGraphComposer {
         return;
       }
 
-      index ??= await fileIndex.build(root);
-      final lookup = findFile(
+      if (index == null) {
+        // The walk does one binder call per directory on Android: a big folder can take seconds, so say so.
+        onSearching?.call();
+        index = await fileIndex.build(root);
+      }
+      final usable = [
+        for (final entry in index!)
+          // The unreadable file at the path itself is no candidate for anything.
+          if (live != null || entry.path != path) entry
+      ];
+      var lookup = findFile(
         externalRef: externalRef,
         refPartId: storedId,
         atPath: live == null ? null : IndexedFile(path, liveId),
-        // The unreadable file at the path itself is no candidate for anything.
-        index: [
-          for (final entry in index!)
-            if (live != null || entry.path != path) entry
-        ],
+        index: usable,
       );
+      // Item 1c: a shift learned from an earlier reference. A shifted file with the stored id is found; for a reference with no
+      // stored id it is [LookupResult.likely] (the same ask-first path as 1b). Never overrides a plain id match.
+      if (shifts.isNotEmpty && lookup.result != LookupResult.found && lookup.result != LookupResult.ask) {
+        for (final candidate in shiftedCandidates(externalRef, usable)) {
+          if (storedId != null && candidate.partId == storedId) {
+            lookup = FileLookup(LookupResult.found, path: candidate.path, via: LookupVia.id, pathMismatch: lookup.pathMismatch);
+            break;
+          }
+          if (storedId == null && lookup.result != LookupResult.likely) {
+            lookup = FileLookup(LookupResult.likely, path: candidate.path, via: LookupVia.suffix);
+            break;
+          }
+        }
+      }
+      final useLikely = lookup.result == LookupResult.likely && acceptLikely;
 
       ReferenceReport report({bool stale = false, String? foundPath}) => ReferenceReport(
             parentPartId: parentPartId,
@@ -241,20 +294,21 @@ class AssemblyGraphComposer {
             occurrenceId: occurrence['id'] as String? ?? '',
             requestedPath: externalRef,
             storedPartId: storedId,
-            outcome: ReferenceReport.outcomeOf(lookup.result),
-            foundPath: foundPath,
-            candidates: lookup.candidates,
+            outcome: useLikely ? ReferenceOutcome.foundByFolder : ReferenceReport.outcomeOf(lookup.result),
+            foundPath: foundPath ?? (lookup.result == LookupResult.likely ? lookup.path : null),
+            candidates: lookup.result == LookupResult.likely ? [lookup.path!] : lookup.candidates,
             pathMismatch: lookup.pathMismatch,
             staleCopy: stale,
           );
 
-      if (lookup.result == LookupResult.found) {
+      if (lookup.result == LookupResult.found || useLikely) {
         final target = lookup.path!;
         final targetPayload = target == path ? live : await readLive(target);
         if (targetPayload != null) {
           final resolved = await resolvePart(target, ancestorPath, preloaded: targetPayload);
           if (resolved != null) {
             reports.add(report(foundPath: target));
+            learnShift(externalRef, target);
             bind(resolved, target);
             return;
           }

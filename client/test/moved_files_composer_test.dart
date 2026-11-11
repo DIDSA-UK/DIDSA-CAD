@@ -11,6 +11,9 @@ import 'package:http/testing.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_document_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_graph_composer.dart';
+import 'package:didsa_cad_client/assembly/compose_for_open.dart';
+import 'package:didsa_cad_client/assembly/folder_match_dialog.dart';
+import 'package:didsa_cad_client/assembly/folder_match_session_choice.dart';
 import 'package:didsa_cad_client/assembly/project_file_index.dart';
 import 'package:didsa_cad_client/assembly/reference_report.dart';
 import 'package:didsa_cad_client/storage/file_cache.dart';
@@ -463,6 +466,183 @@ void main() {
       expect((await index.build(root)).single.partId, isNull);
       expect(await index.partIdAt(root, 'nowhere.didsa'), isNull);
     });
+  });
+
+  // Flutter-testing feedback 2026-11-11, item 1: the project folder is changed to its parent, so every stored path is missing its
+  // leading folder, and the files carry no ids on the occurrences (saved before ref_part_id, resolved_part_id null).
+  group('item 1: a 3-level assembly under a new project root, no stored ids', () {
+    setUp(() {
+      // Old root: the folder that holds root.didsa. New root: its parent, so every file is under proj/.
+      storage.put('proj/root.didsa', _part('root', occurrences: [_occ('o-sub', 'parts/Sub.didsa')]));
+      storage.put('proj/parts/Sub.didsa', _part('sub', occurrences: [_occ('o-part', 'parts/Leaf.didsa')]));
+      storage.put('proj/parts/Leaf.didsa', _part('leaf'));
+    });
+
+    // Before the folder-shift step this was the reproduction: level 1 was only a suggestion and level 2 was never reported
+    // (confirmed failing as the plan predicted, then these cases replaced it).
+    test('acceptLikely false: level 1 is likely, never used, and its children are not visited', () async {
+      final graph = await composer.compose(root, 'proj/root.didsa');
+      final sub = _reportFor(graph, 'o-sub');
+      expect(sub.outcome, ReferenceOutcome.likely);
+      expect(sub.foundPath, 'proj/parts/Sub.didsa');
+      expect(sub.candidates, ['proj/parts/Sub.didsa']);
+      expect(sub.needsYou, isTrue);
+      expect(graph.references.where((r) => r.occurrenceId == 'o-part'), isEmpty);
+      expect(_occurrenceOf(graph, 'root', 'o-sub').containsKey('resolved_part_id'), isFalse);
+      expect(_occurrenceOf(graph, 'root', 'o-sub')['external_ref'], 'parts/Sub.didsa', reason: 'not corrected until the user agrees');
+    });
+
+    test('acceptLikely true: every level is found by folder, reported, and its external_ref corrected', () async {
+      final graph = await composer.compose(root, 'proj/root.didsa', acceptLikely: true);
+      expect(_reportFor(graph, 'o-sub').outcome, ReferenceOutcome.foundByFolder);
+      expect(_reportFor(graph, 'o-part').outcome, ReferenceOutcome.foundByFolder);
+      expect(_reportFor(graph, 'o-part').parentPath, 'proj/parts/Sub.didsa');
+      expect(graph.references.any((r) => r.needsYou), isFalse);
+      expect(_occurrenceOf(graph, 'root', 'o-sub')['external_ref'], 'proj/parts/Sub.didsa');
+      expect(_occurrenceOf(graph, 'root', 'o-sub')['resolved_part_id'], 'sub');
+      expect(_occurrenceOf(graph, 'sub', 'o-part')['external_ref'], 'proj/parts/Leaf.didsa');
+      expect(_occurrenceOf(graph, 'sub', 'o-part')['resolved_part_id'], 'leaf');
+      expect(graph.relativePathByPartId, {'root': 'proj/root.didsa', 'sub': 'proj/parts/Sub.didsa', 'leaf': 'proj/parts/Leaf.didsa'});
+    });
+
+    test('a folder that is the other way round (the stored paths carry the leading folder) is found the same way', () async {
+      final fresh = _FakeStorageService();
+      fresh.put('root.didsa', _part('root', occurrences: [_occ('o-sub', 'proj/parts/Sub.didsa')]));
+      fresh.put('parts/Sub.didsa', _part('sub', occurrences: [_occ('o-part', 'proj/parts/Leaf.didsa')]));
+      fresh.put('parts/Leaf.didsa', _part('leaf'));
+      final tempDir = Directory.systemTemp.createTempSync('didsa_moved_files_test_');
+      addTearDown(() => tempDir.deleteSync(recursive: true));
+      final other = AssemblyGraphComposer(storageService: fresh, fileCache: FileCache(cacheDirectory: tempDir));
+      final graph = await other.compose(root, 'root.didsa', acceptLikely: true);
+      expect(_reportFor(graph, 'o-sub').outcome, ReferenceOutcome.foundByFolder);
+      expect(_reportFor(graph, 'o-part').outcome, ReferenceOutcome.foundByFolder);
+      expect(_occurrenceOf(graph, 'sub', 'o-part')['external_ref'], 'parts/Leaf.didsa');
+    });
+
+    test('1c: one id-bearing reference teaches the shift, so id-less files that moved the same way become likely', () async {
+      // The root's reference to Sub carries its id (found by id, whatever the folder); Sub's reference to Leaf has none.
+      storage.put('proj/root.didsa', _part('root', occurrences: [_occ('o-sub', 'parts/Sub.didsa', refPartId: 'sub')]));
+      final graph = await composer.compose(root, 'proj/root.didsa');
+      expect(_reportFor(graph, 'o-sub').outcome, ReferenceOutcome.movedById);
+      final leaf = _reportFor(graph, 'o-part');
+      expect(leaf.outcome, ReferenceOutcome.likely, reason: 'asked, not used: Leaf has no stored id');
+      expect(leaf.foundPath, 'proj/parts/Leaf.didsa');
+      expect(leaf.parentPath, 'proj/parts/Sub.didsa', reason: 'its own references were visited because Sub resolved');
+
+      final accepted = await composer.compose(root, 'proj/root.didsa', acceptLikely: true);
+      expect(_reportFor(accepted, 'o-part').outcome, ReferenceOutcome.foundByFolder);
+    });
+
+    test('1c: a learned shift with a stored id is used when the shifted file has that id, and ignored when it has another', () async {
+      storage.put('proj/root.didsa', _part('root', occurrences: [
+        _occ('o-sub', 'parts/Sub.didsa', refPartId: 'sub'),
+        _occ('o-wrong', 'parts/Other.didsa', refPartId: 'someone-else'),
+      ]));
+      storage.put('proj/parts/Other.didsa', _part('not-someone-else'));
+      final graph = await composer.compose(root, 'proj/root.didsa');
+      final wrong = _reportFor(graph, 'o-wrong');
+      expect(wrong.outcome, ReferenceOutcome.suggest, reason: 'a stored id the file does not carry is never used');
+      expect(_occurrenceOf(graph, 'root', 'o-wrong').containsKey('resolved_part_id'), isFalse);
+    });
+
+    test('a file with the same name in two folders at the same depth stays a suggestion', () async {
+      storage.put('proj/other/parts/Sub.didsa', _part('sub-copy'));
+      final graph = await composer.compose(root, 'proj/root.didsa', acceptLikely: true);
+      final sub = _reportFor(graph, 'o-sub');
+      expect(sub.outcome, ReferenceOutcome.suggest);
+      expect(sub.candidates, hasLength(2));
+    });
+    group('the Open question (composeForOpen), asked before anything is imported', () {
+      late AssemblyDocumentClient client;
+      late FolderMatchSessionChoice choice;
+      var imports = 0;
+
+      setUp(() {
+        imports = 0;
+        choice = FolderMatchSessionChoice.instance..clear();
+        addTearDown(choice.clear);
+        final tempDir = Directory.systemTemp.createTempSync('didsa_moved_files_test_');
+        addTearDown(() => tempDir.deleteSync(recursive: true));
+        final inner = AssemblyGraphComposer(storageService: storage, fileCache: FileCache(cacheDirectory: tempDir));
+        client = AssemblyDocumentClient(
+          storageService: storage,
+          composer: inner,
+          documentApiClient: DocumentApiClient(
+            httpClient: MockClient((request) async {
+              if (request.url.path == '/document/import/native') imports++;
+              return _json({'document_id': 'doc', 'part_ids': ['root']});
+            }),
+          ),
+        );
+      });
+
+      Future<ComposedAssemblyGraph> open(Future<FolderMatchAnswer?> Function(List<ReferenceReport>) ask, {List<int>? asked}) =>
+          composeForOpen(client, root, 'proj/root.didsa', ask: (likely) {
+            asked?.add(likely.length);
+            return ask(likely);
+          }, choice: choice);
+
+      test('Use them re-composes with accept and the caller imports once', () async {
+        final asked = <int>[];
+        final graph = await open((_) async => const FolderMatchAnswer(useThem: true, dontAskAgain: false), asked: asked);
+        expect(asked, [1]);
+        expect(graph.references.every((r) => r.outcome == ReferenceOutcome.foundByFolder), isTrue);
+        expect(graph.references, hasLength(2), reason: 'all levels: one answer covers the whole tree');
+        expect(imports, 0, reason: 'nothing is imported by the compose step');
+        await client.importComposed(graph);
+        expect(imports, 1);
+        expect(choice.answer, isNull, reason: 'no checkbox, nothing remembered');
+      });
+
+      test('Not now keeps the suggestions and imports as composed', () async {
+        final graph = await open((_) async => const FolderMatchAnswer(useThem: false, dontAskAgain: false));
+        expect(_reportFor(graph, 'o-sub').outcome, ReferenceOutcome.likely);
+        expect(graph.references.where((r) => r.occurrenceId == 'o-part'), isEmpty);
+      });
+
+      test('a dismissed dialog behaves as Not now and stores nothing', () async {
+        final graph = await open((_) async => null);
+        expect(_reportFor(graph, 'o-sub').outcome, ReferenceOutcome.likely);
+        expect(choice.answer, isNull);
+      });
+
+      test("Don't ask again stores the answer (in memory), and the next open applies it without asking", () async {
+        await open((_) async => const FolderMatchAnswer(useThem: true, dontAskAgain: true));
+        expect(choice.answer, isTrue);
+        final asked = <int>[];
+        final second = await open((_) async => fail('must not ask again'), asked: asked);
+        expect(asked, isEmpty);
+        expect(second.references.every((r) => r.outcome == ReferenceOutcome.foundByFolder), isTrue);
+
+        choice.clear(); // Ask again
+        expect(choice.answer, isNull);
+        final third = <int>[];
+        await open((_) async => const FolderMatchAnswer(useThem: false, dontAskAgain: false), asked: third);
+        expect(third, [1], reason: 'asks again after Ask again');
+      });
+
+      test("a stored Not now leaves them as suggestions without asking", () async {
+        await open((_) async => const FolderMatchAnswer(useThem: false, dontAskAgain: true));
+        expect(choice.answer, isFalse);
+        final graph = await open((_) async => fail('must not ask'));
+        expect(_reportFor(graph, 'o-sub').outcome, ReferenceOutcome.likely);
+      });
+
+      test('nothing is asked when no reference is likely', () async {
+        storage.put('proj/root.didsa', _part('root', occurrences: [_occ('o-sub', 'parts/Sub.didsa', refPartId: 'sub')]));
+        storage.put('proj/parts/Sub.didsa', _part('sub', occurrences: [_occ('o-part', 'parts/Leaf.didsa', refPartId: 'leaf')]));
+        final graph = await open((_) async => fail('must not ask'));
+        expect(_reportFor(graph, 'o-sub').outcome, ReferenceOutcome.movedById);
+        expect(_reportFor(graph, 'o-part').outcome, ReferenceOutcome.movedById);
+      });
+
+      test('onSearching fires once, when the folder is about to be listed', () async {
+        var searching = 0;
+        await composeForOpen(client, root, 'proj/root.didsa', ask: (_) async => null, choice: choice, onSearching: () => searching++);
+        expect(searching, 1);
+      });
+    });
+
   });
 }
 
