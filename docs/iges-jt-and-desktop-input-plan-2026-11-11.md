@@ -4,6 +4,8 @@ Source: the owner's testing notes of 2026-11-11 (Flutter client on a phone in de
 This doc is for the implementation session. Code pointers were read on branch `ccr-dec7d67f-ipq5rn` (= `main` plus this doc).
 Line numbers drift, so search for the named symbol. **Nothing here was run**: no OCCT, no Flutter and no device were available
 while planning. Where a cause is a guess from reading, it says so and the first step is how to confirm it.
+**Reviewed 11 Nov** (second pass against the code): F-3's surface handling corrected (an import is already one Body whatever its
+shape), F-4's per-part Bodies corrected (an ImportFeature is always one Body), F-5 adjusted (the mesh viewer is opened before connecting).
 
 The VR items from the same notes are in `DIDSA-UK/DIDSA-VR`, `docs/vr-feedback-2026-11-11-plan.md`. Item F-3 below touches
 the VR client's file list (one line), nothing else crosses over.
@@ -117,11 +119,13 @@ document idiom `TDocStd_Document("any-label")` with no `XCAFApp_Application` is 
    path; suffix `.igs`), `IGESControl_Reader`, `ReadFile`, `TransferRoots`, `OneShape`. Same error mapping as STEP
    (`_invalid_import_data` for a parse failure, `_import_failed` for no roots or an empty shape). Dispatch it in `resolve_import`.
 3. **IGES-specific work that STEP does not need.** IGES files from many systems carry *surfaces and trimmed faces, not solids*
-   (types 143/144/186/510/514). Before returning the shape: run `ShapeFix_Shape`; if the result has no solids, try
-   `BRepBuilderAPI_Sewing` on the faces then `ShapeFix_Solid` / `BRepBuilderAPI_MakeSolid` when the shell is closed. A shape that is
-   still only faces/shells is **allowed** (it becomes a surface Body, like other non-solid Bodies; check how `compute_part_bodies`
-   / `_register_solids` in `extrude.py` handles a non-solid import and reuse it) rather than rejected. Surface the outcome in the
-   response so the client can say "imported as surfaces (not a closed solid)".
+   (types 143/144/186/510/514). Checked: `extrude.py` (~2064) registers an ImportFeature as **exactly one Body keyed by the
+   feature id, whatever shape `resolve_import` returns** (it deliberately skips `_register_solids`), so a faces-only IGES already
+   imports and shows; nothing rejects it. What to add: `ShapeFix_Shape`, then, when there are no solids, `BRepBuilderAPI_Sewing` and
+   `BRepBuilderAPI_MakeSolid` / `ShapeFix_Solid` if the sewn shell is closed, so a closed model becomes a real solid (volume, mass,
+   booleans work). Leave an open model as the sewn shell. Return whether it became a solid in the response
+   (e.g. `ImportFeatureResponse.solid: bool`) so the client can say "imported as surfaces (not a closed solid)".
+   Note the same "one Body" rule applies to a multi-solid file: all its solids are one Body (the STEP path behaves the same today).
 4. Units: IGES stores the model unit in the Global section; OCCT's reader converts to its working unit by default
    (`Interface_Static.SetCVal("xstep.cascade.unit", "MM")` before reading; set it explicitly, the backend's native unit is mm). Test
    with an inch file and a metre file.
@@ -201,9 +205,10 @@ keep tessellated geometry, but it is not an interchange export of a DIDSA Part: 
    `decode_gltf` in `mesh_import.py`). `jt_import.py` runs it on a temp file with a timeout and size limit, then reuses the glTF path.
    The Python package (`pip install ferrojt`, abi3) is the alternative if the binary is awkward in the Docker image: pin the
    version in `backend/environment.yml` (pip section) and `backend/Dockerfile`.
-   **Assembly structure**: the glTF export may flatten or keep nodes; per-part Bodies (each part its own Body with its transform and
-   colour) are better than one fused mesh. Prefer the JSON dump / Python API for the tree if glTF loses it, and create one
-   `ImportFeature` Body per part (watch the Body-count limit and the `#N` multi-solid naming in `extrude._register_solids`).
+   **Assembly structure**: an ImportFeature is always **one Body** (`extrude.py` ~2064), so v1 imports a JT assembly as one mesh
+   Body (all parts at their transforms; colours kept per triangle if the glTF path carries them, else one colour). Importing a
+   JT (or STEP) **assembly as an assembly** (a Part per JT part, placed as occurrences) is a separate, larger feature: STEP import
+   doesn't do it either. Note it as a follow-up, decided with the owner, not part of F-4.
 3. `ImportSourceFormat.JT = "jt"`; `resolve_import` dispatches to the converter inside the existing `MeshImportError` handling.
 4. Client and VR: the same one-liners as IGES (`'jt'`, extensions `['jt']`; VR `_BACKEND_IMPORT_FORMATS` and `MODEL_EXTENSIONS`).
    The import dialog should say "JT is imported as a mesh (no editable faces)", and the Body shows as a reference mesh like STL.
@@ -223,6 +228,10 @@ The viewer (`client/lib/mesh_viewer/mesh_viewer_screen.dart`) decodes **on the d
 (`_decodeAndDecimate` handles `stl`, `obj`, `gltf`, `glb`; `_supportedExtensions` at ~line 197; decoders in `mesh_data.dart`).
 IGES is a B-rep: it cannot be decoded in Dart, it needs tessellating, and that needs OCCT. So:
 
+0. **The viewer is offline by design today**: it is opened from the connection screen *before* connecting
+   (`connection_screen.dart` ~405, `MeshViewerScreen()` takes no client), for photogrammetry files on the phone. So a backend path can
+   only work when a server has been set up before; use the saved connection (`config.dart` / `server_management/`), and keep every
+   mesh format working with no server.
 1. **New small backend endpoint**, e.g. `POST /convert/mesh` (body: `source_format` + `data_base64`, optional
    `linear_deflection`; response: a `.glb`), stateless (no document, no Part created). It runs the same decode as
    `resolve_import`, meshes with `BRepMesh_IncrementalMesh`, and encodes with the existing `encode_glb` in `mesh_export.py`.
@@ -231,10 +240,13 @@ IGES is a B-rep: it cannot be decoded in Dart, it needs tessellating, and that n
 2. **Viewer**: add the B-rep extensions to `_supportedExtensions` and the file picker. For those, `_decodeAndDecimate` is not
    used: read the file by path (not through the platform channel; the crash note on the function explains why), POST it
    to `/convert/mesh`, then feed the returned glb bytes to the existing `decodeGltf(bytes, maxTriangles:)` so decimation, up-axis,
-   mirror and the export-reduced-mesh buttons keep working. **When no backend is configured**, show "Opening IGES/STEP needs the
-   DIDSA-CAD backend; connect one in Settings" instead of failing.
-   (Check what the mesh viewer does about a backend today: it may have none. If so, the connection settings (`config.dart`,
-   `server_management/`) are the existing way to get one; do not add a second.)
+   mirror and the export-reduced-mesh buttons keep working. **When no server is saved or it doesn't answer**, show "Opening IGES /
+   STEP needs a DIDSA-CAD server: connect one first" instead of failing.
+2b. **JT in the viewer, offline (option, after F-4's spike).** JT carries its own meshes, so it does not need the server. FerroJT is
+   MIT / Apache-2.0, which the Apache client may ship (`LICENSING.md`: only backend / GPL code is barred). A Rust library through
+   FFI (`flutter_rust_bridge`, built for Android arm64 / x86_64 and Windows / Linux) decoding to the viewer's `DecodedMesh` would open JT
+   on the phone with no server. Cost: a Rust toolchain in the client build and a native library per platform, a first for this
+   client. Recommend only if the owner needs offline JT viewing; otherwise JT goes through the same server endpoint as IGES.
 3. **Cheap mesh formats worth adding at the same time** (pure Dart, no backend, each small and testable against the existing
    `mesh_data.dart` pattern): **PLY** (photogrammetry output, the viewer's stated audience, ASCII and binary little-endian) and
    **3MF** (zip + XML). Optional; do PLY first if the owner agrees. Not JT in Dart (see F-4).
