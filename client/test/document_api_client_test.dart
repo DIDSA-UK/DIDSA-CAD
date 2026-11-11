@@ -1944,6 +1944,60 @@ void main() {
     });
   });
 
+  group('Item 2 (2026-11-11 feedback): sketch alignment', () {
+    test('updateSketchAlignment PATCHes .../sketch-alignment with a line, an edge or null, and the row carries the resolved frame', () async {
+      final requests = <http.Request>[];
+      final client = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          requests.add(request);
+          return http.Response(
+              jsonEncode({
+                'type': 'sketch',
+                'id': 'sf-2',
+                'sketch_id': 's2',
+                'locked': false,
+                'produces': 'sketch',
+                'x_axis_ref': {'sketch_id': 's1', 'entity_type': 'line', 'entity_id': 'l1'},
+                'resolved_frame_origin': [1.0, 2.0, 3.0],
+                'resolved_x_axis': [0.8660254, 0.5, 0.0],
+                'resolved_y_axis': [-0.5, 0.8660254, 0.0],
+                'resolved_normal': [0.0, 0.0, 1.0],
+                'aligned_x_axis': [0.8660254, 0.5, 0.0],
+                'aligned_y_axis': [-0.5, 0.8660254, 0.0],
+              }),
+              200,
+              headers: {'content-type': 'application/json'});
+        }),
+      );
+      final line = await client.updateSketchAlignment('part-1', 'sf-2', PathRefDto.sketchEntity(sketchId: 's1', entityType: 'line', entityId: 'l1'));
+      await client.updateSketchAlignment('part-1', 'sf-2', PathRefDto.edge(const SubShapeRefDto(bodyId: 'b', shapeType: 'edge', index: 4)));
+      await client.updateSketchAlignment('part-1', 'sf-2', null);
+      expect(requests.every((r) => r.method == 'PATCH' && r.url.path == '/document/parts/part-1/features/sf-2/sketch-alignment'), isTrue);
+      expect(jsonDecode(requests[0].body), {
+        'x_axis_ref': {'sketch_id': 's1', 'entity_type': 'line', 'entity_id': 'l1'},
+      });
+      expect(jsonDecode(requests[1].body), {
+        'x_axis_ref': {
+          'edge_ref': {'body_id': 'b', 'shape_type': 'edge', 'index': 4},
+        },
+      });
+      expect(jsonDecode(requests[2].body), {'x_axis_ref': null});
+      expect(line.sketchXAxisRef!.entityId, 'l1');
+      expect(line.resolvedSketchXAxis, [0.8660254, 0.5, 0.0]);
+      expect(line.resolvedSketchYAxis, [-0.5, 0.8660254, 0.0]);
+      expect(line.resolvedSketchNormal, [0.0, 0.0, 1.0]);
+      expect(line.resolvedSketchFrameOrigin, [1.0, 2.0, 3.0]);
+      expect(line.alignedSketchXAxis, [0.8660254, 0.5, 0.0]);
+    });
+
+    test('a Sketch row from an older backend has no alignment and no frame', () {
+      final dto = FeatureDto.fromJson({'type': 'sketch', 'id': 'sf', 'sketch_id': 's', 'locked': false, 'produces': 'sketch'});
+      expect(dto.sketchXAxisRef, isNull);
+      expect(dto.resolvedSketchXAxis, isNull);
+      expect(dto.alignedSketchXAxis, isNull);
+    });
+  });
+
   group('Item 5 (2026-11-11 feedback): thin Revolve', () {
     test('createRevolveFeature sends thickness and direction only when thin; updateRevolveFeature can clear it', () async {
       final requests = <http.Request>[];

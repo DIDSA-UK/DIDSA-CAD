@@ -922,6 +922,18 @@ class FeatureDto {
   /// no origin, for a lost one (the backend fell back to the plane's origin), and from an older backend that sends neither key.
   final List<double>? resolvedSketchOrigin;
 
+  /// Sketch alignment (item 2 of the 2026-11-11 feedback): the straight Body edge or Sketch Line whose direction is this Sketch's +X axis (null: the plane's own axes),
+  /// and the Sketch's whole resolved frame in world coordinates (the exact vectors the backend builds the Sketch with: `frameOrigin + u * xAxis + v * yAxis`, flip and
+  /// turns and origin included; a flipped Sketch's frame is left-handed). [alignedSketchXAxis] / [alignedSketchYAxis] are the anchor plane's axes after the alignment
+  /// but BEFORE flip / turns, which is what the orientation step starts from.
+  final PathRefDto? sketchXAxisRef;
+  final List<double>? resolvedSketchFrameOrigin;
+  final List<double>? resolvedSketchXAxis;
+  final List<double>? resolvedSketchYAxis;
+  final List<double>? resolvedSketchNormal;
+  final List<double>? alignedSketchXAxis;
+  final List<double>? alignedSketchYAxis;
+
   /// C3: the plane's own in-plane basis (see the backend's `ResolvedPlane.
   /// x_axis`/`y_axis`) - the exact orientation a Sketch anchored to this
   /// Plane embeds its local (x, y) geometry through, and what the viewport
@@ -1377,6 +1389,13 @@ class FeatureDto {
     this.origin,
     this.sketchOrigin,
     this.resolvedSketchOrigin,
+    this.sketchXAxisRef,
+    this.resolvedSketchFrameOrigin,
+    this.resolvedSketchXAxis,
+    this.resolvedSketchYAxis,
+    this.resolvedSketchNormal,
+    this.alignedSketchXAxis,
+    this.alignedSketchYAxis,
     this.normal,
     this.xAxis,
     this.yAxis,
@@ -1496,6 +1515,13 @@ class FeatureDto {
         origin: json['origin'] is List ? (json['origin'] as List).map((v) => (v as num).toDouble()).toList() : null,
         sketchOrigin: json['origin'] is Map ? SketchOriginDto.fromJson(json['origin'] as Map<String, dynamic>) : null,
         resolvedSketchOrigin: (json['resolved_origin'] as List?)?.map((v) => (v as num).toDouble()).toList(),
+        sketchXAxisRef: json['x_axis_ref'] is Map<String, dynamic> ? PathRefDto.fromJson(json['x_axis_ref'] as Map<String, dynamic>) : null,
+        resolvedSketchFrameOrigin: _doubleList(json['resolved_frame_origin']),
+        resolvedSketchXAxis: _doubleList(json['resolved_x_axis']),
+        resolvedSketchYAxis: _doubleList(json['resolved_y_axis']),
+        resolvedSketchNormal: _doubleList(json['resolved_normal']),
+        alignedSketchXAxis: _doubleList(json['aligned_x_axis']),
+        alignedSketchYAxis: _doubleList(json['aligned_y_axis']),
         normal: (json['normal'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         xAxis: (json['x_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
         yAxis: (json['y_axis'] as List?)?.map((v) => (v as num).toDouble()).toList(),
@@ -3661,6 +3687,18 @@ class DocumentApiClient {
               _uri('/document/parts/$partId/features/$featureId/sketch-origin'),
               headers: _headers,
               body: jsonEncode({'origin': origin == null ? null : _sketchOriginBody(origin)}),
+            ),
+        (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Aligns an existing Sketch's +X axis to a straight Body edge or a Sketch Line of an EARLIER Sketch (`PATCH .../features/{featureId}/sketch-alignment`), or `null` to
+  /// go back to the plane's own axes. A live reference. 422 `alignment_edge_not_straight` (a curve), `alignment_reference_not_upstream` (a Line of this Sketch or a
+  /// later one), `alignment_edge_parallel_to_normal`. Returns the Sketch's Feature row with its new resolved frame; existing geometry keeps its local coordinates.
+  Future<FeatureDto> updateSketchAlignment(String partId, String featureId, PathRefDto? ref) => _send(
+        () => _httpClient.patch(
+              _uri('/document/parts/$partId/features/$featureId/sketch-alignment'),
+              headers: _headers,
+              body: jsonEncode({'x_axis_ref': ref?.toJson()}),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
       );
@@ -7353,3 +7391,5 @@ class DocumentApiClient {
 
   void close() => _httpClient.close();
 }
+
+List<double>? _doubleList(Object? value) => value is List ? [for (final v in value) (v as num).toDouble()] : null;

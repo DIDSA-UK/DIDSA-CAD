@@ -82,6 +82,12 @@ class SketchFeature(Feature):
     # Sketch origin (docs/view-override-edit-alone-sketch-origin-plan.md Item 3): where the Sketch's local (0, 0) sits in its anchor plane. None (every
     # existing Sketch and file) = the anchor plane's own origin. See `SketchOrigin` and `app.document.create_plane.basis_for_sketch`.
     origin: "SketchOrigin | None" = None
+    # Sketch alignment (Flutter-testing feedback 2026-11-11, item 2): a STRAIGHT edge or Sketch Line whose direction (projected into the anchor plane) is the
+    # Sketch's local +X axis, applied BEFORE flip / rotation (those then act relative to the edge: one turn puts Y on the edge, flip reverses X). A live reference:
+    # it follows the edge as the model changes. None (every existing Sketch and file) = the anchor plane's own axes. A Sketch Line must be of an EARLIER Sketch;
+    # a lost, not-upstream, curved or degenerate (parallel to the plane normal) reference falls back to the unaligned frame and is reported as a lost reference
+    # (`x_axis_ref.edge_ref` / `x_axis_ref.sketch_entity_ref`). See `app.document.create_plane.aligned_anchor_basis`.
+    x_axis_ref: "SketchOrEdgeRef | None" = None
 
     @property
     def type(self) -> str:

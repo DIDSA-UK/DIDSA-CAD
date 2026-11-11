@@ -665,6 +665,13 @@ class SketchOriginUpdate(BaseModel):
     origin: SketchOriginSchema | Literal["auto"] | None = None
 
 
+class SketchAlignmentUpdate(BaseModel):
+    """Body of `PATCH .../features/{feature_id}/sketch-alignment`: the straight Body edge or Sketch Line (of an EARLIER Sketch) whose direction becomes the Sketch's +X
+    axis, or null to go back to the anchor plane's own axes. Flip and rotate then act relative to that edge."""
+
+    x_axis_ref: "SketchOrEdgeRefSchema | None" = None
+
+
 class SketchFeatureCreate(BaseModel):
     """Creates a SketchFeature wrapping a brand-new, empty Sketch, either on
     one of the three fixed reference planes (`plane`) or (C3) anchored to an
@@ -702,6 +709,20 @@ class SketchFeatureResponse(FeatureResponseBase):
     # origin reference reports `origin.point_ref.vertex_ref` (or `origin.circle_centre_ref`) in `lost_references` and has no `resolved_origin`.
     origin: SketchOriginSchema | None = None
     resolved_origin: tuple[float, float, float] | None = None
+    # Sketch alignment (item 2 of the 2026-11-11 feedback): the stored reference (a straight Body edge or a Sketch Line of an earlier Sketch whose direction is the Sketch's
+    # +X axis), and THE RESOLVED FRAME in world coordinates, always present when it can be worked out: anchor plane -> alignment -> flip / turns -> origin, exactly the
+    # vectors `basis_for_sketch` uses, so a Sketch point (u, v) is at `resolved_frame_origin + u * resolved_x_axis + v * resolved_y_axis`. A flipped Sketch's frame is
+    # left-handed (x cross y = -normal). `resolved_origin` keeps its old meaning (set only for a stored origin that resolves). A lost alignment reports
+    # `x_axis_ref.edge_ref` / `x_axis_ref.sketch_entity_ref` in `lost_references` and the frame is the unaligned one.
+    x_axis_ref: "SketchOrEdgeRefSchema | None" = None
+    resolved_frame_origin: tuple[float, float, float] | None = None
+    resolved_x_axis: tuple[float, float, float] | None = None
+    resolved_y_axis: tuple[float, float, float] | None = None
+    resolved_normal: tuple[float, float, float] | None = None
+    # The anchor plane's axes AFTER the alignment but BEFORE this Sketch's flip / turns: what a client that applies flip / turns itself (the orientation step) starts from.
+    # Equal to the plane's own axes for an unaligned Sketch.
+    aligned_x_axis: tuple[float, float, float] | None = None
+    aligned_y_axis: tuple[float, float, float] | None = None
     # Sketcher-roadmap Phase 4.3 v1: true whenever at least one of this
     # Sketch's `external_references` (a Point tracking a Body vertex) no
     # longer resolves against the Part's *current* Bodies - resolved live
@@ -750,6 +771,10 @@ class SketchOrEdgeRefSchema(BaseModel):
     entity_id: str | None = None
     edge_ref: SubShapeRefSchema | None = None
     curve_feature_id: str | None = None
+
+
+SketchFeatureResponse.model_rebuild()
+SketchAlignmentUpdate.model_rebuild()
 
 
 class PlaneRefSchema(BaseModel):

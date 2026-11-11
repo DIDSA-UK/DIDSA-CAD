@@ -124,6 +124,13 @@ class _FakeDocumentBackend {
   /// answers with: [autoStored] / [autoResolved] for `'auto'` (null = "no origin", the plane's own), [pickResolved] for a concrete origin.
   final List<Map<String, dynamic>> sketchCreateBodies = [];
   final List<Object?> originPatches = [];
+
+  /// Sketch alignment (item 2 of the 2026-11-11 feedback): every `x_axis_ref` a `PATCH .../sketch-alignment` sent (a map, or null), the aligned anchor axes the fake answers a
+  /// concrete alignment with, and an optional refusal (the 422 `type`).
+  final List<Object?> alignmentPatches = [];
+  List<double> alignedX = const [0.0, 1.0, 0.0];
+  List<double> alignedY = const [-1.0, 0.0, 0.0];
+  String? alignmentError;
   Map<String, dynamic>? autoStored;
   List<double>? autoResolved;
   List<double> pickResolved = const [11.0, 12.0, 13.0];
@@ -594,6 +601,26 @@ class _FakeDocumentBackend {
       } else {
         feature['origin'] = origin;
         feature['resolved_origin'] = pickResolved;
+      }
+      return _json(feature, 200);
+    }
+
+    final alignmentMatch = RegExp(r'^/document/parts/part-1/features/([^/]+)/sketch-alignment$').firstMatch(path);
+    if (alignmentMatch != null && method == 'PATCH') {
+      final feature = features.firstWhere((f) => f['id'] == alignmentMatch.group(1));
+      final ref = body['x_axis_ref'];
+      alignmentPatches.add(ref);
+      if (alignmentError != null) {
+        return http.Response(jsonEncode({'detail': {'type': alignmentError}}), 422);
+      }
+      if (ref == null) {
+        feature.remove('x_axis_ref');
+        feature.remove('aligned_x_axis');
+        feature.remove('aligned_y_axis');
+      } else {
+        feature['x_axis_ref'] = ref;
+        feature['aligned_x_axis'] = alignedX;
+        feature['aligned_y_axis'] = alignedY;
       }
       return _json(feature, 200);
     }
@@ -10131,6 +10158,147 @@ void main() {
       await settle(tester);
       expect(backend.originPatches, isEmpty);
       expect(find.textContaining('this sketch or a later one'), findsOneWidget);
+    });
+
+    // Item 2 of the 2026-11-11 feedback: align a sketch axis to an edge or line in the orientation step.
+    group('Align (sketch X axis to an edge or line)', () {
+      final alignButton = find.byKey(const ValueKey('sketch-orientation-align'));
+      final earlierSketch = {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': false};
+
+      Future<_FakeDocumentBackend> openNew(WidgetTester tester, {bool earlier = false}) async {
+        final backend = _FakeDocumentBackend(seedFeatures: [if (earlier) ...[earlierSketch, {...earlierSketch, 'id': 'feature-2', 'sketch_id': 'sketch-2'}], planeFeature]);
+        await pump(tester, backend, _FakeSketchBackend());
+        await newSketchOnPlane(tester);
+        return backend;
+      }
+
+      testWidgets('the pill has Align in a new Sketch\'s step and in an existing one\'s', (tester) async {
+        await openNew(tester);
+        expect(alignButton, findsOneWidget);
+        expect(find.byTooltip('Align the sketch X axis to an edge or line'), findsOneWidget);
+        await tester.tap(find.text('Cancel'));
+        await settle(tester);
+
+        final backend = _FakeDocumentBackend(seedFeatures: [earlierSketch]);
+        await tester.pumpWidget(const SizedBox());
+        await pump(tester, backend, _FakeSketchBackend());
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        await tester.longPress(find.text('Sketch 1'));
+        await settle(tester);
+        await tester.tap(find.byTooltip('More actions'));
+        await settle(tester);
+        await tester.tap(find.text('Sketch Orientation'));
+        await _pumpUntil(tester, () => alignButton.evaluate().isNotEmpty);
+        expect(find.text('Done'), findsOneWidget);
+        expect(alignButton, findsOneWidget);
+      });
+
+      testWidgets('picking a sketch line of an earlier sketch sends the reference and turns the orientation axes; flip afterwards keeps it', (tester) async {
+        final backend = await openNew(tester, earlier: true);
+        await tester.tap(alignButton);
+        await settle(tester);
+        expect(find.text('Align sketch'), findsOneWidget);
+        expect(find.byKey(const ValueKey('sketch-alignment-clear')), findsOneWidget);
+        viewport(tester).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.sketchLine, sketchFeatureId: 'feature-1', sketchEntityId: 'line-9'),
+        );
+        await settle(tester);
+        expect(backend.alignmentPatches.single, {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'line-9'});
+        final basis = viewport(tester).sketchOrientationBasis!;
+        expect((basis.xAxis.x, basis.xAxis.y), (0.0, 1.0), reason: 'the orientation axes use the backend\'s aligned axes');
+        expect((basis.yAxis.x, basis.yAxis.y), (-1.0, 0.0));
+        expect(find.text('Align sketch'), findsNothing, reason: 'back to the pill');
+        expect(tester.widget<IconButton>(alignButton).isSelected, isTrue);
+
+        await tester.tap(find.byTooltip('Flip'));
+        await settle(tester);
+        expect(backend.alignmentPatches, hasLength(1), reason: 'flip refines the aligned frame, it does not touch the reference');
+        expect(viewport(tester).sketchOrientationBasis!.xAxis.y, -1.0, reason: 'flip reverses X relative to the edge');
+      });
+
+      testWidgets('a Body edge sends an edge_ref', (tester) async {
+        final backend = await openNew(tester);
+        await tester.tap(alignButton);
+        await settle(tester);
+        viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: 'b', id: 5));
+        await settle(tester);
+        expect(backend.alignmentPatches.single, {
+          'edge_ref': {'body_id': 'b', 'shape_type': 'edge', 'index': 5},
+        });
+      });
+
+      testWidgets('Clear alignment sends null', (tester) async {
+        final backend = await openNew(tester);
+        await tester.tap(alignButton);
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('sketch-alignment-clear')));
+        await settle(tester);
+        expect(backend.alignmentPatches.single, isNull);
+        expect(find.text('Align sketch'), findsNothing);
+      });
+
+      testWidgets('a line of this or a later sketch is refused with a note and nothing is sent; a curved edge shows the backend refusal', (tester) async {
+        final backend = await openNew(tester);
+        await tester.tap(alignButton);
+        await settle(tester);
+        final own = backend.features.last['id'] as String;
+        viewport(tester).onSelectionToggle!(SelectionEntityRef(kind: SelectionEntityKind.sketchLine, sketchFeatureId: own, sketchEntityId: 'l1'));
+        await settle(tester);
+        expect(backend.alignmentPatches, isEmpty);
+        expect(find.textContaining('this sketch or a later one'), findsOneWidget);
+
+        backend.alignmentError = 'alignment_edge_not_straight';
+        viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.edge, bodyId: 'b', id: 7));
+        await settle(tester);
+        expect(backend.alignmentPatches, hasLength(1));
+        expect(find.textContaining('not straight'), findsOneWidget);
+        expect(find.text('Align sketch'), findsOneWidget, reason: 'the sub-step stays open');
+      });
+
+      testWidgets('editing an aligned Sketch starts from its aligned axes; Cancel puts the old alignment back', (tester) async {
+        final stored = {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'old-line'};
+        final backend = _FakeDocumentBackend(
+          seedFeatures: [
+            earlierSketch,
+            {
+              'type': 'sketch',
+              'id': 'feature-2',
+              'sketch_id': 'sketch-2',
+              'locked': false,
+              'x_axis_ref': stored,
+              'aligned_x_axis': [0.0, 1.0, 0.0],
+              'aligned_y_axis': [-1.0, 0.0, 0.0],
+            },
+          ],
+        );
+        final sketchBackend = _FakeSketchBackend();
+        await pump(tester, backend, sketchBackend);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        await tester.longPress(find.text('Sketch 2'));
+        await settle(tester);
+        await tester.tap(find.byTooltip('More actions'));
+        await settle(tester);
+        await tester.tap(find.text('Sketch Orientation'));
+        await _pumpUntil(tester, () => alignButton.evaluate().isNotEmpty);
+        expect(tester.widget<IconButton>(alignButton).isSelected, isTrue, reason: 'it is aligned now');
+        final basis = viewport(tester).sketchOrientationBasis!;
+        expect((basis.xAxis.x, basis.xAxis.y), (0.0, 1.0), reason: 'the axes start from the aligned frame');
+
+        backend.alignedX = const [1.0, 1.0, 0.0];
+        await tester.tap(alignButton);
+        await settle(tester);
+        viewport(tester).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.sketchLine, sketchFeatureId: 'feature-1', sketchEntityId: 'new-line'),
+        );
+        await settle(tester);
+        expect(backend.alignmentPatches.single, {'sketch_id': 'sketch-1', 'entity_type': 'line', 'entity_id': 'new-line'});
+
+        await tester.tap(find.text('Cancel'));
+        await settle(tester);
+        expect(backend.alignmentPatches.last, stored, reason: 'Cancel restores the alignment the Sketch had');
+      });
     });
 
     testWidgets('editing an existing Sketch\'s orientation has Pick origin too; Cancel puts the old origin back', (tester) async {

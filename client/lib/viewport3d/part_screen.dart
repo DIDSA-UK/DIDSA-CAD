@@ -3092,6 +3092,11 @@ class _PartScreenState extends State<PartScreen> {
       unawaited(_onSketchOriginPicked(entity));
       return;
     }
+    // ... and its Align: a straight edge or a sketch line sets the Sketch's X axis.
+    if (_pickingSketchAlignment) {
+      unawaited(_onSketchAlignmentPicked(entity));
+      return;
+    }
     // New Sketch's "tap a reference plane": in Selection mode a tap arrives
     // here rather than at [_onPlaneTap], so it has to start the sketch from
     // here too - it must not just select the plane.
@@ -11287,14 +11292,24 @@ class _PartScreenState extends State<PartScreen> {
     // The Sketch's own origin (Item 3 of `docs/view-override-edit-alone-sketch-origin-plan.md`): the axes are the plane's, the origin may have been moved.
     final origin = _sketchOriginOf(feature);
     if (planeFeatureId != null) {
-      final raw = _customPlaneBasis(planeFeatureId);
+      final raw = _alignedRawBasis(feature, _customPlaneBasis(planeFeatureId));
       return raw?.withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns).withOrigin(origin);
     }
     final plane = referencePlaneKindFromApiValue(sketch.plane);
     return plane == null
         ? null
-        : SketchPlaneBasis.oriented(plane, flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns)
+        : _alignedRawBasis(feature, SketchPlaneBasis.fixed(plane))!
+            .withOrientation(flip: sketch.flip, rotationQuarterTurns: sketch.rotationQuarterTurns)
             .withOrigin(origin);
+  }
+
+  /// [plain] (the anchor plane's own basis, before flip / turns) with its X / Y axes replaced by the backend's alignment result when the Sketch is aligned to an edge or
+  /// line (`FeatureDto.alignedSketchXAxis` / `YAxis`: the anchor axes after the alignment and BEFORE flip / turns, so [SketchPlaneBasis.withOrientation] still applies
+  /// the Sketch's own flip and turns on top, as the backend does). [plain] unchanged for an unaligned Sketch or an older backend; null stays null.
+  SketchPlaneBasis? _alignedRawBasis(FeatureDto feature, SketchPlaneBasis? plain) {
+    final x = feature.alignedSketchXAxis, y = feature.alignedSketchYAxis;
+    if (plain == null || feature.sketchXAxisRef == null || x == null || y == null || x.length != 3 || y.length != 3) return plain;
+    return SketchPlaneBasis(origin: plain.origin, xAxis: vm.Vector3(x[0], x[1], x[2]), yAxis: vm.Vector3(y[0], y[1], y[2]), normal: plain.normal);
   }
 
   /// [feature]'s resolved Sketch origin as a world point, or null when it has none (or a lost one: the backend then used the plane's own origin too).
@@ -14064,6 +14079,12 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationOriginalOrigin = null;
       _pendingOrientationHasExternalRefs = false;
       _pickingSketchOrigin = false;
+      _pendingOrientationPlainBasis = rawBasis;
+      _pendingOrientationAlignRef = null;
+      _pendingOrientationOriginalAlignRef = null;
+      _pendingOrientationAlignTouched = false;
+      _pickingSketchAlignment = false;
+      _sketchAlignmentNote = null;
       _pendingOrientationMode = _PendingOrientationMode.newSketch;
       _pendingOrientationFixedPlaneKind = fixedPlane;
       // On-device feedback: judging a pending orientation needs free orbit
@@ -14108,6 +14129,8 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
     if (rawBasis == null || !mounted) return;
+    final plainBasis = rawBasis;
+    rawBasis = _alignedRawBasis(feature, plainBasis); // an aligned Sketch starts from its aligned axes
     // Moving the origin of a Sketch that holds points pinned to the part leaves those points where they are in the world.
     final hasExternalRefs = feature.sketchId != null && await _sketchApi.countExternalReferences(_focusPartId, feature.id) > 0;
     if (!mounted) return;
@@ -14133,6 +14156,12 @@ class _PartScreenState extends State<PartScreen> {
       _pendingOrientationOriginalOrigin = feature.sketchOrigin;
       _pendingOrientationHasExternalRefs = hasExternalRefs;
       _pickingSketchOrigin = false;
+      _pendingOrientationPlainBasis = plainBasis;
+      _pendingOrientationAlignRef = feature.sketchXAxisRef;
+      _pendingOrientationOriginalAlignRef = feature.sketchXAxisRef;
+      _pendingOrientationAlignTouched = false;
+      _pickingSketchAlignment = false;
+      _sketchAlignmentNote = null;
       _pendingOrientationMode = _PendingOrientationMode.redefine;
       // Irrelevant to redefine (only _addSketchFeature's new-sketch camera
       // sequence reads this) - cleared rather than left stale from a
@@ -14166,6 +14195,126 @@ class _PartScreenState extends State<PartScreen> {
   /// True while the Pick origin sub-step is open (a [PickerRibbon] replaces the orientation pill, and a corner, point or circle tap sets the origin).
   bool _pickingSketchOrigin = false;
   String? _sketchOriginNote;
+
+  /// Sketch alignment, in the orientation step (item 2 of `docs/flutter-testing-feedback-2026-11-11-plan.md`): the anchor plane's own basis (before any alignment, flip or
+  /// turns), the alignment the Sketch has now and had when the step started (Cancel of a redefine puts the old one back), whether it was changed this step, and the
+  /// Align sub-step (a [PickerRibbon] replaces the pill; a tap on a straight edge or a sketch line sets the alignment).
+  SketchPlaneBasis? _pendingOrientationPlainBasis;
+  PathRefDto? _pendingOrientationAlignRef;
+  PathRefDto? _pendingOrientationOriginalAlignRef;
+  bool _pendingOrientationAlignTouched = false;
+  bool _pickingSketchAlignment = false;
+  String? _sketchAlignmentNote;
+
+  static const _sketchAlignmentPickFilter = SelectionFilterState(
+    vertex: false,
+    edge: true,
+    face: false,
+    body: false,
+    sketchPoint: false,
+    sketchLine: true,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  /// Opens the Align sub-step: a tap on a straight Body edge or a Sketch Line of an earlier Sketch makes its direction the Sketch's +X axis (Flip and Rotate then
+  /// refine). Like [_startPickSketchOrigin], this turns selection mode on for the pick and [_endPickSketchAlignment] puts it back.
+  void _startPickSketchAlignment() {
+    if (!_confirmingSketchOrientation || _pickingSketchOrigin || _pickingSketchAlignment || _busy) return;
+    setState(() {
+      _pickingSketchAlignment = true;
+      _sketchAlignmentNote = null;
+      _selectedEntities = {};
+      _selectionFilterOverrides.push(_sketchAlignmentPickFilter);
+      _selectionMode = true;
+    });
+  }
+
+  void _endPickSketchAlignment() {
+    if (!_pickingSketchAlignment) return;
+    setState(() {
+      _pickingSketchAlignment = false;
+      _sketchAlignmentNote = null;
+      _selectedEntities = {};
+      _selectionFilterOverrides.pop();
+      _selectionMode = false;
+    });
+  }
+
+  /// Sends a new alignment for the pending Sketch (a [PathRefDto] or null = the plane's own axes) and, when it is accepted, turns the orientation axes to it and leaves
+  /// the sub-step. A refusal (a curve, a line of a later Sketch, an edge along the plane's normal) keeps it open with the reason. With the "auto" origin still on, the
+  /// origin is asked for again, as after a flip or rotate.
+  Future<void> _applySketchAlignment(PathRefDto? ref) async {
+    final feature = _pendingOrientationFeature;
+    if (feature == null || _busy) return;
+    FeatureDto? updated;
+    FeatureDto? reAsked;
+    await _runGuarded(() async {
+      updated = await _api.updateSketchAlignment(_focusPartId, feature.id, ref);
+      if (_pendingOrientationOriginAuto && feature.planeFeatureId != null) {
+        reAsked = await _api.updateSketchOrigin(_focusPartId, feature.id, SketchOriginDto.auto);
+      }
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    });
+    if (!mounted) return;
+    final done = updated;
+    if (done == null) {
+      final message = _errorMessage ?? '';
+      String? note;
+      if (message.contains('alignment_edge_not_straight')) {
+        note = 'That is not straight: pick a straight edge or a line';
+      } else if (message.contains('alignment_reference_not_upstream')) {
+        note = 'That line belongs to this sketch or a later one: pick something that exists before it';
+      } else if (message.contains('alignment_edge_parallel_to_normal')) {
+        note = 'That edge runs along the sketch plane\'s normal: pick one that lies along the plane';
+      }
+      if (note != null) {
+        setState(() {
+          _errorMessage = null;
+          _sketchAlignmentNote = note;
+        });
+      }
+      return;
+    }
+    final fresh = _featureById(feature.id) ?? done;
+    setState(() {
+      _pendingOrientationRawBasis = _alignedRawBasis(fresh, _pendingOrientationPlainBasis) ?? _pendingOrientationRawBasis;
+      _pendingOrientationAlignRef = done.sketchXAxisRef;
+      _pendingOrientationAlignTouched = true;
+      final origin = reAsked;
+      if (origin != null) {
+        _pendingOrientationOrigin = _sketchOriginOf(origin);
+        _pendingOrientationOriginTouched = true;
+      }
+    });
+    _endPickSketchAlignment();
+  }
+
+  /// A tap while the Align sub-step is open: a Body edge or a Sketch Line of an EARLIER Sketch. Anything else is ignored with a hint (the backend refuses a curved edge).
+  Future<void> _onSketchAlignmentPicked(SelectionEntityRef entity) async {
+    final pending = _pendingOrientationFeature;
+    if (pending == null || _busy) return;
+    switch (entity.kind) {
+      case SelectionEntityKind.edge:
+        await _applySketchAlignment(PathRefDto.edge(SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'edge', index: entity.id)));
+      case SelectionEntityKind.sketchLine:
+        final own = _features.indexWhere((f) => f.id == pending.id);
+        final other = _features.indexWhere((f) => f.id == entity.sketchFeatureId);
+        if (own < 0 || other < 0 || other >= own) {
+          setState(() => _sketchAlignmentNote = 'That line belongs to this sketch or a later one: pick something that exists before it');
+          return;
+        }
+        final sketchId = _sketchIdForFeatureId(entity.sketchFeatureId);
+        if (sketchId == null) return;
+        await _applySketchAlignment(PathRefDto.sketchEntity(sketchId: sketchId, entityType: 'line', entityId: entity.sketchEntityId));
+      default:
+        setState(() => _sketchAlignmentNote = 'Tap a straight edge or a sketch line');
+    }
+  }
 
   static const _sketchOriginPickFilter = SelectionFilterState(
     vertex: true,
@@ -14380,9 +14529,12 @@ class _PartScreenState extends State<PartScreen> {
     final flip = _pendingOrientationFlip;
     final rotation = _pendingOrientationRotation;
     if (_pickingSketchOrigin) _endPickSketchOrigin();
+    if (_pickingSketchAlignment) _endPickSketchAlignment();
     setState(() {
       _pendingOrientationFeature = null;
       _pendingOrientationRawBasis = null;
+      _pendingOrientationPlainBasis = null;
+      _pendingOrientationAlignRef = null;
       _pendingOrientationFixedPlaneKind = null;
       _pendingOrientationOrigin = null;
       _pendingOrientationOriginAuto = false;
@@ -14438,9 +14590,14 @@ class _PartScreenState extends State<PartScreen> {
     final originalRotation = _pendingOrientationOriginalRotation;
     final originalOrigin = _pendingOrientationOriginalOrigin;
     final originTouched = _pendingOrientationOriginTouched;
+    final originalAlignRef = _pendingOrientationOriginalAlignRef;
+    final alignTouched = _pendingOrientationAlignTouched;
     if (_pickingSketchOrigin) _endPickSketchOrigin();
+    if (_pickingSketchAlignment) _endPickSketchAlignment();
     setState(() {
       _pendingOrientationFeature = null;
+      _pendingOrientationPlainBasis = null;
+      _pendingOrientationAlignRef = null;
       _pendingOrientationRawBasis = null;
       _pendingOrientationFixedPlaneKind = null;
       _pendingOrientationOrigin = null;
@@ -14463,7 +14620,8 @@ class _PartScreenState extends State<PartScreen> {
           flip: originalFlip,
           rotationQuarterTurns: originalRotation,
         );
-        // The origin the Sketch had when the step started (only if it was changed here).
+        // The alignment, then the origin the Sketch had when the step started (only if they were changed here).
+        if (alignTouched) await _api.updateSketchAlignment(_focusPartId, feature.id, originalAlignRef);
         if (originTouched) await _api.updateSketchOrigin(_focusPartId, feature.id, originalOrigin);
         await _refreshFeatures();
         await _refreshSketchGeometries();
@@ -25679,6 +25837,8 @@ class _PartScreenState extends State<PartScreen> {
       _exitMultiSelect();
     } else if (_pickingSketchOrigin) {
       _endPickSketchOrigin();
+    } else if (_pickingSketchAlignment) {
+      _endPickSketchAlignment();
     } else if (_confirmingSketchOrientation) {
       _cancelPendingOrientation();
     } else if (_sketchPickerActive) {
@@ -28517,7 +28677,26 @@ class _PartScreenState extends State<PartScreen> {
                       ],
                     ),
                   ),
-                if (_confirmingSketchOrientation && !_pickingSketchOrigin)
+                if (_confirmingSketchOrientation && _pickingSketchAlignment)
+                  Positioned.fill(
+                    child: PickerRibbon(
+                      title: 'Align sketch',
+                      tooltip: _sketchAlignmentNote ??
+                          (_pendingOrientationHasExternalRefs
+                              ? 'Tap a straight edge or line to align the sketch X axis. Points pinned to the part stay where they are, so a sketch that mixes free and pinned geometry can distort.'
+                              : 'Tap a straight edge or line to align the sketch X axis'),
+                      onCancel: _endPickSketchAlignment,
+                      extraActions: [
+                        PickerRibbonAction(
+                          key: const ValueKey('sketch-alignment-clear'),
+                          label: 'Clear alignment',
+                          icon: Icons.layers_clear,
+                          onPressed: _busy ? null : () => unawaited(_applySketchAlignment(null)),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_confirmingSketchOrientation && !_pickingSketchOrigin && !_pickingSketchAlignment)
                   Positioned(
                     bottom: 8,
                     left: 8,
@@ -28574,6 +28753,14 @@ class _PartScreenState extends State<PartScreen> {
                                   onPressed: _busy
                                       ? null
                                       : () => _adjustPendingOrientation(flip: !_pendingOrientationFlip),
+                                ),
+                                IconButton(
+                                  visualDensity: VisualDensity.compact,
+                                  key: const ValueKey('sketch-orientation-align'),
+                                  tooltip: 'Align the sketch X axis to an edge or line',
+                                  icon: const Icon(Icons.straighten),
+                                  isSelected: _pendingOrientationAlignRef != null,
+                                  onPressed: _busy ? null : _startPickSketchAlignment,
                                 ),
                                 IconButton(
                                   visualDensity: VisualDensity.compact,

@@ -1195,6 +1195,8 @@ def _feature_to_dict(feature: Feature) -> dict:
         }
         if feature.origin is not None:  # written only when set: a file with no moved origin is byte-for-byte what it was
             data["origin"] = _sketch_origin_to_dict(feature.origin)
+        if feature.x_axis_ref is not None:  # likewise: only a Sketch aligned to an edge or line writes its reference
+            data["x_axis_ref"] = _sketch_or_edge_ref_to_dict(feature.x_axis_ref)
         return data
     if isinstance(feature, ExtrudeFeature):
         return {
@@ -1631,6 +1633,7 @@ def _feature_from_dict(data: dict) -> Feature:
             sketch_id=_require(data, "sketch_id"),
             plane_feature_id=data.get("plane_feature_id"),
             origin=_sketch_origin_from_dict(data["origin"]) if data.get("origin") else None,
+            x_axis_ref=_sketch_or_edge_ref_from_dict(data["x_axis_ref"]) if data.get("x_axis_ref") else None,
         )
     if feature_type == "extrude":
         return ExtrudeFeature(

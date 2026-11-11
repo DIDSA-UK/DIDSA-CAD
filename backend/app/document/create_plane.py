@@ -48,6 +48,7 @@ from OCC.Core.BRepAdaptor import BRepAdaptor_Curve, BRepAdaptor_Surface
 from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Line, GeomAbs_Plane
 from OCC.Core.gp import gp_Pnt
 from OCC.Core.TopAbs import TopAbs_REVERSED
+from OCC.Core.TopExp import topexp
 from OCC.Core.TopoDS import TopoDS_Shape, topods
 
 from app.document.face_normal import plane_axis_points_inward
@@ -78,7 +79,7 @@ from app.document.plane_geometry import (
 )
 from app.document.reference_signature import BodyVertexMeasurer, measurer_for
 from app.sketch.constraints import DistanceConstraint
-from app.sketch.models import Arc, Circle, ExternalVertexReference, Point, Sketch
+from app.sketch.models import Arc, Circle, ExternalVertexReference, Line, Point, Sketch
 from app.sketch.reference_signature import (
     SEARCH_TOLERANCE_REL,
     LineageOrigin,
@@ -466,23 +467,124 @@ def basis_for_sketch(
     return oriented
 
 
+def anchor_basis_unoriented(
+    part: Part,
+    sketch: Sketch,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """`sketch`'s anchor plane exactly as its fixed plane / Plane feature gives it: not aligned, not flipped or turned, origin not moved."""
+    sketch_feature_id = sketch_feature_id_for_sketch(part, sketch.id)
+    sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id else None
+    if isinstance(sketch_feature, SketchFeature) and sketch_feature.plane_feature_id is not None:
+        plane_feature = part.get_feature(sketch_feature.plane_feature_id)
+        assert isinstance(plane_feature, CreatePlaneFeature)
+        return resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
+    assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
+    return oriented_basis_for_plane(sketch.plane, flip=False, rotation_quarter_turns=0)
+
+
 def oriented_anchor_basis(
     part: Part,
     sketch: Sketch,
     bodies: dict[str, TopoDS_Shape],
     excluded_feature_ids: frozenset[str],
 ) -> ResolvedPlane:
-    """`sketch`'s anchor plane with the Sketch's own flip / rotation applied, WITHOUT its origin moved (`basis_for_sketch` = this + `basis_with_sketch_origin`). The
-    frame the "auto" origin default is worked out in."""
+    """`sketch`'s anchor plane, aligned to its `x_axis_ref` (when set and it resolves: `aligned_anchor_basis`), THEN with the Sketch's own flip / rotation applied, WITHOUT
+    its origin moved (`basis_for_sketch` = this + `basis_with_sketch_origin`). The frame the "auto" origin default is worked out in. Flip and rotate therefore act relative to
+    the edge the Sketch is aligned to."""
     sketch_feature_id = sketch_feature_id_for_sketch(part, sketch.id)
     sketch_feature = part.get_feature(sketch_feature_id) if sketch_feature_id else None
-    if isinstance(sketch_feature, SketchFeature) and sketch_feature.plane_feature_id is not None:
-        plane_feature = part.get_feature(sketch_feature.plane_feature_id)
-        assert isinstance(plane_feature, CreatePlaneFeature)
-        anchor_basis = resolve_create_plane_from_bodies(part, plane_feature, bodies, excluded_feature_ids)
-        return apply_orientation(anchor_basis, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
-    assert sketch.plane is not None, f"Sketch {sketch.id} has neither a fixed plane nor an anchor plane"
-    return oriented_basis_for_plane(sketch.plane, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
+    anchor_basis = anchor_basis_unoriented(part, sketch, bodies, excluded_feature_ids)
+    if isinstance(sketch_feature, SketchFeature):
+        anchor_basis = aligned_anchor_basis(part, sketch_feature, anchor_basis, bodies, excluded_feature_ids)
+    return apply_orientation(anchor_basis, flip=sketch.flip, rotation_quarter_turns=sketch.rotation_quarter_turns)
+
+
+# --- Sketch alignment (docs/flutter-testing-feedback-2026-11-11-plan.md item 2) -------------------------------------------------------------
+
+
+def sketch_alignment_is_upstream(part: Part, sketch_feature: SketchFeature) -> bool:
+    """Whether `sketch_feature.x_axis_ref` only names things that exist BEFORE the Sketch: a Sketch Line must belong to a Sketch whose SketchFeature comes earlier in
+    `part.features` (never the Sketch itself); a Body edge is upstream by construction (resolved against the Bodies as of the Sketch's place in the history). True for
+    no alignment at all."""
+    ref = sketch_feature.x_axis_ref
+    if ref is None or ref.sketch_entity_ref is None:
+        return True
+    other_id = sketch_feature_id_for_sketch(part, ref.sketch_entity_ref.sketch_id)
+    if other_id is None or other_id == sketch_feature.id:
+        return False
+    ids = [f.id for f in part.features]
+    return other_id in ids and sketch_feature.id in ids and ids.index(other_id) < ids.index(sketch_feature.id)
+
+
+def _alignment_not_straight(detail: dict | None = None) -> HTTPException:
+    return HTTPException(status_code=422, detail={"type": "alignment_edge_not_straight", **(detail or {})})
+
+
+def resolve_alignment_direction(
+    part: Part,
+    sketch_feature: SketchFeature,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> tuple[float, float, float]:
+    """The world direction (start -> end, unnormalised) of `sketch_feature.x_axis_ref`: a Sketch Line's `start` -> `end` through its own Sketch's resolved basis, or a
+    LINEAR Body edge's first -> last vertex (orientation-aware). 422 `alignment_edge_not_straight` for a curve, `alignment_reference_not_upstream` for a Line of this Sketch
+    or a later one, the usual `missing_reference` when it no longer resolves."""
+    ref = sketch_feature.x_axis_ref
+    assert ref is not None
+    if (ref.sketch_entity_ref is None) == (ref.edge_ref is None) or ref.curve_feature_id is not None:
+        raise HTTPException(status_code=422, detail="x_axis_ref must have exactly one of sketch_entity_ref or edge_ref")
+    if ref.sketch_entity_ref is not None:
+        if not sketch_alignment_is_upstream(part, sketch_feature):
+            raise HTTPException(status_code=422, detail={"type": "alignment_reference_not_upstream"})
+        entity = resolve_sketch_entity(ref.sketch_entity_ref)
+        if not isinstance(entity, Line):
+            raise _alignment_not_straight()
+        other = get_sketch_or_404(ref.sketch_entity_ref.sketch_id)
+        basis = basis_for_sketch(part, other, bodies, excluded_feature_ids)
+        start, end = other.points[entity.start_point_id], other.points[entity.end_point_id]
+        a, b = basis_point(basis, start.x, start.y), basis_point(basis, end.x, end.y)
+        return (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+    edge = topods.Edge(resolve_subshape_from_bodies(bodies, ref.edge_ref))
+    curve = BRepAdaptor_Curve(edge)
+    if curve.GetType() != GeomAbs_Line:
+        raise _alignment_not_straight({"body_id": ref.edge_ref.body_id, "index": ref.edge_ref.index})
+    first, last = topexp.FirstVertex(edge, True), topexp.LastVertex(edge, True)
+    a, b = BRep_Tool.Pnt(first), BRep_Tool.Pnt(last)
+    return (b.X() - a.X(), b.Y() - a.Y(), b.Z() - a.Z())
+
+
+def align_basis(basis: ResolvedPlane, direction: tuple[float, float, float]) -> ResolvedPlane:
+    """`basis` with its X axis turned onto `direction` projected into the plane (`d - dot(d, n) n`, normalised) and Y = n x X, so the frame stays right-handed. The origin and
+    normal do not change. 422 `alignment_edge_parallel_to_normal` when the projection is (nearly) nothing: the edge runs along the plane's normal."""
+    n = basis.normal
+    dot = sum(d * c for d, c in zip(direction, n))
+    projected = tuple(d - dot * c for d, c in zip(direction, n))
+    length = math.sqrt(sum(c * c for c in projected))
+    full = math.sqrt(sum(c * c for c in direction))
+    if full < 1e-12 or length < 1e-6 * full:
+        raise HTTPException(status_code=422, detail={"type": "alignment_edge_parallel_to_normal"})
+    x_axis = tuple(c / length for c in projected)
+    y_axis = (n[1] * x_axis[2] - n[2] * x_axis[1], n[2] * x_axis[0] - n[0] * x_axis[2], n[0] * x_axis[1] - n[1] * x_axis[0])
+    return replace(basis, x_axis=x_axis, y_axis=y_axis)
+
+
+def aligned_anchor_basis(
+    part: Part,
+    sketch_feature: SketchFeature,
+    basis: ResolvedPlane,
+    bodies: dict[str, TopoDS_Shape],
+    excluded_feature_ids: frozenset[str],
+) -> ResolvedPlane:
+    """`basis` (the anchor plane, not yet flipped or turned) aligned to the Sketch's `x_axis_ref`, or `basis` itself when there is none or it does not resolve (lost, not
+    upstream, curved, degenerate): the Sketch never fails because of it, it falls back to the unaligned frame and the response reports the reference as lost."""
+    if sketch_feature.x_axis_ref is None:
+        return basis
+    try:
+        return align_basis(basis, resolve_alignment_direction(part, sketch_feature, bodies, excluded_feature_ids))
+    except HTTPException:
+        return basis
 
 
 # --- Sketch origin (docs/view-override-edit-alone-sketch-origin-plan.md Item 3) ----------------------------------------------------------
