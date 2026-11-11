@@ -315,8 +315,10 @@ parts imported; 2 skipped: <names, reasons>") instead of all-or-nothing.
   `save_all.dart`). Save All must write them into a folder next to the assembly (default: `<file name>/` beside the root file) using
   the suggested names, and set each occurrence's `external_ref` to the relative path. Check the save-project pipeline docs
   (`docs/save-project-overhaul-scope.md`) for where that belongs.
-- **VR**: saves the whole session as one native snapshot (`main.gd` `save_native_snapshot`), so new Parts need no files; add the
-  choice to the Files page import (`main.gd` `_import_external_file`), then refresh the tree and mates state (`mark_stale`).
+- **VR**: today it saves the whole session as one snapshot file; DIDSA-VR `docs/vr-feedback-2026-11-11-plan.md` V-9 changes that to
+  the flat app's one-file-per-Part Save, with the same auto-naming, so imported Parts get files the same way in both apps. Land V-9
+  before F-6 reaches VR. Add the choice to the Files page import (`main.gd` `_import_external_file`), then refresh the tree and mates
+  state (`mark_stale`).
 - Both: the import report shown to the user.
 
 **Tests.** Fixture STEP files (make them with the backend's own `export_step` from a test assembly where possible, so their licence is
