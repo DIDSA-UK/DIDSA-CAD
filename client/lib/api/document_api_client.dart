@@ -859,6 +859,10 @@ class FeatureDto {
   final double? startDistance;
   final double? endDistance;
 
+  /// F-3: only on the create response of a STEP / IGES `"import"` Feature - whether the shape came in as a real solid
+  /// (`false`: surfaces or an open sewn shell, so no volume or booleans). Null everywhere else.
+  final bool? solid;
+
   /// C3: only present on a `"sketch"` Feature - the id of the
   /// CreatePlaneFeature this Sketch is anchored to, or null when it lives on
   /// one of the three fixed reference planes instead (the common case).
@@ -1370,6 +1374,7 @@ class FeatureDto {
     required this.type,
     required this.id,
     required this.locked,
+    this.solid,
     this.sketchId,
     this.sketchFeatureId,
     this.extrudeType,
@@ -1482,6 +1487,7 @@ class FeatureDto {
         type: json['type'] as String,
         id: json['id'] as String,
         locked: json['locked'] as bool,
+        solid: json['solid'] as bool?,
         sketchId: json['sketch_id'] as String?,
         sketchFeatureId: json['sketch_feature_id'] as String?,
         extrudeType: json['extrude_type'] as String?,
@@ -6468,7 +6474,7 @@ class DocumentApiClient {
     return PartDrawingDto(png: response.bodyBytes, boundingBoxSize: size.length == 3 ? size : null);
   }
 
-  /// Export: raw file bytes for `format` (`'step'`/`'stl'`/`'obj'`/`'glb'`)
+  /// Export: raw file bytes for `format` (`'step'`/`'iges'`/`'stl'`/`'obj'`/`'glb'`)
   /// - the backend 400s if `partId` has no solid geometry yet (surfaced as
   /// an [ApiException] here, same as any other error response).
   Future<Uint8List> exportPart(String partId, String format) => _sendBytes(
@@ -6493,7 +6499,7 @@ class DocumentApiClient {
 
   /// Import: brings [bytes] in as a fixed, non-parametric Body (locked-in
   /// scope - see the backend's `app.document.models.ImportFeature` own
-  /// docstring). [sourceFormat] is `'step'`/`'stl'`/`'obj'`/`'gltf'`, base64-
+  /// docstring). [sourceFormat] is `'step'`/`'iges'`/`'stl'`/`'obj'`/`'gltf'`, base64-
   /// encoded into the JSON body rather than a multipart upload (no other
   /// endpoint here uses multipart - this mirrors the native file format's
   /// own "binary data as a plain JSON string" convention instead). The

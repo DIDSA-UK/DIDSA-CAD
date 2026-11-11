@@ -123,7 +123,7 @@ from app.document.graph import (
     tool_feature_qualifies,
     transitive_dependents,
 )
-from app.document.import_geometry import extract_step_metadata, resolve_import
+from app.document.import_geometry import extract_step_metadata, resolve_import, shape_has_solid
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
 from app.document.mesh_data import BodyTopology, MeshQuality, Triangle
 from app.document.mesh_export import AssemblyGlbInstance, encode_assembly_glb, encode_glb, encode_obj, encode_stl
@@ -131,6 +131,7 @@ from app.document.mirror import resolve_mirror
 from app.document.add_component import AddComponentError, merge_component_into_document
 from app.document.native_format import NativeFormatError, export_native, import_native
 from app.document.pattern import resolve_pattern, resolve_pattern_coarse
+from app.document.iges_export import export_iges
 from app.document.step_export import export_step
 from app.document.models import (
     BevelGearFeature,
@@ -8840,7 +8841,7 @@ def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportF
     except (binascii.Error, ValueError):
         raise HTTPException(status_code=422, detail="data_base64 is not valid base64")
     feature = ImportFeature(id=str(uuid.uuid4()), source_format=payload.source_format, source_data=source_data)
-    resolve_import(feature)  # raises on an unimportable file; result unused here
+    imported_shape = resolve_import(feature)  # raises on an unimportable file
     part.add_feature(feature)
 
     # Part Properties round: a STEP import may carry its own source
@@ -8856,7 +8857,11 @@ def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportF
         if metadata is not None and metadata.material is not None:
             part.body_material_assignments.setdefault(feature.id, metadata.material)
 
-    return _feature_response(part, feature)
+    response = _feature_response(part, feature)
+    if payload.source_format in (ImportSourceFormat.STEP, ImportSourceFormat.IGES):
+        # F-3: whether the B-rep came in as a real solid (volume, mass and booleans work) or only as surfaces / a sewn open shell.
+        response.solid = shape_has_solid(imported_shape)
+    return response
 
 
 @router.delete("/parts/{part_id}/features/{feature_id}", status_code=204)
@@ -9768,6 +9773,20 @@ def export_part_step(part_id: str) -> Response:
     )
 
 
+@router.get("/parts/{part_id}/export/iges")
+def export_part_iges(part_id: str) -> Response:
+    """IGES export (F-3) of every current Body in this Part: geometry only
+    (IGES has no slot for material, mass or colour here - see
+    `app.document.iges_export`'s docstring)."""
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    return Response(
+        content=export_iges(bodies),
+        media_type="model/iges",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.igs"'},
+    )
+
+
 @router.get("/parts/{part_id}/drawing.png")
 def get_part_line_drawing(part_id: str) -> Response:
     """The Part as a 3rd angle line drawing (front, top, right, isometric;
@@ -9970,6 +9989,20 @@ def export_part_assembly_step(part_id: str) -> Response:
         content=data,
         media_type="application/step",
         headers={"Content-Disposition": f'attachment; filename="{root_part.name}.step"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/assembly-iges")
+def export_part_assembly_iges(part_id: str) -> Response:
+    """[export_part_iges]'s assembly sibling: every placed Occurrence's real
+    geometry at its composed world transform, flattened to world-placed Bodies
+    exactly like `export/assembly-step` (an IGES file has no assembly
+    structure)."""
+    root_part, bodies = _assembly_export_bodies_or_400(part_id)
+    return Response(
+        content=export_iges(bodies),
+        media_type="model/iges",
+        headers={"Content-Disposition": f'attachment; filename="{root_part.name}.igs"'},
     )
 
 

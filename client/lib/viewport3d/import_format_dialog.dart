@@ -23,6 +23,7 @@ class ImportFormatOption {
 /// user happens to pick.
 const List<ImportFormatOption> importFormatOptions = [
   ImportFormatOption(label: 'STEP', value: 'step', extensions: ['step', 'stp']),
+  ImportFormatOption(label: 'IGES', value: 'iges', extensions: ['iges', 'igs']),
   ImportFormatOption(label: 'STL', value: 'stl', extensions: ['stl']),
   ImportFormatOption(label: 'OBJ', value: 'obj', extensions: ['obj']),
   ImportFormatOption(label: 'glTF', value: 'gltf', extensions: ['gltf', 'glb']),

@@ -1890,6 +1890,11 @@ class ImportFeatureResponse(FeatureResponseBase):
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ImportFeature.
     produces: Produces
+    # F-3: for a STEP / IGES import, whether the shape came in as a real solid
+    # (False = surfaces or an open sewn shell: no volume, mass or booleans).
+    # Only set on the create response (None when read back later and for the
+    # mesh formats, which are triangulation-only references).
+    solid: bool | None = None
 
 
 class GearFeatureCreate(BaseModel):

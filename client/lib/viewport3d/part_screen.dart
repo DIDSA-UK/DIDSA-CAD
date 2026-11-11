@@ -12667,14 +12667,20 @@ class _PartScreenState extends State<PartScreen> {
     }
 
     await _runGuarded(() async {
-      await _api.createImportFeature(_focusPartId, sourceFormat: sourceFormat, bytes: bytes);
+      final created = await _api.createImportFeature(_focusPartId, sourceFormat: sourceFormat, bytes: bytes);
       await _refreshFeatures();
       await _refreshMesh();
+      if (created.solid == false && mounted) {
+        // F-3: an IGES (or STEP) that is only surfaces, or an open shell, imports and shows but has no volume.
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          const SnackBar(content: Text('Imported as surfaces (not a closed solid): no volume, mass or boolean operations.')),
+        );
+      }
     });
   }
 
   /// Export: writes the current Part's geometry out to one of four
-  /// interchange formats (`format` is `'step'`/`'stl'`/`'obj'`/`'glb'`,
+  /// interchange formats (`format` is `'step'`/`'iges'`/`'stl'`/`'obj'`/`'glb'`,
   /// matching both the backend endpoint's own path segment and the saved
   /// file's extension) via [DocumentApiClient.exportPart]. The backend 400s
   /// (surfaced as [_errorMessage] by [_runGuarded]) if the Part has no
@@ -12714,9 +12720,10 @@ class _PartScreenState extends State<PartScreen> {
           ? await _api.exportPart(part.id, format)
           : await _api.exportAssemblyPart(part.id, format);
       // file_picker 13 writes `bytes` itself on every platform; null means the user cancelled.
+      final extension = exportFormatOptions.firstWhere((o) => o.value == format).extension;
       await FilePicker.saveFile(
         dialogTitle: 'Export Part',
-        fileName: '${part.name}.$format',
+        fileName: '${part.name}.$extension',
         bytes: bytes,
       );
     });

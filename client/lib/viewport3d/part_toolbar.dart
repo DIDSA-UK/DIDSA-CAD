@@ -137,7 +137,7 @@ class PartToolbar extends StatelessWidget {
   final VoidCallback? onSaveAll;
 
   /// Export: writes the current Part's geometry out to one of four
-  /// interchange formats (`'step'`/`'stl'`/`'obj'`/`'glb'`) - see
+  /// interchange formats (`'step'`/`'iges'`/`'stl'`/`'obj'`/`'glb'`) - see
   /// `PartScreen._exportPart`. The four separate format-specific File-menu
   /// entries this used to drive were folded into this one "Export…" entry
   /// (per direct request) - `_exportPart` now prompts for the format itself

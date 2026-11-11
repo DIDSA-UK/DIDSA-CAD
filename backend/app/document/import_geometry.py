@@ -11,7 +11,14 @@ import tempfile
 from dataclasses import dataclass
 
 from fastapi import HTTPException
-from OCC.Core.BRep import BRep_Builder
+from OCC.Core.BRep import BRep_Builder, BRep_Tool
+from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing
+from OCC.Core.IGESControl import IGESControl_Reader
+from OCC.Core.Interface import Interface_Static
+from OCC.Core.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
+from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+from OCC.Core.TopExp import TopExp_Explorer
+from OCC.Core.TopoDS import topods
 from OCC.Core.gp import gp_Pnt
 from OCC.Core.IFSelect import IFSelect_RetDone
 from OCC.Core.Poly import Poly_Triangle, Poly_Triangulation
@@ -60,6 +67,74 @@ def _shape_from_step(data: bytes) -> TopoDS_Shape:
         if shape.IsNull():
             raise _import_failed("STEP file produced an empty shape")
         return shape
+    finally:
+        os.unlink(tmp_path)
+
+
+def shape_has_solid(shape: TopoDS_Shape) -> bool:
+    """Whether `shape` contains at least one real solid (F-3's `solid` flag)."""
+    return TopExp_Explorer(shape, TopAbs_SOLID).More()
+
+
+def _heal_to_solid(shape: TopoDS_Shape) -> TopoDS_Shape:
+    """IGES from many systems carries surfaces and trimmed faces, not solids.
+    `ShapeFix_Shape` first; then, when there is no solid, sew the faces and -
+    if every sewn shell is closed - turn them into real solids, so a closed
+    model gets a volume and works in booleans. An open model is left as the
+    sewn shell (a Body is still one Body whatever the shape - `extrude.py`)."""
+    fixer = ShapeFix_Shape(shape)
+    fixer.Perform()
+    shape = fixer.Shape()
+    if shape_has_solid(shape):
+        return shape
+    sewing = BRepBuilderAPI_Sewing(1e-4)
+    face_count = 0
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        sewing.Add(explorer.Current())
+        face_count += 1
+        explorer.Next()
+    if face_count == 0:
+        return shape
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    shells = []
+    shell_explorer = TopExp_Explorer(sewn, TopAbs_SHELL)
+    while shell_explorer.More():
+        shells.append(topods.Shell(shell_explorer.Current()))
+        shell_explorer.Next()
+    if not shells or not all(BRep_Tool.IsClosed(shell) for shell in shells):
+        return sewn
+    builder = BRep_Builder()
+    compound = TopoDS_Compound()
+    builder.MakeCompound(compound)
+    for shell in shells:
+        builder.Add(compound, ShapeFix_Solid().SolidFromShell(shell))
+    return compound
+
+
+def _shape_from_iges(data: bytes) -> TopoDS_Shape:
+    """The IGES twin of `_shape_from_step`: same temp-file idiom (the reader
+    only reads a path; suffix `.igs`), same error mapping. The model unit is
+    set to millimetres explicitly (the backend's native unit; OCCT converts
+    the file's own Global-section unit to it), then `_heal_to_solid`."""
+    fd, tmp_path = tempfile.mkstemp(suffix=".igs")
+    os.close(fd)
+    try:
+        with open(tmp_path, "wb") as handle:
+            handle.write(data)
+        Interface_Static.SetCVal("xstep.cascade.unit", "MM")
+        reader = IGESControl_Reader()
+        read_status = reader.ReadFile(tmp_path)
+        if read_status != IFSelect_RetDone:
+            raise _invalid_import_data(f"Could not parse IGES file (status={read_status})")
+        transferred_root_count = reader.TransferRoots()
+        if transferred_root_count < 1:
+            raise _import_failed("IGES file transferred no usable shapes")
+        shape = reader.OneShape()
+        if shape.IsNull():
+            raise _import_failed("IGES file produced an empty shape")
+        return _heal_to_solid(shape)
     finally:
         os.unlink(tmp_path)
 
@@ -217,6 +292,8 @@ def resolve_import(feature: ImportFeature) -> TopoDS_Shape:
     `app.document.mesh_import` function."""
     if feature.source_format == ImportSourceFormat.STEP:
         return _shape_from_step(feature.source_data)
+    if feature.source_format == ImportSourceFormat.IGES:
+        return _shape_from_iges(feature.source_data)
 
     try:
         if feature.source_format == ImportSourceFormat.STL:
