@@ -33,6 +33,12 @@ extensions to the VR client's file lists, and F-6 needs the VR plan's V-9 (VR sa
 
 F-6 reuses F-3's IGES reader and F-4's JT reader for those formats; build it for STEP first, it has the real structure.
 
+## Progress notes (implementation session, 11 Nov 2026)
+
+One PR per package, stacked (each PR's base is the branch of the one before).
+
+**Package F-2 (built).** The cause was as read. `setsPivot` in `part_viewport.dart` now comes from the pure `orbitTapSetsPivot` (`touch_pivot.dart`): false for a mouse, in selection / draw-cursor mode and with a sketch plane. `_noteDeviceKind` clears `_touchPivot` when the pointer changes to a mouse. "Rotate about here" / "Clear pivot" and D2's per-drag orbit about the point under the middle press (`_orbitPivot`) are unchanged: **the D2 orbit was left in** (a one-line change if the owner meant both). Note: with a mouse an empty-space click no longer clears a menu-set pivot (use "Clear pivot"), per the plan's "exactly as if no pivot code existed". Tests: pure `orbitTapSetsPivot` tests run here; the two new PartViewport widget tests (mouse click sets no pivot, finger still does, mouse after finger drops it; menu pivot works with a mouse) **skip without a GPU, so they did not run here**. Check in desktop mode: a left click on the model should not plant the pivot marker; two-finger/touch tap still does.
+
 ---
 
 ## F-2: a left click with a mouse sets a rotation centre

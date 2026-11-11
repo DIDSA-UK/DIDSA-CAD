@@ -4899,7 +4899,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final hit = hitTestReferencePlanes(ray, hidden: widget.hiddenReferencePlanes);
     // Orbit mode on the part / assembly screens (not the sketcher, where a tap means sketch): a tap on the model sets
     // the rotation pivot there, unless a plane is nearer on the same ray, which keeps its own meaning.
-    final setsPivot = !widget.selectionMode && !widget.drawCursorMode && widget.sketchPlaneBasis == null;
+    // F-2: a touch feature. With a mouse the click falls through to its ordinary meaning (plane tap, background tap).
+    final setsPivot = orbitTapSetsPivot(
+      mouseDriven: _mouseDriven,
+      selectionMode: widget.selectionMode,
+      drawCursorMode: widget.drawCursorMode,
+      hasSketchPlane: widget.sketchPlaneBasis != null,
+    );
     final createPlaneHit = hitTestCreatePlanes(localRay, widget.createPlanes);
     if (setsPivot) {
       final pivotHit = _orbitPivotHitAt(localPosition);
@@ -5476,7 +5482,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _noteDeviceKind(PointerDeviceKind kind) {
     if (_lastPointerKind == kind) return;
-    setState(() => _lastPointerKind = kind);
+    setState(() {
+      _lastPointerKind = kind;
+      // F-2: a pivot a finger tap set must not keep steering a mouse orbit with no way to see why. (The marker is drawn from
+      // [_touchPivot], so it goes with it; "Rotate about here" in the menu sets one again on purpose.)
+      if (kind == PointerDeviceKind.mouse) _touchPivot = null;
+    });
   }
 
   /// Desktop input D1: one move of a middle/right drag - see
