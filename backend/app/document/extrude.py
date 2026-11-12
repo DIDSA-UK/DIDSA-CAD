@@ -2986,6 +2986,10 @@ def _unify_same_domain(shape: TopoDS_Shape) -> TopoDS_Shape:
     running against arbitrary real Part geometry, not just the primitives
     spiked - fail open to the pre-unify shape rather than losing a Body or
     crashing `/mesh` over a `SubShapeRef`-numbering optimization."""
+    if not BRepCheck_Analyzer(shape).IsValid():
+        # Never hand a shape OCCT already calls invalid to the unifier: on a sewn, open IGES surface set (37 shells, 700 faces) `Build()` segfaults,
+        # which no `except` can catch and which takes the whole server down. The pre-unify shape is what we fall back to anyway.
+        return shape
     unify = ShapeUpgrade_UnifySameDomain(shape, True, True, True)
     try:
         unify.Build()
