@@ -329,3 +329,26 @@ def test_freecad_reads_our_iges_as_solids_with_the_right_volume(tmp_path):
     assert len(lines) == 2
     for _fc, name, solids, volume, valid in lines:
         assert int(solids) == 2 and float(volume) == pytest.approx(expected, rel=1e-4) and valid == "True", name
+
+
+def test_the_face_merging_pass_never_sees_a_shape_occt_calls_invalid(monkeypatch):
+    """Owner's crash: a 17 MB Creo IGES sewed into 37 open shells (invalid); meshing it ran ShapeUpgrade_UnifySameDomain.Build(), which segfaults on
+    that shape, so the whole server died on GET /mesh. The unifier must not be constructed for an input that fails BRepCheck."""
+    from app.document import extrude
+
+    class _Boom:
+        def __init__(self, *a, **k):
+            raise AssertionError("ShapeUpgrade_UnifySameDomain was built for an invalid shape")
+
+    monkeypatch.setattr(extrude, "BRepCheck_Analyzer", lambda shape: type("A", (), {"IsValid": lambda self: False})())
+    monkeypatch.setattr(extrude, "ShapeUpgrade_UnifySameDomain", _Boom)
+    shape = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
+    assert extrude._unify_same_domain(shape) is shape
+
+
+def test_an_imported_open_surface_set_can_be_meshed_over_http():
+    faces = _faces(BRepPrimAPI_MakeBox(100.0, 60.0, 40.0).Shape())[:5]  # an open box: sewn into a shell, not a solid
+    part_id = _create_part("Open Box Surfaces")
+    assert _import(part_id, _write_many(faces)).status_code == 201
+    mesh = client.get(f"/document/parts/{part_id}/mesh?quality=0.5")
+    assert mesh.status_code == 200 and len(mesh.content) > 0
