@@ -8,7 +8,6 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../api/dimension_label_placement.dart';
 import '../api/sketch_api_client.dart';
-import '../layout/hardware_number_keys.dart';
 import '../viewport3d/controls_preferences.dart';
 import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
@@ -2534,16 +2533,13 @@ class _GhostValueEditorState extends State<GhostValueEditor> {
             children: [
               SizedBox(
                 width: 72,
-                child: HardwareNumberKeys(
+                child: TextField(
                   controller: _text,
-                  child: TextField(
-                    controller: _text,
-                    focusNode: _focusNode,
-                    autofocus: true,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: InputDecoration(isDense: true, suffixText: suffix),
-                    onSubmitted: (_) => _confirm(),
-                  ),
+                  focusNode: _focusNode,
+                  autofocus: true,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: InputDecoration(isDense: true, suffixText: suffix),
+                  onSubmitted: (_) => _confirm(),
                 ),
               ),
               IconButton(
