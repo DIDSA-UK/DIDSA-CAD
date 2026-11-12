@@ -5,6 +5,7 @@ Feature module in this codebase already keeps (e.g. `app.document.sweep`
 vs. its own pure-Python path-resolution helpers).
 """
 
+import hashlib
 import logging
 import math
 import os
@@ -151,9 +152,9 @@ def _heal_to_solid(shape: TopoDS_Shape) -> TopoDS_Shape:
         return shape
     diagonal = _bounding_diagonal(shape)
     best: tuple[int, list] | None = None
-    for tolerance in sorted({1e-4, diagonal * 1e-5, diagonal * 1e-4, diagonal * 1e-3}):
-        if tolerance < 1e-6:
-            continue
+    # Sewing a real file takes tens of seconds a pass (an 859-face SolidWorks export: ~24 s), so the ladder starts at the first rung that can plausibly work:
+    # that file needs ~2 microns, and a pass at 1e-4 only to fail cost another 21 s.
+    for tolerance in sorted({max(1e-4, diagonal * 1e-5), max(1e-4, diagonal * 1e-4), max(1e-4, diagonal * 1e-3)}):
         shells = _sew(faces, tolerance)
         if not shells:
             continue
@@ -177,7 +178,23 @@ def _heal_to_solid(shape: TopoDS_Shape) -> TopoDS_Shape:
     return compound
 
 
+_IGES_CACHE: dict[str, TopoDS_Shape] = {}  # sha256 of the file -> its healed shape (a few entries: the probe, the import and every re-mesh read the same file)
+_IGES_CACHE_MAX = 3
+
+
 def _shape_from_iges(data: bytes) -> TopoDS_Shape:
+    key = hashlib.sha256(data).hexdigest()
+    cached = _IGES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    shape = _shape_from_iges_uncached(data)
+    if len(_IGES_CACHE) >= _IGES_CACHE_MAX:
+        _IGES_CACHE.pop(next(iter(_IGES_CACHE)))
+    _IGES_CACHE[key] = shape
+    return shape
+
+
+def _shape_from_iges_uncached(data: bytes) -> TopoDS_Shape:
     """The IGES twin of `_shape_from_step`: same temp-file idiom (the reader
     only reads a path; suffix `.igs`), same error mapping. The model unit is
     set to millimetres explicitly (the backend's native unit; OCCT converts
