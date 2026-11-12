@@ -1702,8 +1702,9 @@ class PatternFeature(Feature):
 
 class ImportSourceFormat(str, Enum):
     """Which interchange format an `ImportFeature`'s own `source_data` bytes
-    are - mirrors `ExtrudeType`/`SweepMode`'s str-Enum pattern. `STEP` reads
-    real B-rep geometry (`STEPControl_Reader`); `STL`/`OBJ`/`GLTF` are all
+    are - mirrors `ExtrudeType`/`SweepMode`'s str-Enum pattern. `STEP` and
+    `IGES` read real B-rep geometry (`STEPControl_Reader` /
+    `IGESControl_Reader`); `STL`/`OBJ`/`GLTF` are all
     triangle-soup mesh formats, decoded by `app.document.mesh_import` into
     the same `MeshData` shape `app.document.mesh_export`'s encoders produce
     on the way out, then rebuilt into a single surface-less, triangulation-
@@ -1711,6 +1712,7 @@ class ImportSourceFormat(str, Enum):
     see `app.document.import_geometry` for both paths."""
 
     STEP = "step"
+    IGES = "iges"  # F-3: a B-rep like STEP (IGESControl_Reader); often surfaces / trimmed faces rather than solids
     STL = "stl"
     OBJ = "obj"
     GLTF = "gltf"

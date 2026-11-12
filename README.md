@@ -42,7 +42,7 @@ Sketch on any of the fixed reference planes with a real 2D geometric constraint 
 - Boolean operations, Shell, Move/Scale Body, Move/Delete Face
 - Measure and Section tools
 
-Import/export **STEP, STL, OBJ and glTF** for interoperability with other CAD tools, 3D printing, and visualization. Scoped for addition next: thin features and more direct-editing operations — see [`docs/roadmap.md`](docs/roadmap.md).
+Import/export **STEP, IGES, STL, OBJ and glTF** (IGES: geometry only; an IGES of surfaces imports as surfaces or, if closed, a solid) for interoperability with other CAD tools, 3D printing, and visualization. Scoped for addition next: thin features and more direct-editing operations — see [`docs/roadmap.md`](docs/roadmap.md).
 
 <img src="docs/screenshots/revolve-tool.jpg" alt="DIDSA Design Tools Revolve tool on Android" width="320">
 
