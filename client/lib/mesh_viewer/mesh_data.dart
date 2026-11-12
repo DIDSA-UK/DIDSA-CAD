@@ -119,6 +119,224 @@ int _decimationStride(int totalTriangles, int? maxTriangles) {
 }
 
 // ---------------------------------------------------------------------------
+// PLY (ASCII + binary little / big endian) - F-5: photogrammetry output
+// ---------------------------------------------------------------------------
+
+/// PLY (`docs/iges-jt-and-desktop-input-plan-2026-11-11.md` F-5): the vertex element's `x y z` (and `nx ny nz` when present) and the face element's
+/// vertex-index list, polygons fanned into triangles. ASCII, `binary_little_endian` and `binary_big_endian`; every property type PLY defines is read (and skipped
+/// when it is not one of those), so colour, alpha and extra scalars never break a file. A file with faces gets flat per-triangle normals unless it carries vertex
+/// normals; a points-only file (no faces) is refused with a clear [MeshImportError]. [maxTriangles] decimates during decode like the other decoders.
+DecodedMesh decodePly(Uint8List bytes, {int? maxTriangles}) {
+  var headerEnd = -1;
+  for (var i = 0; i + 9 <= bytes.length && i < 65536; i++) {
+    // "end_header" followed by \n (or \r\n)
+    if (bytes[i] == 0x65 && utf8.decode(bytes.sublist(i, i + 10 > bytes.length ? bytes.length : i + 10), allowMalformed: true) == 'end_header') {
+      var j = i + 10;
+      if (j < bytes.length && bytes[j] == 0x0d) j++;
+      if (j < bytes.length && bytes[j] == 0x0a) j++;
+      headerEnd = j;
+      break;
+    }
+  }
+  if (headerEnd < 0) throw MeshImportError('Not a PLY file: no end_header');
+  final header = const LineSplitter().convert(utf8.decode(bytes.sublist(0, headerEnd), allowMalformed: true));
+  if (header.isEmpty || header.first.trim() != 'ply') throw MeshImportError('Not a PLY file: it does not start with "ply"');
+  var format = '';
+  final elements = <_PlyElement>[];
+  for (final raw in header) {
+    final tokens = raw.trim().split(RegExp(r'\s+'));
+    if (tokens.isEmpty) continue;
+    if (tokens[0] == 'format' && tokens.length >= 2) {
+      format = tokens[1];
+    } else if (tokens[0] == 'element' && tokens.length >= 3) {
+      elements.add(_PlyElement(tokens[1], int.tryParse(tokens[2]) ?? 0));
+    } else if (tokens[0] == 'property' && elements.isNotEmpty) {
+      if (tokens.length >= 5 && tokens[1] == 'list') {
+        elements.last.properties.add(_PlyProperty(tokens[4], tokens[3], listCountType: tokens[2]));
+      } else if (tokens.length >= 3) {
+        elements.last.properties.add(_PlyProperty(tokens[2], tokens[1]));
+      }
+    }
+  }
+  if (format != 'ascii' && format != 'binary_little_endian' && format != 'binary_big_endian') {
+    throw MeshImportError('Unsupported PLY format "$format"');
+  }
+  final vertexElement = elements.where((e) => e.name == 'vertex').firstOrNull;
+  final faceElement = elements.where((e) => e.name == 'face').firstOrNull;
+  if (vertexElement == null || vertexElement.count == 0) throw MeshImportError('PLY file has no vertices');
+  if (faceElement == null || faceElement.count == 0) throw MeshImportError('PLY file has no faces (a point cloud cannot be shown as a surface)');
+
+  final reader = _PlyReader(bytes, headerEnd, format);
+  final positions = Float32List(vertexElement.count * 3);
+  Float32List? vertexNormals;
+  final names = [for (final p in vertexElement.properties) p.name];
+  final hasNormals = names.contains('nx') && names.contains('ny') && names.contains('nz');
+  if (hasNormals) vertexNormals = Float32List(vertexElement.count * 3);
+  List<int>? faceIndices;
+  var faceTriangles = 0;
+  // elements are stored in header order
+  final triangles = <int>[]; // flat vertex indices, three per triangle (only the kept ones, decided below)
+  for (final element in elements) {
+    if (element == vertexElement) {
+      for (var v = 0; v < element.count; v++) {
+        for (final property in element.properties) {
+          final value = property.isList ? reader.skipList(property) : reader.read(property.type);
+          switch (property.name) {
+            case 'x': positions[v * 3] = value;
+            case 'y': positions[v * 3 + 1] = value;
+            case 'z': positions[v * 3 + 2] = value;
+            case 'nx': vertexNormals?[v * 3] = value;
+            case 'ny': vertexNormals?[v * 3 + 1] = value;
+            case 'nz': vertexNormals?[v * 3 + 2] = value;
+          }
+        }
+      }
+    } else if (element == faceElement) {
+      faceIndices = <int>[];
+      for (var f = 0; f < element.count; f++) {
+        for (final property in element.properties) {
+          if (property.isList && (property.name == 'vertex_indices' || property.name == 'vertex_index')) {
+            final indices = reader.readIntList(property);
+            for (var k = 1; k + 1 < indices.length; k++) {
+              faceIndices.addAll([indices[0], indices[k], indices[k + 1]]);
+              faceTriangles++;
+            }
+          } else if (property.isList) {
+            reader.skipList(property);
+          } else {
+            reader.read(property.type);
+          }
+        }
+      }
+    } else {
+      for (var i = 0; i < element.count; i++) {
+        for (final property in element.properties) {
+          property.isList ? reader.skipList(property) : reader.read(property.type);
+        }
+      }
+    }
+  }
+  final all = faceIndices ?? const <int>[];
+  final stride = _decimationStride(faceTriangles, maxTriangles);
+  for (var t = 0; t < faceTriangles; t += stride) {
+    triangles.addAll([all[t * 3], all[t * 3 + 1], all[t * 3 + 2]]);
+  }
+  final kept = triangles.length ~/ 3;
+  final outPositions = Float32List(kept * 9);
+  final outNormals = Float32List(kept * 9);
+  for (var t = 0; t < kept; t++) {
+    final ia = triangles[t * 3], ib = triangles[t * 3 + 1], ic = triangles[t * 3 + 2];
+    if (ia < 0 || ib < 0 || ic < 0 || ia >= vertexElement.count || ib >= vertexElement.count || ic >= vertexElement.count) {
+      throw MeshImportError('PLY face refers to a vertex that does not exist');
+    }
+    final corners = [ia, ib, ic];
+    for (var c = 0; c < 3; c++) {
+      outPositions[t * 9 + c * 3] = positions[corners[c] * 3];
+      outPositions[t * 9 + c * 3 + 1] = positions[corners[c] * 3 + 1];
+      outPositions[t * 9 + c * 3 + 2] = positions[corners[c] * 3 + 2];
+    }
+    if (vertexNormals != null) {
+      for (var c = 0; c < 3; c++) {
+        outNormals[t * 9 + c * 3] = vertexNormals[corners[c] * 3];
+        outNormals[t * 9 + c * 3 + 1] = vertexNormals[corners[c] * 3 + 1];
+        outNormals[t * 9 + c * 3 + 2] = vertexNormals[corners[c] * 3 + 2];
+      }
+    } else {
+      final ux = outPositions[t * 9 + 3] - outPositions[t * 9], uy = outPositions[t * 9 + 4] - outPositions[t * 9 + 1], uz = outPositions[t * 9 + 5] - outPositions[t * 9 + 2];
+      final vx = outPositions[t * 9 + 6] - outPositions[t * 9], vy = outPositions[t * 9 + 7] - outPositions[t * 9 + 1], vz = outPositions[t * 9 + 8] - outPositions[t * 9 + 2];
+      var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      final length = math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (length > 0) {
+        nx /= length;
+        ny /= length;
+        nz /= length;
+      }
+      for (var c = 0; c < 3; c++) {
+        outNormals[t * 9 + c * 3] = nx;
+        outNormals[t * 9 + c * 3 + 1] = ny;
+        outNormals[t * 9 + c * 3 + 2] = nz;
+      }
+    }
+  }
+  return DecodedMesh(positions: outPositions, normals: outNormals, uvs: Float32List(kept * 6), sourceTriangleCount: faceTriangles);
+}
+
+class _PlyProperty {
+  final String name;
+  final String type;
+  final String? listCountType;
+  _PlyProperty(this.name, this.type, {this.listCountType});
+  bool get isList => listCountType != null;
+}
+
+class _PlyElement {
+  final String name;
+  final int count;
+  final List<_PlyProperty> properties = [];
+  _PlyElement(this.name, this.count);
+}
+
+/// Reads PLY property values from the ASCII or binary body.
+class _PlyReader {
+  final Uint8List bytes;
+  final bool ascii;
+  final Endian endian;
+  int offset;
+  late final List<String> _tokens;
+  int _tokenAt = 0;
+
+  _PlyReader(this.bytes, this.offset, String format)
+      : ascii = format == 'ascii',
+        endian = format == 'binary_big_endian' ? Endian.big : Endian.little {
+    if (ascii) {
+      _tokens = utf8.decode(bytes.sublist(offset), allowMalformed: true).split(RegExp(r'\s+')).where((t) => t.isNotEmpty).toList();
+    }
+  }
+
+  static int _size(String type) => switch (type) {
+        'char' || 'uchar' || 'int8' || 'uint8' => 1,
+        'short' || 'ushort' || 'int16' || 'uint16' => 2,
+        'int' || 'uint' || 'float' || 'int32' || 'uint32' || 'float32' => 4,
+        'double' || 'float64' => 8,
+        _ => throw MeshImportError('Unsupported PLY property type "$type"'),
+      };
+
+  double read(String type) {
+    if (ascii) {
+      if (_tokenAt >= _tokens.length) throw MeshImportError('PLY file ends early');
+      return double.tryParse(_tokens[_tokenAt++]) ?? 0;
+    }
+    final size = _size(type);
+    if (offset + size > bytes.length) throw MeshImportError('PLY file ends early');
+    final data = ByteData.sublistView(bytes, offset, offset + size);
+    offset += size;
+    return switch (type) {
+      'char' || 'int8' => data.getInt8(0).toDouble(),
+      'uchar' || 'uint8' => data.getUint8(0).toDouble(),
+      'short' || 'int16' => data.getInt16(0, endian).toDouble(),
+      'ushort' || 'uint16' => data.getUint16(0, endian).toDouble(),
+      'int' || 'int32' => data.getInt32(0, endian).toDouble(),
+      'uint' || 'uint32' => data.getUint32(0, endian).toDouble(),
+      'float' || 'float32' => data.getFloat32(0, endian),
+      _ => data.getFloat64(0, endian),
+    };
+  }
+
+  List<int> readIntList(_PlyProperty property) {
+    final count = read(property.listCountType!).toInt();
+    return [for (var i = 0; i < count; i++) read(property.type).toInt()];
+  }
+
+  double skipList(_PlyProperty property) {
+    final count = read(property.listCountType!).toInt();
+    for (var i = 0; i < count; i++) {
+      read(property.type);
+    }
+    return 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // STL (binary + ASCII)
 // ---------------------------------------------------------------------------
 

@@ -5,7 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../config.dart';
+import 'import_assembly_dto.dart';
 import 'sketch_api_client.dart' show ApiException;
+
+export 'import_assembly_dto.dart';
 
 /// Wire counterpart of the backend's `MaterialAssignmentSchema` - a
 /// resolved `(materialId, name, densityGCm3)` assignment, distinct from the
@@ -6519,6 +6522,34 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// F-6: what a STEP / IGES file holds (parts, sub-assemblies, placements), read without importing it - so the import dialog can say "37 parts in 6
+  /// sub-assemblies" and pick a default. 422s (`import_too_large`, `invalid_import_data`, ...) surface as an [ApiException].
+  Future<ImportProbeDto> probeImport({required String sourceFormat, required Uint8List bytes}) => _send(
+        () => _httpClient.post(
+              _uri('/document/import/probe'),
+              headers: _headers,
+              body: jsonEncode({'source_format': sourceFormat, 'data_base64': base64Encode(bytes)}),
+            ),
+        (body) => ImportProbeDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// F-6: imports a STEP file as an assembly (a Part per product, an Occurrence per placement) or an IGES file as one part per solid, adding it to
+  /// [rootPartId] as a sub-assembly occurrence. The new Parts have no file yet: the result names the one suggested for each ([ImportAssemblyDto.suggestedFiles]).
+  Future<ImportAssemblyDto> importAssembly(
+    String rootPartId, {
+    required String sourceFormat,
+    required Uint8List bytes,
+    String? name,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$rootPartId/import-assembly'),
+              headers: _headers,
+              body: jsonEncode({'source_format': sourceFormat, 'data_base64': base64Encode(bytes), if (name != null) 'name': name}),
+            ),
+        (body) => ImportAssemblyDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// `docs/gear-design/08-entry-screen-and-preview.md`: the cheap

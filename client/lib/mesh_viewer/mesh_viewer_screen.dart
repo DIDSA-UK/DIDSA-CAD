@@ -35,6 +35,7 @@ import '../viewport3d/scene_preferences.dart';
 import '../viewport3d/triad.dart';
 import '../viewport3d/view_preferences.dart';
 import '../viewport3d/svg_icon.dart';
+import 'brep_convert.dart';
 import 'mesh_data.dart';
 import 'mesh_viewer_preferences.dart';
 import 'mesh_viewer_render.dart';
@@ -52,7 +53,10 @@ class _DecodeRequest {
   final String path;
   final String extension;
   final int maxTriangles;
-  const _DecodeRequest(this.path, this.extension, this.maxTriangles);
+
+  /// F-5: a STEP / IGES file the server already turned into a `.glb`: decoded from these bytes (as 'glb') instead of reading [path].
+  final Uint8List? convertedGlb;
+  const _DecodeRequest(this.path, this.extension, this.maxTriangles, {this.convertedGlb});
 }
 
 /// Runs off the main isolate via [compute] - decode alone can be a
@@ -85,9 +89,10 @@ class _DecodeRequest {
 /// Java heap it's bound by) for the file's actual bytes entirely - the
 /// picker only ever hands over a short path string.
 (DecodedMesh mesh, int originalTriangleCount) _decodeAndDecimate(_DecodeRequest request) {
-  final bytes = File(request.path).readAsBytesSync();
-  final mesh = switch (request.extension) {
+  final bytes = request.convertedGlb ?? File(request.path).readAsBytesSync();
+  final mesh = switch (request.convertedGlb != null ? 'glb' : request.extension) {
     'stl' => decodeStl(bytes, maxTriangles: request.maxTriangles),
+    'ply' => decodePly(bytes, maxTriangles: request.maxTriangles),
     'obj' => decodeObj(String.fromCharCodes(bytes), maxTriangles: request.maxTriangles),
     'gltf' || 'glb' => decodeGltf(bytes, maxTriangles: request.maxTriangles),
     _ => throw MeshImportError('Unsupported file extension: ${request.extension}'),
@@ -194,7 +199,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
   bool _showFacets = true;
   bool _showWireframe = false;
 
-  static const _supportedExtensions = ['stl', 'obj', 'gltf', 'glb'];
+  static const _supportedExtensions = kViewerExtensions;
 
   @override
   void initState() {
@@ -370,7 +375,7 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     }
     final extension = (file.extension ?? '').toLowerCase();
     if (!_supportedExtensions.contains(extension)) {
-      setState(() => _error = 'Unsupported file type ".$extension" - pick an STL, OBJ, glTF, or GLB file.');
+      setState(() => _error = 'Unsupported file type ".$extension" - pick an STL, OBJ, PLY, glTF, GLB, STEP or IGES file.');
       return;
     }
 
@@ -383,9 +388,14 @@ class _MeshViewerScreenState extends State<MeshViewerScreen> {
     });
 
     try {
+      Uint8List? converted;
+      if (needsServer(extension)) {
+        // F-5: a B-rep file is tessellated by the saved server (read by path, not through the platform channel: see _decodeAndDecimate's crash note).
+        converted = await convertBrepToGlb(bytes: await File(path).readAsBytes(), extension: extension);
+      }
       final (decoded, originalTriangleCount) = await compute(
         _decodeAndDecimate,
-        _DecodeRequest(path, extension, MeshViewerPreferences.maxTriangles),
+        _DecodeRequest(path, extension, MeshViewerPreferences.maxTriangles, convertedGlb: converted),
       );
       final corrected = await _applyCorrectionsTo(decoded);
       if (!mounted) return;
