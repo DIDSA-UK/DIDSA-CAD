@@ -130,3 +130,51 @@ def test_a_step_whose_faces_cannot_be_sewn_into_solids_keeps_its_own_faces():
     shape = _shape_from_step(_step_bytes(faces[:5]))  # an open box: it never closes
     assert not shape_has_solid(shape)
     assert _count(shape, TopAbs_FACE) == 5
+
+
+def _torus_patch_step(reverse_loop: bool) -> bytes:
+    """One small patch of a torus (15.85 mm2) written as a STEP face; `reverse_loop` writes its one trim loop in the opposite sense, which OCCT reads as a hole in the whole ring."""
+    from OCC.Core.BRep import BRep_Tool
+    from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_MakeFace
+    from OCC.Core.BRepTools import breptools
+    from OCC.Core.Geom import Geom_ToroidalSurface
+    from OCC.Core.gp import gp_Ax3
+    from OCC.Core.TopoDS import TopoDS_Face
+
+    surface = Geom_ToroidalSurface(gp_Ax3(gp_Pnt(0, 0, 50), gp_Dir(0, 0, 1)), 43.28, 10.0)
+    patch = BRepBuilderAPI_MakeFace(surface, 0.5, 0.65, 0.2, 0.4, 1e-6).Face()
+    wire = breptools.OuterWire(patch)
+    face = TopoDS_Face()
+    builder = BRep_Builder()
+    builder.MakeFace(face, BRep_Tool.Surface(patch), patch.Location(), 1e-6)
+    builder.Add(face, topods.Wire(wire.Reversed()) if reverse_loop else wire)
+    return _step_bytes([face])
+
+
+def _only_face(shape):
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    return topods.Face(explorer.Current())
+
+
+@pytest.mark.parametrize("reverse_loop", [False, True])
+def test_a_torus_patch_comes_in_as_the_patch_whichever_way_its_loop_is_written(reverse_loop):
+    from app.document.import_geometry import _face_area
+
+    face = _only_face(_shape_from_step(_torus_patch_step(reverse_loop)))
+    assert _face_area(face) == pytest.approx(15.85, abs=0.2)  # not the 17,070 mm2 ring with a hole
+
+
+def test_a_whole_torus_and_a_ball_with_a_hole_are_left_as_they_are():
+    from app.document.import_geometry import _face_area
+
+    torus = BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 30, 8).Shape()
+    assert _face_area(_only_face(_shape_from_step(_step_bytes([_only_face(torus)])))) == pytest.approx(4 * math.pi**2 * 30 * 8, rel=1e-6)
+    ball = BRepAlgoAPI_Cut(BRepPrimAPI_MakeSphere(gp_Pnt(0, 0, 0), 30).Shape(), BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 3, 100).Shape()).Shape()
+    faces = []
+    explorer = TopExp_Explorer(ball, TopAbs_FACE)
+    while explorer.More():
+        faces.append(topods.Face(explorer.Current()))
+        explorer.Next()
+    sphere_faces = [f for f in faces if f.IsNull() is False and _face_area(f) > 1000]  # the drilled ball's spherical face
+    got = _shape_from_step(_step_bytes(sphere_faces))
+    assert _face_area(_only_face(got)) == pytest.approx(_face_area(sphere_faces[0]), rel=1e-6)

@@ -18,7 +18,14 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing
 from OCC.Core.IGESControl import IGESControl_Reader
 from OCC.Core.Interface import Interface_Static
 from OCC.Core.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
-from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+from OCC.Core.BRepAdaptor import BRepAdaptor_Surface
+from OCC.Core.BRepCheck import BRepCheck_Analyzer
+from OCC.Core.BRepGProp import brepgprop
+from OCC.Core.BRepTools import BRepTools_ReShape, breptools
+from OCC.Core.GProp import GProp_GProps
+from OCC.Core.GeomAbs import GeomAbs_Torus
+from OCC.Core.ShapeFix import ShapeFix_Face
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
 from OCC.Core.TopExp import TopExp_Explorer, topexp
 from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
 from OCC.Core.Bnd import Bnd_Box
@@ -71,6 +78,7 @@ def _shape_from_step(data: bytes) -> TopoDS_Shape:
         shape = reader.OneShape()
         if shape.IsNull():
             raise _import_failed("STEP file produced an empty shape")
+        shape = _repair_flipped_torus_patches(shape)
         if not shape_has_solid(shape):
             # Some exporters (a Creo surface model: 750 faces, no shell, no solid) write loose faces. They are watertight but unconnected, so they
             # show with arbitrary orientation and have no volume to the boolean operations: sew them into shells and solids, as an IGES import does.
@@ -82,6 +90,57 @@ def _shape_from_step(data: bytes) -> TopoDS_Shape:
         return shape
     finally:
         os.unlink(tmp_path)
+
+
+def _face_area(face: TopoDS_Face) -> float:
+    props = GProp_GProps()
+    brepgprop.SurfaceProperties(face, props)
+    return props.Mass()
+
+
+def _repair_flipped_torus_patches(shape: TopoDS_Shape) -> TopoDS_Shape:
+    """A STEP face on a torus can come with its one trim loop written in the opposite sense to OCCT's convention. OCCT then reads the loop as a hole and adds
+    the torus's whole natural boundary: a complete ring with a small patch missing, where the file meant just the patch (the owner's Creo STEP: two 8.5 mm2
+    blend faces came in as two 17,000 mm2 rings). A torus face that covers 99 % or more of its surface and has a hole is rebuilt as the patch that hole's loop
+    encloses, if that is a valid face far smaller than the ring. Spheres and cylinders are left alone (a ball with a drilled hole is a real, common face)."""
+    reshape = BRepTools_ReShape()
+    changed = False
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face = topods.Face(explorer.Current())
+        explorer.Next()
+        adaptor = BRepAdaptor_Surface(face)
+        if adaptor.GetType() != GeomAbs_Torus:
+            continue
+        torus = adaptor.Torus()
+        full = 4 * math.pi**2 * torus.MajorRadius() * torus.MinorRadius()
+        outer = breptools.OuterWire(face)
+        holes = []
+        wires = TopExp_Explorer(face, TopAbs_WIRE)
+        while wires.More():
+            wire = topods.Wire(wires.Current())
+            wires.Next()
+            if not wire.IsSame(outer):
+                holes.append(wire)
+        if len(holes) != 1 or _face_area(face) < 0.99 * full:
+            continue
+        for wire in (topods.Wire(holes[0].Reversed()), holes[0]):
+            patch = TopoDS_Face()
+            builder = BRep_Builder()
+            builder.MakeFace(patch, BRep_Tool.Surface(face), face.Location(), BRep_Tool.Tolerance(face))
+            builder.Add(patch, wire)
+            patch.Orientation(face.Orientation())
+            fixer = ShapeFix_Face(patch)
+            fixer.SetFixAddNaturalBoundMode(False)
+            fixer.Perform()
+            patch = fixer.Face()
+            area = _face_area(patch)
+            if 0.0 < area < 0.01 * full and BRepCheck_Analyzer(patch).IsValid():
+                reshape.Replace(face, patch)
+                changed = True
+                logger.info("STEP: a torus face covering %.1f%% of its surface was rebuilt as the %.1f mm2 patch its trim loop encloses", 100 * _face_area(face) / full, area)
+                break
+    return reshape.Apply(shape) if changed else shape
 
 
 def shape_has_solid(shape: TopoDS_Shape) -> bool:
