@@ -98,6 +98,7 @@ import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
 import 'fill_surface_panel.dart';
 import 'fillet_panel.dart';
+import 'import_advisory.dart';
 import 'import_assembly_dialog.dart';
 import 'import_format_dialog.dart';
 import 'knit_surface_panel.dart';
@@ -3889,6 +3890,9 @@ class _PartScreenState extends State<PartScreen> {
   /// added to a Part that already contains one - `compute_part_bodies`
   /// replays the whole history uncached) ever surfaces it.
   bool _showBusyOverlay = false;
+
+  /// What the busy overlay says instead of its general wording (an import names its file and step, see [ImportAdvisory]); null = the general wording.
+  String? _busyNote;
   Timer? _busyOverlayTimer;
   static const Duration _busyOverlayDelay = Duration(milliseconds: 600);
 
@@ -12671,10 +12675,22 @@ class _PartScreenState extends State<PartScreen> {
     if (sourceFormat == 'step' || sourceFormat == 'iges') {
       ImportProbeDto? probe;
       String? probeProblem;
+      // The server reads the whole file here: say so at once (a big file takes seconds, and nothing else shows it).
+      setState(() {
+        _busyNote = ImportAdvisory.reading(picked.name, bytes.length);
+        _showBusyOverlay = true;
+      });
       try {
         probe = await _api.probeImport(sourceFormat: sourceFormat, bytes: bytes);
       } on ApiException catch (e) {
         probeProblem = e.message;
+      } finally {
+        if (mounted) {
+          setState(() {
+            _showBusyOverlay = false;
+            _busyNote = null;
+          });
+        }
       }
       if (!mounted) return;
       if (probe != null && offersAssemblyChoice(probe)) {
@@ -12691,8 +12707,13 @@ class _PartScreenState extends State<PartScreen> {
       }
     }
 
+    setState(() {
+      _busyNote = ImportAdvisory.importing(picked.name, bytes.length);
+      _showBusyOverlay = true; // at once: the importing step is the long one
+    });
     await _runGuarded(() async {
       final created = await _api.createImportFeature(_focusPartId, sourceFormat: sourceFormat, bytes: bytes);
+      if (mounted) setState(() => _busyNote = 'Drawing ${picked.name}: fetching the mesh from the server...');
       await _refreshFeatures();
       await _refreshMesh();
       if (created.solid == false && mounted) {
@@ -12710,6 +12731,10 @@ class _PartScreenState extends State<PartScreen> {
   Future<void> _importAsAssembly(String sourceFormat, Uint8List bytes, String fileName) async {
     final stem = fileName.contains('.') ? fileName.substring(0, fileName.lastIndexOf('.')) : fileName;
     ImportAssemblyDto? result;
+    setState(() {
+      _busyNote = ImportAdvisory.importing(fileName, bytes.length);
+      _showBusyOverlay = true;
+    });
     await _runGuarded(() async {
       final imported = await _api.importAssembly(_focusPartId, sourceFormat: sourceFormat, bytes: bytes, name: stem);
       result = imported;
@@ -25825,6 +25850,7 @@ class _PartScreenState extends State<PartScreen> {
         setState(() {
           _busy = false;
           _showBusyOverlay = false;
+          _busyNote = null;
         });
       }
     }
@@ -25871,7 +25897,7 @@ class _PartScreenState extends State<PartScreen> {
             children: [
               _buildScaffold(context),
               if (_showBusyOverlay || _activeJob != null)
-                _BuildingGeometryOverlay(onCancel: _activeJob != null ? _cancelActiveJob : null),
+                _BuildingGeometryOverlay(message: _busyNote, onCancel: _activeJob != null ? _cancelActiveJob : null),
             ],
           ),
         ),
@@ -29232,7 +29258,10 @@ class _PartScreenState extends State<PartScreen> {
 /// bottom - that's where [PickerRibbon]/confirm FABs already live for
 /// several of this screen's other modes.
 class _BuildingGeometryOverlay extends StatelessWidget {
-  const _BuildingGeometryOverlay({this.onCancel});
+  const _BuildingGeometryOverlay({this.message, this.onCancel});
+
+  /// Replaces the general wording (null = 'Building geometry - complex models can take a while...').
+  final String? message;
 
   /// LOD Phase 2 chunk 4: non-null only while a job-mode BevelPairFeature/
   /// PlanetaryGearFeature create is in flight (see
@@ -29267,7 +29296,7 @@ class _BuildingGeometryOverlay extends StatelessWidget {
           const SizedBox(width: 12),
           Flexible(
             child: Text(
-              'Building geometry - complex models can take a while...',
+              message ?? 'Building geometry - complex models can take a while...',
               style: theme.textTheme.bodyMedium,
             ),
           ),

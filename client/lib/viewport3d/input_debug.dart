@@ -31,6 +31,39 @@ class InputDebug {
       '$phase ${kind.name} p=${pointer ?? '-'} buttons=0b${buttons.toRadixString(2).padLeft(3, '0')} '
       'ctrl=$control shift=$shift -> ${action?.name ?? 'none'} nav=${navPointer ?? '-'}';
 
+  /// The key side of the same question ("ctrl always said false"): does Flutter receive the key events at all? `keys=N last=KEY
+  /// pressed=[LABELS]`. If Ctrl is held and `keys` does not move, the key events never reach the app (Android window / view focus), which
+  /// no pointer-handling change can fix; if they arrive, the problem is in how they are read.
+  static final ValueNotifier<String> keyLine = ValueNotifier<String>('keys=0 (press a key here)');
+  static int _keyCount = 0;
+  static String _lastKey = '-';
+  static bool _watching = false;
+
+  static bool _onKey(KeyEvent event) {
+    _keyCount++;
+    _lastKey = '${event.logicalKey.keyLabel.isEmpty ? event.logicalKey.debugName : event.logicalKey.keyLabel} ${event.runtimeType.toString().replaceAll('Key', '').replaceAll('Event', '').toLowerCase()}';
+    final pressed = HardwareKeyboard.instance.logicalKeysPressed.map((k) => k.debugName ?? k.keyLabel).join('+');
+    keyLine.value = 'keys=$_keyCount last=$_lastKey pressed=[$pressed]';
+    debugPrint('DIDSA key: ${keyLine.value}');
+    return false; // observe only
+  }
+
+  /// Starts counting key events (idempotent). Called by the overlay.
+  static void startKeyWatch() {
+    if (_watching) return;
+    _watching = true;
+    HardwareKeyboard.instance.addHandler(_onKey);
+  }
+
+  /// For tests: forget the counters.
+  static void resetKeyWatch() {
+    if (_watching) HardwareKeyboard.instance.removeHandler(_onKey);
+    _watching = false;
+    _keyCount = 0;
+    _lastKey = '-';
+    keyLine.value = 'keys=0 (press a key here)';
+  }
+
   /// Records [event] when the setting is on. [navPointer] is the viewport's `_mouseNavPointer`.
   static void note(String phase, PointerEvent event, {required int? navPointer}) {
     if (!ControlsPreferences.showInputDebug) return;
@@ -51,22 +84,41 @@ class InputDebug {
 }
 
 /// The overlay: small monospace text, bottom left, never takes a pointer.
-class InputDebugOverlay extends StatelessWidget {
+class InputDebugOverlay extends StatefulWidget {
   const InputDebugOverlay({super.key});
 
   @override
+  State<InputDebugOverlay> createState() => _InputDebugOverlayState();
+}
+
+class _InputDebugOverlayState extends State<InputDebugOverlay> {
+  @override
+  void initState() {
+    super.initState();
+    InputDebug.startKeyWatch();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    const style = TextStyle(color: Color(0xFFFFFFFF), fontSize: 11, fontFamily: 'monospace');
     return IgnorePointer(
-      child: ValueListenableBuilder<String?>(
-        valueListenable: InputDebug.last,
-        builder: (context, line, _) => Container(
-          key: const ValueKey('input-debug-overlay'),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-          color: const Color(0xCC000000),
-          child: Text(
-            line ?? 'input debug: move or press the mouse here',
-            style: const TextStyle(color: Color(0xFFFFFFFF), fontSize: 11, fontFamily: 'monospace'),
-          ),
+      child: Container(
+        key: const ValueKey('input-debug-overlay'),
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        color: const Color(0xCC000000),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            ValueListenableBuilder<String?>(
+              valueListenable: InputDebug.last,
+              builder: (context, line, _) => Text(line ?? 'input debug: move or press the mouse here', style: style),
+            ),
+            ValueListenableBuilder<String>(
+              valueListenable: InputDebug.keyLine,
+              builder: (context, line, _) => Text(line, style: style),
+            ),
+          ],
         ),
       ),
     );

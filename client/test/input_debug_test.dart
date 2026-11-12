@@ -80,4 +80,18 @@ void main() {
     expect(find.text('down mouse p=1 buttons=0b100 ctrl=false shift=false -> orbit nav=1'), findsOneWidget);
     expect(find.descendant(of: find.byType(InputDebugOverlay), matching: find.byType(IgnorePointer)), findsWidgets);
   });
+
+  testWidgets('the overlay also counts the key events Flutter receives, so a missing Ctrl is visible', (tester) async {
+    InputDebug.resetKeyWatch();
+    await tester.pumpWidget(const MaterialApp(home: Scaffold(body: Stack(children: [Positioned(left: 8, bottom: 8, child: InputDebugOverlay())]))));
+    expect(find.textContaining('keys=0'), findsOneWidget);
+    await simulateKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(find.textContaining('keys=1'), findsOneWidget);
+    expect(find.textContaining('Control Left'), findsWidgets);
+    await simulateKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(find.textContaining('keys=2'), findsOneWidget);
+    InputDebug.resetKeyWatch();
+  });
 }
