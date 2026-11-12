@@ -74,7 +74,11 @@ def _shape_from_step(data: bytes) -> TopoDS_Shape:
         if not shape_has_solid(shape):
             # Some exporters (a Creo surface model: 750 faces, no shell, no solid) write loose faces. They are watertight but unconnected, so they
             # show with arbitrary orientation and have no volume to the boolean operations: sew them into shells and solids, as an IGES import does.
-            shape = _heal_to_solid(shape)
+            healed = _heal_to_solid(shape)
+            if shape_has_solid(healed):
+                return healed
+            # Sewing did not close it into solids: keep the file's own faces. (On the owner's 750-face Creo STEP it made 87 open shells, an invalid shape
+            # and edge tolerances of 31 mm from a valid, 0.006 mm original.)
         return shape
     finally:
         os.unlink(tmp_path)

@@ -118,3 +118,15 @@ def test_http_import_of_loose_face_step_reports_a_solid():
     assert response.status_code == 201 and response.json()["solid"] is True
     mass = client.get(f"/document/parts/{part_id}/mass-properties")
     assert mass.status_code == 200
+
+
+def test_a_step_whose_faces_cannot_be_sewn_into_solids_keeps_its_own_faces():
+    box = BRepPrimAPI_MakeBox(100, 60, 40).Shape()
+    faces = []
+    explorer = TopExp_Explorer(box, TopAbs_FACE)
+    while explorer.More():
+        faces.append(topods.Face(explorer.Current()))
+        explorer.Next()
+    shape = _shape_from_step(_step_bytes(faces[:5]))  # an open box: it never closes
+    assert not shape_has_solid(shape)
+    assert _count(shape, TopAbs_FACE) == 5

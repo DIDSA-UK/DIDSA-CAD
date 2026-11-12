@@ -125,6 +125,82 @@ def round_faces_report(shape) -> None:
         say(f"  {label:26s} covers {100 * covers:6.1f}%  loops {wires}  edges {edges:3d}  u-span {100 * uspan:5.1f}%  centre ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f})")
 
 
+def suspects_report(path: str) -> None:
+    """The STEP read raw (no sewing), then for every sphere face and every torus face that covers (almost) its whole surface: how each trim wire is built (edges,
+    whether each has a curve on the face, tolerance), whether OCCT's own face repair changes it, and a small STEP of just those faces to send back."""
+    from OCC.Core.BRep import BRep_Tool
+    from OCC.Core.BRep import BRep_Builder
+    from OCC.Core.BRepTools import breptools
+    from OCC.Core.IFSelect import IFSelect_RetDone
+    from OCC.Core.ShapeFix import ShapeFix_Face
+    from OCC.Core.STEPControl import STEPControl_AsIs, STEPControl_Reader, STEPControl_Writer
+    from OCC.Core.TopoDS import TopoDS_Compound
+
+    reader = STEPControl_Reader()
+    if reader.ReadFile(path) != IFSelect_RetDone:
+        say("suspects: could not read the file raw")
+        return
+    reader.TransferRoots()
+    raw = reader.OneShape()
+    builder, keep = BRep_Builder(), TopoDS_Compound()
+    builder.MakeCompound(keep)
+    say("suspect faces, read raw (before any sewing): the whole-surface tori and every sphere")
+    index = 0
+    explorer = TopExp_Explorer(raw, TopAbs_FACE)
+    while explorer.More():
+        face = topods.Face(explorer.Current())
+        explorer.Next()
+        adaptor = BRepAdaptor_Surface(face)
+        kind = int(adaptor.GetType())
+        if kind not in (3, 4):
+            continue
+        props = GProp_GProps()
+        brepgprop.SurfaceProperties(face, props)
+        if kind == 3:
+            full = 4 * math.pi * adaptor.Sphere().Radius() ** 2
+            label = f"sphere r={adaptor.Sphere().Radius():.2f}"
+        else:
+            full = 4 * math.pi**2 * adaptor.Torus().MajorRadius() * adaptor.Torus().MinorRadius()
+            label = f"torus R={adaptor.Torus().MajorRadius():.2f} r={adaptor.Torus().MinorRadius():.2f}"
+        share = props.Mass() / full
+        if kind == 4 and share < 0.99:
+            continue
+        index += 1
+        builder.Add(keep, face)
+        outer = breptools.OuterWire(face)
+        say(f"  #{index} {label} covers {100 * share:.1f}%  valid {BRepCheck_Analyzer(face).IsValid()}")
+        wires = TopExp_Explorer(face, TopAbs_WIRE)
+        w = 0
+        while wires.More():
+            wire = topods.Wire(wires.Current())
+            wires.Next()
+            w += 1
+            edges = TopExp_Explorer(wire, TopAbs_EDGE)
+            n = pcurves = seams = degenerate = 0
+            worst = 0.0
+            while edges.More():
+                edge = topods.Edge(edges.Current())
+                edges.Next()
+                n += 1
+                curve = BRep_Tool.CurveOnSurface(edge, face)
+                pcurves += 1 if curve[0] is not None else 0
+                seams += 1 if breptools.IsReallyClosed(edge, face) else 0
+                degenerate += 1 if BRep_Tool.Degenerated(edge) else 0
+                worst = max(worst, BRep_Tool.Tolerance(edge))
+            say(f"      wire {w}{' (outer)' if wire.IsSame(outer) else ''}: {n} edges, {pcurves} with a curve on the face, {seams} seam, {degenerate} degenerate, worst tolerance {worst:.4f}")
+        fixer = ShapeFix_Face(face)
+        fixer.Perform()
+        fixed = fixer.Face()
+        fprops = GProp_GProps()
+        brepgprop.SurfaceProperties(fixed, fprops)
+        say(f"      after OCCT's face repair: covers {100 * fprops.Mass() / full:.1f}%  valid {BRepCheck_Analyzer(fixed).IsValid()}  loops {count(fixed, TopAbs_WIRE)}")
+    out = path + ".suspects.step"
+    writer = STEPControl_Writer()
+    writer.Transfer(keep, STEPControl_AsIs)
+    writer.Write(out)
+    say(f"wrote {index} suspect faces to {out} ({os.path.getsize(out) / 1024:.0f} KB): please send that file")
+
+
 def main(path: str) -> None:
     data = open(path, "rb").read()
     is_iges = path.lower().endswith((".igs", ".iges"))
@@ -215,6 +291,8 @@ def main(path: str) -> None:
         say(f"total solid volume: {total:.1f} mm3")
 
     pieces_report(shape)
+    if not is_iges:
+        suspects_report(path)
     round_faces_report(shape)
 
     say("meshing (this is where a crash would show)...")
