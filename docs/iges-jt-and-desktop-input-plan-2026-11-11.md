@@ -382,3 +382,7 @@ resolved.
 4. F-5: add PLY / 3MF to the viewer now? **Default: PLY yes, 3MF later.**
 5. F-6: when importing as an assembly into the flat app, where do the new part files go? **Default: a folder named after the file,
    beside the assembly.**
+
+### Progress note: colours on import (STEP and IGES)
+
+Done. A colour the file puts on faces, shells or solids (STEP via XCAF, IGES via the CAF reader, with a direct IGES colour-pointer parser as fallback) now lands on the imported Body (`body_appearances`) for a one-part import, and on each Part of an assembly import. Limits: it is one colour per body (the one covering most area), not per face; the IGES fallback is file-wide. Checked on real SolidWorks `Part1` (STEP and IGES both `#CAD1EE`) and `Jack_assy`: its IGES file specifies `#878C8C` where its STEP specifies `#CAD1EE`, so those two exports differ in the files themselves. Tests: `backend/tests/test_import_colours.py`.

@@ -113,6 +113,27 @@ def _label_colour(colour_tool, label: TDF_Label) -> str | None:
     return None
 
 
+def _dominant_sub_colour(shape_tool, colour_tool, label: TDF_Label) -> str | None:
+    """The colour of the solids / faces of a leaf product (sub-label colours), the one covering the most faces; None when none carries one."""
+    from OCC.Core.TopAbs import TopAbs_FACE
+    from OCC.Core.TopExp import TopExp_Explorer
+
+    counts: dict[str, int] = {}
+    subs = TDF_LabelSequence()
+    shape_tool.GetSubShapes(label, subs)
+    for i in range(subs.Length()):
+        sub = subs.Value(i + 1)
+        colour = _label_colour(colour_tool, sub)
+        sub_shape = shape_tool.GetShape(sub)
+        if colour is None or sub_shape is None or sub_shape.IsNull():
+            continue
+        explorer = TopExp_Explorer(sub_shape, TopAbs_FACE)
+        while explorer.More():
+            counts[colour] = counts.get(colour, 0) + 1
+            explorer.Next()
+    return max(counts, key=counts.get) if counts else None
+
+
 def _is_rigid(trsf: gp_Trsf) -> bool:
     return not trsf.IsNegative() and abs(trsf.ScaleFactor() - 1.0) < 1e-9
 
@@ -190,6 +211,8 @@ def _read_step_structure(data: bytes) -> StepStructure:
             shape = shape_tool.GetShape(label)
             if shape is not None and not shape.IsNull():
                 node.shape = shape
+                if node.colour is None:
+                    node.colour = _dominant_sub_colour(shape_tool, colour_tool, label)  # colours on its solids or faces (SolidWorks puts them on the solids)
         return node
 
     labels = TDF_LabelSequence()
@@ -240,7 +263,10 @@ def read_iges_solids(data: bytes) -> StepStructure:
         solids = [shape]  # surfaces only: one product holding whatever was read
     if len(solids) > MAX_PRODUCTS:
         raise AssemblyImportError(f"This file has {len(solids):,} solids (the limit is {MAX_PRODUCTS:,})", "import_too_large")
-    children = [(ProductNode(key=str(i), name=f"Solid {i + 1}", shape=solid), gp_Trsf()) for i, solid in enumerate(solids)]
+    from app.document.import_colours import colour_index
+
+    colours = colour_index("iges", data)  # colours on import: each solid takes the colour covering most of it
+    children = [(ProductNode(key=str(i), name=f"Solid {i + 1}", shape=solid, colour=colours.dominant_colour(solid)), gp_Trsf()) for i, solid in enumerate(solids)]
     root = ProductNode(key="root", name="", children=children)
     return StepStructure(roots=[root], products=len(solids), assemblies=0, instances=len(solids), mirrored_instances=0, name="")
 

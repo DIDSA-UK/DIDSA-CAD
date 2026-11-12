@@ -8866,6 +8866,14 @@ def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportF
         if metadata is not None and metadata.material is not None:
             part.body_material_assignments.setdefault(feature.id, metadata.material)
 
+    if payload.source_format in (ImportSourceFormat.STEP, ImportSourceFormat.IGES):
+        # Colours on import: the colour covering most of the body, if the file coloured its faces (never overwrites an appearance the Part already has).
+        from app.document.appearance import Appearance
+        from app.document.import_colours import colour_index
+
+        colour = colour_index(payload.source_format.value, source_data).dominant_colour(imported_shape)
+        if colour is not None:
+            part.body_appearances.setdefault(feature.id, Appearance(colour=colour))
     response = _feature_response(part, feature)
     if payload.source_format in (ImportSourceFormat.STEP, ImportSourceFormat.IGES):
         # F-3: whether the B-rep came in as a real solid (volume, mass and booleans work) or only as surfaces / a sewn open shell.
