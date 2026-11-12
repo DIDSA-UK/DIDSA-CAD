@@ -191,7 +191,7 @@ def chain_scene(n: int, bolts: bool = False) -> ScalingScene:
     holes. Per joint: bottom face on top face (coincident) and two concentric holes; the second concentric repeats two rows
     of the first (a bolt pattern is always redundant). The chain is one rigid body: floating dof 6, first plate fixed 0.
     `bolts=True` adds two bolt parts per joint (concentric to the lower plate's hole, flush with its underside): each keeps its
-    spin, so the dof grows by `2 (n - 1)`."""
+    spin, so the floating dof grows by `2 (n - 1)`; with plate 0 fixed the two bolts in it join no mover's group: `2 (n - 2)`."""
     assert n >= 2
     plate = box_part("Plate", _PLATE, _PLATE, _PLATE_T, holes=tuple((x, y, 5.0) for x, y in _HOLES))
     probe = _probe_part()
@@ -225,7 +225,7 @@ def chain_scene(n: int, bolts: bool = False) -> ScalingScene:
         mover=plates[last],
         occurrence_ids=tuple(o for o, _p, _t in occurrences),
         expected_dof_floating=6 + len(bolt_ids),
-        expected_dof_fixed=len(bolt_ids),
+        expected_dof_fixed=max(len(bolt_ids) - 2, 0),  # the two bolts in the fixed first plate are not in the mover's group
         probe_mate=_payload("distance", PROBE, face(probe, (0, 0, -1)), plates[last], top, value=5.0),
         redundant_mate=redundant,
         conflict_mate=conflict,

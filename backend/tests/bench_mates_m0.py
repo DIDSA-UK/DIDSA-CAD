@@ -256,11 +256,13 @@ def measure_scaling(family: str, n: int, factory, variant: str, caps: tuple[int,
     return row
 
 
-def run_scaling(quick: bool) -> list[dict]:
+def run_scaling(quick: bool, only: tuple[str, ...] = ()) -> list[dict]:
     caps = client_caps()
     rows = []
     for family, n, factory in SCALING_SCENES:
         if quick and (family, n) not in _QUICK:
+            continue
+        if only and family not in only:
             continue
         for variant in ("floating", "fixed"):
             began = time.perf_counter()
@@ -432,6 +434,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("what", choices=("scaling", "accuracy", "all"))
     parser.add_argument("--quick", action="store_true", help="scaling: the small sizes only")
     parser.add_argument("--trials", type=int, default=60, help="accuracy: trials per scene and start class (default 60, as Phase 4)")
+    parser.add_argument("--family", action="append", default=[], help="scaling: only this family (chain, chain+bolts, frame, linkage; repeatable)")
     parser.add_argument("--scene", action="append", default=[], help="accuracy: only this scene (repeatable)")
     parser.add_argument("--json", help="also write the raw results here")
     args = parser.parse_args(argv)
@@ -440,7 +443,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Machine: {info['cpu']}, {info['cores']} cores, {info['ram_gb']} GB, {info['os']}; Python {info['python']}, numpy {info['numpy']}, OCCT {info['occt']}. Date: {info['date']}.")
     out = {"machine": info, "caps": dict(zip(("members", "rows"), client_caps()))}
     if args.what in ("scaling", "all"):
-        out["scaling"] = run_scaling(args.quick)
+        out["scaling"] = run_scaling(args.quick, tuple(args.family))
         print_scaling(out["scaling"], client_caps())
     if args.what in ("accuracy", "all"):
         out["accuracy"] = run_accuracy(args.trials, tuple(args.scene))

@@ -31,7 +31,7 @@ The implementation session updates this table in its PR.
 
 | Phase | Summary | Repos | State |
 |---|---|---|---|
-| M0 | Mate benchmark: scaling scenes and first-time accuracy baseline | CAD | Not started |
+| M0 | Mate benchmark: scaling scenes and first-time accuracy baseline | CAD | In review (results: "M0 results" below) |
 | M1 | Rigid sets in the group solve | CAD backend | Not started |
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | Not started |
 | M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Not started |
@@ -98,6 +98,174 @@ Extend the existing mate bench and `backend/tests/motion_scenes.py`:
 - first-time accuracy scenes for M4: same-facing inset / overhang with realistic pick points, and upside-down starts.
 
 Done when the numbers are in this doc's M0 section. Every later mates phase is judged against them.
+
+### M0 results (2026-11-12)
+
+Measured by `backend/tests/bench_mates_m0.py` (scenes: `tests/motion_scaling_scenes.py`, `tests/mate_first_guess_scenes.py`; the fast
+scene test is `tests/test_mates_m0_scenes.py`). No solver code was changed. Reproduce from `backend/` in the `backend/environment.yml`
+conda env: `CAD_API_KEY=test-api-key python -m tests.bench_mates_m0 scaling` (about 2 hours on this machine: the 50-plate chain and the
+30-bar frame alone take 10 to 20 minutes a variant; `--quick` keeps the small sizes) and `... accuracy --trials 60` (a few minutes).
+
+Machine: Intel(R) Xeon(R) Processor @ 2.10GHz, 4 cores, 15.7 GB, Linux 6.18.44-fc-v378; Python 3.11.18, numpy 2.4.6, OCCT 8.0.1.2. Date: 2026-11-12.
+
+**How to read it.** One run on one shared 4-core cloud VM: compare later runs only with a run on the same machine. Times are medians of up
+to 7 runs (5 for previews), in-process through FastAPI's `TestClient` (no network, no tunnel). A scene is built at its true pose, so every
+mate is satisfied as built. "Floating" = nothing fixed; "fixed" = the scene's base part fixed. The dof column is the group's own dof as
+the analysis reports it; it matched the dof each scene was designed to have in every row.
+
+**Method note: the Phase 4 "mate bench" was rebuilt, not found.** It is not in the repo or its git history (only `bench_width_mate.py` and
+`bench_pattern_follower_drag.py` are, and they measure other things). The accuracy half below follows the method in
+`mate-solution-choice-plan.md` (ground truth by construction, near 12 mm / 25 deg, medium 50 mm / 100 deg, far 110 mm / any way up, 60
+trials, nothing named, extra clicks = the fewer of branch toggles and Next-solution presses), but the doc gives the sizes of only some
+scenes, so the others are my choice. **The numbers are therefore a new baseline for M4 to be judged against, not a re-measurement of the
+doc's 83.3 %.** Mine is lower (75.9 % on the nine Phase 4 mates; 83.3 % there); the difference is most likely the scenes, which I could not
+check against the original.
+
+### Scaling: the group, `solve_group`, the drag anchor and the client caps
+
+Client caps: kLocalMaxMembers = 8, kLocalMaxRows = 64. Times: median ms.
+
+| scene | variant | members | mates | rows | dof | solve_group at rest | solve_group with a wish (iterations) | drag anchor: wall (server solve_ms), max | client model: members / rows | refused by the caps |
+|---|---|---|---|---|---|---|---|---|---|---|
+| chain-5 | floating | 5 | 12 | 64 | 6 | 9.64 | 32.5 (3) | 41.2 (36.1), 55.8 | 5 / 64 | no |
+| chain-5 | fixed | 4 | 12 | 64 | 0 | 7.54 | 45.0 (3) | 36.5 (31.2), 39.2 | 4 / 64 | no |
+| chain-10 | floating | 10 | 27 | 144 | 6 | 23.5 | 88.2 (3) | 93.8 (88.9), 107 | 10 / 144 | **yes** (members 10 > 8, rows 144 > 64) |
+| chain-10 | fixed | 9 | 27 | 144 | 0 | 31.9 | 78.7 (3) | 83.5 (78.3), 121 | 9 / 144 | **yes** (members 9 > 8, rows 144 > 64) |
+| chain-20 | floating | 20 | 57 | 304 | 6 | 60.0 | 239 (4) | 237 (231), 272 | 20 / 304 | **yes** (members 20 > 8, rows 304 > 64) |
+| chain-20 | fixed | 19 | 57 | 304 | 0 | 88.2 | 243 (3) | 246 (241), 293 | 19 / 304 | **yes** (members 19 > 8, rows 304 > 64) |
+| chain-50 | floating | 50 | 147 | 784 | 6 | 224 | 780 (4) | 894 (883), 1012 | 50 / 784 | **yes** (members 50 > 8, rows 784 > 64) |
+| chain-50 | fixed | 49 | 147 | 784 | 0 | 234 | 843 (3) | 829 (823), 884 | 49 / 784 | **yes** (members 49 > 8, rows 784 > 64) |
+| chain-5-bolts | floating | 13 | 28 | 144 | 14 | 22.4 | 79.4 (3) | 102 (95.8), 106 | 13 / 144 | **yes** (members 13 > 8, rows 144 > 64) |
+| chain-5-bolts | fixed | 10 | 24 | 124 | 6 | 20.0 | 78.1 (6) | 84.4 (80.4), 136 | 10 / 124 | **yes** (members 10 > 8, rows 124 > 64) |
+| chain-10-bolts | floating | 28 | 63 | 324 | 24 | 89.8 | 270 (3) | 267 (256), 341 | 28 / 324 | **yes** (members 28 > 8, rows 324 > 64) |
+| chain-10-bolts | fixed | 25 | 59 | 304 | 16 | 73.8 | 238 (6) | 306 (298), 364 | 25 / 304 | **yes** (members 25 > 8, rows 304 > 64) |
+| frame-4 | floating | 4 | 11 | 44 | 6 | 7.36 | 37.1 (4) | 33.7 (28.5), 43.2 | 4 / 44 | no |
+| frame-4 | fixed | 3 | 11 | 44 | 0 | 8.10 | 19.9 (1) | 26.0 (20.3), 32.4 | 3 / 44 | no |
+| frame-10 | floating | 10 | 41 | 164 | 6 | 30.8 | 107 (4) | 117 (112), 128 | 10 / 164 | **yes** (members 10 > 8, rows 164 > 64) |
+| frame-10 | fixed | 9 | 41 | 164 | 0 | 32.3 | 83.2 (1) | 86.3 (81.3), 94.4 | 9 / 164 | **yes** (members 9 > 8, rows 164 > 64) |
+| frame-20 | floating | 20 | 91 | 364 | 6 | 98.1 | 333 (5) | 322 (315), 441 | 20 / 364 | **yes** (members 20 > 8, rows 364 > 64) |
+| frame-20 | fixed | 19 | 91 | 364 | 0 | 97.0 | 221 (1) | 234 (228), 250 | 19 / 364 | **yes** (members 19 > 8, rows 364 > 64) |
+| frame-30 | floating | 30 | 141 | 564 | 6 | 144 | 557 (5) | 574 (566), 717 | 30 / 564 | **yes** (members 30 > 8, rows 564 > 64) |
+| frame-30 | fixed | 29 | 141 | 564 | 0 | 146 | 404 (1) | 388 (384), 424 | 29 / 564 | **yes** (members 29 > 8, rows 564 > 64) |
+| linkage-payload-20 | floating | 24 | 68 | 280 | 7 | 74.8 | 217 (3) | 273 (266), 351 | 24 / 280 | **yes** (members 24 > 8, rows 280 > 64) |
+| linkage-payload-20 | fixed | 23 | 68 | 280 | 1 | 62.2 | 273 (6) | 261 (257), 285 | 23 / 280 | **yes** (members 23 > 8, rows 280 > 64) |
+
+### Scaling: `preview-mate-solve` (alternatives and the branch search included)
+
+Per cell: median ms / `solve_group` calls in that one preview (largest group solved, members). `auto` = only the mated part moves if that is enough; `group` = the whole component is solved.
+
+| scene | variant | probe/auto | probe/group | redundant/auto | redundant/group | conflict/auto | conflict/group |
+|---|---|---|---|---|---|---|---|
+| chain-5 | floating | 16.5 / 6 (1) | 71.1 / 6 (6) | 1857 / 9 (5) | 1879 / 6 (5) | 5699 / 28 (5) x | 5891 / 14 (5) x |
+| chain-5 | fixed | 17.5 / 6 (1) | 79.3 / 6 (5) | 396 / 9 (4) | 407 / 6 (4) | 3674 / 28 (4) x | 3411 / 14 (4) x |
+| chain-10 | floating | 15.0 / 6 (1) | 147 / 6 (11) | 1923 / 9 (10) | 2068 / 6 (10) | 9172 / 28 (10) x | 9482 / 14 (10) x |
+| chain-10 | fixed | 16.1 / 6 (1) | 138 / 6 (10) | 1316 / 9 (9) | 1401 / 6 (9) | 10364 / 28 (9) x | 9543 / 14 (9) x |
+| chain-20 | floating | 16.3 / 6 (1) | 424 / 6 (21) | 7680 / 9 (20) | 7400 / 6 (20) | 34726 / 28 (20) x | 35729 / 14 (20) x |
+| chain-20 | fixed | 20.4 / 6 (1) | 392 / 6 (20) | 6335 / 9 (19) | 6366 / 6 (19) | 40460 / 28 (19) x | 39728 / 14 (19) x |
+| chain-50 | floating | 20.8 / 6 (1) | 1729 / 6 (51) | 20990 / 9 (50) | 22113 / 6 (50) | 130233 / 28 (50) x | 132797 / 14 (50) x |
+| chain-50 | fixed | 15.9 / 6 (1) | 1304 / 6 (50) | 23421 / 9 (49) | 23840 / 6 (49) | 151611 / 28 (49) x | 153458 / 14 (49) x |
+| chain-5-bolts | floating | 15.4 / 6 (1) | 154 / 6 (14) | 4695 / 9 (13) | 4477 / 6 (13) | 14525 / 28 (13) x | 13814 / 14 (13) x |
+| chain-5-bolts | fixed | 14.2 / 6 (1) | 115 / 6 (11) | 898 / 9 (10) | 857 / 6 (10) | 7937 / 28 (10) x | 7924 / 14 (10) x |
+| chain-10-bolts | floating | 18.2 / 6 (1) | 533 / 6 (29) | 13049 / 9 (28) | 13379 / 6 (28) | 35622 / 28 (28) x | 33253 / 14 (28) x |
+| chain-10-bolts | fixed | 17.3 / 6 (1) | 418 / 6 (26) | 5745 / 9 (25) | 5911 / 6 (25) | 40096 / 28 (25) x | 39655 / 14 (25) x |
+| frame-4 | floating | 18.8 / 6 (1) | 59.4 / 6 (5) | 2082 / 9 (4) | 1893 / 6 (4) | 12248 / 28 (4) x | 12630 / 14 (4) x |
+| frame-4 | fixed | 15.3 / 6 (1) | 64.6 / 6 (4) | 2464 / 9 (3) | 2226 / 6 (3) | 11519 / 28 (3) x | 11029 / 14 (3) x |
+| frame-10 | floating | 14.2 / 6 (1) | 188 / 6 (11) | 8274 / 9 (10) | 7592 / 6 (10) | 49113 / 28 (10) x | 47428 / 14 (10) x |
+| frame-10 | fixed | 14.6 / 6 (1) | 197 / 6 (10) | 7284 / 9 (9) | 7037 / 6 (9) | 42273 / 28 (9) x | 43618 / 14 (9) x |
+| frame-20 | floating | 12.9 / 6 (1) | 571 / 6 (21) | 25149 / 9 (20) | 24970 / 6 (20) | 138781 / 28 (20) x | 142870 / 14 (20) x |
+| frame-20 | fixed | 15.7 / 6 (1) | 514 / 6 (20) | 23996 / 9 (19) | 23482 / 6 (19) | 132557 / 28 (19) x | 129115 / 14 (19) x |
+| frame-30 | floating | 14.0 / 6 (1) | 1132 / 6 (31) | 41977 / 9 (30) | 42799 / 6 (30) | 235790 / 28 (30) x | 231952 / 14 (30) x |
+| frame-30 | fixed | 15.6 / 6 (1) | 896 / 6 (30) | 39155 / 9 (29) | 37372 / 6 (29) | 198721 / 28 (29) x | 191932 / 14 (29) x |
+| linkage-payload-20 | floating | 15.2 / 6 (1) | 412 / 6 (25) | 1240 / 9 (24) | 1529 / 6 (24) | 6783 / 28 (24) x | 5685 / 14 (24) x |
+| linkage-payload-20 | fixed | 15.9 / 6 (1) | 412 / 6 (24) | 1013 / 9 (23) | 1025 / 6 (23) | 4754 / 28 (23) x | 4397 / 14 (23) x |
+
+`x` = no placement (expected for `conflict`: the answer names the conflicting mates instead).
+
+Client model refused by the caps: 18 of 22 scene variants.
+
+
+### First-time accuracy of an unnamed mate (60 trials per scene and start class)
+
+Right first time, per start class; `all` = near + medium + far (the Phase 4 bench's three classes). Extra clicks per mate over the same three.
+
+| scene | set | kind | near | medium | far | upside_down | all | extra clicks | no way to the truth | median preview ms |
+|---|---|---|---|---|---|---|---|---|---|---|
+| stack | phase4 | other | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 0.000 | 0 | 10.4 |
+| parallel | phase4 | other | 100.0% | 53.3% | 63.3% | 0.0% | 72.2% | 0.278 | 0 | 10.6 |
+| pin-in-post | phase4 | other | 100.0% | 56.7% | 80.0% | 0.0% | 78.9% | 0.211 | 0 | 11.8 |
+| axis-distance-25 | phase4 | other | 100.0% | 65.0% | 71.7% | 0.0% | 78.9% | 0.211 | 0 | 13.6 |
+| inset-10 | phase4 | same_facing | 95.0% | 36.7% | 46.7% | 0.0% | 59.4% | 0.500 | 0 | 19.8 |
+| overhang-3 | phase4 | same_facing | 55.0% | 23.3% | 38.3% | 0.0% | 38.9% | 0.611 | 0 | 19.3 |
+| gap-6-above | phase4 | facing_gap | 100.0% | 58.3% | 70.0% | 0.0% | 76.1% | 0.333 | 0 | 18.6 |
+| gap-6-under | phase4 | facing_gap | 100.0% | 68.3% | 66.7% | 0.0% | 78.3% | 0.333 | 0 | 18.0 |
+| vertex-6-above | phase4 | facing_gap | 100.0% | 100.0% | 100.0% | 100.0% | 100.0% | 0.000 | 0 | 11.0 |
+| inset-2 | m4 | same_facing | 70.0% | 38.3% | 45.0% | 0.0% | 51.1% | 0.600 | 0 | 19.3 |
+| overhang-25 | m4 | same_facing | 100.0% | 30.0% | 43.3% | 0.0% | 57.8% | 0.422 | 0 | 20.8 |
+| inset-10-seated | m4 | same_facing, seated | 100.0% | 100.0% | 100.0% | n/a | 100.0% | 0.000 | 0 | 20.3 |
+| overhang-3-seated | m4 | same_facing, seated | 100.0% | 100.0% | 100.0% | n/a | 100.0% | 0.000 | 0 | 19.7 |
+
+| summary | right first time | extra clicks per mate |
+|---|---|---|
+| Phase 4 set (9 mates), near + medium + far | 75.9% | 0.275 |
+| Phase 4 set, near | 94.4% | 0.056 |
+| Phase 4 set, medium | 62.4% | 0.422 |
+| Phase 4 set, far | 70.7% | 0.348 |
+| Same-facing distances (all 6 scenes), near + medium + far | 67.9% | 0.356 |
+| Same-facing, free part (4 scenes), near + medium + far | 51.8% | 0.533 |
+| Same-facing, seated (2 scenes), near + medium + far | 100.0% | 0.000 |
+| Same-facing insets only, near + medium + far | 70.2% | 0.367 |
+| Same-facing overhangs only, near + medium + far | 65.6% | 0.344 |
+| Upside-down starts, every free scene (11) | 18.2% | 1.047 |
+| Upside-down starts, same-facing distances (4) | 0.0% | 1.500 |
+| Upside-down starts, the other mates (7) | 28.6% | 0.788 |
+| Every scene and start class | 63.5% | 0.440 |
+
+
+### M0 findings (what the numbers say; nothing here was tuned or fixed)
+
+- **Cost grows faster than linearly with the group.** `solve_group` at rest on the bolted chain: 9.6 / 23.5 / 60 / 224 ms for 5 / 10 / 20 / 50
+  members (10x the members, 23x the time). With a wish it is 32 / 88 / 239 / 780 ms. The drag anchor (`mate-motion`) tracks the with-wish solve
+  (41 / 94 / 237 / 894 ms), so a group of 10 or more members is already beyond the ~150 ms anchor budget the smoothness study designed for,
+  and the 20-member groups are around 250 ms. The 20-part rigid payload on a 4-bar linkage costs 75 ms at rest and about 270 ms per anchor.
+  Floating or fixed makes little difference at this size.
+- **The Flutter caps refuse 18 of the 22 scene variants.** Only `chain-5` (5 members, 64 rows: exactly at `kLocalMaxRows`) and `frame-4`
+  fit, floating or fixed. Every other scene exceeds both caps, by rows first (10 members is already 144 to 164 rows). Even a 5-plate chain
+  is at the row limit. Redundant mates inflate rows without adding members: `frame-10` has 164 rows against `chain-10`'s 144. So raising
+  `kLocalMaxMembers` alone would not help; rows are the binding cap.
+- **A preview that moves only the new part is cheap; one that touches the group is not.** `probe/auto` (a loose part onto the group) is
+  13 to 23 ms at every size (a 1-member solve each time). `probe/group` grows with the group: 71 ms at 5 plates, 1.7 s at 50, 1.1 s for the
+  30-bar frame. Six `solve_group` calls per preview in both.
+- **A redundant mate is slow even in a small group.** The `redundant` preview (a distance the locked group already meets) took 0.4 to 1.9 s on a
+  5-plate chain, 7 to 8 s on a 20-plate chain and a 10-bar frame, and 21 to 43 s at 50 plates / 30 bars, in 9 solves (`auto`) or 6 (`group`):
+  several times what one solve of the same group costs at rest. I did not investigate why (not measured: where in the solve the time goes).
+- **A conflicting mate can take minutes.** The `conflict` preview (nothing can meet it, so the branch search and the conflict step run, 28
+  solves in `auto`, 14 in `group`) took 3.4 to 6 s on 5 members, 9 to 10 s on a 10-plate chain, 42 to 49 s on the 10-bar frame (redundant mates
+  make it slower than the chain of the same size), 35 to 40 s at 20 plates, 2 to 2.5 minutes at 50 plates and at the 20-bar frame, and 3 to 4
+  minutes at the 30-bar frame (190 to 236 s). `BRANCH_SEARCH_SECONDS` is 1.5 s in the code, but the clock only ends a search after its minimum of
+  `BRANCH_SEARCH_MIN_SOLVES = 8` solves and the conflict step has its own reserve, so on a big rigid group the budget does not bound the wait.
+  The route returned an answer (`mate_conflict`) every time.
+- **Accuracy baseline (rebuilt bench).** Right first time, near + medium + far: 75.9 % on the nine Phase 4 mates (near 94.4, medium 62.4,
+  far 70.7), 0.275 extra clicks per mate. Same-facing distances on a free part (inset 10, overhang 3, inset 2, overhang 25): 51.8 % (doc: 54 %).
+  The same four with the part already resting on the base (a stored coincident mate) are 100 %: the stored mate leaves only a slide, so the
+  nearest root is right. The big miss is the upside-down start: **18.2 % over the 11 free scenes, 0 % for every same-facing distance**, about one
+  extra click per mate (1.5 for same-facing). Only the vertex-to-face gap and the stack coincident are right when the part starts upside down.
+- **Pick points are recorded but unused.** `GuessScene.picks` holds a realistic pick per face (and each trial's jittered picks are stored in
+  the raw JSON, `--json`), but the backend does not read pick points yet: this baseline is what M4 must beat with them.
+
+### What was not measured or not verified
+
+- **The Dart client was not run.** "Refused by the caps" is computed with the Python reference model (`ConstraintModel`, the one the golden
+  vectors pin) at identity poses plus one row per limit mate, compared with `kLocalMaxMembers` / `kLocalMaxRows` read from
+  `local_retraction.dart`. That mirrors `LocalRetractor.tryParse`'s checks but I did not run `tryParse`. The GDScript solver was not measured.
+- **No client frame time, no network or tunnel time, no headset.** All times are server-side in-process on one VM; a repeat run on another
+  machine will differ. Single run, no confidence interval beyond the min and max in the raw JSON.
+- **Accuracy scenes are mine.** The 13 scenes (9 from the Phase 4 doc, 4 more same-facing) and the `upside_down` class are new; the
+  upside-down starts turn the part 180 degrees about an axis in the mate's plane plus up to 20 degrees of tilt and move it 30 mm. Not
+  compared with the original bench because it could not be found.
+- **Scaling scenes use boxes, plates with round holes and cylinders only**, with coincident, concentric and distance mates. No gears, limits,
+  couplers or pattern followers, and no sub-assemblies.
+- Time per scene is dominated by the preview cases; the raw per-case counts (`solves`, `alternatives`, `blocked_by`) are in the `--json` output,
+  not in this doc.
 
 ### M1. Rigid sets (CAD backend; large; strongest agent, solver maths)
 
