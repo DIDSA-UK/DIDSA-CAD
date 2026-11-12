@@ -56,6 +56,41 @@ def count(shape, kind) -> int:
     return n
 
 
+SURFACE_NAMES = {0: "plane", 1: "cylinder", 2: "cone", 3: "sphere", 4: "torus", 5: "bezier", 6: "bspline", 7: "revolution", 8: "extrusion", 9: "offset"}
+
+
+def pieces_report(shape) -> None:
+    """Every separate piece after the importer's own sewing (a solid, else a shell), and every piece that holds a sphere or a torus, with where it is and how big."""
+    kind = TopAbs_SOLID if count(shape, TopAbs_SOLID) else TopAbs_SHELL
+    pieces = []
+    explorer = TopExp_Explorer(shape, kind)
+    while explorer.More():
+        piece = explorer.Current()
+        box = Bnd_Box()
+        brepbndlib.Add(piece, box)
+        x0, y0, z0, x1, y1, z1 = box.Get()
+        types = collections.Counter()
+        area = 0.0
+        faces = TopExp_Explorer(piece, TopAbs_FACE)
+        while faces.More():
+            face = topods.Face(faces.Current())
+            types[SURFACE_NAMES.get(int(BRepAdaptor_Surface(face).GetType()), "?")] += 1
+            props = GProp_GProps()
+            brepgprop.SurfaceProperties(face, props)
+            area += props.Mass()
+            faces.Next()
+        pieces.append((sum(types.values()), area, ((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2), (x1 - x0, y1 - y0, z1 - z0), types))
+        explorer.Next()
+    pieces.sort(key=lambda p: -p[1])
+    say(f"pieces after sewing: {len(pieces)} ({'solids' if kind == TopAbs_SOLID else 'shells'}); the largest few by area:")
+    for faces_n, area, c, size, types in pieces[:6]:
+        say(f"  faces {faces_n:4d} area {area:9.1f} centre ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) size ({size[0]:.1f}, {size[1]:.1f}, {size[2]:.1f}) {dict(types)}")
+    round_pieces = [p for p in pieces if p[4].get("sphere") or p[4].get("torus")]
+    say(f"pieces holding a sphere or a torus: {len(round_pieces)} (smallest first, at most 25)")
+    for faces_n, area, c, size, types in sorted(round_pieces, key=lambda p: p[1])[:25]:
+        say(f"  faces {faces_n:4d} area {area:9.1f} centre ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) size ({size[0]:.1f}, {size[1]:.1f}, {size[2]:.1f}) {dict(types)}")
+
+
 def main(path: str) -> None:
     data = open(path, "rb").read()
     is_iges = path.lower().endswith((".igs", ".iges"))
@@ -144,6 +179,8 @@ def main(path: str) -> None:
             total += props.Mass()
             explorer.Next()
         say(f"total solid volume: {total:.1f} mm3")
+
+    pieces_report(shape)
 
     say("meshing (this is where a crash would show)...")
     from app.document import mesh as mesh_module
