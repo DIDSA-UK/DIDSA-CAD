@@ -5,7 +5,9 @@ Feature module in this codebase already keeps (e.g. `app.document.sweep`
 vs. its own pure-Python path-resolution helpers).
 """
 
+import hashlib
 import logging
+import math
 import os
 import tempfile
 from dataclasses import dataclass
@@ -16,9 +18,12 @@ from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Sewing
 from OCC.Core.IGESControl import IGESControl_Reader
 from OCC.Core.Interface import Interface_Static
 from OCC.Core.ShapeFix import ShapeFix_Shape, ShapeFix_Solid
-from OCC.Core.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
-from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopoDS import topods
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+from OCC.Core.TopExp import TopExp_Explorer, topexp
+from OCC.Core.TopTools import TopTools_IndexedDataMapOfShapeListOfShape
+from OCC.Core.Bnd import Bnd_Box
+from OCC.Core.BRepBndLib import brepbndlib
+from OCC.Core.TopoDS import TopoDS_Shell, topods
 from OCC.Core.gp import gp_Pnt
 from OCC.Core.IFSelect import IFSelect_RetDone
 from OCC.Core.Poly import Poly_Triangle, Poly_Triangulation
@@ -76,44 +81,120 @@ def shape_has_solid(shape: TopoDS_Shape) -> bool:
     return TopExp_Explorer(shape, TopAbs_SOLID).More()
 
 
+def _free_edge_count(shape: TopoDS_Shape) -> int:
+    """Edges of `shape` that only one face uses (not counting degenerate ones): zero means a closed shell. A seam edge (a sphere's, a cylinder's) is used twice by
+    its own face, so it is not free."""
+    ancestors = TopTools_IndexedDataMapOfShapeListOfShape()
+    topexp.MapShapesAndAncestors(shape, TopAbs_EDGE, TopAbs_FACE, ancestors)
+    free = 0
+    for index in range(1, ancestors.Extent() + 1):
+        edge = topods.Edge(ancestors.FindKey(index))
+        if BRep_Tool.Degenerated(edge):
+            continue
+        if ancestors.FindFromIndex(index).Size() < 2:
+            free += 1
+    return free
+
+
+def _bounding_diagonal(shape: TopoDS_Shape) -> float:
+    box = Bnd_Box()
+    brepbndlib.Add(shape, box)
+    if box.IsVoid():
+        return 0.0
+    xmin, ymin, zmin, xmax, ymax, zmax = box.Get()
+    return math.sqrt((xmax - xmin) ** 2 + (ymax - ymin) ** 2 + (zmax - zmin) ** 2)
+
+
+def _sew(faces: list, tolerance: float) -> list:
+    """Shells from `faces` sewn at `tolerance` (a lone face that sewing hands back as a face is wrapped in a shell of its own)."""
+    sewing = BRepBuilderAPI_Sewing(tolerance)
+    for face in faces:
+        sewing.Add(face)
+    sewing.Perform()
+    sewn = sewing.SewedShape()
+    shells = []
+    explorer = TopExp_Explorer(sewn, TopAbs_SHELL)
+    while explorer.More():
+        shells.append(topods.Shell(explorer.Current()))
+        explorer.Next()
+    if not shells:
+        builder = BRep_Builder()
+        faces_back = []
+        face_explorer = TopExp_Explorer(sewn, TopAbs_FACE)
+        while face_explorer.More():
+            faces_back.append(topods.Face(face_explorer.Current()))
+            face_explorer.Next()
+        if faces_back:
+            shell = TopoDS_Shell()
+            builder.MakeShell(shell)
+            for face in faces_back:
+                builder.Add(shell, face)
+            shells.append(shell)
+    return shells
+
+
 def _heal_to_solid(shape: TopoDS_Shape) -> TopoDS_Shape:
-    """IGES from many systems carries surfaces and trimmed faces, not solids.
-    `ShapeFix_Shape` first; then, when there is no solid, sew the faces and -
-    if every sewn shell is closed - turn them into real solids, so a closed
-    model gets a volume and works in booleans. An open model is left as the
-    sewn shell (a Body is still one Body whatever the shape - `extrude.py`)."""
+    """IGES from many systems carries surfaces and trimmed faces, not solids. `ShapeFix_Shape` first; then, when there is no solid, sew the faces and - if every
+    sewn shell is closed - turn them into real solids, so a closed model gets a volume and works in booleans. Real files have gaps between surfaces, so the
+    sewing tolerance climbs a ladder scaled to the model (1e-4 mm, then 1e-5 / 1e-4 / 1e-3 of its bounding diagonal) and stops at the first that closes every
+    shell; if none does, the attempt with the fewest free edges stays as an open shell (a Body is still one Body whatever the shape - `extrude.py`)."""
     fixer = ShapeFix_Shape(shape)
     fixer.Perform()
     shape = fixer.Shape()
     if shape_has_solid(shape):
         return shape
-    sewing = BRepBuilderAPI_Sewing(1e-4)
-    face_count = 0
-    explorer = TopExp_Explorer(shape, TopAbs_FACE)
-    while explorer.More():
-        sewing.Add(explorer.Current())
-        face_count += 1
-        explorer.Next()
-    if face_count == 0:
+    faces = []
+    face_explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while face_explorer.More():
+        faces.append(topods.Face(face_explorer.Current()))
+        face_explorer.Next()
+    if not faces:
         return shape
-    sewing.Perform()
-    sewn = sewing.SewedShape()
-    shells = []
-    shell_explorer = TopExp_Explorer(sewn, TopAbs_SHELL)
-    while shell_explorer.More():
-        shells.append(topods.Shell(shell_explorer.Current()))
-        shell_explorer.Next()
-    if not shells or not all(BRep_Tool.IsClosed(shell) for shell in shells):
-        return sewn
+    diagonal = _bounding_diagonal(shape)
+    best: tuple[int, list] | None = None
+    # Sewing a real file takes tens of seconds a pass (an 859-face SolidWorks export: ~24 s), so the ladder starts at the first rung that can plausibly work:
+    # that file needs ~2 microns, and a pass at 1e-4 only to fail cost another 21 s.
+    for tolerance in sorted({max(1e-4, diagonal * 1e-5), max(1e-4, diagonal * 1e-4), max(1e-4, diagonal * 1e-3)}):
+        shells = _sew(faces, tolerance)
+        if not shells:
+            continue
+        free = sum(_free_edge_count(shell) for shell in shells)
+        if best is None or free < best[0]:
+            best = (free, shells)
+        if free == 0:
+            break
+    if best is None:
+        return shape
+    free, shells = best
     builder = BRep_Builder()
     compound = TopoDS_Compound()
     builder.MakeCompound(compound)
+    if free > 0:
+        for shell in shells:
+            builder.Add(compound, shell)
+        return compound
     for shell in shells:
         builder.Add(compound, ShapeFix_Solid().SolidFromShell(shell))
     return compound
 
 
+_IGES_CACHE: dict[str, TopoDS_Shape] = {}  # sha256 of the file -> its healed shape (a few entries: the probe, the import and every re-mesh read the same file)
+_IGES_CACHE_MAX = 3
+
+
 def _shape_from_iges(data: bytes) -> TopoDS_Shape:
+    key = hashlib.sha256(data).hexdigest()
+    cached = _IGES_CACHE.get(key)
+    if cached is not None:
+        return cached
+    shape = _shape_from_iges_uncached(data)
+    if len(_IGES_CACHE) >= _IGES_CACHE_MAX:
+        _IGES_CACHE.pop(next(iter(_IGES_CACHE)))
+    _IGES_CACHE[key] = shape
+    return shape
+
+
+def _shape_from_iges_uncached(data: bytes) -> TopoDS_Shape:
     """The IGES twin of `_shape_from_step`: same temp-file idiom (the reader
     only reads a path; suffix `.igs`), same error mapping. The model unit is
     set to millimetres explicitly (the backend's native unit; OCCT converts

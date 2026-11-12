@@ -3312,6 +3312,15 @@ class NativeImportResponse(BaseModel):
     part_ids: list[str]
 
 
+class ConvertMeshRequest(BaseModel):
+    """`POST /convert/mesh` (F-5): a STEP / IGES file to a `.glb`, stateless (no document, no Part is created): the mesh viewer opens B-rep files through this.
+    `linear_deflection` (mm, optional) coarsens or refines the tessellation."""
+
+    source_format: ImportSourceFormat
+    data_base64: str
+    linear_deflection: float | None = None
+
+
 class ImportProbeRequest(BaseModel):
     """`POST /import/probe` (F-6): the structure of a STEP / IGES file, no geometry sent anywhere - so the client can say "37 parts in 6 sub-assemblies"."""
 
