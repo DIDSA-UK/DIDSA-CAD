@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
 from app.auth import verify_api_key
@@ -18,6 +19,9 @@ from app.sketch.router import router as sketch_router
 # /openapi.json routes - FastAPI wires those up outside the normal
 # dependency system, so they stay reachable (schema only, no data).
 app = FastAPI(dependencies=[Depends(verify_api_key)])
+# A part's mesh is plain JSON with full-precision floats (12.6 MB for a 33,000-triangle imported part, 2.1 MB gzipped, 0.25 s): compress anything over 1 KB
+# for a client that asks (dart:io's HttpClient does by default and decodes it itself). Nothing here streams.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
 app.include_router(sketch_router)
 app.include_router(document_router)
 
