@@ -25,7 +25,7 @@ from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.BRep import BRep_Tool
 from OCC.Core.GProp import GProp_GProps
 from OCC.Core.ShapeAnalysis import ShapeAnalysis_FreeBounds
-from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+from OCC.Core.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, TopAbs_WIRE
 from OCC.Core.TopExp import TopExp_Explorer
 from OCC.Core.TopoDS import topods
 
@@ -89,6 +89,40 @@ def pieces_report(shape) -> None:
     say(f"pieces holding a sphere or a torus: {len(round_pieces)} (smallest first, at most 25)")
     for faces_n, area, c, size, types in sorted(round_pieces, key=lambda p: p[1])[:25]:
         say(f"  faces {faces_n:4d} area {area:9.1f} centre ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) size ({size[0]:.1f}, {size[1]:.1f}, {size[2]:.1f}) {dict(types)}")
+
+
+def round_faces_report(shape) -> None:
+    """Every sphere and torus face: how much of the whole surface it covers and how many trim loops it has. A face that should be trimmed (a knob cut out of a
+    sphere) but covers ~100 % of its surface with one loop has lost its trimming."""
+    from OCC.Core.BRepTools import breptools
+
+    rows = []
+    explorer = TopExp_Explorer(shape, TopAbs_FACE)
+    while explorer.More():
+        face = topods.Face(explorer.Current())
+        adaptor = BRepAdaptor_Surface(face)
+        kind = int(adaptor.GetType())
+        if kind in (3, 4):
+            props = GProp_GProps()
+            brepgprop.SurfaceProperties(face, props)
+            if kind == 3:
+                radius = adaptor.Sphere().Radius()
+                full, label = 4 * math.pi * radius**2, f"sphere r={radius:.2f}"
+            else:
+                big, small = adaptor.Torus().MajorRadius(), adaptor.Torus().MinorRadius()
+                full, label = 4 * math.pi**2 * big * small, f"torus R={big:.2f} r={small:.2f}"
+            u0, u1, v0, v1 = breptools.UVBounds(face)
+            wires = count(face, TopAbs_WIRE)
+            box = Bnd_Box()
+            brepbndlib.Add(face, box)
+            x0, y0, z0, x1, y1, z1 = box.Get()
+            rows.append((props.Mass() / full, label, wires, count(face, TopAbs_EDGE), (u1 - u0) / (2 * math.pi), ((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2)))
+        explorer.Next()
+    spheres = [r for r in rows if r[1].startswith("sphere")]
+    say(f"sphere faces: {len(spheres)}, torus faces: {len(rows) - len(spheres)}")
+    say("  covers = share of the whole surface (100% with one loop = no trimming); loops = trim wires; edges; u-span = share of the full turn")
+    for covers, label, wires, edges, uspan, c in sorted(rows, key=lambda r: -r[0])[:30]:
+        say(f"  {label:26s} covers {100 * covers:6.1f}%  loops {wires}  edges {edges:3d}  u-span {100 * uspan:5.1f}%  centre ({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f})")
 
 
 def main(path: str) -> None:
@@ -181,6 +215,7 @@ def main(path: str) -> None:
         say(f"total solid volume: {total:.1f} mm3")
 
     pieces_report(shape)
+    round_faces_report(shape)
 
     say("meshing (this is where a crash would show)...")
     from app.document import mesh as mesh_module
