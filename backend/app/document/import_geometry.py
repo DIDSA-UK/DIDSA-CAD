@@ -71,6 +71,10 @@ def _shape_from_step(data: bytes) -> TopoDS_Shape:
         shape = reader.OneShape()
         if shape.IsNull():
             raise _import_failed("STEP file produced an empty shape")
+        if not shape_has_solid(shape):
+            # Some exporters (a Creo surface model: 750 faces, no shell, no solid) write loose faces. They are watertight but unconnected, so they
+            # show with arbitrary orientation and have no volume to the boolean operations: sew them into shells and solids, as an IGES import does.
+            shape = _heal_to_solid(shape)
         return shape
     finally:
         os.unlink(tmp_path)
@@ -117,19 +121,16 @@ def _sew(faces: list, tolerance: float) -> list:
     while explorer.More():
         shells.append(topods.Shell(explorer.Current()))
         explorer.Next()
-    if not shells:
-        builder = BRep_Builder()
-        faces_back = []
-        face_explorer = TopExp_Explorer(sewn, TopAbs_FACE)
-        while face_explorer.More():
-            faces_back.append(topods.Face(face_explorer.Current()))
-            face_explorer.Next()
-        if faces_back:
-            shell = TopoDS_Shell()
-            builder.MakeShell(shell)
-            for face in faces_back:
-                builder.Add(shell, face)
-            shells.append(shell)
+    # A face that sewed to nothing (a whole sphere or torus is one periodic face) comes back bare, not in a shell: wrap each in a shell of its own, so it is
+    # kept and can become a solid. (Faces already inside a shell are skipped by the TopAbs_SHELL avoid-type.)
+    builder = BRep_Builder()
+    loose = TopExp_Explorer(sewn, TopAbs_FACE, TopAbs_SHELL)
+    while loose.More():
+        shell = TopoDS_Shell()
+        builder.MakeShell(shell)
+        builder.Add(shell, topods.Face(loose.Current()))
+        shells.append(shell)
+        loose.Next()
     return shells
 
 
