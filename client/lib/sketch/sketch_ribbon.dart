@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 
+import '../layout/hardware_number_keys.dart';
 import 'dimension_text.dart';
 import 'sketch_controller.dart';
 
@@ -879,15 +880,18 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
       child: Row(
         children: [
           Expanded(
-            child: TextField(
+            child: HardwareNumberKeys(
               controller: _textController,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(
-                isDense: true,
-                suffixText: suffix,
-                border: const OutlineInputBorder(),
+              child: TextField(
+                controller: _textController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  isDense: true,
+                  suffixText: suffix,
+                  border: const OutlineInputBorder(),
+                ),
+                onSubmitted: (_) => _submit(),
               ),
-              onSubmitted: (_) => _submit(),
             ),
           ),
           const SizedBox(width: 8),
