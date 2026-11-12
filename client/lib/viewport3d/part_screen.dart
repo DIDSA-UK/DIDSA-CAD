@@ -98,6 +98,7 @@ import 'feature_tree_panel.dart';
 import 'export_format_dialog.dart';
 import 'fill_surface_panel.dart';
 import 'fillet_panel.dart';
+import 'import_assembly_dialog.dart';
 import 'import_format_dialog.dart';
 import 'knit_surface_panel.dart';
 import 'loft_panel.dart';
@@ -12666,15 +12667,69 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
 
+    // F-6: a STEP / IGES file with several products can come in as an assembly (a Part per product) instead of one lump.
+    if (sourceFormat == 'step' || sourceFormat == 'iges') {
+      ImportProbeDto? probe;
+      String? probeProblem;
+      try {
+        probe = await _api.probeImport(sourceFormat: sourceFormat, bytes: bytes);
+      } on ApiException catch (e) {
+        probeProblem = e.message;
+      }
+      if (!mounted) return;
+      if (probe != null && offersAssemblyChoice(probe)) {
+        final choice = await showImportAssemblyDialog(context, probe, sourceFormat);
+        if (choice == null || !mounted) return;
+        if (choice == ImportAssemblyChoice.assembly) {
+          await _importAsAssembly(sourceFormat, bytes, picked.name);
+          return;
+        }
+      } else if (probeProblem != null) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text("Couldn't read the file's structure, importing it as one part: $probeProblem")),
+        );
+      }
+    }
+
     await _runGuarded(() async {
-      await _api.createImportFeature(_focusPartId, sourceFormat: sourceFormat, bytes: bytes);
+      final created = await _api.createImportFeature(_focusPartId, sourceFormat: sourceFormat, bytes: bytes);
       await _refreshFeatures();
       await _refreshMesh();
+      if (created.solid == false && mounted) {
+        // F-3: an IGES (or STEP) that is only surfaces, or an open shell, imports and shows but has no volume.
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          const SnackBar(content: Text('Imported as surfaces (not a closed solid): no volume, mass or boolean operations.')),
+        );
+      }
     });
   }
 
+  /// F-6: imports the picked STEP / IGES file as an assembly onto the focused Part. The new Parts have no file yet, so each is given the path the backend
+  /// suggested (a folder named after the file, beside the root file) and marked "never written": Save writes them and stamps every occurrence's
+  /// `external_ref`, like Create Component's parts.
+  Future<void> _importAsAssembly(String sourceFormat, Uint8List bytes, String fileName) async {
+    final stem = fileName.contains('.') ? fileName.substring(0, fileName.lastIndexOf('.')) : fileName;
+    ImportAssemblyDto? result;
+    await _runGuarded(() async {
+      final imported = await _api.importAssembly(_focusPartId, sourceFormat: sourceFormat, bytes: bytes, name: stem);
+      result = imported;
+      setState(() {
+        _relativePathByPartId = {..._relativePathByPartId, ...imported.suggestedFiles};
+        _neverWrittenPartIds.addAll(imported.newPartIds);
+        _markPartDirty(); // the part it was added to gained an occurrence
+      });
+      await _refreshFeatures();
+      await _refreshMesh();
+      await _refreshAssemblyTree();
+    });
+    final report = result?.report;
+    if (report != null && mounted) {
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(report.summary), duration: const Duration(seconds: 8)));
+    }
+  }
+
   /// Export: writes the current Part's geometry out to one of four
-  /// interchange formats (`format` is `'step'`/`'stl'`/`'obj'`/`'glb'`,
+  /// interchange formats (`format` is `'step'`/`'iges'`/`'stl'`/`'obj'`/`'glb'`,
   /// matching both the backend endpoint's own path segment and the saved
   /// file's extension) via [DocumentApiClient.exportPart]. The backend 400s
   /// (surfaced as [_errorMessage] by [_runGuarded]) if the Part has no
@@ -12714,9 +12769,10 @@ class _PartScreenState extends State<PartScreen> {
           ? await _api.exportPart(part.id, format)
           : await _api.exportAssemblyPart(part.id, format);
       // file_picker 13 writes `bytes` itself on every platform; null means the user cancelled.
+      final extension = exportFormatOptions.firstWhere((o) => o.value == format).extension;
       await FilePicker.saveFile(
         dialogTitle: 'Export Part',
-        fileName: '${part.name}.$format',
+        fileName: '${part.name}.$extension',
         bytes: bytes,
       );
     });

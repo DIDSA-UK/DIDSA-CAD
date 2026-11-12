@@ -48,6 +48,10 @@ Update this table with every milestone.
 
 ### D2 implementation notes
 
+- **Input debug overlay (F-1 step 0, 11 Nov 2026).** Controls > "Show input debug" (off by default) draws the last pointer event's kind, buttons, Ctrl / Shift as `HardwareKeyboard` reports them, the chosen `MouseNavAction` and the viewport's nav pointer at the bottom of the 3D viewport, and logs the same line (`input_debug.dart`). Observation only, to find why Ctrl / Shift + middle sometimes orbits.
+
+- **The persistent tap pivot is touch only (F-2, 11 Nov 2026).** A left click with a mouse in orbit mode no longer plants a rotation pivot (`orbitTapSetsPivot` in `touch_pivot.dart`; the click keeps its plane / background meaning), and a pivot set by a finger is dropped when the first mouse event arrives. The menu's "Rotate about here" / "Clear pivot" are unchanged. "Orbit about the cursor" below (the per-drag pivot under a middle press) is a separate feature and stays.
+
 - **Orbit about the cursor** (`OrbitCamera.orbitAboutPointByScreenDelta`): a middle press hit-tests under the cursor
   (`PartViewportState._orbitPivotAt`: bodies, components and component edges/vertices, whatever the selection filter, reference
   planes skipped) and the drag orbits about that point - the target's offset from it is carried round in the camera's frame, so the

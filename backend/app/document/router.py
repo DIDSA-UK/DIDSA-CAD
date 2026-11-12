@@ -123,14 +123,18 @@ from app.document.graph import (
     tool_feature_qualifies,
     transitive_dependents,
 )
-from app.document.import_geometry import extract_step_metadata, resolve_import
+from app.document.import_geometry import extract_step_metadata, resolve_import, shape_has_solid
 from app.document.mesh import DEFAULT_MESH_QUALITY, MeshData, mesh_quality_from_slider, tessellate_shape
 from app.document.mesh_data import BodyTopology, MeshQuality, Triangle
 from app.document.mesh_export import AssemblyGlbInstance, encode_assembly_glb, encode_glb, encode_obj, encode_stl
 from app.document.mirror import resolve_mirror
 from app.document.add_component import AddComponentError, merge_component_into_document
+from app.document.native_format import SCHEMA_VERSION as NATIVE_SCHEMA_VERSION
 from app.document.native_format import NativeFormatError, export_native, import_native
+
 from app.document.pattern import resolve_pattern, resolve_pattern_coarse
+from app.document.iges_export import export_iges
+from app.document import step_assembly
 from app.document.step_export import export_step
 from app.document.models import (
     BevelGearFeature,
@@ -338,7 +342,13 @@ from app.document.schemas import (
     GearFeatureResponse,
     GearGroupSchema,
     ImportFeatureCreate,
+    ConvertMeshRequest,
+    ImportAssemblyReport,
+    ImportAssemblyRequest,
+    ImportAssemblyResponse,
     ImportFeatureResponse,
+    ImportProbeRequest,
+    ImportProbeResponse,
     KnitSurfaceFeatureCreate,
     KnitSurfaceFeatureResponse,
     KnitSurfaceFeatureUpdate,
@@ -8840,7 +8850,7 @@ def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportF
     except (binascii.Error, ValueError):
         raise HTTPException(status_code=422, detail="data_base64 is not valid base64")
     feature = ImportFeature(id=str(uuid.uuid4()), source_format=payload.source_format, source_data=source_data)
-    resolve_import(feature)  # raises on an unimportable file; result unused here
+    imported_shape = resolve_import(feature)  # raises on an unimportable file
     part.add_feature(feature)
 
     # Part Properties round: a STEP import may carry its own source
@@ -8856,7 +8866,19 @@ def create_import_feature(part_id: str, payload: ImportFeatureCreate) -> ImportF
         if metadata is not None and metadata.material is not None:
             part.body_material_assignments.setdefault(feature.id, metadata.material)
 
-    return _feature_response(part, feature)
+    if payload.source_format in (ImportSourceFormat.STEP, ImportSourceFormat.IGES):
+        # Colours on import: the colour covering most of the body, if the file coloured its faces (never overwrites an appearance the Part already has).
+        from app.document.appearance import Appearance
+        from app.document.import_colours import colour_index
+
+        colour = colour_index(payload.source_format.value, source_data).dominant_colour(imported_shape)
+        if colour is not None:
+            part.body_appearances.setdefault(feature.id, Appearance(colour=colour))
+    response = _feature_response(part, feature)
+    if payload.source_format in (ImportSourceFormat.STEP, ImportSourceFormat.IGES):
+        # F-3: whether the B-rep came in as a real solid (volume, mass and booleans work) or only as surfaces / a sewn open shell.
+        response.solid = shape_has_solid(imported_shape)
+    return response
 
 
 @router.delete("/parts/{part_id}/features/{feature_id}", status_code=204)
@@ -9688,6 +9710,132 @@ def add_component(root_part_id: str, payload: AddComponentRequest) -> AddCompone
     return AddComponentResponse(document_id=document.id, part_ids=list(document.parts.keys()), occurrence_id=occurrence_id)
 
 
+def _decode_import_data(data_base64: str) -> bytes:
+    try:
+        return base64.b64decode(data_base64, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=422, detail="data_base64 is not valid base64")
+
+
+def _assembly_import_error(exc: step_assembly.AssemblyImportError) -> HTTPException:
+    return HTTPException(status_code=422, detail={"type": exc.code, "detail": str(exc)})
+
+
+def _structure_for(source_format: ImportSourceFormat, data: bytes) -> step_assembly.StepStructure:
+    try:
+        if source_format == ImportSourceFormat.STEP:
+            return step_assembly.read_step_structure(data)
+        if source_format == ImportSourceFormat.IGES:
+            return step_assembly._with_timeout(step_assembly.read_iges_solids, data)
+    except step_assembly.AssemblyImportError as exc:
+        raise _assembly_import_error(exc)
+    raise HTTPException(status_code=422, detail={"type": "unsupported_format", "detail": "Only STEP (an assembly) and IGES (one part per solid) can be imported as an assembly"})
+
+
+def _build_assembly_import(payload: ImportAssemblyRequest) -> step_assembly.AssemblyImport:
+    data = _decode_import_data(payload.data_base64)
+    structure = _structure_for(payload.source_format, data)
+    try:
+        return step_assembly.build_native_payload(structure, payload.name or "", NATIVE_SCHEMA_VERSION)
+    except step_assembly.AssemblyImportError as exc:
+        raise _assembly_import_error(exc)
+
+
+def _assembly_import_response(imported: step_assembly.AssemblyImport, document, occurrence_id: str | None, new_part_ids: list[str]) -> ImportAssemblyResponse:
+    return ImportAssemblyResponse(
+        document_id=document.id,
+        part_ids=list(document.parts.keys()),
+        new_part_ids=new_part_ids,
+        root_part_id=imported.root_part_id,
+        occurrence_id=occurrence_id,
+        folder=imported.folder,
+        suggested_files={pid: f"{imported.folder}/{name}" for pid, name in imported.part_files.items()},
+        part_names=imported.part_names,
+        report=ImportAssemblyReport(**imported.report),
+    )
+
+
+CONVERT_MAX_BYTES = 150 * 1024 * 1024  # an uploaded file above this is refused (413)
+CONVERT_MAX_TRIANGLES = 3_000_000  # a result above this is refused (422 import_too_large): ask for a coarser deflection
+
+
+@router.post("/convert/mesh")
+def convert_to_mesh(payload: ConvertMeshRequest) -> Response:
+    """F-5: stateless STEP / IGES -> `.glb` for a viewer that has no document (the Flutter mesh viewer, which is offline by design and decodes the mesh formats
+    itself). Nothing is stored and no Part is created. Decodes with the same reader as `resolve_import`, meshes with OCCT and encodes with `encode_glb`;
+    the client feeds the glb to its own glb decoder, so decimation, up-axis and export keep working. Capped in upload size and triangle count."""
+    if payload.source_format not in (ImportSourceFormat.STEP, ImportSourceFormat.IGES):
+        raise HTTPException(status_code=422, detail={"type": "unsupported_format", "detail": "Only STEP and IGES need the server: the mesh formats are decoded on the device"})
+    data = _decode_import_data(payload.data_base64)
+    if len(data) > CONVERT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail={"type": "import_too_large", "detail": "The file is too large to convert"})
+    feature = ImportFeature(id="convert", source_format=payload.source_format, source_data=data)
+    shape = resolve_import(feature)
+    quality = MeshQuality(linear_deflection=payload.linear_deflection) if payload.linear_deflection else DEFAULT_MESH_QUALITY
+    merged = _merged_body_mesh_data({"shape": shape}, quality)
+    if len(merged.triangles) > CONVERT_MAX_TRIANGLES:
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "import_too_large", "detail": f"The model has {len(merged.triangles):,} triangles (the limit is {CONVERT_MAX_TRIANGLES:,}): use a larger linear deflection"},
+        )
+    return Response(content=encode_glb(merged), media_type="model/gltf-binary")
+
+
+@router.post("/import/probe", response_model=ImportProbeResponse)
+def probe_import(payload: ImportProbeRequest) -> ImportProbeResponse:
+    """F-6: reads a STEP / IGES file's structure only (no Part is created, nothing is stored) so a client can offer "As an assembly" / "As one part" with the
+    real counts. IGES has no product structure: it reports its solids (one part per solid). Capped in time and product count."""
+    data = _decode_import_data(payload.data_base64)
+    try:
+        if payload.source_format == ImportSourceFormat.STEP:
+            return ImportProbeResponse(**step_assembly.probe_step(data))
+        if payload.source_format == ImportSourceFormat.IGES:
+            return ImportProbeResponse(**step_assembly._with_timeout(step_assembly.probe_iges, data))
+    except step_assembly.AssemblyImportError as exc:
+        raise _assembly_import_error(exc)
+    raise HTTPException(status_code=422, detail={"type": "unsupported_format", "detail": "Only STEP and IGES files can be probed"})
+
+
+@router.post("/import/assembly", response_model=ImportAssemblyResponse, status_code=201)
+def import_assembly_as_new(payload: ImportAssemblyRequest) -> ImportAssemblyResponse:
+    """F-6, "open as new": the imported top product becomes the session's root, like opening a native file (a full replace, built and validated before the
+    session is touched)."""
+    imported = _build_assembly_import(payload)
+    try:
+        document, sketches = import_native(imported.payload)
+    except NativeFormatError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid native file: {exc}")
+    replace_document(document)
+    replace_all_sketches(sketches)
+    return _assembly_import_response(imported, document, None, list(imported.part_files.keys()))
+
+
+@router.post("/parts/{root_part_id}/import-assembly", response_model=ImportAssemblyResponse, status_code=201)
+def import_assembly_into_part(root_part_id: str, payload: ImportAssemblyRequest) -> ImportAssemblyResponse:
+    """F-6, insert: the imported top product is added to `root_part_id` as a sub-assembly Occurrence, through the same merge `add-component` uses
+    (`merge_component_into_document`, then `import_native`), so the session is only replaced if everything that was kept is valid."""
+    get_part_or_404(root_part_id)
+    imported = _build_assembly_import(payload)
+    current_payload = export_native(get_document(), all_sketches())
+    occurrence_id = payload.occurrence_id or str(uuid.uuid4())
+    root_file = imported.part_files[imported.root_part_id]
+    try:
+        merged = merge_component_into_document(
+            current_payload=current_payload,
+            component_payload=imported.payload,
+            root_part_id=root_part_id,
+            occurrence_id=occurrence_id,
+            external_ref=f"{imported.folder}/{root_file}",
+            name_override=payload.name or None,
+        )
+        document, sketches = import_native(merged)
+    except (AddComponentError, NativeFormatError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    replace_document(document)
+    replace_all_sketches(sketches)
+    return _assembly_import_response(imported, document, occurrence_id, list(imported.part_files.keys()))
+
+
 def _export_bodies_or_400(part: Part) -> dict[str, object]:
     """The current Body map every export format below shares (per
     `compute_part_bodies`, the same source of truth `/mesh` tessellates
@@ -9765,6 +9913,21 @@ def export_part_step(part_id: str) -> Response:
         content=data,
         media_type="application/step",
         headers={"Content-Disposition": f'attachment; filename="{part.name}.step"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/iges")
+def export_part_iges(part_id: str) -> Response:
+    """IGES export (F-3) of every current Body in this Part: geometry only
+    (IGES has no slot for material, mass or colour here - see
+    `app.document.iges_export`'s docstring)."""
+    part = get_part_or_404(part_id)
+    bodies = _export_bodies_or_400(part)
+    looks = _step_body_looks(get_document(), part, {body_id: ([], body_id) for body_id in bodies}, bodies)
+    return Response(
+        content=export_iges(bodies, appearances=looks),
+        media_type="model/iges",
+        headers={"Content-Disposition": f'attachment; filename="{part.name}.igs"'},
     )
 
 
@@ -9970,6 +10133,22 @@ def export_part_assembly_step(part_id: str) -> Response:
         content=data,
         media_type="application/step",
         headers={"Content-Disposition": f'attachment; filename="{root_part.name}.step"'},
+    )
+
+
+@router.get("/parts/{part_id}/export/assembly-iges")
+def export_part_assembly_iges(part_id: str) -> Response:
+    """[export_part_iges]'s assembly sibling: every placed Occurrence's real
+    geometry at its composed world transform, flattened to world-placed Bodies
+    exactly like `export/assembly-step` (an IGES file has no assembly
+    structure)."""
+    sources: dict[str, tuple[list[str], str]] = {}
+    root_part, bodies = _assembly_export_bodies_or_400(part_id, sources)
+    looks = _step_body_looks(get_document(), root_part, sources, bodies)
+    return Response(
+        content=export_iges(bodies, appearances=looks),
+        media_type="model/iges",
+        headers={"Content-Disposition": f'attachment; filename="{root_part.name}.igs"'},
     )
 
 

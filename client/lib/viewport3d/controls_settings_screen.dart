@@ -25,6 +25,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
   LayoutPreference _layout = ControlsPreferences.layoutPreference;
   bool _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
   int _edgeLimit = ControlsPreferences.edgeLimit;
+  bool _showInputDebug = ControlsPreferences.showInputDebug;
 
   @override
   void initState() {
@@ -42,6 +43,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
       _layout = ControlsPreferences.layoutPreference;
       _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
       _edgeLimit = ControlsPreferences.edgeLimit;
+      _showInputDebug = ControlsPreferences.showInputDebug;
     });
   }
 
@@ -55,6 +57,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
       _layout = ControlsPreferences.layoutPreference;
       _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
       _edgeLimit = ControlsPreferences.edgeLimit;
+      _showInputDebug = ControlsPreferences.showInputDebug;
     });
   }
 
@@ -196,6 +199,17 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
                 title: const Text('Keyboard shortcuts'),
                 subtitle: const Text('The list of keys (also on ? or F1 in each screen).'),
                 onTap: () => showCadShortcutSheet(context, CadShortcut.values),
+              ),
+              SwitchListTile(
+                key: const ValueKey('show-input-debug'),
+                title: const Text('Show input debug'),
+                subtitle: const Text(
+                    'A line at the bottom of the 3D view with the last mouse event: device, buttons, Ctrl / Shift as the app sees them and the action chosen. For reporting a Ctrl / Shift + middle-drag problem.'),
+                value: _showInputDebug,
+                onChanged: (value) {
+                  setState(() => _showInputDebug = value);
+                  ControlsPreferences.setShowInputDebug(value);
+                },
               ),
               Padding(
                 padding: const EdgeInsets.all(16),

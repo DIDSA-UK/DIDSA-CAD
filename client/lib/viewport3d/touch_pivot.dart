@@ -26,6 +26,18 @@ OrbitTapOutcome resolveOrbitTap({double? pivotDistance, double? planeDistance}) 
   return planeDistance != null ? OrbitTapOutcome.plane : OrbitTapOutcome.background;
 }
 
+/// Whether a tap in orbit mode may set the persistent rotation pivot (F-2, `docs/iges-jt-and-desktop-input-plan-2026-11-11.md`).
+/// It is a touch feature: a left click with a mouse keeps its ordinary meaning (a plane tap, a background tap), so a mouse
+/// never plants a pivot by accident. Not in selection or draw-cursor mode, nor while a sketch plane is shown (those taps
+/// mean something else). A pivot a deliberate menu choice sets ("Rotate about here") is not affected.
+bool orbitTapSetsPivot({
+  required bool mouseDriven,
+  required bool selectionMode,
+  required bool drawCursorMode,
+  required bool hasSketchPlane,
+}) =>
+    !mouseDriven && !selectionMode && !drawCursorMode && !hasSketchPlane;
+
 /// A point the view orbits about, and its distance along the ray it was picked with.
 typedef PivotHit = ({vm.Vector3 point, double distance});
 

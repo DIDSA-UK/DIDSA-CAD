@@ -7,7 +7,13 @@ class ExportFormatOption {
   final String label;
   final String value;
 
-  const ExportFormatOption({required this.label, required this.value});
+  /// The saved file's extension when it differs from [value] (IGES is `.igs`).
+  final String? fileExtension;
+
+  const ExportFormatOption({required this.label, required this.value, this.fileExtension});
+
+  /// The extension the exported file gets.
+  String get extension => fileExtension ?? value;
 }
 
 /// On-device request: the File menu's four format-specific export entries
@@ -16,6 +22,7 @@ class ExportFormatOption {
 /// for the opposite direction.
 const List<ExportFormatOption> exportFormatOptions = [
   ExportFormatOption(label: 'STEP', value: 'step'),
+  ExportFormatOption(label: 'IGES', value: 'iges', fileExtension: 'igs'),
   ExportFormatOption(label: 'STL', value: 'stl'),
   ExportFormatOption(label: 'OBJ', value: 'obj'),
   ExportFormatOption(label: 'glTF', value: 'glb'),

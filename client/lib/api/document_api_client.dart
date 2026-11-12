@@ -5,7 +5,10 @@ import 'package:http/http.dart' as http;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../config.dart';
+import 'import_assembly_dto.dart';
 import 'sketch_api_client.dart' show ApiException;
+
+export 'import_assembly_dto.dart';
 
 /// Wire counterpart of the backend's `MaterialAssignmentSchema` - a
 /// resolved `(materialId, name, densityGCm3)` assignment, distinct from the
@@ -859,6 +862,10 @@ class FeatureDto {
   final double? startDistance;
   final double? endDistance;
 
+  /// F-3: only on the create response of a STEP / IGES `"import"` Feature - whether the shape came in as a real solid
+  /// (`false`: surfaces or an open sewn shell, so no volume or booleans). Null everywhere else.
+  final bool? solid;
+
   /// C3: only present on a `"sketch"` Feature - the id of the
   /// CreatePlaneFeature this Sketch is anchored to, or null when it lives on
   /// one of the three fixed reference planes instead (the common case).
@@ -1370,6 +1377,7 @@ class FeatureDto {
     required this.type,
     required this.id,
     required this.locked,
+    this.solid,
     this.sketchId,
     this.sketchFeatureId,
     this.extrudeType,
@@ -1482,6 +1490,7 @@ class FeatureDto {
         type: json['type'] as String,
         id: json['id'] as String,
         locked: json['locked'] as bool,
+        solid: json['solid'] as bool?,
         sketchId: json['sketch_id'] as String?,
         sketchFeatureId: json['sketch_feature_id'] as String?,
         extrudeType: json['extrude_type'] as String?,
@@ -6468,7 +6477,7 @@ class DocumentApiClient {
     return PartDrawingDto(png: response.bodyBytes, boundingBoxSize: size.length == 3 ? size : null);
   }
 
-  /// Export: raw file bytes for `format` (`'step'`/`'stl'`/`'obj'`/`'glb'`)
+  /// Export: raw file bytes for `format` (`'step'`/`'iges'`/`'stl'`/`'obj'`/`'glb'`)
   /// - the backend 400s if `partId` has no solid geometry yet (surfaced as
   /// an [ApiException] here, same as any other error response).
   Future<Uint8List> exportPart(String partId, String format) => _sendBytes(
@@ -6493,7 +6502,7 @@ class DocumentApiClient {
 
   /// Import: brings [bytes] in as a fixed, non-parametric Body (locked-in
   /// scope - see the backend's `app.document.models.ImportFeature` own
-  /// docstring). [sourceFormat] is `'step'`/`'stl'`/`'obj'`/`'gltf'`, base64-
+  /// docstring). [sourceFormat] is `'step'`/`'iges'`/`'stl'`/`'obj'`/`'gltf'`, base64-
   /// encoded into the JSON body rather than a multipart upload (no other
   /// endpoint here uses multipart - this mirrors the native file format's
   /// own "binary data as a plain JSON string" convention instead). The
@@ -6513,6 +6522,34 @@ class DocumentApiClient {
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// F-6: what a STEP / IGES file holds (parts, sub-assemblies, placements), read without importing it - so the import dialog can say "37 parts in 6
+  /// sub-assemblies" and pick a default. 422s (`import_too_large`, `invalid_import_data`, ...) surface as an [ApiException].
+  Future<ImportProbeDto> probeImport({required String sourceFormat, required Uint8List bytes}) => _send(
+        () => _httpClient.post(
+              _uri('/document/import/probe'),
+              headers: _headers,
+              body: jsonEncode({'source_format': sourceFormat, 'data_base64': base64Encode(bytes)}),
+            ),
+        (body) => ImportProbeDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// F-6: imports a STEP file as an assembly (a Part per product, an Occurrence per placement) or an IGES file as one part per solid, adding it to
+  /// [rootPartId] as a sub-assembly occurrence. The new Parts have no file yet: the result names the one suggested for each ([ImportAssemblyDto.suggestedFiles]).
+  Future<ImportAssemblyDto> importAssembly(
+    String rootPartId, {
+    required String sourceFormat,
+    required Uint8List bytes,
+    String? name,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$rootPartId/import-assembly'),
+              headers: _headers,
+              body: jsonEncode({'source_format': sourceFormat, 'data_base64': base64Encode(bytes), if (name != null) 'name': name}),
+            ),
+        (body) => ImportAssemblyDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// `docs/gear-design/08-entry-screen-and-preview.md`: the cheap

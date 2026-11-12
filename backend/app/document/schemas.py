@@ -1890,6 +1890,11 @@ class ImportFeatureResponse(FeatureResponseBase):
     # B1: see SketchFeatureResponse.produces above - always BODY for an
     # ImportFeature.
     produces: Produces
+    # F-3: for a STEP / IGES import, whether the shape came in as a real solid
+    # (False = surfaces or an open sewn shell: no volume, mass or booleans).
+    # Only set on the create response (None when read back later and for the
+    # mesh formats, which are triangulation-only references).
+    solid: bool | None = None
 
 
 class GearFeatureCreate(BaseModel):
@@ -3305,6 +3310,68 @@ class NativeImportResponse(BaseModel):
 
     document_id: str
     part_ids: list[str]
+
+
+class ConvertMeshRequest(BaseModel):
+    """`POST /convert/mesh` (F-5): a STEP / IGES file to a `.glb`, stateless (no document, no Part is created): the mesh viewer opens B-rep files through this.
+    `linear_deflection` (mm, optional) coarsens or refines the tessellation."""
+
+    source_format: ImportSourceFormat
+    data_base64: str
+    linear_deflection: float | None = None
+
+
+class ImportProbeRequest(BaseModel):
+    """`POST /import/probe` (F-6): the structure of a STEP / IGES file, no geometry sent anywhere - so the client can say "37 parts in 6 sub-assemblies"."""
+
+    source_format: ImportSourceFormat
+    data_base64: str
+
+
+class ImportProbeResponse(BaseModel):
+    products: int  # distinct parts with a shape (IGES: solids)
+    assemblies: int
+    instances: int  # placements, counting every one
+    has_structure: bool  # STEP with sub-assemblies; always False for IGES
+    mirrored_instances: int  # placements that are mirrored or scaled (baked into their own Part, or skipped for a sub-assembly)
+    name: str
+
+
+class ImportAssemblyRequest(BaseModel):
+    """`POST /parts/{root_part_id}/import-assembly` and `POST /import/assembly` (F-6): import a STEP file as an assembly (a Part per product, an Occurrence per
+    placement) or an IGES file as one Part per solid (`mode` "solids"). `name` names the imported top assembly (the client sends the file's name)."""
+
+    source_format: ImportSourceFormat
+    data_base64: str
+    name: str | None = None
+    occurrence_id: str | None = None
+
+
+class ImportAssemblyReportSkip(BaseModel):
+    name: str
+    reason: str
+
+
+class ImportAssemblyReport(BaseModel):
+    imported: int
+    total: int
+    skipped: list[ImportAssemblyReportSkip]
+    baked: int  # mirrored / scaled placements baked into a Part of their own
+
+
+class ImportAssemblyResponse(BaseModel):
+    """What an assembly import hands back: the new Parts, a suggested file for each (relative to the folder the client writes them to: `folder`; unique and
+    sanitised, so the client's Save All can name them) and the per-part report ("35 of 37 parts imported; 2 skipped")."""
+
+    document_id: str
+    part_ids: list[str]
+    new_part_ids: list[str]
+    root_part_id: str  # the imported top assembly's Part
+    occurrence_id: str | None  # the Occurrence placing it (insert), None for "open as new"
+    folder: str
+    suggested_files: dict[str, str]  # Part id -> "<folder>/<File>.didsa"
+    part_names: dict[str, str]
+    report: ImportAssemblyReport
 
 
 class AddComponentRequest(BaseModel):

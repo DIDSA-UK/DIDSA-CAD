@@ -38,6 +38,25 @@ void main() {
     });
   });
 
+  group('orbitTapSetsPivot (F-2: the persistent pivot is a touch feature)', () {
+    bool sets({bool mouse = false, bool select = false, bool draw = false, bool sketch = false}) => orbitTapSetsPivot(
+          mouseDriven: mouse,
+          selectionMode: select,
+          drawCursorMode: draw,
+          hasSketchPlane: sketch,
+        );
+
+    test('a finger tap in plain orbit mode sets it', () => expect(sets(), isTrue));
+    test('a mouse click never does, so it keeps its ordinary meaning', () => expect(sets(mouse: true), isFalse));
+    test('selection, draw-cursor and sketch-plane taps never do, with either device', () {
+      for (final mouse in [false, true]) {
+        expect(sets(mouse: mouse, select: true), isFalse);
+        expect(sets(mouse: mouse, draw: true), isFalse);
+        expect(sets(mouse: mouse, sketch: true), isFalse);
+      }
+    });
+  });
+
   group('pivot picking and orbiting', () {
     const size = Size(800, 600);
     const tap = Offset(520, 230);
@@ -167,6 +186,42 @@ void main() {
       expect(key.currentState!.rotationPivot, isNull);
       expect(backgroundTaps, hasLength(1));
       expect(find.byKey(const ValueKey('rotation-pivot-marker')), findsNothing);
+    });
+
+    testWidgets('F-2: a mouse click on the body sets no pivot (it is the ordinary background / plane tap); a finger tap still does', (tester) async {
+      final key = await pump(tester);
+      if (key == null) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      final center = tester.getCenter(find.byType(PartViewport));
+      final mouse = await tester.startGesture(center, kind: PointerDeviceKind.mouse);
+      await mouse.up();
+      await tester.pump();
+      expect(key.currentState!.rotationPivot, isNull);
+      expect(find.byKey(const ValueKey('rotation-pivot-marker')), findsNothing);
+
+      await tapAt(tester, center); // a finger
+      expect(key.currentState!.rotationPivot, isNotNull);
+      // ...and the mouse arriving afterwards drops it, so it cannot steer a mouse orbit unseen.
+      final mouse2 = await tester.startGesture(center, kind: PointerDeviceKind.mouse);
+      await mouse2.up();
+      await tester.pump();
+      expect(key.currentState!.rotationPivot, isNull);
+    });
+
+    testWidgets('F-2: the menu\'s Rotate about here still sets a pivot with a mouse', (tester) async {
+      final key = await pump(tester);
+      if (key == null) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      final mouse = await tester.startGesture(tester.getTopLeft(find.byType(PartViewport)) + const Offset(5, 5), kind: PointerDeviceKind.mouse);
+      await mouse.up();
+      await tester.pump();
+      key.currentState!.setRotationPivot(vm.Vector3(1, 2, 3));
+      await tester.pump();
+      expect(key.currentState!.rotationPivot, vm.Vector3(1, 2, 3));
     });
 
     testWidgets('selection mode: a tap leaves the pivot alone', (tester) async {

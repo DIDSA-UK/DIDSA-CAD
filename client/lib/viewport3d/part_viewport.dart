@@ -27,6 +27,7 @@ import 'orbit_camera.dart';
 import 'orthographic_camera.dart';
 import 'reference_planes.dart';
 import 'presentation_mode.dart' show Turntable;
+import 'input_debug.dart';
 import 'touch_pivot.dart';
 import 'assembly_instance_render.dart';
 import 'render_mode.dart';
@@ -4899,7 +4900,13 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final hit = hitTestReferencePlanes(ray, hidden: widget.hiddenReferencePlanes);
     // Orbit mode on the part / assembly screens (not the sketcher, where a tap means sketch): a tap on the model sets
     // the rotation pivot there, unless a plane is nearer on the same ray, which keeps its own meaning.
-    final setsPivot = !widget.selectionMode && !widget.drawCursorMode && widget.sketchPlaneBasis == null;
+    // F-2: a touch feature. With a mouse the click falls through to its ordinary meaning (plane tap, background tap).
+    final setsPivot = orbitTapSetsPivot(
+      mouseDriven: _mouseDriven,
+      selectionMode: widget.selectionMode,
+      drawCursorMode: widget.drawCursorMode,
+      hasSketchPlane: widget.sketchPlaneBasis != null,
+    );
     final createPlaneHit = hitTestCreatePlanes(localRay, widget.createPlanes);
     if (setsPivot) {
       final pivotHit = _orbitPivotHitAt(localPosition);
@@ -5090,6 +5097,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (_turntable.running) setTurntable(false);
     _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
+    InputDebug.note('down', event, navPointer: _mouseNavPointer);
     // Desktop input D1: a middle or right press drags the view in every
     // mode, ahead of gizmos, marquee and select - see [_mouseNavPointer].
     final middleDoubleClick = _middleDoubleClick.registerPress(event);
@@ -5203,6 +5211,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerMove(PointerMoveEvent event) {
+    InputDebug.note('move', event, navPointer: _mouseNavPointer);
     if (event.pointer == _mouseNavPointer) {
       _applyMouseNavigation(event);
       return;
@@ -5319,6 +5328,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerEnd(PointerEvent event) {
+    InputDebug.note(event is PointerCancelEvent ? 'cancel' : 'up', event, navPointer: _mouseNavPointer);
     if (event.pointer == _mouseNavPointer) {
       _endMouseNavigation(event);
       return;
@@ -5461,6 +5471,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   }
 
   void _onPointerHover(PointerHoverEvent event) {
+    InputDebug.note('hover', event, navPointer: _mouseNavPointer);
     _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
     if (widget.selectionMode) {
@@ -5476,7 +5487,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _noteDeviceKind(PointerDeviceKind kind) {
     if (_lastPointerKind == kind) return;
-    setState(() => _lastPointerKind = kind);
+    setState(() {
+      _lastPointerKind = kind;
+      // F-2: a pivot a finger tap set must not keep steering a mouse orbit with no way to see why. (The marker is drawn from
+      // [_touchPivot], so it goes with it; "Rotate about here" in the menu sets one again on purpose.)
+      if (kind == PointerDeviceKind.mouse) _touchPivot = null;
+    });
   }
 
   /// Desktop input D1: one move of a middle/right drag - see
@@ -7726,6 +7742,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             if (ViewPreferences.debugShowCameraOrientation)
               DebugCameraOrientationOverlay(camera: _camera.cameraFor(size)),
+            if (ControlsPreferences.showInputDebug)
+              const Positioned(left: 8, bottom: 8, child: InputDebugOverlay()),
           ],
         );
       },
