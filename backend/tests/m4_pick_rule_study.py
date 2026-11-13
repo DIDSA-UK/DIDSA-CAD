@@ -3,6 +3,8 @@ Not collected by pytest. Run from `backend/` in the backend conda env:
 
     CAD_API_KEY=test-api-key python -m tests.m4_pick_rule_study dump OUT.json [--trials 60]   # replays every accuracy trial (a few minutes)
     python -m tests.m4_pick_rule_study evaluate OUT.json                                    # every candidate rule, per scene and start class
+    python -m tests.m4_pick_rule_study evaluate-view OUT.json                               # the view-direction rules (two camera models)
+    python -m tests.m4_pick_rule_study selectors OUT.json                                   # "a rule per kind of request": its upper bound
 
 `dump` replays the accuracy benchmark's trials (`tests/bench_mates_m0.py`, same seeds, same starts and pick points) and stores, per trial, the
 start geometry, whether the shown answer was right, and EVERY alternative the preview returned (each branch combination solved from the same
@@ -250,10 +252,167 @@ def report(path: str) -> None:
         print(f"\n{name}: all {100*tot/n:.1f}%  phase4 3-class {100*p4s:.1f}%  rows worse: {len(worse)}  changes: {gains}")
 
 
+# ---- the view direction (follow-up spike, 2026-11-13) ----------------------------------------------------------------------------
+#
+# The benchmark has no camera, so each trial gets one, seeded per trial. Two models of where the user was looking (v = the direction the
+# camera looks along, world, unit):
+#   visible   - uniform over the directions from which every picked FLAT face is front-facing at the START pose (v . n < -0.1): you can only
+#               click a face you can see. Nothing else, so it knows nothing about the truth. Occlusion is ignored.
+#   look_down - `visible`, and the camera looks down at the table (v.z < -0.3): an ASSUMPTION about how people sit at a desk.
+# A trial where no such view exists (the two picked faces point away from each other at the start: a user would have turned the view
+# between the picks) keeps the shown answer.
+
+
+def _view_seed(r) -> int:
+    return sum(ord(c) * (i + 1) for i, c in enumerate(f"view/{r['scene']}/{r['start']}/{r['trial']}")) % (2**31)
+
+
+def view_dir(r, model: str):
+    rng = np.random.default_rng(_view_seed(r))
+    g = r["start_g"]
+    normals = [v(g[k]) for k, kind in (("nd", g["kind_d"]), ("nf", g["kind_f"])) if kind == "plane"]
+    for _ in range(10000):
+        d = rng.normal(size=3)
+        d /= np.linalg.norm(d)
+        if all(d @ n < -0.1 for n in normals) and (model != "look_down" or d[2] < -0.3):
+            return d
+    return None
+
+
+def _align_tie45(r) -> bool:
+    c = start_cos(r)
+    return c is not None and abs(c) < math.cos(math.radians(45))
+
+
+def _choose(alts, pred):
+    good = [a for a in alts if pred(a)]
+    return good[0] if good and len(good) < len(alts) else None
+
+
+def _faces_camera(a, d) -> bool:
+    return float(v(a["g"]["nd"]) @ d) < 0
+
+
+def _camera_side(a, d) -> bool:
+    g = a["g"]
+    offset = float((v(g["pd"]) - v(g["pf"])) @ v(g["nf"]))
+    return offset * float(-d @ v(g["nf"])) > 0
+
+
+def _resolved_aligned(r) -> bool:
+    return (r["resolved"] or {}).get("alignment") == "aligned"
+
+
+def _aligned_alts(r):
+    return [a for a in r["alts"] if a["alignment"] == "aligned"]
+
+
+VIEW_RULES = {
+    "V1 alignment tie (45 deg): the clicked face faces the camera": lambda r, d: _choose(r["alts"], lambda a: _faces_camera(a, d)) if _align_tie45(r) else None,
+    "V2 alignment tie (45 deg): the clicked face faces away": lambda r, d: _choose(r["alts"], lambda a: not _faces_camera(a, d)) if _align_tie45(r) else None,
+    "V3 same-facing distance: the camera's side of the fixed face": lambda r, d: _choose(_aligned_alts(r), lambda a: _camera_side(a, d)) if _resolved_aligned(r) else None,
+    "V4 same-facing distance: the far side": lambda r, d: _choose(_aligned_alts(r), lambda a: not _camera_side(a, d)) if _resolved_aligned(r) else None,
+}
+VIEW_RULES["V5 V1, then V3"] = lambda r, d: VIEW_RULES["V1 alignment tie (45 deg): the clicked face faces the camera"](r, d) or VIEW_RULES["V3 same-facing distance: the camera's side of the fixed face"](r, d)
+
+_PHASE4 = {"stack", "parallel", "pin-in-post", "axis-distance-25", "inset-10", "overhang-3", "gap-6-above", "gap-6-under", "vertex-6-above"}
+_SAME_FACING_FREE = {"inset-10", "overhang-3", "inset-2", "overhang-25"}
+
+
+def _cells(choose) -> dict:
+    """`choose(row)` -> the alternative a rule picks, or None (the shown answer stays). Right first time per (scene, start)."""
+    cells = defaultdict(lambda: [0, 0])
+    for r in ROWS:
+        chosen = choose(r)
+        cells[(r["scene"], r["start"])][0] += r["first"] if chosen is None else chosen["correct"]
+        cells[(r["scene"], r["start"])][1] += 1
+    return cells
+
+
+def _summary(cells, base) -> str:
+    def share(keys):
+        return 100.0 * sum(cells[k][0] for k in keys) / max(1, sum(cells[k][1] for k in keys))
+
+    three = [k for k in cells if k[1] != "upside_down"]
+    diff = {k: cells[k][0] - base[k][0] for k in cells if cells[k][0] != base[k][0]}
+    worse = {k: d for k, d in diff.items() if d < 0}
+    return (f"all {share(list(cells)):.1f}% | phase4 {share([k for k in three if k[0] in _PHASE4]):.1f}% | same-facing free "
+            f"{share([k for k in three if k[0] in _SAME_FACING_FREE]):.1f}% | helped {sum(d for d in diff.values() if d > 0)} harmed "
+            f"{-sum(worse.values())} in {len(worse)} rows | {diff}")
+
+
+def plane_distance(r) -> bool:
+    return r["type"] == "distance" and plane_plane(r)
+
+
+def report_view(path: str) -> None:
+    global ROWS
+    ROWS = json.load(open(path))
+    base = _cells(lambda r: None)
+    for model in ("visible", "look_down"):
+        dirs = {id(r): view_dir(r, model) for r in ROWS}
+        print(f"\n## view model: {model} (trials with no possible view, kept as shown: {sum(d is None for d in dirs.values())})")
+        for name, rule in VIEW_RULES.items():
+            cells = _cells(lambda r: rule(r, dirs[id(r)]) if dirs[id(r)] is not None and plane_distance(r) else None)
+            print(f"{name}: {_summary(cells, base)}")
+
+
+# ---- "a rule per kind of request": what it could reach at best -------------------------------------------------------------------
+#
+# A selector picks one of the candidate rules (the pick-point rules above, the view rules with the `visible` model, or none) by what it
+# can see in the request. `oracle_by_scene` lets it see the SCENE (which no request carries): the upper bound of the idea. The honest
+# selectors see only the request: its type and picked geometry kinds (`by_request`), and also its value (`by_request_and_value`, which
+# on these synthetic scenes separates insets from overhangs only because of the sizes chosen for them: overfitting, shown to say so).
+
+
+def report_selectors(path: str) -> None:
+    global ROWS
+    ROWS = json.load(open(path))
+    base = _cells(lambda r: None)
+    dirs = {id(r): view_dir(r, "visible") for r in ROWS}
+    candidates = {"none": lambda r: None}
+    candidates.update({name: rule for name, rule in RULES.items() if name != "default"})
+    for name, rule in VIEW_RULES.items():
+        candidates[name] = (lambda rule: lambda r: rule(r, dirs[id(r)]) if dirs[id(r)] is not None and plane_distance(r) else None)(rule)
+    outcome = {name: {} for name in candidates}
+    for name, choose in candidates.items():
+        for r in ROWS:
+            chosen = choose(r)
+            outcome[name][id(r)] = r["first"] if chosen is None else chosen["correct"]
+
+    def selector(key):
+        groups = defaultdict(list)
+        for r in ROWS:
+            groups[key(r)].append(r)
+        picked = {}
+        for group, rows in groups.items():
+            picked[group] = max(candidates, key=lambda n: (sum(outcome[n][id(r)] for r in rows), n == "none"))
+        cells = defaultdict(lambda: [0, 0])
+        for r in ROWS:
+            cells[(r["scene"], r["start"])][0] += outcome[picked[key(r)]][id(r)]
+            cells[(r["scene"], r["start"])][1] += 1
+        return cells, picked
+
+    for label, key in (
+        ("oracle_by_scene (sees the scene: the idea's upper bound)", lambda r: r["scene"]),
+        ("by_request (type + picked kinds)", lambda r: (r["type"], r["start_g"]["kind_d"], r["start_g"]["kind_f"])),
+        ("by_request_and_value (+ the value: overfits these scenes)", lambda r: (r["type"], r["start_g"]["kind_d"], r["start_g"]["kind_f"], r["value"])),
+    ):
+        cells, picked = selector(key)
+        print(f"\n{label}: {_summary(cells, base)}")
+        for group, name in sorted(picked.items(), key=str):
+            if name != "none":
+                print(f"   {group}: {name}")
+
+
 ROWS: list = []
 
 if __name__ == "__main__":
     if sys.argv[1] == "dump":
         dump(sys.argv[2], int(sys.argv[sys.argv.index("--trials") + 1]) if "--trials" in sys.argv else 60)
+    elif sys.argv[1] == "evaluate-view":
+        report_view(sys.argv[2])
+    elif sys.argv[1] == "selectors":
+        report_selectors(sys.argv[2])
     else:
         report(sys.argv[2])

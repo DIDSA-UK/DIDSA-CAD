@@ -734,6 +734,39 @@ Why none works on this benchmark: from the picks alone (a face on each part) a s
 every "facing" preference trades one for the other, and the inset / overhang choice is the user's (the Phase 4 doc found the same). I did not
 tune thresholds against the rows to find a combination that happens to harm nothing. The view direction (flat app) is not in the benchmark,
 so no rule could be judged on it.
+**Follow-up spike: the view direction, then "a rule per kind of request" (2026-11-13, nothing shipped).** Both are in
+`tests/m4_pick_rule_study.py` (`evaluate-view`, `selectors`) over the same dump.
+*The view direction.* The benchmark has no camera, so each trial gets one, seeded per trial, from one of two models. `visible` is uniform
+over the directions from which every picked flat face faces the camera at the start (you can only click a face you can see); it knows
+nothing about the truth. `look_down` adds that the camera looks down at the table, an assumption about how people sit. Trials where no
+single view sees both faces keep the shown answer (264 and 640 of 3000). Rules (plane-plane distances only):
+
+| rule | view model | all rows (63.5 %) | Phase 4 set (75.9 %) | same-facing, free part (51.8 %) | previews helped / harmed (rows harmed) |
+|---|---|---|---|---|---|
+| V1: alignment tie (45 deg), the clicked face faces the camera | visible | 63.7 % | 73.1 % | 65.3 % | 104 / 99 (7) |
+| V1 | look_down | 64.9 % | 75.7 % | 63.6 % | 91 / 50 (4) |
+| V2: alignment tie, the clicked face faces away | visible / look_down | 60.1 / 60.7 % | 72.8 / 73.5 % | 37.9 / 39.3 % | 9 / 110 (10); 7 / 91 (9) |
+| V3: same-facing distance on the camera's side of the fixed face | visible / look_down | 54.1 / 54.2 % | 73.4 / 73.5 % | 37.8 / 38.1 % | 98 / 379 (9); 94 / 373 (9) |
+| V4: same-facing distance on the far side | visible / look_down | 53.7 / 53.8 % | 73.0 / 73.0 % | 35.8 / 36.4 % | 59 / 354 (9); 59 / 350 (9) |
+| V5: V1, then V3 | visible / look_down | 54.6 / 55.8 % | 71.1 / 73.6 % | 52.5 / 50.8 % | 147 / 414 (13); 134 / 365 (11) |
+
+None passes. V1 is the mirror of the pick-point rule: it lifts overhangs (overhang-3 medium +36, overhang-25 medium +41) and costs facing
+gaps (gap-6-under medium -34, gap-6-above medium -25). With a camera model that does not know the answer, the view says only what the start
+pose already says (which way the clicked faces pointed), so every rule moves the misses from one kind of mate to another. Whether real users'
+views carry intent (looking at the gap they are closing) a synthetic bench cannot show without assuming it; logged sessions could.
+*A rule per kind of request.* A selector chooses, per kind of request, one rule among all the candidates above (or none):
+
+| selector sees | all rows | Phase 4 set | same-facing, free part | harmed rows |
+|---|---|---|---|---|
+| the scene itself (the idea's upper bound; no request carries it) | 79.0 % | 89.6 % | 88.1 % | 0 |
+| the request: type and picked geometry kinds | 65.1 % | 78.1 % | 57.5 % | 4 (it picks one rule for every plane-plane distance: the alignment tie "towards") |
+| the request plus its value | 79.0 % | 89.6 % | 88.1 % | 0, but only because these scenes happen to use different values for insets (10, 2), overhangs (3, 25) and gaps (6): overfitting, not a rule |
+
+So the idea would nearly reach the plan's targets **if the selector knew the intent** (gap, inset or overhang), and gains nothing safe
+from what a request actually carries: the requests that need opposite rules are identical. The only honest source of that intent is the
+user (for example a Distance that asks "gap / inset / overhang" up front); that is one choice before the preview instead of a Flip after it,
+so it saves a click only if the choice is remembered or defaulted well. Not built, and not measurable on this bench.
+
 **What did ship for pick points:** the wire only. `MateCreate.pick_points` (one per reference, local to its occurrence, mm, null allowed) and
 `view_direction` are accepted and checked (422 for a wrong shape), and **no solve reads them**: a test pins that the answer is the same with
 and without them. Both clients send them (Flutter: the hit point taken into the occurrence's frame plus the view direction; VR: the laser's
