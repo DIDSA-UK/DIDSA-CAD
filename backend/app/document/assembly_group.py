@@ -1137,11 +1137,15 @@ def _expand_result(
     residual_inf = max(result.quality.residual_inf, internal)
     converged, near = result.converged, dict(result.near)
     full = replace(red.full, active_limits={})
-    if converged and internal > _NOISE_TOL and not reduced.active_limits:
-        polished, polished_inf, _ = _retract(full, poses, _solve_weights(full, grabbed_id, lever_arm))
-        if polished_inf < residual_inf:
-            poses, residual_inf = polished, polished_inf
-            internal = rigid_sets.internal_residual_inf(reduced, poses)
+    if converged and internal > _NOISE_TOL:
+        if near_redundant_mates(document, part, full, poses) is None:
+            # a mate inside a set is missed beyond the near limits: the set is rigid without it, so no solve can meet it here (the
+            # unreduced solve fails the same way, only slower) - not converged, and no unreduced steps spent on it
+            converged = False
+        elif not reduced.active_limits:
+            polished, polished_inf, _ = _retract(full, poses, _solve_weights(full, grabbed_id, lever_arm))
+            if polished_inf < residual_inf:
+                poses, residual_inf = polished, polished_inf
     if converged and (residual_inf > _NOISE_TOL or near):
         # some mate is above the strict tolerance: judge the whole group (the mates inside the sets too) as the unreduced solve would
         accepted = near_redundant_mates(document, part, full, poses)
