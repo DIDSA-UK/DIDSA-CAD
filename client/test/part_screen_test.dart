@@ -7739,15 +7739,16 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
     }
 
-    testWidgets('the File menu has Server projects and Copy this project to the server', (tester) async {
+    testWidgets('one Open entry: no separate Server projects entry, and Copy to cloud storage is in the File menu', (tester) async {
       await pumpServerScreen(tester);
       await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      expect(find.byKey(const ValueKey('file-server-projects')), findsOneWidget);
-      expect(find.text('Server projects…'), findsOneWidget);
-      expect(find.text('Copy this project to the server…'), findsOneWidget);
+      expect(find.text('Open…'), findsOneWidget);
+      expect(find.text('Server projects…'), findsNothing);
+      expect(find.byKey(const ValueKey('file-server-projects')), findsNothing);
+      expect(find.text('Copy this project to cloud storage…'), findsOneWidget);
     });
 
     testWidgets('a screen with no project store service shows neither entry', (tester) async {
@@ -7769,7 +7770,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(find.text('Server projects…'), findsNothing);
-      expect(find.text('Copy this project to the server…'), findsNothing);
+      expect(find.text('Copy this project to cloud storage…'), findsNothing);
     });
 
     testWidgets('Save All on a server project is ONE commit, and the chip says Synced', (tester) async {
@@ -7785,6 +7786,13 @@ void main() {
       expect(store.count('PUT'), 0);
       expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
+
+    Future<void> openCloudFromMenu(WidgetTester tester) async {
+      await tapFileMenu(tester, 'Open…');
+      await tester.tap(find.byKey(const ValueKey('open-source-cloud')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+    }
 
     // The owner's sequence (13 Nov): a brand-new part, then File > Server projects into a new (empty) project: there is no file to
     // open, so the session must start saving into the project - before this, nothing was sent and no chip appeared.
@@ -7807,7 +7815,7 @@ void main() {
       await pumpNewSession(tester);
       expect(await _syncButtonPresent(tester), isFalse);
 
-      await tapFileMenu(tester, 'Server projects…');
+      await openCloudFromMenu(tester);
       expect(find.byKey(const ValueKey('server-project-Gearbox')), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
       await tester.pump();
@@ -7830,7 +7838,7 @@ void main() {
       store.writeJson('Gearbox', 'Existing.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}});
       await pumpNewSession(tester);
 
-      await tapFileMenu(tester, 'Server projects…');
+      await openCloudFromMenu(tester);
       await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
@@ -7934,6 +7942,19 @@ void main() {
       await pumpDesktop(tester, storage: _FakeStorageService());
       expect(find.byKey(const ValueKey('desktop-sync-button')), findsNothing);
       expect(find.byKey(const ValueKey('desktop-local-button')), findsNothing);
+    });
+
+    testWidgets('Open with cloud storage set up asks where: this device or cloud storage', (tester) async {
+      await pumpNewSession(tester);
+      await tapFileMenu(tester, 'Open…');
+      expect(find.byKey(const ValueKey('open-source-dialog')), findsOneWidget);
+      expect(find.byKey(const ValueKey('open-source-device')), findsOneWidget);
+      expect(find.byKey(const ValueKey('open-source-cloud')), findsOneWidget);
+      expect(find.text('store.test'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('open-source-cloud')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('server-projects-dialog')), findsOneWidget);
     });
 
     testWidgets('plain Save on a server project sends the file to the store', (tester) async {

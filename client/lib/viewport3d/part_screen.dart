@@ -12530,6 +12530,17 @@ class _PartScreenState extends State<PartScreen> {
   /// is kept rather than forced uniform.
   Future<void> _onOpenPressed() async {
     setState(() => _toolbarOpen = false);
+    // One Open for both places a project can live: with cloud storage set up, ask where first. (Cloud storage handles its own
+    // "discard unsaved work?" question, only if a file is opened.)
+    final remote = _remote;
+    if (remote != null && remote.isConfigured) {
+      final source = await showOpenSourceDialog(context, cloudHost: Uri.tryParse(remote.settings.url)?.host ?? remote.settings.url);
+      if (source == null || !mounted) return;
+      if (source == OpenSource.cloud) {
+        await _onServerProjectsPressed();
+        return;
+      }
+    }
     if (!await _confirmExitPart()) return;
     if (!mounted) return;
     if (_canPersistFilePathForReuse) {
@@ -15140,7 +15151,7 @@ class _PartScreenState extends State<PartScreen> {
             ListTile(
               key: const ValueKey('local-sheet-server-projects'),
               leading: const Icon(Icons.cloud_outlined),
-              title: const Text('Server projects…'),
+              title: const Text('Open from cloud storage…'),
               onTap: () {
                 Navigator.of(sheetContext).pop();
                 unawaited(_onServerProjectsPressed());
@@ -15149,7 +15160,7 @@ class _PartScreenState extends State<PartScreen> {
             ListTile(
               key: const ValueKey('local-sheet-copy'),
               leading: const Icon(Icons.cloud_upload_outlined),
-              title: const Text('Copy this project to the server…'),
+              title: const Text('Copy this project to cloud storage…'),
               onTap: () {
                 Navigator.of(sheetContext).pop();
                 unawaited(_onCopyToServerPressed());
@@ -16033,7 +16044,7 @@ class _PartScreenState extends State<PartScreen> {
     await _openComposedProject(root, rootPath);
   }
 
-  /// File > Server projects…: choose a project on the store, then a file in it, and open it like any project file.
+  /// File > Open… > Cloud storage: choose a project on the store, then a file in it, and open it like any project file.
   Future<void> _onServerProjectsPressed() async {
     setState(() => _toolbarOpen = false);
     final remote = _remote;
@@ -16117,7 +16128,7 @@ class _PartScreenState extends State<PartScreen> {
     await _openComposedProject(root, relativePath);
   }
 
-  /// File > Copy this project to the server…: every file of the open local project folder goes into a new server project in one
+  /// File > Copy this project to cloud storage…: every file of the open local project folder goes into a new server project in one
   /// commit, and this session carries on in that server project (paths are relative, so they stay valid).
   Future<void> _onCopyToServerPressed() async {
     setState(() => _toolbarOpen = false);
@@ -16130,7 +16141,7 @@ class _PartScreenState extends State<PartScreen> {
     final local = _projectRoot ?? await _ensureProjectRoot();
     if (local == null || !mounted) return;
     if (local is ServerProjectRoot) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This project is already on the server.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This project is already in cloud storage.')));
       return;
     }
     final name = await showCopyToServerDialog(context, suggestedName: local.displayName);
@@ -16159,7 +16170,7 @@ class _PartScreenState extends State<PartScreen> {
       root,
       markUnsaved: !hadFiles,
       note: hadFiles
-          ? 'Copied to the server as "${root.project}". This session now works on the server copy.'
+          ? 'Copied to cloud storage as "${root.project}". This session now works on that copy.'
           : 'The folder had no files to copy, so "${root.project}" is empty. This session now saves into it: use Save or Save All.',
     );
   }
@@ -26833,12 +26844,11 @@ class _PartScreenState extends State<PartScreen> {
           menuChildren: [
             item('New', idle(_startNewPart), keys: 'Ctrl+N'),
             item('Open…', idle(_onOpenPressed), keys: 'Ctrl+O'),
-            if (_remote != null) item('Server projects…', idle(_onServerProjectsPressed)),
             const Divider(height: 1),
             item('Save', idle(_saveNativeFile), keys: 'Ctrl+S'),
             item('Save As…', idle(_saveAsNativeFile), keys: 'Ctrl+Shift+S'),
             item('Save All', idle(_onSaveAllPressed)),
-            if (_remote != null) item('Copy this project to the server…', idle(_onCopyToServerPressed)),
+            if (_remote != null) item('Copy this project to cloud storage…', idle(_onCopyToServerPressed)),
             const Divider(height: 1),
             item('Export…', idle(_exportPart)),
             item('Import geometry…', idle(_importGeometry)),
@@ -28167,7 +28177,6 @@ class _PartScreenState extends State<PartScreen> {
                     hasUnsavedChanges: _isDirty,
                     onOpen: _onOpenPressed,
                     onSaveAll: _onSaveAllPressed,
-                    onServerProjects: _remote == null ? null : _onServerProjectsPressed,
                     onCopyToServer: _remote == null ? null : _onCopyToServerPressed,
                     onStartNew: _startNewPart,
                     onExportPart: _exportPart,

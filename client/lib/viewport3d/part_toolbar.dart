@@ -136,9 +136,8 @@ class PartToolbar extends StatelessWidget {
   /// too, not just Assembly lens.
   final VoidCallback? onSaveAll;
 
-  /// File > Server projects… (open a project on the project store) and File > Copy this project to the server…
+  /// File > Copy this project to cloud storage…
   /// (`docs/shared-storage-scope.md` section 7). Null hides the entry (a screen with no project store service).
-  final VoidCallback? onServerProjects;
   final VoidCallback? onCopyToServer;
 
   /// Export: writes the current Part's geometry out to one of four
@@ -262,7 +261,6 @@ class PartToolbar extends StatelessWidget {
     this.onStartNew,
     this.hasUnsavedChanges = false,
     this.onSaveAll,
-    this.onServerProjects,
     this.onCopyToServer,
     this.onExportPart,
     this.onImportGeometry,
@@ -416,13 +414,6 @@ class PartToolbar extends StatelessWidget {
           title: const Text('Open…'),
           onTap: onOpen,
         ),
-        if (onServerProjects != null)
-          ListTile(
-            key: const ValueKey('file-server-projects'),
-            leading: const Icon(Icons.cloud_outlined),
-            title: const Text('Server projects…'),
-            onTap: onServerProjects,
-          ),
         ListTile(
           leading: const SvgIcon('assets/icons/feature/parttoolbar_save.svg'),
           title: const Text('Save'),
@@ -450,7 +441,7 @@ class PartToolbar extends StatelessWidget {
           ListTile(
             key: const ValueKey('file-copy-to-server'),
             leading: const Icon(Icons.cloud_upload_outlined),
-            title: const Text('Copy this project to the server…'),
+            title: const Text('Copy this project to cloud storage…'),
             onTap: onCopyToServer,
           ),
         ListTile(

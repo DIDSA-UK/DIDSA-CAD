@@ -60,7 +60,7 @@ assembly composer do not branch on where a project lives.
 - **Set up once:** home screen > Storage > Cloud storage: the store's address, its key (`PROJECT_STORE_API_KEY`, not
   the CAD key) and this device's name (sent as `X-Device-Name`; other devices see it as who changed a file; it is a label, not a login).
   If the backend's `/health` says where its store is (`project_store`), that address is offered as the default.
-- **File menu:** *Server projects...* (pick a project on the store, then a file in it) next to *Open...*; *Copy this project to the server...*
+- **File menu:** one *Open...* (with cloud storage set up it asks *This device* or *Cloud storage*; cloud storage lists the projects, then a file in one); *Copy this project to cloud storage...*
   next to *Save All* (every file of the open local folder goes into a new server project in one commit, and the session carries on
   there). A symbol in the Start button's quick menu (swipe up from Start) shows a server project's state (cloud done = synced, upload = to
   send, warning = clash, cloud off = offline); tap it for *Sync now* and *Resolve...*. On the desktop layout the same symbol is in the top bar,

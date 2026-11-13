@@ -185,7 +185,7 @@ void main() {
       );
       await tester.tap(find.text('go'));
       await _settle(tester);
-      expect(find.text('No projects on the server yet.'), findsOneWidget);
+      expect(find.text('No projects in cloud storage yet.'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('new-server-project')));
       await _settle(tester);
@@ -219,6 +219,27 @@ void main() {
       await tester.tap(find.text('Try again'));
       await _settle(tester);
       expect(find.text('Back'), findsOneWidget);
+    });
+
+    testWidgets('Open asks where: This device and Cloud storage are the two answers, and Cancel is neither', (tester) async {
+      for (final entry in {'open-source-device': OpenSource.device, 'open-source-cloud': OpenSource.cloud}.entries) {
+        OpenSource? result;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Builder(
+              builder: (context) => Scaffold(
+                body: TextButton(onPressed: () async => result = await showOpenSourceDialog(context, cloudHost: 'storage-2.snail-shell.uk'), child: const Text('go')),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('go'));
+        await _settle(tester);
+        expect(find.text('storage-2.snail-shell.uk'), findsOneWidget);
+        await tester.tap(find.byKey(ValueKey(entry.key)));
+        await _settle(tester);
+        expect(result, entry.value);
+      }
     });
 
     testWidgets('Copy to the server asks for the project name', (tester) async {
