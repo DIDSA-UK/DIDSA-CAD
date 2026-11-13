@@ -1019,6 +1019,10 @@ differences below.
 - **A commit refused with 400 for one bad file** leaves its changes queued with the store's message in the chip's sheet, where each can be
   discarded; the store does not say which file it was, so the client cannot drop the right one by itself.
 - **The change feed is used for sync, not for the file list**: it has no hashes or sizes, so a changed file list is fetched as a tree.
+- **Found on the owner's first real use (13 Nov) and fixed in this PR:** File > Server projects only switched a session into a project by
+  opening one of its files, so choosing a new (empty) project did nothing and later Saves went to the local folder flow (no chip, no
+  request to the store). Now an empty project is adopted as the session's project (Save / Save All write there), a project with files asks
+  "Save current work here" or "Open a file", and Copy to the server from a folder with no files says so and still adopts the new project.
 - The queue is not in `FileCache` itself (see above); `FileCache` only gained the version field and now creates a given directory.
 
 **Tests:** `test/remote_storage_service_test.dart` (47: reads, versioned writes, the stale write, every store status, offline queue and

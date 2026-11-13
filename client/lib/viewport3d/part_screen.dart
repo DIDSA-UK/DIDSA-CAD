@@ -15956,10 +15956,51 @@ class _PartScreenState extends State<PartScreen> {
       setState(() => _errorMessage = 'Set the project store address and key in Connection Settings (File > Exit) first.');
       return;
     }
-    if (!await _confirmExitPart() || !mounted) return;
     final project = await showServerProjectsDialog(context, remote);
     if (project == null || !mounted) return;
     remote.beginSession(project);
+
+    // An empty project (a new one, say) has no file to open: this session simply starts saving into it, so Save and Save All
+    // write there. A project with files asks: open one of them, or save the current work into it.
+    List<String> existing = const [];
+    try {
+      existing = await _storageService.listFiles(project);
+    } on StorageException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+      return;
+    }
+    if (!mounted) return;
+    if (existing.isEmpty) {
+      _adoptServerProject(project, markUnsaved: true, note: 'This session now saves into "${project.project}". Use Save or Save All.');
+      return;
+    }
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const ValueKey('server-project-choice'),
+        title: Text(project.project),
+        content: Text('${existing.length} file${existing.length == 1 ? '' : 's'} in this project.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+          TextButton(
+            key: const ValueKey('server-project-save-here'),
+            onPressed: () => Navigator.of(context).pop('save'),
+            child: const Text('Save current work here'),
+          ),
+          FilledButton(
+            key: const ValueKey('server-project-open'),
+            onPressed: () => Navigator.of(context).pop('open'),
+            child: const Text('Open a file…'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+    if (choice == 'save') {
+      _adoptServerProject(project, markUnsaved: true, note: 'This session now saves into "${project.project}". Use Save or Save All.');
+      return;
+    }
+    if (!await _confirmExitPart() || !mounted) return;
     var root = project;
     final relativePath = await showOpenProjectPathPromptDialog(
       context,
@@ -16020,11 +16061,38 @@ class _PartScreenState extends State<PartScreen> {
     });
     final root = created;
     if (root == null || !mounted) return;
-    setState(() => _projectRoot = root);
-    _watchServerProject();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Copied to the server as "${root.project}". This session now works on the server copy.')),
+    // A folder with no files copies nothing: say so, and the session still starts saving into the new project.
+    var hadFiles = true;
+    try {
+      hadFiles = (await _storageService.listFiles(root)).isNotEmpty;
+    } on StorageException {
+      hadFiles = true;
+    }
+    if (!mounted) return;
+    _adoptServerProject(
+      root,
+      markUnsaved: !hadFiles,
+      note: hadFiles
+          ? 'Copied to the server as "${root.project}". This session now works on the server copy.'
+          : 'The folder had no files to copy, so "${root.project}" is empty. This session now saves into it: use Save or Save All.',
     );
+  }
+
+  /// Makes [root] this session's project: the sync chip appears and Save / Save All write there. [markUnsaved]: the session's Parts are
+  /// not in that project yet, so each is written on the next Save (as when a lost folder is replaced).
+  void _adoptServerProject(ServerProjectRoot root, {required bool markUnsaved, required String note}) {
+    setState(() {
+      _projectRoot = root;
+      if (markUnsaved) {
+        _dirtyPartIds.addAll(_relativePathByPartId.keys);
+        final rootPartId = _part?.id;
+        if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+      }
+    });
+    _watchServerProject();
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(note)));
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and

@@ -7765,6 +7765,68 @@ void main() {
       expect(find.text('Synced'), findsOneWidget);
     });
 
+    // The owner's sequence (13 Nov): a brand-new part, then File > Server projects into a new (empty) project: there is no file to
+    // open, so the session must start saving into the project - before this, nothing was sent and no chip appeared.
+    Future<void> pumpNewSession(WidgetTester tester) async {
+      final backend = _FakeDocumentBackend();
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: RoutingStorageService(local: _FakeStorageService(), remote: remote),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    testWidgets('Server projects into an empty project: the session starts saving there, and Save All sends the file', (tester) async {
+      await pumpNewSession(tester);
+      expect(find.byKey(const ValueKey('server-sync-chip')), findsNothing);
+
+      await tapFileMenu(tester, 'Server projects…');
+      expect(find.byKey(const ValueKey('server-project-Gearbox')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(find.byKey(const ValueKey('server-sync-chip')), findsOneWidget);
+      expect(find.textContaining('now saves into "Gearbox"'), findsOneWidget);
+
+      await tapFileMenu(tester, 'Save All');
+      // A part with no file yet is named first (the existing Save All prompt); confirm it.
+      expect(find.textContaining('Save "Part 1" as'), findsOneWidget);
+      await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Save')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(store.livePaths('Gearbox'), ['Part 1.didsa'], reason: 'requests: ${store.requests}');
+      expect(find.text('Synced'), findsOneWidget);
+    });
+
+    testWidgets('Server projects into a project that has files asks: save the current work there, or open a file', (tester) async {
+      store.writeJson('Gearbox', 'Existing.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}});
+      await pumpNewSession(tester);
+
+      await tapFileMenu(tester, 'Server projects…');
+      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const ValueKey('server-project-choice')), findsOneWidget);
+      expect(find.text('1 file in this project.'), findsOneWidget);
+      expect(find.byKey(const ValueKey('server-sync-chip')), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('server-project-save-here')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const ValueKey('server-sync-chip')), findsOneWidget);
+
+      await tapFileMenu(tester, 'Save');
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(store.livePaths('Gearbox'), containsAll(['Existing.didsa', 'Part 1.didsa']), reason: 'requests: ${store.requests}');
+    });
+
     testWidgets('plain Save on a server project sends the file to the store', (tester) async {
       await pumpServerScreen(tester);
 
