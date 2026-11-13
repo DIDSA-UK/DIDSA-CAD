@@ -81,6 +81,7 @@ class Reduction:
     internal: list = field(default_factory=list)  # (mate, side, side) of the full model inside one set
     set_ids: dict[str, str] = field(default_factory=dict)  # reported id per member of a set that is not ground-locked
     ground: frozenset[str] = frozenset()
+    internal_inf: float = 0.0  # max residual of the mates inside the sets: a function of the offsets only (rigid motion keeps it)
 
 
 # ---- detection ------------------------------------------------------------------------------------------------------
@@ -104,6 +105,11 @@ def _side_key(side) -> tuple:
 
 
 def _detection_key(part: Part, model, exclude: frozenset[str]) -> tuple:
+    stored_ids = {m.id for m in part.mates}
+    if model.state_key is not None and all(m.id in exclude or m.id in stored_ids for m, _a, _b in model.sides):
+        # the model came through `assembly_group`'s cache: its Part state (every mate, occurrence and pose, every placed part's
+        # features) already says everything the sets depend on; the hypothetical mates are excluded from detection anyway
+        return ("state", model.state_key, tuple(sorted(model.component.member_ids)), model.component.frozen_ids)
     stored = {o.id: o.transform for o in part.occurrences}
     return (
         part.id,
@@ -320,49 +326,139 @@ def reported_ids(part: Part, found: RigidSetsFound) -> dict[str, str]:
     return out
 
 
-def reduce_model(part: Part, full, found: RigidSetsFound, grabbed_id: str):
-    """`full` with every set merged into its lead (the grabbed member leads its own set), or `None` when there is no set."""
+# M1.1: what `reduce_model` derives from the sets' offsets (the mapped sides, the mates inside the sets and their residual) does not
+# change while the sets keep their shape, so a drag re-anchor reuses it. Keyed by the built model's sides (the same list object
+# while `assembly_group`'s model cache holds the model; kept here so its id cannot be reused), the sets, the grabbed member and the
+# offsets to 1e-9 (mm, and rotation matrix entries).
+_REDUCTION_CACHE_SIZE = 32
+_reduction_cache: "OrderedDict[tuple, tuple]" = OrderedDict()
+reduction_cache_stats = {"hits": 0, "misses": 0}
+
+
+def _prune_ground_rows(full, leads: tuple[str, ...], kept: list, kept_full: list, ground_lead: str, lever: float) -> tuple[list, list]:
+    """M1.1: the set locked to the ground keeps only enough of its mates to the frozen parts to hold it (rank 6, greedy in mate
+    order); the others are returned to be checked once with the mates inside the sets (in the full model's form). Nothing is pruned
+    unless the mates to the frozen parts alone lock the set (it may also be held through a member that is never merged), and a
+    coupler or a limit is never pruned."""
+    from app.document.assembly_group import GroupModel, relative_rank
+
+    candidates = []
+    for i, (mate, a, b) in enumerate(kept):
+        if is_coupler(mate) or is_limit(mate):
+            continue
+        occ = {s.occurrence_id for s in _all_sides(a, b)}
+        movers = occ & set(leads)
+        if movers == {ground_lead} and len(occ) > 1:
+            candidates.append(i)
+    if len(candidates) < 2:
+        return kept, []
+    probe = GroupModel(
+        component=replace(full.component, member_ids=(ground_lead,)),
+        base_transforms={ground_lead: full.base_transforms[ground_lead]},
+        sides=[kept[i] for i in candidates],
+    )
+    probe._index = {ground_lead: 0}
+    spec = export_constraint_model(probe)
+    if not spec:
+        return kept, []
+    placed = [rigid_to_pose(full.base_transforms[ground_lead])]
+    scale = np.array([1.0, 1.0, 1.0, lever, lever, lever])
+    chosen: list[int] = []
+    rows, rank = np.zeros((0, 6)), 0
+    for i, entry in zip(candidates, spec["mates"]):
+        _r, jac = ConstraintModel({"members": [ground_lead], "mates": [entry]}).residual(placed)
+        if not jac.size:
+            continue
+        trial = np.vstack([rows, jac / scale])
+        trial_rank = _relative_rank(np.linalg.svd(trial, compute_uv=False))
+        if trial_rank > rank:
+            rows, rank, chosen = trial, trial_rank, [*chosen, i]
+        if rank == 6:
+            break
+    if rank < 6:
+        return kept, []
+    drop = set(candidates) - set(chosen)
+    return [s for i, s in enumerate(kept) if i not in drop], [kept_full[i] for i in sorted(drop)]
+
+
+def reduce_model(part: Part, full, found: RigidSetsFound, grabbed_id: str, lever_arm: float = 1.0):
+    """`full` with every set merged into its lead (the grabbed member leads its own set), or `None` when there is no set. A set
+    locked to the ground keeps only enough of its mates to the frozen parts to hold it (`_prune_ground_rows`; `lever_arm` weighs
+    rotation against translation in that rank test)."""
     from app.document.assembly_group import GroupModel
 
     if not found.groups:
         return None
     ids = full.member_ids
     lead_of = {oid: oid for oid in ids}
-    followers: dict[str, list[tuple[str, np.ndarray, np.ndarray]]] = {}
-    offsets: dict[str, RigidTransform] = {}
+    offsets_rt: dict[str, tuple[np.ndarray, np.ndarray]] = {}
     for group in found.groups:
         lead = grabbed_id if grabbed_id in group else group[0]
-        entries = []
         for oid in group:
             lead_of[oid] = lead
             if oid != lead:
-                r, t = _offset(full.base_transforms[lead], full.base_transforms[oid])
-                entries.append((oid, r, t))
-                offsets[oid] = pose_to_rigid((r, t))
-        followers[lead] = entries
+                offsets_rt[oid] = _offset(full.base_transforms[lead], full.base_transforms[oid])
     leads = tuple(oid for oid in ids if lead_of[oid] == oid)
+    key = (
+        id(full.sides),
+        found.groups,
+        grabbed_id,
+        round(float(lever_arm), 6),
+        tuple((oid, tuple(np.round(r, 9).ravel()), tuple(np.round(t, 9))) for oid, (r, t) in sorted(offsets_rt.items())),
+    )
+    with _cache_lock:
+        hit = _reduction_cache.get(key)
+        if hit is not None and hit[0] is full.sides:
+            _reduction_cache.move_to_end(key)
+            reduction_cache_stats["hits"] += 1
+        else:
+            hit = None
+    if hit is not None:
+        _sides, kept, internal, offsets_rt, internal_inf = hit
+    else:
+        reduction_cache_stats["misses"] += 1
+        offsets = {oid: pose_to_rigid(rt) for oid, rt in offsets_rt.items()}
 
-    def map_side(side):
-        if side is None:
-            return None
-        partner = map_side(side.partner)
-        oid = side.occurrence_id
-        if oid in offsets:
-            side = replace(side, occurrence_id=lead_of[oid], geometry=_place_in_world(side.geometry, offsets[oid]))
-        return side if partner is side.partner else replace(side, partner=partner)
+        def map_side(side):
+            if side is None:
+                return None
+            partner = map_side(side.partner)
+            oid = side.occurrence_id
+            if oid in offsets:
+                side = replace(side, occurrence_id=lead_of[oid], geometry=_place_in_world(side.geometry, offsets[oid]))
+            return side if partner is side.partner else replace(side, partner=partner)
 
-    kept, internal = [], []
-    for mate, a, b in full.sides:
-        ma, mb = map_side(a), map_side(b)
-        occ = {s.occurrence_id for s in _all_sides(ma, mb)}
-        if not is_coupler(mate) and len(occ) == 1 and next(iter(occ)) in leads:
-            internal.append((mate, a, b))
-            continue
-        kept.append((mate, ma, mb))
+        kept, internal, kept_full = [], [], []
+        for mate, a, b in full.sides:
+            ma, mb = map_side(a), map_side(b)
+            occ = {s.occurrence_id for s in _all_sides(ma, mb)}
+            if not is_coupler(mate) and len(occ) == 1 and next(iter(occ)) in leads:
+                internal.append((mate, a, b))
+                continue
+            kept.append((mate, ma, mb))
+            kept_full.append((mate, a, b))
+        ground_lead = next((lead_of[oid] for group in found.groups if set(group) <= found.ground for oid in group), None)
+        if ground_lead is not None:
+            kept, dropped = _prune_ground_rows(full, leads, kept, kept_full, ground_lead, lever_arm)
+            internal.extend(dropped)
+        internal_inf = 0.0
+        if internal:
+            r = replace(full, sides=list(internal), active_limits={}).residual()
+            internal_inf = float(np.max(np.abs(r))) if r.size else 0.0
+        with _cache_lock:
+            _reduction_cache[key] = (full.sides, kept, internal, offsets_rt, internal_inf)
+            while len(_reduction_cache) > _REDUCTION_CACHE_SIZE:
+                _reduction_cache.popitem(last=False)
+    followers: dict[str, list[tuple[str, np.ndarray, np.ndarray]]] = {lead: [] for lead in leads}
+    for oid in ids:
+        if oid in offsets_rt:
+            r, t = offsets_rt[oid]
+            followers[lead_of[oid]].append((oid, r, t))
+    followers = {lead: entries for lead, entries in followers.items() if entries}
     reduced = GroupModel(
         component=replace(full.component, member_ids=leads),
         base_transforms={oid: full.base_transforms[oid] for oid in leads},
-        sides=kept,
+        sides=list(kept),
         branches=dict(full.branches),
         active_limits=dict(full.active_limits),
     )
@@ -375,6 +471,7 @@ def reduce_model(part: Part, full, found: RigidSetsFound, grabbed_id: str):
         internal=internal,
         set_ids=reported_ids(part, found),
         ground=found.ground,
+        internal_inf=internal_inf,
     )
     return reduced
 

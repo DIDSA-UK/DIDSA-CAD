@@ -245,6 +245,9 @@ class GroupModel:
     active_limits: dict[str, float] = field(default_factory=dict)
     # M1 (`app.document.rigid_sets`): set on a REDUCED model, whose members are rigid-set leads (`rigid_sets.Reduction`); None otherwise.
     rigid: object | None = field(default=None, repr=False)
+    # M1.1: the Part state this model was built from (`_model_cache_key` without the call's own arguments), when it came through the
+    # cache; `rigid_sets.detect` keys on it instead of re-reading every side. None for a model built any other way.
+    state_key: tuple | None = field(default=None, repr=False)
 
     @property
     def member_ids(self) -> tuple[str, ...]:
@@ -375,7 +378,85 @@ class GroupModel:
         return jac
 
 
+# ---- the built-model cache (M1.1) ---------------------------------------------------------------------------------------
+#
+# `build_group_model` resolves every mate's geometry (OCCT face / edge measurements) and branch on every call: ~50 ms for the
+# 50-plate chain, most of a drag anchor once rigid sets made the solve itself cheap. The model depends only on what
+# `_model_cache_key` lists - the Part's mates, occurrences and component patterns, the features (and the sketches they read) of
+# every Part it places, and the call's own arguments - so a re-anchor or a preview that changes none of them reuses it. Any mate,
+# fix, suppress, pose, pattern, feature or sketch change misses. `model_cache_enabled = False` builds every time (tests compare).
+
+model_cache_enabled = True
+_MODEL_CACHE_SIZE = 32
+_model_cache: "dict[tuple, GroupModel]" = {}
+model_cache_stats = {"hits": 0, "misses": 0}
+
+
+def clear_model_cache() -> None:
+    _model_cache.clear()
+
+
+def _placed_parts(document: Document, part: Part) -> list[Part]:
+    """`part` and every Part it places, through sub-assemblies (each once, in a stable order)."""
+    seen: dict[str, Part] = {}
+    stack = [part]
+    while stack:
+        current = stack.pop()
+        if current.id in seen:
+            continue
+        seen[current.id] = current
+        for occurrence in current.occurrences:
+            target = document.parts.get(occurrence.part_id) if occurrence.part_id is not None else None
+            if target is not None and target.id not in seen:
+                stack.append(target)
+    return list(seen.values())
+
+
+def _model_cache_key(document: Document, part: Part, grabbed_id: str, also_frozen: frozenset[str], extra_mates: tuple[Mate, ...]) -> tuple:
+    from app.document.body_cache import feature_fingerprint
+
+    geometry = tuple(
+        (p.id, tuple(feature_fingerprint(f) for f in p.features), repr(p.occurrences) if p is not part else "", repr(p.component_patterns) if p is not part else "")
+        for p in _placed_parts(document, part)
+    )
+    state = (part.id, repr(part.mates), repr(part.occurrences), repr(part.component_patterns), geometry)
+    return (grabbed_id, tuple(sorted(also_frozen)), repr(extra_mates), state)
+
+
 def build_group_model(
+    document: Document,
+    part: Part,
+    grabbed_id: str,
+    also_frozen: frozenset[str] = frozenset(),
+    extra_mates: tuple[Mate, ...] = (),
+) -> GroupModel:
+    """`_build_group_model`, cached (see above). Each call gets its own `GroupModel` (its `branches` / `active_limits` copied), so a
+    caller may `replace` its poses or limits freely; the resolved sides are shared and never changed after the build."""
+    if not model_cache_enabled:
+        return _build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
+    key = _model_cache_key(document, part, grabbed_id, also_frozen, extra_mates)
+    cached = _model_cache.get(key)
+    if cached is None:
+        model_cache_stats["misses"] += 1
+        cached = _build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
+        _model_cache[key] = cached
+        while len(_model_cache) > _MODEL_CACHE_SIZE:
+            _model_cache.pop(next(iter(_model_cache)))
+    else:
+        model_cache_stats["hits"] += 1
+        _model_cache[key] = _model_cache.pop(key)  # most recently used last
+    out = replace(
+        cached,
+        base_transforms=dict(cached.base_transforms),
+        branches=dict(cached.branches),
+        active_limits=dict(cached.active_limits),
+        state_key=key[3],
+    )
+    out._index = dict(cached._index)
+    return out
+
+
+def _build_group_model(
     document: Document,
     part: Part,
     grabbed_id: str,
@@ -766,6 +847,12 @@ _FOLLOWER_WEIGHT = 1e-4  # follower metric = this x the grabbed metric (follower
 _PINV_RCOND = 1e-9
 # Escalating follower weights tried, in order, when Gauss-Newton at `_FOLLOWER_WEIGHT` stalls on a multi-member group.
 _FOLLOWER_WEIGHT_FALLBACKS = (1e-3, 1e-2, 1e-1, 1.0)
+# M1.1: a retraction whose residual is still above `_STALL_RESIDUAL` (far beyond the near-redundant limits) and that took less than
+# `_STALL_GAIN` off the residual norm over the last `_STALL_STEPS` steps stops: it is on a least-squares plateau (conflicting mates).
+# Before, such a solve crawled through all `_MAX_ITERATIONS` with backtracked steps, five times with the re-weighted retries.
+_STALL_STEPS = 5
+_STALL_RESIDUAL = 0.1
+_STALL_GAIN = 1e-4
 
 
 @dataclass
@@ -1006,7 +1093,15 @@ def _retract(
 
     r = resid(poses)
     iterations = 0
+    norms: list[float] = []
     while r.size and float(np.max(np.abs(r))) > _SOLVE_TOL and iterations < max_iterations:
+        norms.append(float(np.linalg.norm(r)))
+        if (
+            len(norms) > _STALL_STEPS
+            and float(np.max(np.abs(r))) > _STALL_RESIDUAL
+            and norms[-1 - _STALL_STEPS] - norms[-1] < _STALL_GAIN * norms[-1 - _STALL_STEPS]
+        ):
+            break  # crawling on a plateau far from any solution (a conflict): more steps cannot get there
         iterations += 1
         jac = model.jacobian(poses)
         w = _weights_at(weights, poses)
@@ -1107,7 +1202,7 @@ def solve_group(
         from app.document import rigid_sets
 
         found = rigid_sets.detect(document, part, model, exclude=frozenset(m.id for m in extra_mates))
-        reduced = rigid_sets.reduce_model(part, model, found, grabbed_id)
+        reduced = rigid_sets.reduce_model(part, model, found, grabbed_id, lever_arm)
     if reduced is None:
         return _solve_with_limits(document, part, model, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump)
     result = _solve_with_limits(document, part, reduced, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump)
@@ -1133,7 +1228,7 @@ def _expand_result(
 
     red = reduced.rigid
     poses = rigid_sets.expand_poses(red, result.poses)
-    internal = rigid_sets.internal_residual_inf(reduced, poses)
+    internal = red.internal_inf  # the followers keep their offsets: the mates inside the sets read what they read at the base poses
     residual_inf = max(result.quality.residual_inf, internal)
     converged, near = result.converged, dict(result.near)
     full = replace(red.full, active_limits={})
@@ -1477,6 +1572,22 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
 
 BRANCH_SEARCH_MAX_SOLVES = 24
 BRANCH_SEARCH_SECONDS = 1.5
+# M1.1: a `preview-mate-solve` as a whole (the first solve, the branch search, the conflict step and the alternatives) stops trying more
+# once this many seconds have passed since it began - each part still gets its minimum solves - and says so (`budget_exhausted`).
+# The create / edit flows (`POST` / `PATCH .../mates?solve=`) are not bounded by it: they keep the search's own budget only.
+PREVIEW_SECONDS = 2.5
+
+
+class PreviewBudget:
+    """The clock of one preview (`PREVIEW_SECONDS`, read when it is made: a test can change it). `exhausted` is set by whatever
+    stopped short because of it."""
+
+    def __init__(self, seconds: float | None = None):
+        self.deadline = time.monotonic() + (PREVIEW_SECONDS if seconds is None else seconds)
+        self.exhausted = False
+
+    def expired(self) -> bool:
+        return time.monotonic() > self.deadline
 BRANCH_SEARCH_MIN_SOLVES = 8  # solves a search always gets, whatever the clock says
 _CONFLICT_RESERVE = 4  # solves kept back for the "which mate does it fight with" step
 _PAIR_CANDIDATES = 6  # pairs are tried among this many of the best-ordered single changes
@@ -1589,6 +1700,7 @@ def search_branch_changes(
     failed: GroupSolveResult | None = None,
     max_solves: int = BRANCH_SEARCH_MAX_SOLVES,
     seconds: float | None = None,  # None = BRANCH_SEARCH_SECONDS, read when the search runs (a test can change it)
+    budget: PreviewBudget | None = None,  # a preview's own clock (M1.1): past it, every step stops once it has had its minimum
 ) -> BranchSearchOutcome:
     """The fewest earlier mates to move to their other branch so the new mate (`new_mate`, or an already-edited stored one) can
     be met. `solve(part) -> (result, movement_used)` is the caller's own solve of the new mate against the mates `part` carries.
@@ -1607,7 +1719,14 @@ def search_branch_changes(
     def spent(reserve: int = 0) -> bool:
         # The clock only ends a search that has had its minimum: a cold server (the first solve builds every body) or a slow CI runner
         # would otherwise stop it before it tried a single change and answer "no branch works".
-        return outcome.solves >= max_solves - reserve or (outcome.solves >= BRANCH_SEARCH_MIN_SOLVES and time.monotonic() - started > seconds)
+        if outcome.solves >= max_solves - reserve:
+            return True
+        if outcome.solves < BRANCH_SEARCH_MIN_SOLVES:
+            return False
+        if budget is not None and budget.expired():
+            budget.exhausted = True
+            return True
+        return time.monotonic() - started > seconds
 
     def run(trial: Part) -> tuple[GroupSolveResult, str]:
         outcome.solves += 1
@@ -1724,16 +1843,22 @@ def branch_alternatives(
     controls: Iterable[str],
     solve: Callable[[Mate], tuple[GroupSolveResult, str]],
     lever_arm: float,
+    budget: PreviewBudget | None = None,
 ) -> list[BranchAlternative]:
     """Every combination of `new_mate`'s `controls` solved from the same start - the other mates keep their persisted branches,
     no search - keeping the converged ones, nearest to the start first. `solve(mate)` runs the caller's own solve with `mate` as
-    the hypothetical one. At most 4 solves (two binary fields)."""
+    the hypothetical one. At most 4 solves (two binary fields); with a `budget` (a preview), none after it has run out but the first."""
     controls = tuple(controls)
     alignments: list[str | None] = [MATE_ALIGNED, MATE_ANTI_ALIGNED] if "alignment" in controls else [None]
     flips: list[bool | None] = [False, True] if "secondary_flip" in controls else [None]
     found: list[BranchAlternative] = []
+    tried = 0
     for alignment in alignments:
         for flip in flips:
+            if budget is not None and tried and budget.expired():
+                budget.exhausted = True  # the preview's clock ran out: the list may be short (the first combination is always tried)
+                break
+            tried += 1
             variant = replace(new_mate, alignment=alignment, secondary_flip=flip, branch_source=BRANCH_USER)
             sync_flipped(variant)
             result, used = solve(variant)
@@ -1812,12 +1937,12 @@ def constraint_report(
             lever = bounding_radius(document, part, occurrence.id)
             reduced = None
             if rigid_sets_enabled and len(model.member_ids) > 1:
-                reduced = rigid_sets.reduce_model(part, model, rigid_sets.component_sets(document, part, model), occurrence.id)
+                reduced = rigid_sets.reduce_model(part, model, rigid_sets.component_sets(document, part, model), occurrence.id, lever)
             if reduced is None:
                 analysis = analyze_model(model, lever)
             else:
                 analysis = analyze_model(reduced, lever)
-                residual_inf = max(analysis.quality.residual_inf, rigid_sets.internal_residual_inf(reduced, model.base_transforms))
+                residual_inf = max(analysis.quality.residual_inf, reduced.rigid.internal_inf)
                 analysis = rigid_sets.expand_analysis(reduced, analysis, residual_inf)
                 if rigid_set_ids is not None:
                     rigid_set_ids.update(reduced.rigid.set_ids)
