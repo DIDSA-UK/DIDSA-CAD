@@ -7,7 +7,7 @@ import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   _FakeStorageService({this.lastUsed, this.picked});
 
   final ProjectRoot? lastUsed;
@@ -36,7 +36,7 @@ class _FakeStorageService implements StorageService {
   Future<Uint8List> readFile(FileHandle handle) => throw UnimplementedError();
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) => throw UnimplementedError();
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) => throw UnimplementedError();
 
   @override
   Future<DateTime?> lastModified(FileHandle handle) => throw UnimplementedError();

@@ -59,7 +59,22 @@ abstract class StorageService {
   /// intermediate directories and the file itself if it doesn't exist yet,
   /// or overwriting it in place if it does. Returns the resulting
   /// `FileHandle`.
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes);
+  ///
+  /// [baseVersion] (shared storage, `docs/shared-storage-scope.md` section 7): the version of the file this write replaces, for a
+  /// service whose files have versions (the project store). A caller that does not say leaves it to the service, which uses the
+  /// version it last read or wrote for that path (null: a new file). The local services ignore it. A server write whose version
+  /// is out of date throws `SyncConflictException` (a `StorageException`) and keeps the bytes as a queued save.
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion});
+
+  /// Whether [commit] on [root] is one all-or-nothing write (a server project). Save All uses [commit] when this is true and
+  /// writes file by file when it is not (a local folder has no such write).
+  bool supportsCommit(ProjectRoot root);
+
+  /// Writes several files at once (`docs/shared-storage-scope.md` section 6). For a server project: one commit, all of it or none
+  /// of it; a clash throws `SyncConflictException` listing every clashing file and nothing is written; an unreachable server queues
+  /// the changes (the outcome says so). For a local folder (`FileByFileCommit`): file by file, a failure thrown as
+  /// [StorageException] after the others were tried.
+  Future<CommitOutcome> commit(ProjectRoot root, List<FileChange> changes, {String? message});
 
   /// The file's last-modified time, or `null` if that information isn't
   /// available from this platform/provider. Used for the "always try
@@ -105,4 +120,40 @@ abstract class StorageService {
   /// return value. Throws `StorageException` if nothing exists at
   /// `relativePath`, or if a file already exists at the destination.
   Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName);
+}
+
+/// One file of a [StorageService.commit].
+class FileChange {
+  const FileChange({required this.path, required this.bytes, this.baseVersion});
+
+  final String path;
+  final Uint8List bytes;
+
+  /// The version this replaces (a server project); null lets the service use the version it last read or wrote.
+  final int? baseVersion;
+}
+
+/// What [StorageService.commit] did: [sent] files are written; [queued] files were kept to send when the store can be reached
+/// (a server project saved offline).
+class CommitOutcome {
+  const CommitOutcome({this.sent = const [], this.queued = const []});
+
+  final List<String> sent;
+  final List<String> queued;
+}
+
+/// [StorageService.commit] for a service with no all-or-nothing write: the files one by one. Mixed into the local services.
+mixin FileByFileCommit {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion});
+
+  bool supportsCommit(ProjectRoot root) => false;
+
+  Future<CommitOutcome> commit(ProjectRoot root, List<FileChange> changes, {String? message}) async {
+    final sent = <String>[];
+    for (final change in changes) {
+      await writeFile(root, change.path, change.bytes, baseVersion: change.baseVersion);
+      sent.add(change.path);
+    }
+    return CommitOutcome(sent: sent);
+  }
 }

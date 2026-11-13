@@ -77,13 +77,41 @@ class PartSaveFailure {
   final String message;
 }
 
+/// What the user chose when Save All found files that changed on disk since this session read them (decision S0-8).
+enum ChangedOnDiskChoice {
+  /// Write every file, the changed ones included.
+  overwrite,
+
+  /// Write the others and leave the changed files as they are on disk.
+  skipChanged,
+
+  /// Write nothing.
+  cancel,
+}
+
 /// `AssemblyDocumentClient.saveAll`'s own result - every relative path that
 /// was actually written, plus every one that failed (see [PartSaveFailure]).
 class SaveAllResult {
-  SaveAllResult({required this.savedRelativePaths, required this.failures});
+  SaveAllResult({
+    required this.savedRelativePaths,
+    required this.failures,
+    this.queuedRelativePaths = const [],
+    this.skippedRelativePaths = const [],
+    this.cancelled = false,
+  });
 
   final List<String> savedRelativePaths;
   final List<PartSaveFailure> failures;
+
+  /// A server project saved while the store could not be reached: written to this device's queue, sent on the next sync. These are
+  /// not in [savedRelativePaths].
+  final List<String> queuedRelativePaths;
+
+  /// Files left alone because they changed on disk and the user chose to skip them.
+  final List<String> skippedRelativePaths;
+
+  /// The user cancelled at the "changed on disk" question: nothing was written.
+  final bool cancelled;
 
   bool get hasFailures => failures.isNotEmpty;
 }

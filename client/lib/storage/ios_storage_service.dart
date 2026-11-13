@@ -29,7 +29,7 @@ import 'storage_service.dart';
 /// (`project_root.dart`/`file_handle.dart`) for the two types this speaks
 /// in - only the root folder carries a persisted bookmark, an individual
 /// file's resolved path is a live-session convenience only.
-class IosStorageService implements StorageService {
+class IosStorageService with FileByFileCommit implements StorageService {
   IosStorageService({IosBookmarkChannel? channel, RecentProjectStore? recentProjectStore})
     : _channel = channel ?? IosBookmarkChannel(),
       _recentProjectStore = recentProjectStore ?? RecentProjectStore();
@@ -94,7 +94,7 @@ class IosStorageService implements StorageService {
   }
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     final iosRoot = _requireIosRoot(root);
     return _withRootAccess(iosRoot, (rootPath) async {
       final fullPath = _fullPath(rootPath, relativePath);

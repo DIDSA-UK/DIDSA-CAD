@@ -71,3 +71,16 @@ final class IosFileHandle extends FileHandle {
   /// container).
   final String resolvedPath;
 }
+
+/// A file of a server project. [version] and [sha256] are the store's current version of it as last seen (null for a
+/// saved-offline file the store has not seen yet). Like every handle, [relativePath] is the portable identity.
+final class ServerFileHandle extends FileHandle {
+  const ServerFileHandle({required this.root, required this.relativePath, this.version, this.sha256});
+
+  @override
+  final ServerProjectRoot root;
+  @override
+  final String relativePath;
+  final int? version;
+  final String? sha256;
+}

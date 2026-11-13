@@ -22,8 +22,13 @@ import 'package:didsa_cad_client/assembly/relative_path.dart';
 import 'package:didsa_cad_client/sketch/sketch_screen.dart';
 import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
+import 'package:didsa_cad_client/storage/routing_storage_service.dart';
+import 'package:didsa_cad_client/storage/server/remote_storage_service.dart';
+import 'package:didsa_cad_client/storage/server/store_client.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
+import 'support/fake_project_store.dart';
+import 'support/in_memory_stores.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
@@ -62,7 +67,7 @@ import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 /// cache on every read.
 class _NoopFileCache extends FileCache {
   @override
-  Future<void> put(ProjectRoot root, String relativePath, Uint8List bytes, {DateTime? lastKnownModified}) async {}
+  Future<void> put(ProjectRoot root, String relativePath, Uint8List bytes, {DateTime? lastKnownModified, int? serverVersion}) async {}
 
   @override
   Future<CachedFile?> get(ProjectRoot root, String relativePath) async => null;
@@ -1149,7 +1154,7 @@ class _FakeSketchBackend {
 /// establishes - `pickOrCreateProjectRoot` returns a fixed root immediately
 /// rather than showing a real platform picker, so "Save All"/"Create
 /// Component…"'s own [PartScreen] flows can be driven end to end here.
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   final Map<String, Uint8List> files = {};
   final DesktopProjectRoot root = const DesktopProjectRoot('/fake/project');
 
@@ -1179,6 +1184,11 @@ class _FakeStorageService implements StorageService {
   /// revoked grant, or a file deleted/moved since the last Save.
   final Set<String> failOnWrite = {};
 
+  /// Modified times, as a real folder would stamp them: set by every [writeFile] (a later time each write) and by a test that
+  /// simulates a file changed outside the app. Files placed directly in [files] have none. (Decision S0-8's check reads these.)
+  final Map<String, DateTime> modified = {};
+  int _tick = 0;
+
   @override
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) async {
     pickOrCreateProjectRootCallCount++;
@@ -1199,15 +1209,16 @@ class _FakeStorageService implements StorageService {
   Future<Uint8List> readFile(FileHandle handle) async => files[handle.relativePath]!;
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     if (failOnWrite.contains(relativePath)) throw StorageException('Permission denied');
     files[relativePath] = bytes;
+    modified[relativePath] = DateTime(2026, 1, 1).add(Duration(seconds: ++_tick));
     writeCounts[relativePath] = (writeCounts[relativePath] ?? 0) + 1;
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
   }
 
   @override
-  Future<DateTime?> lastModified(FileHandle handle) async => null;
+  Future<DateTime?> lastModified(FileHandle handle) async => modified[handle.relativePath];
 
   @override
   Future<bool> exists(FileHandle handle) async => files.containsKey(handle.relativePath);
@@ -1296,6 +1307,19 @@ Future<void> switchLens(WidgetTester tester, String to) async {
   await _settleSheet(tester);
   await tester.tap(find.byKey(const ValueKey('start-menu-close')));
   await _settleSheet(tester);
+}
+
+/// File menu > [entry] (the phone layout's quick-menu panel).
+Future<void> _fileMenuTap(WidgetTester tester, String entry) async {
+  await openToolbar(tester);
+  await tester.tap(find.text('File'));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
+  await tester.ensureVisible(find.text(entry));
+  await tester.pump();
+  await tester.tap(find.text(entry));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
 }
 
 void main() {
@@ -7639,6 +7663,283 @@ void main() {
   // routes are the one-time cost that makes that possible, the same
   // precedent Phase 10 already set for `occurrences`/`mates`/
   // `component-patterns`/`assembly-mesh`.
+  // Shared storage S2 (`docs/shared-storage-scope.md` sections 6 and 7): the PartScreen's side of server projects - the File menu
+  // entries, Save All as one commit, the conflict dialog, the offline queue and the sync chip - against a fake store, and decision
+  // S0-8's "changed on disk meanwhile?" question for a local folder. The service logic is `remote_storage_service_test.dart`.
+  group('Shared storage S2: server projects in the PartScreen', () {
+    late FakeProjectStore store;
+    late RemoteStorageService remote;
+    late ServerProjectRoot root;
+
+    setUp(() {
+      store = FakeProjectStore();
+      store.createProject('Gearbox');
+      remote = RemoteStorageService(
+        settings: () => const StoreSettings(url: 'https://store.test', apiKey: 'store-key', deviceName: 'Desktop'),
+        httpClient: store.client,
+        syncStore: InMemorySyncStore(),
+        fileCache: InMemoryFileCache(),
+        treeTtl: Duration.zero,
+      );
+      root = remote.rootFor('Gearbox');
+      remote.beginSession(root);
+    });
+
+    Future<_FakeDocumentBackend> pumpServerScreen(WidgetTester tester) async {
+      final backend = _FakeDocumentBackend();
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: RoutingStorageService(local: _FakeStorageService(), remote: remote),
+            initialProjectRoot: root,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await switchLens(tester, 'Assembly');
+      await tapStartCommand(tester, 'Create Component');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      return backend;
+    }
+
+    Future<void> tapFileMenu(WidgetTester tester, String entry) async {
+      await openToolbar(tester);
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.ensureVisible(find.text(entry));
+      await tester.pump();
+      await tester.tap(find.text(entry));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    testWidgets('the File menu has Server projects and Copy this project to the server', (tester) async {
+      await pumpServerScreen(tester);
+      await openToolbar(tester);
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byKey(const ValueKey('file-server-projects')), findsOneWidget);
+      expect(find.text('Server projects…'), findsOneWidget);
+      expect(find.text('Copy this project to the server…'), findsOneWidget);
+    });
+
+    testWidgets('a screen with no project store service shows neither entry', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: _FakeStorageService(),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await openToolbar(tester);
+      await tester.tap(find.text('File'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.text('Server projects…'), findsNothing);
+      expect(find.text('Copy this project to the server…'), findsNothing);
+      expect(find.byKey(const ValueKey('server-sync-chip')), findsNothing);
+    });
+
+    testWidgets('Save All on a server project is ONE commit, and the chip says Synced', (tester) async {
+      await pumpServerScreen(tester);
+      expect(find.byKey(const ValueKey('server-sync-chip')), findsOneWidget);
+
+      await tapFileMenu(tester, 'Save All');
+
+      await tester.pump(const Duration(milliseconds: 600)); // the previous note leaves, then this one is shown
+      expect(find.text('Saved 2 file(s)'), findsOneWidget);
+      expect(store.livePaths('Gearbox'), containsAll(['Part 1.didsa', 'Component 1.didsa']));
+      expect(store.count('POST /projects/Gearbox/commit'), 1);
+      expect(store.count('PUT'), 0);
+      expect(find.text('Synced'), findsOneWidget);
+    });
+
+    testWidgets('a clash on Save All writes nothing, shows who changed it, and Keep mine then lands the commit', (tester) async {
+      final backend = await pumpServerScreen(tester);
+      await tapFileMenu(tester, 'Save All');
+      expect(store.versionOf('Gearbox', 'Part 1.didsa'), 1);
+
+      // Another device saves Part 1; this session then renames its Part and Saves All.
+      store.writeJson('Gearbox', 'Part 1.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}}, device: 'Quest 3');
+      backend.partOneName = 'Edited here';
+      await tapFileMenu(tester, 'Save All');
+
+      expect(find.byKey(const ValueKey('sync-conflict-dialog')), findsOneWidget);
+      expect(find.textContaining('Changed by Quest 3'), findsOneWidget);
+      expect(store.versionOf('Gearbox', 'Part 1.didsa'), 2, reason: 'nothing was written');
+      expect(find.text('Clash'), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('conflict-keepMine-Part 1.didsa')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('conflict-apply')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(store.versionOf('Gearbox', 'Part 1.didsa'), 3);
+      expect(jsonDecode(utf8.decode(store.bytesOf('Gearbox', 'Part 1.didsa')!))['document']['parts'][0]['name'], 'Edited here');
+      expect(find.text('Synced'), findsOneWidget);
+    });
+
+    testWidgets('Decide later leaves the clash queued: nothing written, and the chip offers the dialog again', (tester) async {
+      final backend = await pumpServerScreen(tester);
+      await tapFileMenu(tester, 'Save All');
+      store.writeJson('Gearbox', 'Part 1.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}}, device: 'Quest 3');
+      backend.partOneName = 'Edited here';
+      await tapFileMenu(tester, 'Save All');
+
+      await tester.tap(find.byKey(const ValueKey('conflict-later')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(store.versionOf('Gearbox', 'Part 1.didsa'), 2);
+      expect(find.text('Clash'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.textContaining('Nothing was written'), findsOneWidget);
+      // The note sits where the chip is: let it go, as a user would, before tapping the chip.
+      tester.state<ScaffoldMessengerState>(find.byType(ScaffoldMessenger).first).clearSnackBars();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 500));
+
+      await tester.tap(find.byKey(const ValueKey('server-sync-chip')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('sync-sheet-resolve')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      expect(find.byKey(const ValueKey('sync-conflict-dialog')), findsOneWidget);
+    });
+
+    testWidgets('Save All while the store is unreachable queues the save and says so; Sync now sends it', (tester) async {
+      final backend = await pumpServerScreen(tester);
+      await tapFileMenu(tester, 'Save All');
+      backend.partOneName = 'Edited offline';
+      store.offline = true;
+
+      await tapFileMenu(tester, 'Save All');
+
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.textContaining('Saved on this device'), findsOneWidget);
+      expect(find.text('1 to send · offline'), findsOneWidget);
+      expect(store.versionOf('Gearbox', 'Part 1.didsa'), 1);
+
+      store.offline = false;
+      await tester.tap(find.byKey(const ValueKey('server-sync-chip')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await tester.tap(find.byKey(const ValueKey('sync-sheet-sync')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(store.versionOf('Gearbox', 'Part 1.didsa'), 2);
+      expect(find.text('Synced'), findsOneWidget);
+    });
+  });
+
+  // Decision S0-8: Save All on a LOCAL folder no longer overwrites, silently, a file that changed on disk since this session read
+  // or wrote it (DIDSA-VR's `project_save.gd` has the same check, by modified time).
+  group('Shared storage S0-8: Save All on a local folder asks before overwriting a file changed on disk', () {
+    Future<(_FakeDocumentBackend, _FakeStorageService)> savedOnce(WidgetTester tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await switchLens(tester, 'Assembly');
+      await tapStartCommand(tester, 'Create Component');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await _fileMenuTap(tester, 'Save All');
+      expect(find.text('Saved 2 file(s)'), findsOneWidget);
+      // Something else (a sync client, another program) changes the file after this session wrote it.
+      storage.files['Part 1.didsa'] = Uint8List.fromList(utf8.encode('{"changed":"outside"}'));
+      storage.modified['Part 1.didsa'] = DateTime(2026, 6, 1);
+      backend.partOneName = 'Edited here';
+      return (backend, storage);
+    }
+
+    testWidgets('Skip these files writes the others and leaves the changed file as it is on disk', (tester) async {
+      final (_, storage) = await savedOnce(tester);
+      await _fileMenuTap(tester, 'Save All');
+
+      expect(find.byKey(const ValueKey('changed-on-disk-dialog')), findsOneWidget);
+      expect(find.text('• Part 1.didsa'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('changed-skip')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(utf8.decode(storage.files['Part 1.didsa']!), '{"changed":"outside"}');
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.textContaining('left 1 that changed on disk'), findsOneWidget);
+    });
+
+    testWidgets('Overwrite writes everything, as Save All always did', (tester) async {
+      final (_, storage) = await savedOnce(tester);
+      await _fileMenuTap(tester, 'Save All');
+      await tester.tap(find.byKey(const ValueKey('changed-overwrite')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(jsonDecode(utf8.decode(storage.files['Part 1.didsa']!))['document']['parts'][0]['name'], 'Edited here');
+    });
+
+    testWidgets('Cancel writes nothing at all', (tester) async {
+      final (_, storage) = await savedOnce(tester);
+      final writesBefore = Map.of(storage.writeCounts);
+      await _fileMenuTap(tester, 'Save All');
+      await tester.tap(find.byKey(const ValueKey('changed-cancel')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+
+      expect(storage.writeCounts, writesBefore);
+      expect(utf8.decode(storage.files['Part 1.didsa']!), '{"changed":"outside"}');
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.textContaining('nothing was written'), findsOneWidget);
+    });
+
+    testWidgets('a file that did not change on disk is saved with no question', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final storage = _FakeStorageService();
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: storage,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await switchLens(tester, 'Assembly');
+      await tapStartCommand(tester, 'Create Component');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      await _fileMenuTap(tester, 'Save All');
+      backend.partOneName = 'Edited here';
+      await _fileMenuTap(tester, 'Save All');
+      expect(find.byKey(const ValueKey('changed-on-disk-dialog')), findsNothing);
+      expect(jsonDecode(utf8.decode(storage.files['Part 1.didsa']!))['document']['parts'][0]['name'], 'Edited here');
+    });
+  });
+
   group('Assembly support Phase 15: multi-file save flow', () {
     testWidgets(
       'Create Component creates an auto-named, auto-pathed Part as a fixed top-level Occurrence '

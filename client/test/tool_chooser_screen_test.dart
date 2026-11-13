@@ -17,7 +17,7 @@ import 'package:didsa_cad_client/viewport3d/part_screen.dart';
 /// (`lastUsedProjectRoot`/`pickOrCreateProjectRoot`) - every other method
 /// throws if reached, the same "fail loud on an unexpected call" posture
 /// `ai_plan_translator_test.dart`'s own `_FakeStorageService` already uses.
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   _FakeStorageService({this.lastUsed, this.picked});
 
   final ProjectRoot? lastUsed;
@@ -42,7 +42,7 @@ class _FakeStorageService implements StorageService {
   Future<Uint8List> readFile(FileHandle handle) => throw UnimplementedError();
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) => throw UnimplementedError();
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) => throw UnimplementedError();
 
   @override
   Future<DateTime?> lastModified(FileHandle handle) => throw UnimplementedError();

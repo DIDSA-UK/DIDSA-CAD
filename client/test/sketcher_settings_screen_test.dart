@@ -12,7 +12,7 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 
 /// Fake whose picker either "picks" [pickResult] (persisting it the way the
 /// real services do) or throws `StorageException` to model a cancel.
-class _FakePickerStorage implements StorageService {
+class _FakePickerStorage with FileByFileCommit implements StorageService {
   _FakePickerStorage({this.pickResult});
 
   final ProjectRoot? pickResult;
@@ -34,7 +34,7 @@ class _FakePickerStorage implements StorageService {
   @override
   Future<Uint8List> readFile(FileHandle handle) => throw UnimplementedError();
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) =>
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) =>
       throw UnimplementedError();
   @override
   Future<DateTime?> lastModified(FileHandle handle) => throw UnimplementedError();

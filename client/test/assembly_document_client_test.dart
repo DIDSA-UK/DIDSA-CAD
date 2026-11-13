@@ -13,19 +13,24 @@ import 'package:didsa_cad_client/assembly/save_all.dart';
 import 'package:didsa_cad_client/storage/file_cache.dart';
 import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
+import 'package:didsa_cad_client/storage/server/sync_conflicts.dart';
+import 'package:didsa_cad_client/storage/server/sync_state.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 
 /// Same in-memory fake used by `assembly_graph_composer_test.dart` - kept
 /// as a private copy here (this codebase's own convention for small test
 /// fakes, e.g. every `test_feature_*.py`'s own helper functions are
 /// copy-pasted rather than shared via a common module).
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   final Map<String, Uint8List> files = {};
 
   /// Relative paths whose [writeFile] should throw [StorageException] -
   /// `saveAll`'s own partial-failure test uses this to simulate a revoked
   /// SAF grant/disk-full write without touching every other path's write.
   final Set<String> failOnWrite = {};
+
+  /// Modified times a test sets to simulate a file changed outside the app (default 2026-01-01 for every file).
+  final Map<String, DateTime> mtimes = {};
 
   void put(String relativePath, Map<String, dynamic> payload) {
     files[relativePath] = Uint8List.fromList(utf8.encode(jsonEncode(payload)));
@@ -53,7 +58,7 @@ class _FakeStorageService implements StorageService {
   }
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     if (failOnWrite.contains(relativePath)) {
       throw StorageException('Failed to write $relativePath');
     }
@@ -62,7 +67,7 @@ class _FakeStorageService implements StorageService {
   }
 
   @override
-  Future<DateTime?> lastModified(FileHandle handle) async => DateTime(2026, 1, 1);
+  Future<DateTime?> lastModified(FileHandle handle) async => mtimes[handle.relativePath] ?? DateTime(2026, 1, 1);
 
   @override
   Future<bool> exists(FileHandle handle) async => files.containsKey(handle.relativePath);
@@ -73,6 +78,27 @@ class _FakeStorageService implements StorageService {
   @override
   Future<FileHandle> renameFile(ProjectRoot root, String relativePath, String newFileName) =>
       throw UnimplementedError();
+}
+
+/// A server-project-like storage: `supportsCommit` is true, and `commit` is recorded (and can be made to fail) instead of writing.
+class _CommitStorage extends _FakeStorageService {
+  final List<List<FileChange>> commits = [];
+  Object? commitThrows;
+  List<String> queuedPaths = const [];
+
+  @override
+  bool supportsCommit(ProjectRoot root) => true;
+
+  @override
+  Future<CommitOutcome> commit(ProjectRoot root, List<FileChange> changes, {String? message}) async {
+    commits.add(changes);
+    final error = commitThrows;
+    if (error != null) throw error;
+    return CommitOutcome(
+      sent: [for (final c in changes) if (!queuedPaths.contains(c.path)) c.path],
+      queued: queuedPaths,
+    );
+  }
 }
 
 Map<String, dynamic> _singlePartPayload({
@@ -407,6 +433,147 @@ void main() {
       expect(result.failures, hasLength(1));
       expect(result.failures.single.partId, 'part-child');
       expect(result.failures.single.relativePath, 'bracket_child.DIDSAprt');
+    });
+
+    group('Save All through the storage layer (shared storage S2)', () {
+      test('a storage with a commit gets ONE commit of every file, in placed-first order, and no file-by-file writes', () async {
+        final storage = _CommitStorage();
+        final routed = routedClient();
+        final client = AssemblyDocumentClient(storageService: storage, documentApiClient: routed.client);
+
+        final result = await client.saveAll(
+          root,
+          twoPartSession(),
+          {'part-top': 'top.didsa', 'part-child': 'child.didsa'},
+          commitMessage: 'Save All',
+        );
+
+        expect(storage.commits, hasLength(1));
+        expect(storage.commits.single.map((c) => c.path), ['child.didsa', 'top.didsa'], reason: 'a placed file is written before the file that places it');
+        expect(storage.files, isEmpty, reason: 'nothing went through writeFile');
+        expect(result.savedRelativePaths, ['child.didsa', 'top.didsa']);
+        final top = jsonDecode(utf8.decode(storage.commits.single.last.bytes)) as Map<String, dynamic>;
+        expect(((top['document']['parts'] as List).single as Map)['occurrences'][0]['external_ref'], 'child.didsa');
+      });
+
+      test('a clash (SyncConflictException) propagates for the caller to settle', () async {
+        final storage = _CommitStorage()
+          ..commitThrows = SyncConflictException([
+            SyncConflict(path: 'top.didsa', clash: const SyncClash(reason: 'changed', currentVersion: 2, modifiedBy: 'Quest 3'), queuedAt: DateTime(2026, 11, 13)),
+          ]);
+        final client = AssemblyDocumentClient(storageService: storage, documentApiClient: routedClient().client);
+
+        await expectLater(
+          client.saveAll(root, twoPartSession(), {'part-top': 'top.didsa', 'part-child': 'child.didsa'}),
+          throwsA(isA<SyncConflictException>()),
+        );
+      });
+
+      test('any other commit failure fails every file of it (all or nothing), none saved', () async {
+        final storage = _CommitStorage()..commitThrows = StorageException('The project store refused the key (401).');
+        final client = AssemblyDocumentClient(storageService: storage, documentApiClient: routedClient().client);
+
+        final result = await client.saveAll(root, twoPartSession(), {'part-top': 'top.didsa', 'part-child': 'child.didsa'});
+
+        expect(result.savedRelativePaths, isEmpty);
+        expect(result.failures.map((f) => f.relativePath), unorderedEquals(['top.didsa', 'child.didsa']));
+        expect(result.failures.first.message, contains('401'));
+      });
+
+      test('saved while the store is unreachable: the queued files are reported apart from the saved ones', () async {
+        final storage = _CommitStorage()..queuedPaths = ['top.didsa', 'child.didsa'];
+        final client = AssemblyDocumentClient(storageService: storage, documentApiClient: routedClient().client);
+
+        final result = await client.saveAll(root, twoPartSession(), {'part-top': 'top.didsa', 'part-child': 'child.didsa'});
+
+        expect(result.savedRelativePaths, isEmpty);
+        expect(result.queuedRelativePaths, unorderedEquals(['top.didsa', 'child.didsa']));
+        expect(result.hasFailures, isFalse);
+      });
+    });
+
+    group('changed on disk meanwhile? (decision S0-8, local folders)', () {
+      Future<(_FakeStorageService, AssemblyDocumentClient)> readThenChange() async {
+        final storage = _FakeStorageService();
+        final client = AssemblyDocumentClient(storageService: storage, documentApiClient: routedClient().client);
+        storage.put('top.didsa', _singlePartPayload(id: 'part-top', name: 'Top'));
+        storage.put('child.didsa', _singlePartPayload(id: 'part-child', name: 'Child'));
+        // This session read both files at their modified time...
+        client.stamps.record(root, 'top.didsa', DateTime(2026, 1, 1));
+        client.stamps.record(root, 'child.didsa', DateTime(2026, 1, 1));
+        // ...and then something else changed one of them.
+        storage.files['top.didsa'] = Uint8List.fromList(utf8.encode('{"edited":"elsewhere"}'));
+        storage.mtimes['top.didsa'] = DateTime(2026, 5, 5);
+        return (storage, client);
+      }
+
+      test('changedOnDisk names the files whose modified time is later than when they were read', () async {
+        final (_, client) = await readThenChange();
+        expect(await client.changedOnDisk(root, ['top.didsa', 'child.didsa', 'never-read.didsa']), ['top.didsa']);
+      });
+
+      test('with no question asked (no callback), Save All writes everything as it always did', () async {
+        final (storage, client) = await readThenChange();
+        final result = await client.saveAll(root, twoPartSession(), {'part-top': 'top.didsa', 'part-child': 'child.didsa'});
+        expect(result.savedRelativePaths, unorderedEquals(['top.didsa', 'child.didsa']));
+        expect(utf8.decode(storage.files['top.didsa']!), isNot('{"edited":"elsewhere"}'));
+      });
+
+      test('Skip: the changed file is left as it is on disk, the others are written', () async {
+        final (storage, client) = await readThenChange();
+        List<String>? asked;
+        final result = await client.saveAll(
+          root,
+          twoPartSession(),
+          {'part-top': 'top.didsa', 'part-child': 'child.didsa'},
+          onChangedOnDisk: (changed) async {
+            asked = changed;
+            return ChangedOnDiskChoice.skipChanged;
+          },
+        );
+        expect(asked, ['top.didsa']);
+        expect(result.skippedRelativePaths, ['top.didsa']);
+        expect(result.savedRelativePaths, ['child.didsa']);
+        expect(utf8.decode(storage.files['top.didsa']!), '{"edited":"elsewhere"}');
+      });
+
+      test('Overwrite writes the changed file too; Cancel writes nothing', () async {
+        var (storage, client) = await readThenChange();
+        var result = await client.saveAll(
+          root,
+          twoPartSession(),
+          {'part-top': 'top.didsa', 'part-child': 'child.didsa'},
+          onChangedOnDisk: (_) async => ChangedOnDiskChoice.overwrite,
+        );
+        expect(result.savedRelativePaths, unorderedEquals(['top.didsa', 'child.didsa']));
+        expect(utf8.decode(storage.files['top.didsa']!), isNot('{"edited":"elsewhere"}'));
+
+        (storage, client) = await readThenChange();
+        result = await client.saveAll(
+          root,
+          twoPartSession(),
+          {'part-top': 'top.didsa', 'part-child': 'child.didsa'},
+          onChangedOnDisk: (_) async => ChangedOnDiskChoice.cancel,
+        );
+        expect(result.cancelled, isTrue);
+        expect(result.savedRelativePaths, isEmpty);
+        expect(utf8.decode(storage.files['top.didsa']!), '{"edited":"elsewhere"}');
+      });
+
+      test('no question is asked when nothing changed, and a file this session just wrote is not "changed" next time', () async {
+        final storage = _FakeStorageService();
+        final client = AssemblyDocumentClient(storageService: storage, documentApiClient: routedClient().client);
+        var asked = false;
+        Future<ChangedOnDiskChoice> ask(List<String> _) async {
+          asked = true;
+          return ChangedOnDiskChoice.cancel;
+        }
+
+        await client.saveAll(root, twoPartSession(), {'part-top': 'top.didsa', 'part-child': 'child.didsa'}, onChangedOnDisk: ask);
+        storage.mtimes['top.didsa'] = DateTime(2026, 1, 1); // the stamp taken after the write is this same time
+        await client.saveAll(root, twoPartSession(), {'part-top': 'top.didsa', 'part-child': 'child.didsa'}, onChangedOnDisk: ask);
+        expect(asked, isFalse);
+      });
     });
   });
 

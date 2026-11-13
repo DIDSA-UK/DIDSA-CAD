@@ -21,7 +21,7 @@ import 'package:didsa_cad_client/storage/file_handle.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   final Map<String, Uint8List> files = {};
   final Map<String, DateTime> modified = {};
   final Set<String> unreadable = {};
@@ -56,7 +56,7 @@ class _FakeStorageService implements StorageService {
   }
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     put(relativePath, jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>);
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
   }

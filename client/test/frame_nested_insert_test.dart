@@ -15,7 +15,7 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 /// before the Save As re-mint fix, so A and B share ids, with legacy
 /// `.DIDSAprt` refs) worked on its own but arrived empty when inserted into a
 /// new part - two levels deep. The three data files are the reporter's own.
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   final Map<String, Uint8List> _files = {};
   final Set<String> _unreadable = {};
 
@@ -47,7 +47,7 @@ class _FakeStorageService implements StorageService {
   }
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     _files[relativePath] = bytes;
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
   }

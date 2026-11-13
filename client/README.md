@@ -36,6 +36,34 @@ flag passed explicitly every time: `flutter run -d windows
 `flutter_scene`'s own exception message for the exact wording this all
 comes from).
 
+## Server projects (shared storage)
+
+A project can live on the project store (`project-store/`, `docs/shared-storage-scope.md`) instead of in a local folder. The flat app's
+storage layer (`lib/storage/`) is one `StorageService` for both: a `RoutingStorageService` sends a `ServerProjectRoot` to
+`RemoteStorageService` (`lib/storage/server/`) and every other root to the platform's folder service, so Open, Save, Save All and the
+assembly composer do not branch on where a project lives.
+
+- **Set up once:** Connection Settings > "Project store (shared projects)": the store's address, its key (`PROJECT_STORE_API_KEY`, not
+  the CAD key) and this device's name (sent as `X-Device-Name`; other devices see it as who changed a file; it is a label, not a login).
+  If the backend's `/health` says where its store is (`project_store`), that address is offered as the default.
+- **File menu:** *Server projects...* (pick a project on the store, then a file in it) next to *Open...*; *Copy this project to the server...*
+  next to *Save All* (every file of the open local folder goes into a new server project in one commit, and the session carries on
+  there). A small chip on a server project shows **Synced / N to send / Clash / Offline**; tap it for *Sync now* and *Resolve...*.
+- **Reads** are live and keep a local copy (`FileCache`, with the store's version). **Saves** name the version they replace; each save
+  is first kept in a queue on the device (`SyncStore`, application-support folder, not the OS cache), then sent. **Offline** a project
+  opens from the local copy and saves wait in the queue; a timer and *Sync now* send them (the change feed from the saved cursor first,
+  then the queue as one commit). **Save All** is one all-or-nothing commit.
+- **Conflicts**, per file, saying who changed it and when: *Keep mine* (the next version over theirs), *Take theirs* (mine is kept on the
+  device until the next sync after that), *Save mine as a copy* (`<name> (<device>, <date>).didsa`, a new Part id). A refused commit
+  lists every clash and writes nothing; after the choices the commit is sent again. A file another device deleted or renamed is a clash.
+- **A local folder** is unchanged, except that Save All now asks before overwriting a file whose modified time is later than when this
+  session read or wrote it (Overwrite / Skip these files / Cancel).
+- Tests: `test/remote_storage_service_test.dart` and `test/server_projects_widget_test.dart` (an in-memory fake store,
+  `test/support/fake_project_store.dart`), the PartScreen groups in `test/part_screen_test.dart`, and `test/live/server_store_live_test.dart`
+  against the real store (skipped unless `DIDSA_LIVE_STORE` is set; `.github/workflows/client-store-e2e.yml` starts the store and runs it).
+- Not built: pairing-code keys (S3 and the VR pairing work), chunked upload (S4: a file over 100 MB may fail through a Cloudflare tunnel
+  and is reported as such), merging two people's changes to one file.
+
 ## What this is
 
 A single Flutter codebase (`flutter create --platforms windows,android,ios`,
