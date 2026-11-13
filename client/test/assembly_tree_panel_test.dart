@@ -815,6 +815,72 @@ void main() {
     });
   });
 
+  // M5: parts one set of mates locks together read as one group.
+  group('rigid sets (M5)', () {
+    const under = ConstraintState.underConstrained;
+    final occs = [
+      _occurrence('a', resolvedPartId: 'p', nameOverride: 'Plate'),
+      _occurrence('b', resolvedPartId: 'p', nameOverride: 'Bolt'),
+      _occurrence('c', resolvedPartId: 'p', nameOverride: 'Cover'),
+      _occurrence('d', resolvedPartId: 'p', nameOverride: 'Loose'),
+    ];
+    const status = {
+      'a': ConstraintStatusDto(state: under, dof: 6, rigidSet: 'a'),
+      'b': ConstraintStatusDto(state: under, dof: 6, rigidSet: 'a'),
+      'c': ConstraintStatusDto(state: under, dof: 6, rigidSet: 'a'),
+      'd': ConstraintStatusDto(state: under, dof: 2),
+    };
+
+    test('the DTO reads rigid_set, and a backend without it as null', () {
+      expect(ConstraintStatusDto.fromJson({'status': 'under_constrained', 'dof': 6, 'rigid_set': 'a'}).rigidSet, 'a');
+      expect(ConstraintStatusDto.fromJson({'status': 'under_constrained', 'dof': 6}).rigidSet, isNull);
+      expect(ConstraintStatusDto.fromJson({'status': 'fully_constrained', 'dof': 0, 'rigid_set': null}).rigidSet, isNull);
+    });
+
+    test('the lead says how many others move with it, the rest name the lead, a loose part says nothing', () {
+      expect(rigidSetSubtitle(occs, status, 0), 'Moves with 2 other parts');
+      expect(rigidSetSubtitle(occs, status, 1), 'Moves with Plate');
+      expect(rigidSetSubtitle(occs, status, 2), 'Moves with Plate');
+      expect(rigidSetSubtitle(occs, status, 3), isNull);
+      expect(rigidSetSubtitle(occs, const {}, 1), isNull, reason: 'no status (an older backend)');
+      expect(rigidSetSubtitle(occs.take(2).toList(), status, 0), 'Moves with 1 other part');
+      expect(rigidSetMemberIds(occs, status, 'a'), ['a', 'b', 'c']);
+    });
+
+    test('the grab notice names the other members (three, then "and N more"), and is null outside a set', () {
+      expect(rigidSetGrabNotice(occs, status, 'b'), 'Moves as one with Plate, Cover: the mates lock them together.');
+      expect(rigidSetGrabNotice(occs, status, 'd'), isNull);
+      final many = [for (var i = 0; i < 6; i++) _occurrence('m$i', nameOverride: 'P$i')];
+      final st = {for (final o in many) o.id: const ConstraintStatusDto(state: under, dof: 6, rigidSet: 'm0')};
+      expect(rigidSetGrabNotice(many, st, 'm0'), 'Moves as one with P1, P2, P3 and 2 more: the mates lock them together.');
+    });
+
+    test('one bracket colour per set, stable, different between sets', () {
+      final two = {...status, 'd': const ConstraintStatusDto(state: under, dof: 2, rigidSet: 'd')};
+      expect(rigidSetBracketColour(two, 'a'), rigidSetBracketColour(two, 'a'));
+      expect(rigidSetBracketColour(two, 'a'), isNot(rigidSetBracketColour(two, 'd')));
+    });
+
+    testWidgets('the rows of a set carry a bracket and the note; a loose part has neither', (tester) async {
+      await tester.pumpWidget(_wrap(AssemblyTreePanel(
+        visible: true,
+        occurrences: occs,
+        mates: const [],
+        selectedOccurrenceId: null,
+        onOccurrenceTap: (_) {},
+        onOccurrenceLongPress: (_) {},
+        onClose: () {},
+        constraintStatusByOccurrenceId: status,
+      )));
+      for (final id in ['a', 'b', 'c']) {
+        expect(find.byKey(Key('rigid-set-bracket-$id')), findsOneWidget, reason: id);
+      }
+      expect(find.byKey(const Key('rigid-set-bracket-d')), findsNothing);
+      expect(find.text('Moves with 2 other parts'), findsOneWidget);
+      expect(find.text('Moves with Plate'), findsNWidgets(2));
+    });
+  });
+
   // Bug report 2026-10-14, item 7: one status-icon slot per row.
   group('constraint badge (item 7)', () {
     Widget panelWith(List<OccurrenceDto> occurrences, Map<String, ConstraintStatusDto> status) => _wrap(

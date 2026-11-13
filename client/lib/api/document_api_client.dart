@@ -1942,7 +1942,11 @@ class ConstraintStatusDto {
   /// What an under-constrained occurrence can still do; empty for every other state.
   final List<FreeMotionDto> freeMotions;
 
-  const ConstraintStatusDto({required this.state, required this.dof, this.freeMotions = const []});
+  /// M1 (`app.document.rigid_sets`): the rigid set the occurrence moves as one with - its id is the occurrence id of the set's first member (its
+  /// lead). Null outside a set, for a set locked to a fixed part (its members read fully constrained) and for a backend that predates the field.
+  final String? rigidSet;
+
+  const ConstraintStatusDto({required this.state, required this.dof, this.freeMotions = const [], this.rigidSet});
 
   factory ConstraintStatusDto.fromJson(Map<String, dynamic> json) => ConstraintStatusDto(
         state: switch (json['status'] as String) {
@@ -1955,6 +1959,7 @@ class ConstraintStatusDto {
         freeMotions: [
           for (final m in (json['free_motions'] as List? ?? const [])) FreeMotionDto.fromJson(m as Map<String, dynamic>),
         ],
+        rigidSet: json['rigid_set'] as String?,
       );
 }
 
