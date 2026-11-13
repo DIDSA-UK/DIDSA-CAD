@@ -97,6 +97,11 @@ class ConstrainedDragSession {
   MotionBlender _blender = MotionBlender(1);
   LocalRetractor? _local;
 
+  /// With a version-8 model (rigid sets) the local model's members are the sets' LEADS while the anchor lists every member: `_leadIdx[i]` is the
+  /// index in [_ids] of the model's member `i`, `_followerIdx` that of each follower id. Null without a model.
+  List<int>? _leadIdx;
+  Map<String, int>? _followerIdx;
+
   /// The last local frame held a limit mate at its bound (the part is stopped by a limit; reset every frame).
   bool _atLimit = false;
   bool get atLimit => _atLimit;
@@ -202,15 +207,41 @@ class ConstrainedDragSession {
     final local = _local;
     if (local == null) return null;
     final start = _shown ?? _hyst.active!.refs;
-    final result = local.frame(
-      poses: start,
-      wishes: <Pose>[wish, ...start.skip(1)],
-      fallback: projected,
-      lever: _lever,
-    );
+    final result = _runLocal(local, wish, start, projected);
     counters.recordLocal(accepted: result.accepted, residualInf: result.residualInf);
     _atLimit = result.accepted && local.heldLimits.isNotEmpty;
-    return result.accepted ? result.poses : null;
+    return result.accepted ? _allPoses(local, result.poses, result.followers, start) : null;
+  }
+
+  /// One local frame on the model's members (the leads) taken out of the all-member lists [start] / [projected].
+  LocalFrameResult _runLocal(LocalRetractor local, Pose wish, List<Pose> start, List<Pose> projected) {
+    final lead = _leadIdx;
+    if (lead == null) {
+      return local.frame(poses: start, wishes: <Pose>[wish, ...start.skip(1)], fallback: projected, lever: _lever);
+    }
+    final from = <Pose>[for (final i in lead) start[i]];
+    return local.frame(
+      poses: from,
+      wishes: <Pose>[wish, ...from.skip(1)],
+      fallback: <Pose>[for (final i in lead) projected[i]],
+      lever: _lever,
+    );
+  }
+
+  /// The displayed poses of EVERY member: the leads from a local answer, each follower expanded from its lead (version 8); [start] fills any member
+  /// the model does not move. Without sets that is [poses] itself.
+  List<Pose> _allPoses(LocalRetractor local, List<Pose> poses, Map<String, Pose> followers, List<Pose> start) {
+    final lead = _leadIdx;
+    if (lead == null) return poses;
+    final out = List<Pose>.of(start);
+    for (var i = 0; i < lead.length; i++) {
+      out[lead[i]] = poses[i];
+    }
+    followers.forEach((id, p) {
+      final at = _followerIdx![id];
+      if (at != null) out[at] = p;
+    });
+    return out;
   }
 
   void _maybeRequest() {
@@ -281,7 +312,7 @@ class ConstrainedDragSession {
     final local = _local;
     final shown = _shown;
     if (local == null || shown == null || _holding) return projected[0];
-    final r = local.frame(poses: shown, wishes: <Pose>[wish, ...shown.skip(1)], fallback: projected, lever: _lever);
+    final r = _runLocal(local, wish, shown, projected);
     return r.accepted ? r.poses[0] : projected[0];
   }
 
@@ -328,6 +359,8 @@ class ConstrainedDragSession {
       _shown = null;
       _prevShownGrabbed = null;
       _local = null;
+      _leadIdx = null;
+      _followerIdx = null;
     } else {
       final List<Pose> old = _holding ? _held! : _hyst.peek(wish!);
       if (_holding) _blender.reset();
@@ -340,13 +373,25 @@ class ConstrainedDragSession {
     _anchor = r;
     // The model arrives with the first anchor and is kept while the group is the same (a later answer may omit it).
     final local = useLocalRetraction ? LocalRetractor.tryParse(r.constraintModel) : null;
-    if (local != null && _sameIds(local.memberIds, ids)) {
-      _local = local;
-    } else if (_local != null && !_sameIds(_local!.memberIds, ids)) {
+    if (local != null) {
+      final map = _mapModel(local, ids);
+      if (map != null) {
+        _local = local;
+        _leadIdx = map.$1;
+        _followerIdx = map.$2;
+      } else if (_local != null && !_covers(_local!, ids)) {
+        _local = null;
+        _leadIdx = null;
+        _followerIdx = null;
+      }
+    } else if (_local != null && !_covers(_local!, ids)) {
       _local = null;
+      _leadIdx = null;
+      _followerIdx = null;
     }
     // A coupler's rows are relative to the accepted pose (the twist is only good within ~170 degrees): re-base them at every anchor.
-    _local?.setAnchors(model.refs);
+    final lead = _leadIdx;
+    _local?.setAnchors(lead == null ? model.refs : <Pose>[for (final i in lead) model.refs[i]]);
     _sched.onAccepted(maxStep: r.quality.maxStep, sigmaGap: r.quality.sigmaGap);
     counters.recordAccepted();
     _dirty = true;
@@ -369,6 +414,32 @@ class ConstrainedDragSession {
     }
     if (_sched.takeCue()) onCue?.call("Can't follow that move with the current mates");
   }
+
+  /// Where a parsed model's members and followers sit in the anchor's member list [ids]; `null` unless the model moves exactly those occurrences
+  /// (a model without sets: the same ids in the same order, as before version 8; with sets: the leads and followers together are the anchor's members,
+  /// the grabbed one - first in both lists - leading its own set).
+  static (List<int>?, Map<String, int>?)? _mapModel(LocalRetractor local, List<String> ids) {
+    if (!local.hasSets) return _sameIds(local.memberIds, ids) ? (null, null) : null;
+    final at = <String, int>{for (var i = 0; i < ids.length; i++) ids[i]: i};
+    final all = <String>[...local.memberIds, ...local.followerIds];
+    if (all.length != ids.length || ids.isEmpty || local.memberIds.first != ids.first) return null;
+    final lead = <int>[];
+    for (final id in local.memberIds) {
+      final i = at[id];
+      if (i == null) return null;
+      lead.add(i);
+    }
+    final fol = <String, int>{};
+    for (final id in local.followerIds) {
+      final i = at[id];
+      if (i == null) return null;
+      fol[id] = i;
+    }
+    return (lead, fol);
+  }
+
+  /// Whether [local] still moves exactly the anchor's members [ids] (an anchor that left its model out keeps the one held).
+  bool _covers(LocalRetractor local, List<String> ids) => _mapModel(local, ids) != null;
 
   static bool _sameIds(List<String> a, List<String> b) {
     if (a.length != b.length) return false;

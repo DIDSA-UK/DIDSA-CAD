@@ -2955,6 +2955,23 @@ void main() {
       expect(result.branchChanges[1].toJson(), {'mate_id': 'mate-2', 'field': 'alignment', 'to': 'anti_aligned'});
     });
 
+    test('previewMateSolve parses budget_exhausted (M1.1) and reads an absent field (an older backend) as false', () async {
+      const refs = [
+        MateEntityRefDto(occurrenceId: 'occ-1', subshapeRef: SubShapeRefDto(bodyId: 'b1', shapeType: 'face', index: 0)),
+        MateEntityRefDto(occurrenceId: '', subshapeRef: SubShapeRefDto(bodyId: 'b2', shapeType: 'face', index: 1)),
+      ];
+      for (final (body, want) in <(Map<String, dynamic>, bool)>[
+        ({'converged': true, 'transform': null, 'budget_exhausted': true}, true),
+        ({'converged': true, 'transform': null, 'budget_exhausted': false}, false),
+        ({'converged': true, 'transform': null}, false),
+      ]) {
+        final client = DocumentApiClient(httpClient: MockClient((request) async => jsonResponse(body)));
+        final result = await client.previewMateSolve('part-1', 'occ-1', type: 'distance', references: refs);
+        expect(result.budgetExhausted, want, reason: '$body');
+      }
+      expect(const MateSolvePreviewDto(converged: true).budgetExhausted, isFalse);
+    });
+
     test('previewMateSolve parses controls, resolved and alternatives, and sends the named branch (Phase 3)', () async {
       Map<String, dynamic> capturedBody = {};
       Map<String, dynamic> pose(double x) => {

@@ -73,7 +73,25 @@ String mateLabel(MateDto mate) => isSymmetricMate(mate)
 /// Phase 2b: the sentence shown while the ghost preview needs earlier mates on their other branch
 /// ([MateSolvePreviewDto.branchChanges]), or cannot get there ([blockedBy] = mates the user set that stand in the
 /// way, [conflicting] = a genuine conflict). `null` when there is nothing to say. [mates] names them by type.
+///
+/// M2: [budgetExhausted] (`MateSolvePreviewDto.budgetExhausted`: the preview ran out of its time budget) adds [kMateSearchStoppedEarlyNote] - on its
+/// own when there is nothing else to say, else after that sentence. It is a note, never an error.
 String? mateBranchNotice(
+  List<BranchChangeDto> changes,
+  List<MateDto> mates, {
+  List<String> blockedBy = const [],
+  List<String> conflicting = const [],
+  bool budgetExhausted = false,
+}) {
+  final text = _mateBranchSentence(changes, mates, blockedBy: blockedBy, conflicting: conflicting);
+  if (!budgetExhausted) return text;
+  return text == null ? kMateSearchStoppedEarlyNote : '$text $kMateSearchStoppedEarlyNote';
+}
+
+/// Shown when the preview's search stopped at its time budget (see [mateBranchNotice]).
+const String kMateSearchStoppedEarlyNote = 'Search stopped early: there may be more solutions.';
+
+String? _mateBranchSentence(
   List<BranchChangeDto> changes,
   List<MateDto> mates, {
   List<String> blockedBy = const [],
