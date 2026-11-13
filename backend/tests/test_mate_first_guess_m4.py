@@ -101,14 +101,43 @@ def test_a_legacy_request_has_no_suggested_type_key():
     assert "suggested_type" not in guess.preview(scene)
 
 
-def test_legacy_previews_are_byte_identical():
-    """Every request an older client sends (no `type: "auto"`, no `pick_points`) gets exactly the bytes recorded before M4."""
+def _same_answer(got, want, path="") -> str | None:
+    """None when `got` is the answer `want` an older client got: the same keys in the same order, the same strings, booleans, nulls and
+    list lengths, and numbers equal to 1e-9 (relative above 1). The recording is floating-point output of one machine (x86-64); another
+    CPU (CI's arm64 runner) differs in the last digits of the same solve, so the bytes cannot be compared across machines."""
+    if isinstance(want, dict):
+        if not isinstance(got, dict) or list(got) != list(want):
+            return f"{path}: keys {list(got) if isinstance(got, dict) else type(got).__name__} != {list(want)}"
+        return next((d for k in want if (d := _same_answer(got[k], want[k], f"{path}.{k}")) is not None), None)
+    if isinstance(want, list):
+        if not isinstance(got, list) or len(got) != len(want):
+            return f"{path}: list of {len(got) if isinstance(got, list) else type(got).__name__} != {len(want)}"
+        return next((d for i, (g, w) in enumerate(zip(got, want)) if (d := _same_answer(g, w, f"{path}[{i}]")) is not None), None)
+    if isinstance(want, float) and not isinstance(want, bool) and isinstance(got, (int, float)) and not isinstance(got, bool):
+        return None if abs(got - want) <= 1e-9 * max(1.0, abs(want)) else f"{path}: {got!r} != {want!r}"
+    return None if got == want and type(got) is type(want) else f"{path}: {got!r} != {want!r}"
+
+
+def test_legacy_previews_are_unchanged():
+    """Every request an older client sends (no `type: "auto"`, `peg_in_hole` or `measure_value`) gets the answer recorded before M4: the same
+    keys, in the same order, the same values (numbers to 1e-9: see `_same_answer`). On the recording machine the bytes are identical too."""
     golden = json.loads(GOLDEN.read_text())
     seen = []
     for key, scene, start, body, movement in cases():
         seen.append(key)
-        assert answer(scene, start, body, movement) == golden[key], key
+        got = answer(scene, start, body, movement)
+        problem = _same_answer(json.loads(got), json.loads(golden[key]))
+        assert problem is None, f"{key}{problem}"
     assert sorted(seen) == sorted(golden)
+
+
+def test_the_comparison_catches_what_an_older_client_would_see():
+    want = {"converged": True, "transform": {"translation": [1.0, 2.0]}, "resolved": {"alignment": "aligned"}}
+    assert _same_answer({"converged": True, "transform": {"translation": [1.0 + 1e-12, 2.0]}, "resolved": {"alignment": "aligned"}}, want) is None
+    assert _same_answer({"converged": True, "transform": {"translation": [1.001, 2.0]}, "resolved": {"alignment": "aligned"}}, want) is not None
+    assert _same_answer({"converged": True, "transform": {"translation": [1.0, 2.0]}, "resolved": {"alignment": "anti_aligned"}}, want) is not None
+    assert _same_answer({"converged": True, "transform": {"translation": [1.0, 2.0]}, "resolved": {"alignment": "aligned"}, "suggested_type": None}, want) is not None
+    assert _same_answer({"transform": {"translation": [1.0, 2.0]}, "converged": True, "resolved": {"alignment": "aligned"}}, want) is not None  # key order
 
 
 # ---- pick points ----------------------------------------------------------------------------------

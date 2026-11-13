@@ -774,13 +774,14 @@ and without them. Both clients send them (Flutter: the hit point taken into the 
 hit point, local mm, no view direction), so a later rule needs only a backend change. Drop them if that is not wanted.
 
 **An older client keeps working.** A request without `auto` / `peg_in_hole` runs exactly the pre-M4 code path, and
-`tests/test_mate_first_guess_m4.py::test_legacy_previews_are_byte_identical` replays 37 legacy previews (8 scenes, near and far starts, `auto`
+`tests/test_mate_first_guess_m4.py::test_legacy_previews_are_unchanged` replays 37 legacy previews (8 scenes, near and far starts, `auto`
 and `group` movement, and in-progress payloads) against answers recorded on `main` before M4 (`tests/data/m4_legacy_previews.json`,
-recorder `tests/m4_legacy_cases.py`) and compares the response **bytes**. Caveat: the recording is floating-point output from one machine; a
-CI runner with another BLAS could in principle differ in the last digit (it did not between two runs here).
+recorder `tests/m4_legacy_cases.py`): the same keys in the same order, the same strings, booleans, branches and list lengths, and numbers
+to 1e-9. On the recording machine (x86-64) the bytes were identical too, but **not across machines**: the first version of the test compared
+bytes and failed on CI's arm64 runner, whose solve differs in the last digits (e.g. `19.99999999999998`), so the numbers now get a tolerance.
 
 **Tests.** The full backend suite without the gears marker: 3085 passed, 1 skipped (pre-existing); the 464 gears-marked tests were deselected and **not run** (they were not touched). `flutter test` in `client/`: all 3880 passed (50 skipped, as before). The bench edits were checked by the after-run above. Backend: `tests/test_mate_first_guess_m4.py` (43: every row of the rule table, pick kinds on real geometry, `suggested_type` on
-the wire and its solve equal to the explicit type's, the no-suggestion answer, no key in a legacy answer, the byte-identical replay, pick points
+the wire and its solve equal to the explicit type's, the no-suggestion answer, no key in a legacy answer, the legacy replay, pick points
 change nothing and are validated, the peg from near / far / upside-down starts against the old Coincident, the atomic two-mate create, a
 refused create leaves nothing, `auto` cannot be created). Flutter: `test/mate_first_guess_m4_test.dart` (14: DTO with / without / null
 `suggested_type`, the request bodies, starting on the suggestion and changing it in the panel, the pick-point maths). VR:
@@ -803,7 +804,7 @@ order: a ghost before any typing, and a value box that starts on the real distan
 **Built.** `preview-mate-solve` with `type: "distance"`, no `value` and `measure_value: true` (opt-in, preview only) measures the picks at the
 stored poses (`app/document/mate_measure.py`: two planes, a plane and a point, two axes, two points; mm, never negative, rounded to a
 micrometre) and answers the ordinary preview at that distance with `measured_value` (the key only in such an answer; null and `converged: false`
-when the picks cannot be measured). A request without the flag is unchanged (the M4 byte-identical replay still passes, including its
+when the picks cannot be measured). A request without the flag is unchanged (the M4 legacy replay still passes, including its
 "no value" cases). **Flutter:** with no value typed for the current picks the panel asks once, shows the ghost, and fills the value box with
 the measured distance ("Measured: the distance now. Type the one you want."); typing replaces it; Confirm with the measured value is allowed.
 **VR:** before, a Distance with nothing typed was previewed at 0 (flush); now at the measured distance, `mate_value` starts on it (not counted

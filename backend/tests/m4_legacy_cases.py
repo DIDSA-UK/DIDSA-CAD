@@ -1,11 +1,12 @@
-"""M4 (`docs/mates-storage-sessions-plan-2026-11-12.md`): the legacy `preview-mate-solve` requests whose answers must stay
-byte-identical after M4. A request that sends neither `type: "auto"` nor `pick_points` must get exactly the bytes it got before M4.
+"""M4 (`docs/mates-storage-sessions-plan-2026-11-12.md`): the legacy `preview-mate-solve` requests whose answers must not
+change after M4. A request that sends none of M4's new fields must get the answer it got before M4 (on the recording machine, the same bytes).
 
 `tests/data/m4_legacy_previews.json` holds the answers recorded on `main` BEFORE M4 (commit 22643c4) by running this module:
 
     CAD_API_KEY=test-api-key python -m tests.m4_legacy_cases   (from backend/, in the backend conda env)
 
-`tests/test_mate_first_guess_m4.py::test_legacy_previews_are_byte_identical` replays every case and compares the response bytes.
+`tests/test_mate_first_guess_m4.py::test_legacy_previews_are_unchanged` replays every case and compares the answers: the same keys in the
+same order and the same values, numbers to 1e-9 (the recording is x86-64 output; CI's arm64 runner differs in the last digits).
 Do not re-record it to make that test pass: a difference means M4 changed what an older client sees.
 """
 
