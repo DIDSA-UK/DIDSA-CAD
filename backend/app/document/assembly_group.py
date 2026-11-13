@@ -243,6 +243,8 @@ class GroupModel:
     # Limit mates (`app.document.limit`) are inequalities: they add NO rows unless listed here, `{mate_id: bound}` - the limits a solve
     # is currently holding at a bound (`solve_group`'s active set). A listed limit adds the row `value - bound`.
     active_limits: dict[str, float] = field(default_factory=dict)
+    # M1 (`app.document.rigid_sets`): set on a REDUCED model, whose members are rigid-set leads (`rigid_sets.Reduction`); None otherwise.
+    rigid: object | None = field(default=None, repr=False)
 
     @property
     def member_ids(self) -> tuple[str, ...]:
@@ -639,7 +641,12 @@ def analyze_model(model: GroupModel, lever_arm: float, rank_rtol: float = _DEFAU
     n = model.n_vars
     k = len(model.member_ids)
     comp = model.component
-    weights = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm] * k)
+    base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
+    if model.rigid is None:
+        weights = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm] * k)
+    else:
+        # a reduced model (rigid sets): every member of a set counts in the metric (`rigid_sets.expand_analysis` relies on it)
+        weights = _RigidWeights(model, lambda _oid: base)(model.base_transforms)
     residual0 = model.residual()
     jac = model.jacobian()
     if jac.shape[0] == 0:
@@ -647,11 +654,11 @@ def analyze_model(model: GroupModel, lever_arm: float, rank_rtol: float = _DEFAU
     else:
         # Weighted variables y = W x make translation and rotation columns
         # commensurate, so the rank tolerance and conditioning are meaningful.
-        _u, svals, vt_full = np.linalg.svd(jac / weights, full_matrices=True)
+        _u, svals, vt_full = np.linalg.svd(_scale_cols(jac, weights), full_matrices=True)
         rank = relative_rank(svals, rank_rtol)
         vt = vt_full
     null_y = vt[rank:]  # (dof, n): orthonormal in y == orthonormal in the weighted metric
-    basis = null_y / weights
+    basis = _unscale_rows(null_y, weights)
     mobility = {
         oid: int(np.linalg.matrix_rank(null_y[:, 6 * i : 6 * i + 6], tol=_MOBILITY_TOL)) if null_y.size else 0
         for i, oid in enumerate(comp.member_ids)
@@ -695,6 +702,58 @@ def analyze_group(
     return analyze_model(model, lever_arm, rank_rtol)
 
 
+# ---- weights: a vector per variable, or (a reduced model) a block metric -------------------------------------------------
+#
+# Every weighted formula below reads `W x`, `J W^-1`, `W^-1 y`. On a plain model `W` is the diagonal weight vector (the code paths
+# are the ones that existed before rigid sets). On a reduced model (`GroupModel.rigid`) a set's 6 variables carry the summed metric
+# of all of its members (`constraint_model.RigidMetric`), so `W` is a block-diagonal matrix `F` that depends on the leads' poses.
+
+
+class _Block:
+    __slots__ = ("f", "finv", "metric")
+
+    def __init__(self, f: np.ndarray, finv: np.ndarray, metric=None):
+        self.f, self.finv, self.metric = f, finv, metric
+
+
+def _scale_cols(jac: np.ndarray, w) -> np.ndarray:  # J W^-1
+    return jac / w if isinstance(w, np.ndarray) else jac @ w.finv
+
+
+def _unscale(y: np.ndarray, w) -> np.ndarray:  # W^-1 y
+    return y / w if isinstance(w, np.ndarray) else w.finv @ y
+
+
+def _scale(x: np.ndarray, w) -> np.ndarray:  # W x
+    return x * w if isinstance(w, np.ndarray) else w.f @ x
+
+
+def _scale_rows(rows: np.ndarray, w) -> np.ndarray:  # each row r -> W r
+    return rows * w if isinstance(w, np.ndarray) else rows @ w.f.T
+
+
+def _unscale_rows(rows: np.ndarray, w) -> np.ndarray:  # each row r -> W^-1 r
+    return rows / w if isinstance(w, np.ndarray) else rows @ w.finv.T
+
+
+class _RigidWeights:
+    """The weights of a reduced model, as a function of the leads' poses: `weight_of(occurrence id)` is each MEMBER's own row."""
+
+    def __init__(self, model: GroupModel, weight_of: Callable[[str], np.ndarray]):
+        from app.document import rigid_sets
+
+        self.model = model
+        self.metric = rigid_sets.metric(model, weight_of)
+
+    def __call__(self, poses: dict[str, RigidTransform]) -> _Block:
+        f, finv = self.metric.factor([rigid_to_pose(poses[oid]) for oid in self.model.member_ids])
+        return _Block(f, finv, self.metric)
+
+
+def _weights_at(weights, poses: dict[str, RigidTransform]):
+    return weights(poses) if callable(weights) else weights
+
+
 # ---- group solve: weighted retraction (S2) -----------------------------------
 
 _SOLVE_TOL = 1e-7  # the solver iterates until the residual is at or below this
@@ -732,6 +791,10 @@ class GroupSolveResult:
     # accepted as converged because every mate is within the near-redundant limits. Empty for an exact solve. Never silent: the
     # routes report it (`X-Mate-Tolerance: near`) and every listing marks those mates `near`.
     near: dict[str, tuple[float, float]] = field(default_factory=dict)
+    # M1 (`app.document.rigid_sets`): `{occurrence id: rigid set id}` for the members of a set that moves (not one locked to the
+    # ground); empty when the group has none. The solve ran on one body per set; `poses` / `analysis` still list every member.
+    rigid_sets: dict[str, str] = field(default_factory=dict)
+    solved_bodies: int | None = None  # bodies the solve had (one per set + every other member); None = one per member (no set)
 
     @property
     def dof(self) -> int | None:
@@ -915,14 +978,22 @@ def _metric(lever_arm: float) -> np.ndarray:
 
 
 def _solve_weights(
-    model: GroupModel, grabbed_id: str, lever_arm: float, follower_weight: float = _FOLLOWER_WEIGHT
-) -> np.ndarray:
+    model: GroupModel, grabbed_id: str, lever_arm: float, follower_weight: float = _FOLLOWER_WEIGHT, grabbed_scale: float = 1.0
+):
+    """The retraction's weights: the grabbed member at `[1,1,1,L,L,L]` (times `grabbed_scale`), every other member at
+    `follower_weight` times that. A vector; on a reduced model a `_RigidWeights` (evaluate it at the poses with `_weights_at`)."""
     base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
-    return np.concatenate([base if oid == grabbed_id else base * follower_weight for oid in model.member_ids])
+    if model.rigid is not None:
+        return _RigidWeights(model, lambda oid: base * grabbed_scale if oid == grabbed_id else base * follower_weight)
+    out = np.concatenate([base if oid == grabbed_id else base * follower_weight for oid in model.member_ids])
+    if grabbed_scale != 1.0:
+        gi = model.member_ids.index(grabbed_id)
+        out[6 * gi : 6 * gi + 6] *= grabbed_scale
+    return out
 
 
 def _retract(
-    model: GroupModel, poses: dict[str, RigidTransform], weights: np.ndarray, max_iterations: int = _MAX_ITERATIONS
+    model: GroupModel, poses: dict[str, RigidTransform], weights, max_iterations: int = _MAX_ITERATIONS
 ) -> tuple[dict, float, int]:
     """Weighted minimum-norm Gauss-Newton from `poses` onto `residual == 0`:
     `dx = -W^-1 pinv(J W^-1) r` (the least step in the metric `W`), with a
@@ -938,7 +1009,8 @@ def _retract(
     while r.size and float(np.max(np.abs(r))) > _SOLVE_TOL and iterations < max_iterations:
         iterations += 1
         jac = model.jacobian(poses)
-        dx = -(np.linalg.pinv(jac / weights, rcond=_PINV_RCOND) @ r) / weights
+        w = _weights_at(weights, poses)
+        dx = -_unscale(np.linalg.pinv(_scale_cols(jac, w), rcond=_PINV_RCOND) @ r, w)
         rot = np.array([np.linalg.norm(dx[6 * i + 3 : 6 * i + 6]) for i in range(n)])
         if rot.max() > _MAX_ROTATION_STEP:
             dx *= _MAX_ROTATION_STEP / rot.max()
@@ -976,9 +1048,13 @@ def _predicted_seed(
     # followers should move least (unit weight: the free-motion space has directions - e.g. a bolt's spin - that
     # only move followers, and the retraction's tiny follower weight would leave them arbitrary).
     base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
-    sw = np.concatenate([base * (1e6 if oid == grabbed_id else 1.0) for oid in ids])
-    a = (nb * sw) @ (nb * sw).T
-    c = np.linalg.solve(a + 1e-12 * np.eye(len(a)), (nb * sw) @ (want * sw))
+    if model.rigid is None:
+        sw = np.concatenate([base * (1e6 if oid == grabbed_id else 1.0) for oid in ids])
+    else:
+        sw = _RigidWeights(model, lambda oid: base * (1e6 if oid == grabbed_id else 1.0))(stored)
+    nbw = _scale_rows(nb, sw)
+    a = nbw @ nbw.T
+    c = np.linalg.solve(a + 1e-12 * np.eye(len(a)), nbw @ _scale(want, sw))
     twist = nb.T @ c
     g = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
     # The wish is (to first order) a free motion of the group: the grabbed block of the projection IS the wish.
@@ -1026,6 +1102,83 @@ def solve_group(
         model = replace(model, base_transforms={**model.base_transforms, **{k: v for k, v in reference.items() if k in model.member_ids}})
     if lever_arm is None:
         lever_arm = bounding_radius(document, part, grabbed_id)
+    reduced = None
+    if rigid_sets_enabled and len(model.member_ids) > 1:
+        from app.document import rigid_sets
+
+        found = rigid_sets.detect(document, part, model, exclude=frozenset(m.id for m in extra_mates))
+        reduced = rigid_sets.reduce_model(part, model, found, grabbed_id)
+    if reduced is None:
+        return _solve_with_limits(document, part, model, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump)
+    result = _solve_with_limits(document, part, reduced, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump)
+    return _expand_result(document, part, reduced, result, grabbed_id, lever_arm)
+
+
+# M1 switch: False solves every group member by member as before (a test / benchmark compares the two; nothing else reads it).
+rigid_sets_enabled = True
+
+
+def _expand_result(
+    document: Document, part: Part, reduced: GroupModel, result: GroupSolveResult, grabbed_id: str, lever_arm: float
+) -> GroupSolveResult:
+    """A reduced solve's answer over every member: followers placed from their leads, the mates inside the sets checked once on
+    those poses (a miss there beyond the near-redundant limits is not converged, as the unreduced solve would be), the analysis
+    expanded (`rigid_sets.expand_analysis`) and the constraint model as version 8.
+
+    A set may be held together by mates that disagree by a hair (`near`, amber: they count as locking). The reduced solve keeps
+    such a set exactly as it stands, which would leave the whole disagreement on one mate; the unreduced solve shares it out in
+    least squares. So when a mate inside a set is above the strict tolerance, the whole group gets the unreduced Gauss-Newton
+    steps from the expanded poses (it starts next to the answer: a few steps), and the near-redundant check judges the result."""
+    from app.document import rigid_sets
+
+    red = reduced.rigid
+    poses = rigid_sets.expand_poses(red, result.poses)
+    internal = rigid_sets.internal_residual_inf(reduced, poses)
+    residual_inf = max(result.quality.residual_inf, internal)
+    converged, near = result.converged, dict(result.near)
+    full = replace(red.full, active_limits={})
+    if converged and internal > _NOISE_TOL:
+        if near_redundant_mates(document, part, full, poses) is None:
+            # a mate inside a set is missed beyond the near limits: the set is rigid without it, so no solve can meet it here (the
+            # unreduced solve fails the same way, only slower) - not converged, and no unreduced steps spent on it
+            converged = False
+        elif not reduced.active_limits:
+            polished, polished_inf, _ = _retract(full, poses, _solve_weights(full, grabbed_id, lever_arm))
+            if polished_inf < residual_inf:
+                poses, residual_inf = polished, polished_inf
+    if converged and (residual_inf > _NOISE_TOL or near):
+        # some mate is above the strict tolerance: judge the whole group (the mates inside the sets too) as the unreduced solve would
+        accepted = near_redundant_mates(document, part, full, poses)
+        converged, near = accepted is not None, (accepted or {})
+    analysis = constraint_model = None
+    if converged and result.analysis is not None:
+        lead_poses = {oid: result.poses[oid] for oid in red.leads}
+        analysis = rigid_sets.expand_analysis(_free(reduced, lead_poses), result.analysis, residual_inf)
+        constraint_model = rigid_sets.export_v8(reduced, result.constraint_model)
+    return GroupSolveResult(
+        converged=converged,
+        poses=poses,
+        analysis=analysis,
+        quality=replace(result.quality, residual_inf=residual_inf),
+        constraint_model=constraint_model,
+        branches=dict(result.branches),
+        near=near if converged else {},
+        rigid_sets=dict(red.set_ids),
+        solved_bodies=len(red.leads),
+    )
+
+
+def _solve_with_limits(
+    document: Document,
+    part: Part,
+    model: GroupModel,
+    grabbed_id: str,
+    wanted_pose: RigidTransform | None,
+    lever_arm: float,
+    extra_mates: tuple[Mate, ...],
+    with_jump: bool,
+) -> GroupSolveResult:
+    """`_solve_model`, with the limit mates' active-set rounds (see `solve_group`)."""
     if not model.has_limits():
         return _solve_model(document, part, model, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump)
     active: dict[str, float] = {}
@@ -1086,7 +1239,7 @@ def _solve_model(
                 break
 
     # (The py-slvs single-occurrence fallback cannot express a Width mid-plane that depends on another part's pose, nor a pattern copy that follows its source - its `_applicable_mates` matches references by raw top and would silently ignore the mate: skip it for those.)
-    if residual_inf > _NOISE_TOL and len(model.member_ids) == 1 and not any(a.partner or b.partner or a.follow or b.follow for _m, a, b in model.sides):
+    if residual_inf > _NOISE_TOL and len(model.member_ids) == 1 and model.rigid is None and not any(a.partner or b.partner or a.follow or b.follow for _m, a, b in model.sides):
         guess = wanted_pose if wanted_pose is not None else stored[grabbed_id]
         fallback = solve_occurrence_from_guess(document, part, grabbed_id, guess, extra_mates)
         if fallback.converged:
@@ -1115,8 +1268,7 @@ def _solve_model(
                 if cand_residual <= _SOLVE_TOL and on_manifold:
                     pinned = dict(cand)
                     pinned[grabbed_id] = wanted_pose
-                    heavy = weights.copy()
-                    heavy[:6] *= 1e3
+                    heavy = _solve_weights(model, grabbed_id, lever_arm, grabbed_scale=1e3)
                     polished, polished_residual, more = _retract(model, pinned, heavy, max_iterations=20)
                     iterations += more
                     if polished_residual <= _SOLVE_TOL:
@@ -1220,7 +1372,15 @@ def _nearest_point_stage(
     the refinement did not converge or is not nearer (the caller keeps its own answer)."""
     ids = list(model.member_ids)
     cm = ConstraintModel(spec, active=model.active_limits)
-    w = _local_weights(len(ids), lever_arm, grabbed=ids.index(grabbed_id))
+    if model.rigid is None:
+        w = _local_weights(len(ids), lever_arm, grabbed=ids.index(grabbed_id))
+    else:
+        from app.document import rigid_sets
+        from app.document.constraint_model import LOCAL_FOLLOWER
+
+        base = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
+        # the followers (those of the grabbed member's set too) wish to stay at their stored poses, as every follower does
+        w = rigid_sets.metric(model, lambda oid: base if oid == grabbed_id else base * LOCAL_FOLLOWER, rest=stored)
     start = [rigid_to_pose(poses[oid]) for oid in ids]
     wishes = [rigid_to_pose(wanted if oid == grabbed_id else stored[oid]) for oid in ids]
     cand = sqp_nearest(cm, start, wishes, w, iters=_NEAREST_ITERATIONS, polish=_NEAREST_POLISH)
@@ -1236,8 +1396,7 @@ def _nearest_point_stage(
         # metric (the grabbed answer of an on-manifold wish IS the wish).
         pinned = {oid: pose_to_rigid(cand[i]) for i, oid in enumerate(ids)}
         pinned[grabbed_id] = wanted
-        heavy = _solve_weights(model, grabbed_id, lever_arm)
-        heavy[6 * gi : 6 * gi + 6] *= 1e3
+        heavy = _solve_weights(model, grabbed_id, lever_arm, grabbed_scale=1e3)
         settled, settled_residual, _ = _retract(model, pinned, heavy, max_iterations=20)
         if settled_residual <= _SOLVE_TOL:
             cand = [rigid_to_pose(settled[oid]) for oid in ids]
@@ -1280,7 +1439,7 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
     concentric about any axis). `max_step`: see the rule above."""
     ids = model.member_ids
     analysis = at_rest_analysis or analyze_model(_free(model, stored), lever_arm)
-    w = _solve_weights(model, grabbed_id, lever_arm)
+    w = _weights_at(_solve_weights(model, grabbed_id, lever_arm), stored)
     stored_poses = {oid: rigid_to_pose(stored[oid]) for oid in ids}
     want = np.zeros(6 * len(ids))
     if seed_wish is not None:
@@ -1288,8 +1447,9 @@ def _jump(model: GroupModel, stored, solved, seed_wish, grabbed_id: str, lever_a
     predicted = np.zeros_like(want)
     if analysis.basis.size:
         nb = analysis.basis  # rows; solve min |W (N^T c - want)| over c
-        a = (nb * w) @ (nb * w).T
-        c = np.linalg.solve(a + 1e-12 * np.eye(len(a)), (nb * w) @ (want * w))
+        nbw = _scale_rows(nb, w)
+        a = nbw @ nbw.T
+        c = np.linalg.solve(a + 1e-12 * np.eye(len(a)), nbw @ _scale(want, w))
         predicted = nb.T @ c
     shown = {oid: screw_exp(stored_poses[oid], predicted[6 * i : 6 * i + 6]) for i, oid in enumerate(ids)}
     g = np.array([1.0, 1.0, 1.0, lever_arm, lever_arm, lever_arm])
@@ -1621,11 +1781,19 @@ def constraint_status(document: Document, part: Part) -> dict[str, tuple[str, in
     return {oid: (status, dof) for oid, (status, dof, _m) in constraint_report(document, part).items()}
 
 
-def constraint_report(document: Document, part: Part) -> dict[str, tuple[str, int, list[dict]]]:
+def constraint_report(
+    document: Document, part: Part, rigid_set_ids: dict[str, str] | None = None
+) -> dict[str, tuple[str, int, list[dict]]]:
     """[constraint_status] plus, for an `under_constrained` occurrence, its free motions
     (`free_motions_for_member`): `{occurrence_id: (status, dof, free_motions)}`. Every other status has no motions
-    listed (`fixed` and `fully_constrained` have none; `over_constrained` motions would be a guess)."""
+    listed (`fixed` and `fully_constrained` have none; `over_constrained` motions would be a guess).
+
+    M1: a component with rigid sets is analysed on one body per set (`app.document.rigid_sets`; the mates inside a set count in
+    the residual check, and the analysis is expanded back to every member). `rigid_set_ids`, when given, is filled with
+    `{occurrence id: set id}` for every member of a set that moves (a set locked to the ground reports none)."""
     from fastapi import HTTPException  # local: this module is otherwise HTTP-free
+
+    from app.document import rigid_sets
 
     result: dict[str, tuple[str, int, list[dict]]] = {}
     visited: set[str] = set()
@@ -1641,7 +1809,18 @@ def constraint_report(document: Document, part: Part) -> dict[str, tuple[str, in
         visited.update(component.member_ids)
         try:
             model = build_group_model(document, part, occurrence.id)
-            analysis = analyze_model(model, bounding_radius(document, part, occurrence.id))
+            lever = bounding_radius(document, part, occurrence.id)
+            reduced = None
+            if rigid_sets_enabled and len(model.member_ids) > 1:
+                reduced = rigid_sets.reduce_model(part, model, rigid_sets.component_sets(document, part, model), occurrence.id)
+            if reduced is None:
+                analysis = analyze_model(model, lever)
+            else:
+                analysis = analyze_model(reduced, lever)
+                residual_inf = max(analysis.quality.residual_inf, rigid_sets.internal_residual_inf(reduced, model.base_transforms))
+                analysis = rigid_sets.expand_analysis(reduced, analysis, residual_inf)
+                if rigid_set_ids is not None:
+                    rigid_set_ids.update(reduced.rigid.set_ids)
         except (GroupError, HTTPException):
             continue
         contradictory = analysis.quality.residual_inf > _STATUS_RESIDUAL_TOL

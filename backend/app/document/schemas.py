@@ -3741,6 +3741,9 @@ class MateResponse(BaseModel):
     status: Literal["ok", "near", "broken"] = "ok"
     status_residual_mm: float | None = None
     status_residual_deg: float | None = None
+    # M1 (`app.document.rigid_sets`), COMPUTED by the listing only (null in every other answer): the rigid set this mate lies inside
+    # (both of its sides on members of one set that moves; the id is the set's first occurrence in the Part's order), null otherwise.
+    rigid_set: str | None = None
 
 
 class MateCreate(BaseModel):
@@ -3859,6 +3862,10 @@ class ConstraintStatusEntry(BaseModel):
     dof: int  # the occurrence's own mobility (0 for fixed / fully constrained)
     # Only for `under_constrained`: what it can still do (empty for every other status).
     free_motions: list[FreeMotion] = []
+    # M1 (`app.document.rigid_sets`): the rigid set the occurrence belongs to - members the mates lock to each other move as one
+    # body. Every member of a set carries the same id (the set's first occurrence in the Part's order); null for an occurrence in
+    # no set, and for a set locked to a fixed part (nothing in it moves: its members read `fully_constrained`).
+    rigid_set: str | None = None
 
 
 class MateMotionQuality(BaseModel):

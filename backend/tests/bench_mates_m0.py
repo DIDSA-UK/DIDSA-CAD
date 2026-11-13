@@ -80,12 +80,26 @@ def client_model_rows(spec: dict) -> int:
     return rows + sum(1 for m in spec["mates"] if m.get("type") in _LIMIT_TYPES)
 
 
+_SHIPPED_CLIENT_MAX_VERSION = 7  # the newest constraint model the shipped Flutter / VR clients parse (v8, rigid sets, is M2)
+
+
 def client_verdict(spec: dict | None, caps: tuple[int, int]) -> dict:
+    """`refused` = over the caps (members or rows). For a version-8 model (M1 rigid sets) `members` are the sets' leads and `rows`
+    exclude the mates inside a set; `shipped_reads` says whether the shipped clients parse the version at all (they return null for
+    v8 and keep projecting until M2), so `refused: false` there means "would fit once M2 reads v8"."""
     if spec is None:
-        return {"version": None, "members": None, "rows": None, "refused": True, "why": "no model exported"}
+        return {"version": None, "members": None, "rows": None, "refused": True, "why": "no model exported", "shipped_reads": False}
     members, rows = len(spec["members"]), client_model_rows(spec)
     why = [w for w, over in ((f"members {members} > {caps[0]}", members > caps[0]), (f"rows {rows} > {caps[1]}", rows > caps[1])) if over]
-    return {"version": spec["version"], "members": members, "rows": rows, "refused": bool(why), "why": ", ".join(why)}
+    return {
+        "version": spec["version"],
+        "members": members,
+        "rows": rows,
+        "refused": bool(why),
+        "why": ", ".join(why),
+        "shipped_reads": spec["version"] <= _SHIPPED_CLIENT_MAX_VERSION,
+        "followers": sum(len(s["followers"]) for s in spec.get("rigid_sets") or []),
+    }
 
 
 def timed(fn, budget_s: float = 6.0, max_repeats: int = 7) -> tuple[list[float], object]:
@@ -102,7 +116,7 @@ class SolveCounter:
     """Counts (and times) the `solve_group` calls the routes make, alternatives and the branch search included."""
 
     def __init__(self):
-        self.calls, self.ms, self.members = 0, 0.0, []
+        self.calls, self.ms, self.members, self.bodies = 0, 0.0, [], []
         self._real = router_module.solve_group
 
     def __enter__(self):
@@ -112,6 +126,7 @@ class SolveCounter:
             self.ms += (time.perf_counter() - began) * 1000.0
             self.calls += 1
             self.members.append(len(result.poses))
+            self.bodies.append(getattr(result, "solved_bodies", None) or len(result.poses))
             return result
 
         router_module.solve_group = counted
@@ -186,6 +201,7 @@ def _preview_case(scene, driven: str, payload: dict, movement: str) -> dict:
         "solves": counter.calls,
         "solve_ms": counter.ms,
         "largest_solve_members": max(counter.members, default=0),
+        "largest_solve_bodies": max(counter.bodies, default=0),  # M1: one body per rigid set
         "converged": answer["converged"],
         "alternatives": len(answer.get("alternatives") or []),
         "branch_changes": len(answer.get("branch_changes") or []),
@@ -222,6 +238,8 @@ def measure_scaling(family: str, n: int, factory, variant: str, caps: tuple[int,
         "solve_rest": {**_stat(rest_ms), "converged": rest.converged, "iterations": rest.quality.iterations},
         "solve_wish": {**_stat(wish_ms), "converged": wish.converged, "iterations": wish.quality.iterations, "seeded_by": wish.quality.seeded_by},
         "client": client_verdict(rest.constraint_model, caps),
+        "bodies": getattr(rest, "solved_bodies", None) or len(model.member_ids),  # M1: one per rigid set + every other member
+        "rigid_sets": len(set(getattr(rest, "rigid_sets", {}).values())),
     }
 
     # the drag: every step warm-started from the last accepted answer, like `ConstrainedDragSession`

@@ -59,6 +59,7 @@ LOCAL_PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two
 LOCAL_COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw): rows on each side's MOVE from its `anchor` pose; emitted only when the model has one
 LOCAL_LIMIT_MODEL_VERSION = 6  # 6: limit mates (limit_distance / limit_angle): an inequality row with `min` / `max`, held at the nearest bound only when violated; emitted only when the model has one
 LOCAL_FOLLOW_MODEL_VERSION = 7  # 7: a side (and a pair) may carry `follow` (a pattern copy that follows its source member: pose `(Rs R, Rs t + ts)`, or `(R, Rs t + ts)` with keep_rotation); a superset of 6, emitted only when some side has one
+LOCAL_RIGID_MODEL_VERSION = 8  # 8: `members` are rigid-set LEADS; `rigid_sets` lists each lead's followers as fixed offsets (pose `(R_L r, R_L t + t_L)`), and a set's metric is the sum of its members' (see `LocalRigidMetric`); a superset of 7, emitted only when the group has a rigid set
 LOCAL_LIMIT_ROUNDS = 3       # active-set rounds of one retraction: each adds the violated limits as equalities and retracts again from the SAME start and wish
 LOCAL_LIMIT_TOL = 1e-6       # mm / degrees a value may sit outside its range before the limit counts as violated
 LOCAL_ACCEPT_DISTANCE = 0.5  # accept the local result only within this x max(L, hand distance from the start pose) of the fallback (projector) grabbed pose
@@ -618,20 +619,111 @@ def _cap_rot(dx, k, cap):
     return dx * (cap / rot) if rot > cap else dx
 
 
+def _log(a, b):
+    """[t_b - t_a, rotvec(R_b R_a^T)] for (R, t) pairs: the additive-chart move from a to b."""
+    return np.concatenate([b[1] - a[1], rotvec_from_rot(b[0] @ a[0].T)])
+
+
+def _ad(d):
+    """[[I, -[d]x], [0, I]]: a lead twist [v, w] to the twist of a point at world offset d from the lead's origin ([v + w x d, w])."""
+    out = np.eye(6)
+    out[:3, 3:] = -skew(d)
+    return out
+
+
+class LocalRigidMetric:
+    """Constraint model v8: the members are rigid-set LEADS. A set costs what its members would cost moving separately: in the lead's
+    chart a follower at world offset d = R_L t_off moves by Ad(d) [v, w], so the set's metric is M = s_L^2 + sum_m Ad(d_m)^T s_m^2 Ad(d_m)
+    (s = the member's weight row: the grabbed lead [1,1,1,L,L,L], every other lead and EVERY follower that times LOCAL_FOLLOWER),
+    factored F = the upper Cholesky factor (F^T F = M, positive diagonal). A lead without followers has F = diag(s). The retraction
+    reads F where it read diag(w): A = J F^-1, dx = F^-1 y, and y0 = F^-T (s_L^2 g_L + sum_m Ad_m^T s_m^2 g_m) where g_L is the lead's
+    wish and g_m the move taking the follower back to its REST pose (its lead's pose at the start of the retraction times its offset)."""
+
+    def __init__(self, spec, lever, grabbed=0, follower=LOCAL_FOLLOWER, rest=None):
+        k = len(spec["members"])
+        self.k = k
+        self.s = local_weights(k, lever, grabbed, follower)
+        fs = np.array([1.0, 1.0, 1.0, lever, lever, lever]) * follower
+        self.followers = [[] for _ in range(k)]
+        for entry in spec.get("rigid_sets") or []:
+            self.followers[entry["member"]] = [(np.array(f["r"], float), np.array(f["t"], float), fs) for f in entry["followers"]]
+        self.rest = rest
+
+    def at_rest(self, rest):
+        out = LocalRigidMetric.__new__(LocalRigidMetric)
+        out.k, out.s, out.followers, out.rest = self.k, self.s, self.followers, list(rest)
+        return out
+
+    def follower_poses(self, cur):
+        return [[(cur[i][0] @ r, cur[i][0] @ t + cur[i][1]) for r, t, _s in self.followers[i]] for i in range(self.k)]
+
+    def factor(self, cur):
+        n = 6 * self.k
+        f, finv = np.zeros((n, n)), np.zeros((n, n))
+        for i in range(self.k):
+            s = self.s[6 * i:6 * i + 6]
+            b = slice(6 * i, 6 * i + 6)
+            if not self.followers[i]:
+                f[b, b], finv[b, b] = np.diag(s), np.diag(1.0 / s)
+                continue
+            m = np.diag(s * s)
+            for r, t, sm in self.followers[i]:
+                ad = _ad(cur[i][0] @ t)
+                m = m + ad.T @ ((sm * sm)[:, None] * ad)
+            u = np.linalg.cholesky(m).T
+            f[b, b], finv[b, b] = u, np.linalg.inv(u)
+        return f, finv
+
+    def target(self, cur, wish):
+        _f, finv = self.factor(cur)
+        moved, home = self.follower_poses(cur), self.follower_poses(self.rest)
+        out = np.zeros(6 * self.k)
+        for i in range(self.k):
+            s = self.s[6 * i:6 * i + 6]
+            g = _log(cur[i], wish[i])
+            if not self.followers[i]:
+                out[6 * i:6 * i + 6] = s * g
+                continue
+            acc = s * s * g
+            for (r, t, sm), c, h in zip(self.followers[i], moved[i], home[i]):
+                acc = acc + _ad(cur[i][0] @ t).T @ (sm * sm * _log(c, h))
+            out[6 * i:6 * i + 6] = finv[6 * i:6 * i + 6, 6 * i:6 * i + 6].T @ acc
+        return out
+
+
+def expand_followers(spec, poses):
+    """{follower id: Pose} with the leads at `poses` (a list of Pose): each follower at its lead's pose times its offset."""
+    out = {}
+    for entry in spec.get("rigid_sets") or []:
+        lead = poses[entry["member"]]
+        for f in entry["followers"]:
+            out[f["id"]] = Pose(lead.r @ np.array(f["t"], float) + lead.t, lead.r @ np.array(f["r"], float))
+    return out
+
+
 def local_retract(model, poses, wishes, w, iters=LOCAL_ITERS, polish=LOCAL_POLISH):
-    """Sequential nearest-point retraction. `poses`, `wishes`: lists of Pose; returns a list of Pose."""
+    """Sequential nearest-point retraction. `poses`, `wishes`: lists of Pose; returns a list of Pose. `w`: the weight vector, or a
+    `LocalRigidMetric` for a version-8 model."""
     k = model.k
     cur = [(p.r, p.t) for p in poses]
     wish = [(p.r, p.t) for p in wishes]
+    rigid = isinstance(w, LocalRigidMetric)
+    if rigid and w.rest is None:
+        w = w.at_rest(cur)
 
     def step(cur, dx):
         return [(rot_from_rotvec(dx[6 * i + 3:6 * i + 6]) @ cur[i][0], cur[i][1] + dx[6 * i:6 * i + 3]) for i in range(k)]
 
     for _ in range(iters):
         r, jac = model.residual(cur)
-        g = np.concatenate([np.concatenate([wish[i][1] - cur[i][1], rotvec_from_rot(wish[i][0] @ cur[i][0].T)]) for i in range(k)])
-        a = jac / w
-        y0 = w * g
+        if rigid:
+            _f, finv = w.factor(cur)
+            a = jac @ finv
+            y0 = w.target(cur, wish)
+        else:
+            g = np.concatenate([np.concatenate([wish[i][1] - cur[i][1], rotvec_from_rot(wish[i][0] @ cur[i][0].T)]) for i in range(k)])
+            a = jac / w
+            y0 = w * g
         n0 = float(np.linalg.norm(y0))
         if n0 > LOCAL_TRUST:
             y0 = y0 * (LOCAL_TRUST / n0)
@@ -639,13 +731,18 @@ def local_retract(model, poses, wishes, w, iters=LOCAL_ITERS, polish=LOCAL_POLIS
             y = y0 - a.T @ np.linalg.solve(a @ a.T + LOCAL_LAM_ABS * np.eye(len(a)), a @ y0 + r)
         else:
             y = y0
-        cur = step(cur, _cap_rot(y / w, k, LOCAL_ROT_CAP))
+        cur = step(cur, _cap_rot(finv @ y if rigid else y / w, k, LOCAL_ROT_CAP))
     for _ in range(polish):
         r, jac = model.residual(cur)
         if not r.size or float(np.max(np.abs(r))) < 1e-12:
             break
-        a = jac / w
-        dx = -(a.T @ np.linalg.solve(a @ a.T + LOCAL_LAM_ABS * np.eye(len(a)), r)) / w
+        if rigid:
+            _f, finv = w.factor(cur)
+            a = jac @ finv
+            dx = -(finv @ (a.T @ np.linalg.solve(a @ a.T + LOCAL_LAM_ABS * np.eye(len(a)), r)))
+        else:
+            a = jac / w
+            dx = -(a.T @ np.linalg.solve(a @ a.T + LOCAL_LAM_ABS * np.eye(len(a)), r)) / w
         cur = step(cur, _cap_rot(dx, k, LOCAL_ROT_CAP))
     return [Pose(t, r) for r, t in cur]
 
@@ -682,7 +779,8 @@ def local_frame(i):
     poses = [Pose.from_json(p) for p in i["poses"]]
     wishes = [Pose.from_json(p) for p in i["wishes"]]
     fallback = [Pose.from_json(p) for p in i["fallback_poses"]]
-    w = local_weights(len(poses), lever)
+    rigid = i["model"].get("version") == LOCAL_RIGID_MODEL_VERSION
+    w = LocalRigidMetric(i["model"], lever) if rigid else local_weights(len(poses), lever)
     wish_step = weighted_dist(wishes[0], poses[0], lever)  # how far the hand is from the pose the frame starts at
     got, held = local_retract_limits(i["model"], poses, wishes, w, iters=local_iterations(wish_step))
     model = ConstraintModel(i["model"], held)  # the residual the frame is judged on includes the limits it holds
@@ -699,6 +797,9 @@ def local_frame(i):
         "residual_inf": res,
         "fallback_distance": dist,
         **({"held_limits": sorted(held)} if "limit" in json.dumps([m["type"] for m in i["model"]["mates"]]) else {}),
+        # v8: every follower's pose with the leads at the shown / the local answer
+        **({"followers": {k: p.out() for k, p in expand_followers(i["model"], shown).items()},
+            "local_followers": {k: p.out() for k, p in expand_followers(i["model"], got).items()}} if rigid else {}),
     }
 
 # ---- output helpers ---------------------------------------------------------------------------------------
@@ -1434,6 +1535,40 @@ def build():
     local_case("local-follow-limit-stops-at-min", "The same model, the source pulled 28 mm towards the stop: the gap would be -3, below the minimum - held at 5, the plate (and the bolt it follows) stop 20 mm along",
                limited, [src_lin, plate0], [moved(src_lin, (28, 0, 0)), plate0], 20.0)
 
+    # ---- constraint model v8: rigid sets. The plate is the LEAD of a set with two followers (a rib 100 mm along x, a cover turned 90 deg about x
+    # and 80 mm along y): `rigid_sets` gives each follower's constant offset from the plate, the mates on them were already re-expressed in the
+    # plate's frame by the backend (none here), and the set's metric is the sum of its three members' (`LocalRigidMetric`): the set is heavier
+    # to move than the bare plate of `float_model`, and turning it costs more the farther its followers sit from the plate's origin.
+    RX90 = rot_from_rotvec(np.array([D(90.0), 0.0, 0.0]))
+    plate_set = lambda idx: [{"member": idx, "followers": [
+        {"id": "rib", "r": [[float(x) for x in row] for row in np.eye(3)], "t": [100.0, 0.0, 0.0]},
+        {"id": "cover", "r": [[float(x) for x in row] for row in RX90], "t": [0.0, 80.0, 20.0]}]}]
+
+    def rigid_float_model(plate_first=False):
+        b, p = (1, 0) if plate_first else (0, 1)
+        return {"version": LOCAL_RIGID_MODEL_VERSION, "members": ["plate", "bolt"] if plate_first else ["bolt", "plate"], "rigid_sets": plate_set(p), "mates": [
+            mate("concentric", axis_side(b, (0, 0, 0), (0, 0, 1)), axis_side(p, (30, 30, 0), (0, 0, 1))),
+            mate("coincident", plane_side(b, (0, 0, 0), (0, 0, -1)), plane_side(p, (0, 0, 10), (0, 0, 1)), alignment=-1),
+        ]}
+
+    rigid8 = rigid_float_model()
+    local_case("local-rigid-bolt-turn-3deg-x", "Rigid set (v8): the plate leads a set with two followers; the grabbed bolt turns 3 deg about x, off the manifold - "
+               "the set (three members' weight) gives way less than the bare plate of local-floating-bolt-turn-3deg-x",
+               rigid8, [bolt_f, plate0], [turned(bolt_f, 3, (1, 0, 0)), plate0], 20.0)
+    local_case("local-rigid-bolt-slide-and-spin", "Rigid set (v8): the bolt slides 4 mm along x and spins 10 deg; the set rides along, its followers wishing to stay where they started",
+               rigid8, [bolt_f, plate0], [turned(moved(bolt_f, (4, 0, 0)), 10), plate0], 20.0)
+    rigid8p = rigid_float_model(plate_first=True)
+    local_case("local-rigid-grab-the-set-turn-5deg-y", "Rigid set (v8): the plate (the set's lead) is grabbed and turned 5 deg about y; its own followers wish to stay at rest, so the set "
+               "stops short of the wish, and the bolt rides along on the plate",
+               rigid8p, [plate0, bolt_f], [turned(plate0, 5, (0, 1, 0)), bolt_f], 20.0)
+    on_fixed_bolt = {"version": LOCAL_RIGID_MODEL_VERSION, "members": ["plate"], "rigid_sets": plate_set(0), "mates": [
+        mate("concentric", axis_side(0, (30, 30, 0), (0, 0, 1)), axis_side(-1, (30, 30, 0), (0, 0, 1))),
+        mate("coincident", plane_side(0, (0, 0, 10), (0, 0, 1)), plane_side(-1, (30, 30, 10), (0, 0, -1)), alignment=-1),
+    ]}
+    local_case("local-rigid-set-on-fixed-bolt-turn-20deg", "Rigid set (v8) on a fixed bolt: the set can only spin about the bolt axis (30, 30); a 20 deg turn of the plate about its own "
+               "origin is off that orbit - the set lands on it, the followers' rest poses pulling it back",
+               on_fixed_bolt, [plate0], [turned(plate0, 20)], 20.0)
+
     rack0 = P((0.0, 20.0, 0.0))
     FROZEN_RAIL = {"r": I3, "t": [0.0, 20.0, 0.0]}
     PITCH_TRAVEL = 2.0 * math.pi * 10.0  # a 10 mm radius pinion: 62.832 mm of rack per turn
@@ -1694,6 +1829,7 @@ def main():
             "local_accept_distance": LOCAL_ACCEPT_DISTANCE,
             "local_follow_model_version": LOCAL_FOLLOW_MODEL_VERSION, "local_limit_model_version": LOCAL_LIMIT_MODEL_VERSION, "local_limit_rounds": LOCAL_LIMIT_ROUNDS, "local_limit_tol": LOCAL_LIMIT_TOL,
             "local_distance_floor": LOCAL_DISTANCE_FLOOR, "local_model_version": LOCAL_MODEL_VERSION, "local_pair_model_version": LOCAL_PAIR_MODEL_VERSION,
+            "local_rigid_model_version": LOCAL_RIGID_MODEL_VERSION,
         },
         "conventions": {
             "pose_in": "translation + rotation_axis (normalised on read) + rotation_angle_degrees (the contract's RigidTransform)",

@@ -56,6 +56,7 @@ from app.document.assembly_group import (
 )
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
 from app.document.mate_status import MateStatusDetail, mate_status, mate_status_detail, mate_status_details
+from app.document.rigid_sets import mate_rigid_sets
 from app.document.occurrence_paths import resolve_path
 from app.document.pattern_dissolve import PatternDissolveError, dissolve_component_pattern
 from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES, REFERENCE_PLANE_IDS
@@ -3870,11 +3871,16 @@ def get_constraint_status(part_id: str) -> dict[str, ConstraintStatusEntry]:
     `assembly_group.constraint_status` for the exact rules). Read-only; one
     group analysis per mate-graph component, so it is meant to be fetched on a
     tree refresh, never per frame. An occurrence whose mates cannot be resolved
-    is simply absent."""
+    is simply absent. M1: `rigid_set` names the rigid set an occurrence moves with
+    (`app.document.rigid_sets`; null outside one, and for a set locked to a fixed part)."""
     part = get_part_or_404(part_id)
+    sets: dict[str, str] = {}
+    report = constraint_report(get_document(), part, rigid_set_ids=sets)
     return {
-        occurrence_id: ConstraintStatusEntry(status=status, dof=dof, free_motions=[FreeMotion(**m) for m in motions])
-        for occurrence_id, (status, dof, motions) in constraint_report(get_document(), part).items()
+        occurrence_id: ConstraintStatusEntry(
+            status=status, dof=dof, free_motions=[FreeMotion(**m) for m in motions], rigid_set=sets.get(occurrence_id)
+        )
+        for occurrence_id, (status, dof, motions) in report.items()
     }
 
 
@@ -3882,10 +3888,12 @@ def get_constraint_status(part_id: str) -> dict[str, ConstraintStatusEntry]:
 def list_mates(part_id: str) -> list[MateResponse]:
     """Assembly support (`docs/assembly-scope.md`): the Assembly tree's own
     Mates list - `part_id`'s own `mates`, full detail (unlike
-    `PartResponse.mate_ids`, ids only)."""
+    `PartResponse.mate_ids`, ids only). M1: `rigid_set` is the rigid set a mate lies
+    inside (`app.document.rigid_sets.mate_rigid_sets`), null otherwise."""
     part = get_part_or_404(part_id)
     statuses = mate_status_details(get_document(), part)
-    return [_mate_response(mate, part, statuses.get(mate.id)) for mate in part.mates]
+    sets = mate_rigid_sets(get_document(), part)
+    return [_mate_response(mate, part, statuses.get(mate.id)).model_copy(update={"rigid_set": sets.get(mate.id)}) for mate in part.mates]
 
 
 def _get_occurrence_or_404(part: Part, occurrence_id: str) -> Occurrence:
