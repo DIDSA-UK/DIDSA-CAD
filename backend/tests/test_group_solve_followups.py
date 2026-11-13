@@ -158,12 +158,27 @@ def test_a_preview_out_of_time_says_so_and_still_answers(monkeypatch):
     body = _conflict_preview(scene)
     assert body["converged"] is False and body["budget_exhausted"] is True
     monkeypatch.setattr(ag, "PREVIEW_SECONDS", 60.0)
+    monkeypatch.setattr(ag, "BRANCH_SEARCH_SECONDS", 60.0)  # the search's own clock flags it as well: plenty of time on both
     body = _conflict_preview(scene)
     assert body["converged"] is False and body["budget_exhausted"] is False
     redundant = client.post(
         f"/document/parts/{scene.root}/occurrences/{scene.inside_driven}/preview-mate-solve", params={"movement": "group"}, json=scene.redundant_mate
     ).json()
     assert redundant["converged"] and redundant["budget_exhausted"] is False
+
+
+def test_a_search_cut_short_by_its_own_clock_says_so(monkeypatch):
+    """The branch search's own clock (`BRANCH_SEARCH_SECONDS`) ending the conflict step used to answer `conflicting: []` with
+    `budget_exhausted: false`, as if nothing fought the new mate. With the clock at zero the search still gets its minimum solves, and
+    the answer now says it stopped early."""
+    scene = scaling.chain_scene(3)
+    monkeypatch.setattr(ag, "PREVIEW_SECONDS", 60.0)
+    monkeypatch.setattr(ag, "BRANCH_SEARCH_SECONDS", 0.0)
+    body = _conflict_preview(scene)
+    assert body["converged"] is False and body["budget_exhausted"] is True
+    monkeypatch.setattr(ag, "BRANCH_SEARCH_SECONDS", 60.0)
+    body = _conflict_preview(scene)
+    assert body["converged"] is False and body["budget_exhausted"] is False and body["conflicting"]
 
 
 def test_a_conflicting_retraction_stops_on_its_plateau():

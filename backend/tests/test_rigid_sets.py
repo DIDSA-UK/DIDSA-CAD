@@ -257,7 +257,11 @@ def _preview_summary(body: dict) -> dict:
 
 @pytest.mark.parametrize("case", ["redundant", "conflict"])
 @pytest.mark.parametrize("name", ["chain-3", "frame-4"])
-def test_previews_answer_as_before(name, case, unreduced):
+def test_previews_answer_as_before(name, case, unreduced, monkeypatch):
+    # The search and the preview stop on wall-clock budgets; the unreduced model is slower, so with the real budgets the two answers
+    # differed whenever it ran out (an empty `conflicting` on one side). Compare the two models, not the speed of the machine.
+    monkeypatch.setattr(ag, "PREVIEW_SECONDS", 600.0)
+    monkeypatch.setattr(ag, "BRANCH_SEARCH_SECONDS", 600.0)
     scene, _document, _part = _scene(name, "floating")
     payload = scene.redundant_mate if case == "redundant" else scene.conflict_mate
 

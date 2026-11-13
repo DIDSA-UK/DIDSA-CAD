@@ -677,6 +677,11 @@ Anything promoted out of this list should get its own scoping doc before it is b
   scoping doc this entry calls for is still not written; this update only
   narrows how urgent it is, since VR no longer needs it just to get a real
   multi-Occurrence assembly to test Mates against.
+  **Update, 2026-11-13:** scoped in `docs/shared-storage-scope.md` (phase S0
+  of `docs/mates-storage-sessions-plan-2026-11-12.md`): a project store as its
+  own service beside the backend, with a version check on every write.
+  Decision #4 is superseded in part, #6 is kept for the backend, and
+  composition stays on the client (no server-side composition).
 - **A sketch's origin point reportedly doesn't line up with the correct 3D
   viewport origin.** User report (2026-07-21), investigated the same day -
   every basis-resolution path audited (backend `basis_for_sketch`, client
