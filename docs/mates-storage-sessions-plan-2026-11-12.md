@@ -548,7 +548,7 @@ Previews, before → after (solves; largest solve after, in bodies):
 
 **What did not improve, or not enough.**
 - **The preview budget does not bound a conflict preview to 2.5 s.** Each step keeps its minimum solves (8 for the search), and the
-  conflict previews still take 1.0 to 4.2 s (bolted chains 1.7 to 4.2 s, linkage 1.6 to 3.4 s; were 1.4 to 9.2 s). Lowering
+  conflict previews still take 0.2 to 4.2 s (bolted chains 1.7 to 4.2 s, linkage 1.6 to 3.4 s; were 0.6 to 9.2 s). Lowering
   `BRANCH_SEARCH_MIN_SOLVES` would bound it further but was put there for cold servers and slow CI runners; not changed.
 - **Two conflict answers changed** (floating 20- and 50-plate chains, `group`): more trials now fit, and the answer names 2 conflicting
   mates where it named none. Same kind of change as M1's on the 10-plate chain.
