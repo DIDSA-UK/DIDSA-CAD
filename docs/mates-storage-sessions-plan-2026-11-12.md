@@ -1044,8 +1044,7 @@ Drive / NAS root; headless tests cannot judge how the conflict dialog, the chip 
 widget tests drive the phone layout only for the File menu; Android SAF and iOS bookmark paths are unchanged and untested for server
 projects (a server project never touches them, but the app was not run on either); the 20 s sync timer and the app being killed mid-sync
 are covered by the persisted queue's design and the restart test, not by a test that kills the process; very large projects (the
-queue holds every unsent file in memory while it is sent) were not measured; `project-store/README.md` still says the clients are not
-built (it was not edited, as the brief said no store changes).
+queue holds every unsent file in memory while it is sent) were not measured.
 
 ### S3. VR (medium; standard agent)
 
