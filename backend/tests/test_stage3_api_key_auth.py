@@ -66,3 +66,26 @@ def test_health_lists_the_api_features_a_client_may_depend_on():
     assert isinstance(features, list) and all(isinstance(f, str) for f in features)
     assert {"ai_plan.face_selector.normal", "ai_plan.mate_paths"} <= set(features)
     assert len(features) == len(set(features))
+
+
+def test_health_names_the_project_store_only_when_told_where_it_is(monkeypatch):
+    headers = {"X-API-Key": TEST_API_KEY}
+    monkeypatch.delenv("PROJECT_STORE_URL", raising=False)
+    body = client.get("/health", headers=headers).json()
+    assert "project_store" not in body and "project_store" not in body["api_features"]
+
+    monkeypatch.setenv("PROJECT_STORE_URL", "  ")
+    body = client.get("/health", headers=headers).json()
+    assert "project_store" not in body and "project_store" not in body["api_features"]
+
+    monkeypatch.setenv("PROJECT_STORE_URL", "https://store.example.com")
+    monkeypatch.setenv("PROJECT_STORE_API_KEY", "must-never-appear")
+    response = client.get("/health", headers=headers)
+    body = response.json()
+    assert body["project_store"] == "https://store.example.com"
+    assert "project_store" in body["api_features"] and "ai_plan.mate_paths" in body["api_features"]
+    assert "must-never-appear" not in response.text
+    # the module's own list is not changed by a request
+    from app.main import API_FEATURES
+
+    assert "project_store" not in API_FEATURES

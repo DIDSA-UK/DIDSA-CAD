@@ -31,7 +31,7 @@ SPDX-License-Identifier = "GPL-3.0-only"
 
 # Unchanged by the backend/client split: still GPL-3.0-only until the owner decides otherwise (see LICENSING.md, open decisions).
 [[annotations]]
-path = ["browser-relay/**", "tools/motion_smoothness/**", "tools/motion_vectors/**", "docs/**", "README.md", ".github/**", "docker-compose.example.yml", "LICENSING.md", "REUSE.toml", ".gitmodules", "*.png"]
+path = ["browser-relay/**", "project-store/**", "tools/motion_smoothness/**", "tools/motion_vectors/**", "docs/**", "README.md", ".github/**", "docker-compose.example.yml", "LICENSING.md", "REUSE.toml", ".gitmodules", "*.png"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 DIDSA-UK and contributors"
 SPDX-License-Identifier = "GPL-3.0-only"

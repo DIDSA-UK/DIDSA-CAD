@@ -2,7 +2,7 @@
 
 Phase S0 of `docs/mates-storage-sessions-plan-2026-11-12.md` (Part 2). Written 2026-11-13 from reading both repos on `main`
 (CAD `3469f1c`, VR `089a0c9`). Nothing here is built yet except the Quest spike (DIDSA-VR, Launcher > Servers > **Check storage**).
-The owner's decisions are asked for in section 8; each has a recommendation, and S1 can start on the recommendations as written.
+The owner's decisions are in section 8: **all eight recommendations accepted on 2026-11-13**, so S1 builds them as written.
 
 ## 1. What this does, in one paragraph
 
@@ -89,7 +89,7 @@ never trusted for anything else.
 
 | Method and path | What it does |
 |---|---|
-| `GET /health` | `{status, api_features, version}` (no key needed, like the backend's) |
+| `GET /health` | `{status, api_features, version}`. **Needs the key**, like the backend's (`backend/app/main.py` says why: the tunnel makes it internet-reachable, and an open endpoint lets any scanner confirm the server is up) |
 | `GET /projects` | the projects: name, file count, total size, last change, last device |
 | `POST /projects` `{name}` | a new, empty project (409 if the name is taken) |
 | `GET /projects/{p}/tree` | every file: `path, size, sha256, version, modified_at, modified_by, part_id` (the file's root Part id when it is a native file, else null) |
@@ -115,7 +115,9 @@ from a project keeps its versions for 30 days.
 
 **Limits:** files up to 200 MB. A Cloudflare tunnel (the owner's set-up) refuses request bodies over 100 MB on its free plan (Cloudflare's
 documented limit; not measured here), so a larger STEP file needs chunked upload; that is S4, not S1. The store refuses `..`, absolute
-paths, a path into `.didsa-store/`, and names Windows cannot store.
+paths, a path into `.didsa-store/`, and names Windows cannot store. S1 also refuses a path whose last part is `versions`, or
+`versions/<digits>`: `GET .../files/a/versions` and `.../versions/3` are the history routes, so such a file could never be read back
+(found while building S1). `GET .../parts/{part_id}` answers 200 with an empty list when no file has that id.
 
 ## 6. Conflicts
 
@@ -177,7 +179,9 @@ slow on the Quest, the mirror can live in `Documents/DIDSA/.server/` instead (th
 `PROJECT_STORE_URL`; never the key). The flat app's server settings take the store's key once. The pairing code gains `p=<store address>`
 and `pk=<store key>` (not `s` / `sk`, section 3). An older headset ignores both keys; an older flat app never writes them.
 
-## 8. Decisions for the owner (each with the recommendation S1 assumes)
+## 8. Decisions for the owner (all eight recommendations ACCEPTED, 2026-11-13)
+
+The owner accepted every recommendation below on 2026-11-13; the table is kept as the record of what was asked.
 
 | # | Question | Recommendation |
 |---|---|---|

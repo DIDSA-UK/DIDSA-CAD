@@ -12,7 +12,7 @@
 # (already gitignored here - see .gitignore's own comment - specifically
 # because that filename has historically been used to stash a real
 # CAD_API_KEY for local runs) and fill in real values, or just set
-# CAD_API_KEY and BROWSER_RELAY_API_KEY in the environment before running
+# CAD_API_KEY, BROWSER_RELAY_API_KEY and PROJECT_STORE_API_KEY in the environment before running
 # `docker compose -f docker-compose.example.yml up`. A .env file next to
 # whichever copy you run from is the easiest way (docker compose loads it
 # automatically, and it's covered by the same .gitignore rule); see each
@@ -26,6 +26,8 @@ services:
       - "8000:8000"
     environment:
       - CAD_API_KEY=${CAD_API_KEY:?set CAD_API_KEY before starting}
+      # Optional: the project store's public address (never its key), advertised in this backend's /health so clients find it.
+      - PROJECT_STORE_URL=${PROJECT_STORE_URL:-}
     restart: unless-stopped
 
   browser-relay:
@@ -45,5 +47,22 @@ services:
     # 4GB host - the number here is a starting point for real measurement
     # on the actual Pi, not a value derived from a load test.
     mem_limit: "768m"
+    cpus: 1.0
+    restart: unless-stopped
+
+  # The project store (project-store/README.md): server projects as plain files with versions. Its own container for the reasons the
+  # relay has one (a long upload must never compete with OCCT for the Pi's 4 GB; restart or rebuild either alone) and because the
+  # backend must stay stateless: it never reads or writes a project file. Its own key, deliberately not CAD_API_KEY. ONE worker.
+  project-store:
+    build: ./project-store
+    ports:
+      - "8200:8200"
+    environment:
+      - PROJECT_STORE_API_KEY=${PROJECT_STORE_API_KEY:?set PROJECT_STORE_API_KEY before starting}
+    # The projects. Point this at an SSD (not the SD card) or a synced Drive / NAS folder, and back it up: it is the only server copy.
+    volumes:
+      - ${PROJECT_STORE_ROOT:-./project-store-data}:/data
+    # A starting point for measurement on the real Pi, not derived from a load test.
+    mem_limit: "512m"
     cpus: 1.0
     restart: unless-stopped

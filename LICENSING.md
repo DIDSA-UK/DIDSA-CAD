@@ -11,7 +11,7 @@ full texts are also in [`LICENSES/`](LICENSES/) and the folder-to-licence map is
 | `tools/gui_harness/` | `AGPL-3.0-only` | Test tooling that imports backend code, so it follows the backend. |
 | `tools/solvespace-reference/` | `GPL-3.0-only` | Test-only reference solver built from SolveSpace (GPL v3). Never part of the app. |
 | `client/assets/fonts/`, `backend/app/sketch/fonts/` | `OFL-1.1` | Third-party fonts, each with its own `OFL.txt`. |
-| `browser-relay/`, `docs/`, `tools/motion_*`, root files | `GPL-3.0-only` | Unchanged from before the split; **see open decisions below**. |
+| `browser-relay/`, `project-store/`, `docs/`, `tools/motion_*`, root files | `GPL-3.0-only` | Unchanged from before the split; **see open decisions below**. |
 
 ## Why this split
 
