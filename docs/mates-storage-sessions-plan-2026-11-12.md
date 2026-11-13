@@ -32,7 +32,8 @@ The implementation session updates this table in its PR.
 | Phase | Summary | Repos | State |
 |---|---|---|---|
 | M0 | Mate benchmark: scaling scenes and first-time accuracy baseline | CAD | Done (PR #354; results: "M0 results" below) |
-| M1 | Rigid sets in the group solve | CAD backend | In review (results: "M1 results" below) |
+| M1 | Rigid sets in the group solve | CAD backend | Done (PR #355; results: "M1 results" below) |
+| M1.1 | Group solve follow-ups: mate geometry cache, ground-row pruning, one preview budget, missing tests | CAD backend | In review (results: "M1.1 results" below) |
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | Not started |
 | M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Not started |
 | M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Not started |
@@ -423,6 +424,144 @@ headset: "fits the caps" is the Python model's count against the declared caps, 
 side, no confidence interval. Pattern-copy sources are checked to stay out of sets, but no scene has a set next to a followed copy;
 couplers are excluded by the same rule as limits but only a limit is in the tests. The gears-marked tests were not run.
 
+### M1.1. Group solve follow-ups (CAD backend; medium; strongest agent, solver maths)
+
+Added 2026-11-13 from the M1 results ("What did not improve, or not enough"): the gaps M1 left that no later phase covers. Backend
+only, so it can run beside M2 (client only); doing it first makes M2's cap measurements better. Judge it with the same M0 benchmark,
+`before` on `main` and `after` on the branch, on one machine and pinned to the same cores, as M1 did.
+
+- **Cache resolved mate geometry.** `build_group_model` resolves every mate's geometry on every call: about 100 ms of the 160 ms
+  the 50-plate chain still costs with a wish, and the main reason it is about 13x a 2-plate solve. Cache the resolved local
+  `_Side` geometry (and the oriented, branch-resolved mates) per component state, keyed like `rigid_sets._detection_key` (mates
+  with their references and branches, the target parts' feature fingerprints, fixed / suppressed state), so a drag re-anchor or a
+  branch-search trial that changes nothing reuses it. Invalidation is the risk: a geometry edit, a pattern edit or a branch change
+  must miss. Target: the 50-plate chain within 2 to 3x a 2-plate one; the platform replay and `table_top_frame` unchanged.
+- **Drop redundant ground rows.** A set locked to the fixed parts keeps every mate that ties it to them: the fixed frames keep 100 to
+  340 rows (over the 64-row client cap) and solve only 1.5 to 2.2x faster. Keep only rows that add rank to the set's lock against
+  the ground (rank 6 is enough; the rest are checked once at the end, like the mates inside a set). The amber rule is unchanged:
+  a near mate still locks, and the least-squares share-out between disagreeing mates must stay what it is.
+- **One time budget for a whole preview.** `BRANCH_SEARCH_SECONDS` bounds only the branch search: alternatives, the conflict step
+  and the minimum solves come on top, so conflict previews still take 2.6 to 8.2 s on the bolted chains and the linkage. Put the
+  search, the conflict step and the alternatives under one budget for the whole `preview-mate-solve` (with the minimum solves
+  kept), and report when it ran out. This matters more once M3 makes the preview move the real part. A shorter search can name
+  fewer conflicting mates: say what changed on the M0 conflict cases.
+- **Tests M1 lacks.** A rigid set next to a coupler (a gear pair on a locked frame) and next to a followed pattern copy (a set
+  that includes the mover mated to a copy), each against the unreduced solve (`assembly_group.rigid_sets_enabled = False`).
+- **Vector check tolerance.** `tools/motion_vectors/generate.py --check` compares text byte for byte, so it already fails on a
+  machine whose numpy / BLAS round one unconverged case differently (seen on `main` during M1). Compare numbers with the vectors'
+  own tolerance instead.
+
+Not in M1.1: the bolted chains stay many bodies (each bolt spins: a real degree of freedom, not a rigid set); the client caps
+are M2's.
+
+### M1.1 results (2026-11-13)
+
+Code: `assembly_group.build_group_model` (the built-model cache), `rigid_sets.reduce_model` (cached per set offsets; ground rows
+pruned by `_prune_ground_rows`), `assembly_group.PreviewBudget` / `PREVIEW_SECONDS` and the stall stop in `_retract`,
+`tools/motion_vectors/generate.py --check` (numbers within the file's tolerance). Tests: `tests/test_group_solve_followups.py` (11).
+
+**What was built.**
+- *Model cache.* `build_group_model` keys the built model on the Part's mates, occurrences (poses, fixed, suppressed) and component
+  patterns, the features (with the sketches they read) of every Part it places, and the call's own arguments; each call gets its
+  own copy of the poses, branches and limits. The rigid-set detection keys on the same Part state, and `reduce_model` keeps the
+  re-expressed sides and the residual of the mates inside the sets per set offsets (to 1e-9), so a drag re-anchor rebuilds
+  nothing. Tested: a repeat call hits and equals a fresh build; a mate value, branch, suppress, fix, pose or feature edit misses.
+- *Ground rows.* A set locked to the fixed parts keeps a rank-6 subset of its mates to them (greedy, in mate order); the others are
+  checked once with the mates inside the sets (an amber disagreement still gets the unreduced steps that share it out). Nothing is
+  pruned unless those mates alone lock the set.
+- *One budget per preview.* `preview-mate-solve` runs on one clock (`PREVIEW_SECONDS` = 2.5 s) shared by the branch search, the
+  conflict step and the alternatives; past it each stops once it has had its minimum solves, and the answer says
+  `budget_exhausted: true`. Create / edit (`POST` / `PATCH .../mates?solve=`) keep the search's own budget only.
+- *Stall stop.* A retraction whose residual is above 0.1 (far beyond the near limits) and that took less than 1e-4 of its norm
+  off over the last 5 steps stops: it is on a least-squares plateau. Before, a conflicting solve crawled through all 60 iterations
+  five times (the re-weighted retries), about 1 to 2 s a trial on the bolted chains. This applies to every solve, not only previews.
+- *Tests M1 lacked.* A set next to a gear pair and a set next to a followed pattern copy give the unreduced solve's answer.
+- *Vector check.* `--check` now passes on this machine (it failed on `main` for one unconverged case, a numpy / BLAS rounding
+  difference) and still fails on a 1e-6 change to a pinned number.
+
+**Same answers.** The full backend suite passes (3042, 1 pre-existing skip; the gears-marked tests not run). The accuracy benchmark is
+unchanged (all 50 rows identical). The platform module plan replays to identical poses (1e-12 mm) and the same 85 ok + 8 near mates.
+Fixed frames: the same poses as the unreduced solve to 1e-9 at rest and with a wish.
+
+**Benchmark.** As for M1: `main` (`71f2029`, M1 merged) against this branch, same machine type, both pinned to cores 0 and 1 with 2
+BLAS threads. **The container restarted during the after-run**, so the after-scaling was run again on the restarted host (same CPU
+model, kernel and cores). As a drift check the linkage family was run again on `main`'s code after the restart: it came out 5 to 20 %
+slower than in the before-run (rest 35 → 41 ms, drag 62 → 69 ms, conflict previews 4.7 → 5.6 s). The after numbers below are
+therefore if anything pessimistic; small differences (under ~20 %) are within that drift.
+
+Scaling ("before" is now M1; client model rows at identity poses, as in M0):
+
+| scene | variant | members | bodies (sets) | rest ms before / after | wish ms before / after | drag anchor server ms before / after | speed-up (drag) | client model before: members / rows | after: members / rows (followers) | fits the caps after |
+|---|---|---|---|---|---|---|---|---|---|---|
+| chain-5 | floating | 5 | 1 (1) | 6.92 / 2.43 | 9.15 / 4.78 | 10.1 / 6 | 1.7x | 1 / 0 | 1 / 0 (4) | yes |
+| chain-5 | fixed | 4 | 1 (0) | 8.13 / 3.31 | 16.7 / 18.4 | 17.2 / 13.4 | 1.3x | 1 / 16 | 1 / 16 (3) | yes |
+| chain-10 | floating | 10 | 1 (1) | 13.6 / 2.85 | 15.8 / 7.31 | 16.5 / 8.63 | 1.9x | 1 / 0 | 1 / 0 (9) | yes |
+| chain-10 | fixed | 9 | 1 (0) | 14.4 / 5.63 | 24.2 / 16.8 | 24.5 / 16 | 1.5x | 1 / 16 | 1 / 16 (8) | yes |
+| chain-20 | floating | 20 | 1 (1) | 26.5 / 3.97 | 30.3 / 6.77 | 31.9 / 7.82 | 4.1x | 1 / 0 | 1 / 0 (19) | yes |
+| chain-20 | fixed | 19 | 1 (0) | 28.5 / 4.73 | 37.5 / 13.4 | 43.8 / 15.8 | 2.8x | 1 / 16 | 1 / 16 (18) | yes |
+| chain-50 | floating | 50 | 1 (1) | 63.5 / 8.98 | 68.3 / 11.6 | 75.2 / 15.8 | 4.8x | 1 / 0 | 1 / 0 (49) | yes |
+| chain-50 | fixed | 49 | 1 (0) | 78.3 / 11.2 | 77.3 / 18 | 102 / 30.3 | 3.4x | 1 / 16 | 1 / 16 (48) | yes |
+| chain-5-bolts | floating | 13 | 9 (1) | 21.1 / 11.3 | 80.1 / 42.5 | 56.1 / 45.5 | 1.2x | 9 / 80 | 9 / 80 (4) | no (members 9 > 8, rows 80 > 64) |
+| chain-5-bolts | fixed | 10 | 7 (0) | 24.3 / 10.9 | 68.6 / 61.9 | 64.4 / 57.5 | 1.1x | 7 / 76 | 7 / 76 (3) | no (rows 76 > 64) |
+| chain-10-bolts | floating | 28 | 19 (1) | 61.6 / 27.8 | 164 / 150 | 155 / 119 | 1.3x | 19 / 180 | 19 / 180 (9) | no (members 19 > 8, rows 180 > 64) |
+| chain-10-bolts | fixed | 25 | 17 (0) | 49.4 / 23.8 | 186 / 148 | 201 / 148 | 1.4x | 17 / 176 | 17 / 176 (8) | no (members 17 > 8, rows 176 > 64) |
+| frame-4 | floating | 4 | 1 (1) | 8.09 / 1.53 | 10.7 / 3.91 | 8.59 / 4.34 | 2.0x | 1 / 0 | 1 / 0 (3) | yes |
+| frame-4 | fixed | 3 | 1 (0) | 8.11 / 2.74 | 17.5 / 8.64 | 17.6 / 8.82 | 2.0x | 1 / 28 | 1 / 12 (2) | yes |
+| frame-10 | floating | 10 | 1 (1) | 16.7 / 3.39 | 19.2 / 8.06 | 20.5 / 8.63 | 2.4x | 1 / 0 | 1 / 0 (9) | yes |
+| frame-10 | fixed | 9 | 1 (0) | 25.5 / 3.61 | 53.6 / 15.6 | 53.6 / 10.4 | 5.1x | 1 / 100 | 1 / 12 (8) | yes |
+| frame-20 | floating | 20 | 1 (1) | 36 / 4.51 | 41.4 / 7.22 | 40.1 / 7.3 | 5.5x | 1 / 0 | 1 / 0 (19) | yes |
+| frame-20 | fixed | 19 | 1 (0) | 52.4 / 6.07 | 106 / 13.8 | 112 / 15.4 | 7.3x | 1 / 220 | 1 / 12 (18) | yes |
+| frame-30 | floating | 30 | 1 (1) | 64 / 4.97 | 60.5 / 8.88 | 63.8 / 10.7 | 5.9x | 1 / 0 | 1 / 0 (29) | yes |
+| frame-30 | fixed | 29 | 1 (0) | 129 / 5.77 | 308 / 13.2 | 301 / 18.4 | 16.4x | 1 / 340 | 1 / 12 (28) | yes |
+| linkage-payload-20 | floating | 24 | 4 (1) | 35.1 / 9.79 | 60.7 / 32.7 | 61.6 / 38.5 | 1.6x | 4 / 40 | 4 / 40 (20) | yes |
+| linkage-payload-20 | fixed | 23 | 3 (1) | 34.7 / 9.66 | 57.9 / 39.7 | 58.7 / 37.5 | 1.6x | 3 / 40 | 3 / 40 (20) | yes |
+
+Within the caps (members <= 8, rows <= 64) once a client reads v8: **18 of 22** (M1: 15; M0: 4). The fixed frames now fit (12 rows,
+was 44 to 340). The four that do not are the bolted chains (7 to 19 bodies, 76 to 180 rows: each bolt spins, a real degree of freedom).
+
+Previews, before → after (solves; largest solve after, in bodies):
+
+| scene | variant | probe/auto | probe/group | redundant/auto | redundant/group | conflict/auto | conflict/group |
+|---|---|---|---|---|---|---|---|
+| chain-5 | floating | 18.4 → 17.1 (6→6; 1 bodies) | 56.6 → 30.7 (6→6; 2 bodies) | 90.1 → 50.8 (9→9; 1 bodies) | 51.7 → 21.1 (6→6; 1 bodies) | 1,745 → 1,831 (44→46; 3 bodies) | 1,825 → 1,720 (23→25; 3 bodies) |
+| chain-5 | fixed | 18.9 → 22.1 (6→6; 1 bodies) | 61.1 → 30.9 (6→6; 2 bodies) | 83.7 → 83 (9→9; 1 bodies) | 69.3 → 29.8 (6→6; 1 bodies) | 1,766 → 1,732 (36→44; 2 bodies) | 1,804 → 1,536 (18→30; 2 bodies) |
+| chain-10 | floating | 19.2 → 25.2 (6→6; 1 bodies) | 96.1 → 32.1 (6→6; 2 bodies) | 93.9 → 71.5 (9→9; 1 bodies) | 99.2 → 25.4 (6→6; 1 bodies) | 1,673 → 1,714 (52→52; 2 bodies) | 1,373 → 995 (30→30; 2 bodies) |
+| chain-10 | fixed | 18 → 18 (6→6; 1 bodies) | 102 → 33 (6→6; 2 bodies) | 104 → 61.6 (9→9; 1 bodies) | 104 → 29 (6→6; 1 bodies) | 1,754 → 1,863 (34→40; 2 bodies) | 1,802 → 1,546 (18→27; 2 bodies) |
+| chain-20 | floating | 21.7 → 25.1 (6→6; 1 bodies) | 189 → 47.3 (6→6; 2 bodies) | 157 → 67.9 (9→9; 1 bodies) | 188 → 34.9 (6→6; 1 bodies) | 1,757 → 1,839 (36→48; 2 bodies) | 1,709 → 1,005 (22→30; 2 bodies) ≠ |
+| chain-20 | fixed | 22.9 → 18.5 (6→6; 1 bodies) | 190 → 46.5 (6→6; 2 bodies) | 159 → 66.7 (9→9; 1 bodies) | 174 → 36.7 (6→6; 1 bodies) | 2,035 → 1,919 (34→38; 2 bodies) | 1,949 → 1,577 (17→24; 2 bodies) |
+| chain-50 | floating | 23.6 → 25.3 (6→6; 1 bodies) | 428 → 71.2 (6→6; 2 bodies) | 276 → 82.7 (9→9; 1 bodies) | 431 → 60.4 (6→6; 1 bodies) | 2,107 → 2,044 (28→30; 2 bodies) | 1,936 → 1,154 (17→26; 2 bodies) ≠ |
+| chain-50 | fixed | 21.1 → 24.1 (6→6; 1 bodies) | 437 → 72.2 (6→6; 2 bodies) | 272 → 87.4 (9→9; 1 bodies) | 416 → 66.3 (6→6; 1 bodies) | 2,265 → 1,983 (28→28; 2 bodies) | 2,164 → 1,604 (14→22; 2 bodies) |
+| chain-5-bolts | floating | 17.3 → 16.6 (6→6; 1 bodies) | 139 → 70.2 (6→6; 10 bodies) | 112 → 66.1 (9→9; 9 bodies) | 120 → 47.7 (6→6; 9 bodies) | 2,956 → 2,473 (28→22; 10 bodies) | 3,045 → 1,995 (14→14; 10 bodies) |
+| chain-5-bolts | fixed | 16.8 → 15.6 (6→6; 1 bodies) | 121 → 64 (6→6; 8 bodies) | 391 → 63.7 (9→9; 7 bodies) | 361 → 42.9 (6→6; 7 bodies) | 3,523 → 1,723 (28→28; 8 bodies) | 2,890 → 1,908 (14→15; 8 bodies) |
+| chain-10-bolts | floating | 17.7 → 17.1 (6→6; 1 bodies) | 371 → 215 (6→6; 20 bodies) | 189 → 104 (9→9; 19 bodies) | 267 → 102 (6→6; 19 bodies) | 9,111 → 3,728 (28→22; 20 bodies) | 9,212 → 3,740 (14→11; 20 bodies) |
+| chain-10-bolts | fixed | 18.9 → 19.4 (6→6; 1 bodies) | 308 → 157 (6→6; 18 bodies) | 909 → 93.7 (9→9; 17 bodies) | 1,013 → 92.6 (6→6; 17 bodies) | 8,610 → 4,053 (28→22; 18 bodies) | 8,333 → 4,220 (14→11; 18 bodies) |
+| frame-4 | floating | 15.8 → 15.7 (6→6; 1 bodies) | 49.5 → 30.5 (6→6; 2 bodies) | 262 → 299 (9→9; 1 bodies) | 45 → 14.6 (6→6; 1 bodies) | 2,217 → 2,198 (28→30; 2 bodies) | 1,668 → 2,003 (14→18; 2 bodies) |
+| frame-4 | fixed | 18.8 → 18.5 (6→6; 1 bodies) | 60.9 → 28.8 (6→6; 2 bodies) | 575 → 280 (9→9; 1 bodies) | 355 → 20.8 (6→6; 1 bodies) | 4,038 → 2,093 (28→34; 2 bodies) | 3,518 → 1,612 (14→17; 2 bodies) |
+| frame-10 | floating | 16.7 → 23 (6→6; 1 bodies) | 122 → 28.4 (6→6; 2 bodies) | 211 → 150 (9→9; 1 bodies) | 117 → 22 (6→6; 1 bodies) | 1,821 → 1,930 (58→52; 2 bodies) | 640 → 205 (30→30; 2 bodies) |
+| frame-10 | fixed | 16.2 → 14.5 (6→6; 1 bodies) | 168 → 33.4 (6→6; 2 bodies) | 392 → 160 (9→9; 1 bodies) | 301 → 38.1 (6→6; 1 bodies) | 3,758 → 2,016 (30→42; 2 bodies) | 3,452 → 295 (15→30; 2 bodies) |
+| frame-20 | floating | 17 → 26.8 (6→6; 1 bodies) | 244 → 38.6 (6→6; 2 bodies) | 403 → 261 (9→9; 1 bodies) | 228 → 50.4 (6→6; 1 bodies) | 2,235 → 2,188 (34→32; 2 bodies) | 1,261 → 251 (30→30; 2 bodies) |
+| frame-20 | fixed | 16.2 → 20.3 (6→6; 1 bodies) | 362 → 57.1 (6→6; 2 bodies) | 766 → 302 (9→9; 1 bodies) | 677 → 40.3 (6→6; 1 bodies) | 4,169 → 2,288 (28→30; 2 bodies) | 3,055 → 320 (17→30; 2 bodies) |
+| frame-30 | floating | 18.9 → 28.7 (6→6; 1 bodies) | 367 → 51.3 (6→6; 2 bodies) | 615 → 426 (9→9; 1 bodies) | 375 → 48.3 (6→6; 1 bodies) | 2,718 → 2,480 (28→24; 2 bodies) | 2,037 → 312 (26→30; 2 bodies) |
+| frame-30 | fixed | 16.8 → 23 (6→6; 1 bodies) | 499 → 72.8 (6→6; 2 bodies) | 1,200 → 440 (9→9; 1 bodies) | 982 → 54 (6→6; 1 bodies) | 4,273 → 2,481 (28→24; 2 bodies) | 3,909 → 388 (17→30; 2 bodies) |
+| linkage-payload-20 | floating | 20.8 → 21.1 (6→6; 1 bodies) | 218 → 67.9 (6→6; 5 bodies) | 162 → 82.3 (9→9; 4 bodies) | 215 → 56.1 (6→6; 4 bodies) | 4,659 → 3,385 (28→22; 5 bodies) | 4,487 → 3,154 (14→11; 5 bodies) |
+| linkage-payload-20 | fixed | 19 → 25.1 (6→6; 1 bodies) | 226 → 67.2 (6→6; 4 bodies) | 163 → 84.6 (9→9; 3 bodies) | 217 → 66.1 (6→6; 3 bodies) | 4,388 → 1,724 (28→28; 4 bodies) | 4,190 → 1,649 (14→14; 4 bodies) |
+
+**What did not improve, or not enough.**
+- **The preview budget does not bound a conflict preview to 2.5 s.** Each step keeps its minimum solves (8 for the search), and the
+  conflict previews still take 0.2 to 4.2 s (bolted chains 1.7 to 4.2 s, linkage 1.6 to 3.4 s; were 0.6 to 9.2 s). Lowering
+  `BRANCH_SEARCH_MIN_SOLVES` would bound it further but was put there for cold servers and slow CI runners; not changed.
+- **Two conflict answers changed** (floating 20- and 50-plate chains, `group`): more trials now fit, and the answer names 2 conflicting
+  mates where it named none. Same kind of change as M1's on the 10-plate chain.
+- **The bolted chains** are still over the caps and improve least (drag 1.1x to 1.4x): the bolts are separate bodies by nature.
+- **`probe/auto`** (one part moved) does not get faster, and a few rows are slower (frames: 17 → 27 ms): each distinct preview is a
+  model-cache miss, and building the cache key (the mates, occurrences and feature fingerprints read as text) costs a few ms on top
+  of the build. The drift above may account for part of it; not measured separately.
+- `chain-5` fixed with a wish (16.7 → 18.4 ms) and `frame-4` floating redundant/auto (262 → 299 ms) are within the drift.
+
+**Not verified.** Only the Python reference model and the backend ran: nothing in Dart, GDScript or on a headset. One run per side,
+on a host that restarted between them (see the drift check). The model-cache key covers what `build_group_model` reads today; a
+future input to the build that is not in the key (a new document-level setting read during geometry resolution) would need adding.
+
 ### M2. Client mirrors (Flutter and VR; medium; standard agent with the vectors as the guard)
 
 - `local_retraction.dart` and `local_retraction.gd` read v8; followers of a set are posed from the lead member each frame
@@ -431,6 +570,9 @@ couplers are excluded by the same rule as limits but only a limit is in the test
 - VR: re-run `docs/local-retraction-benchmark.md` on the reduced models. If a typical group is now 1 to 3 bodies the
   GDScript solve may fit a frame; if not, VR stays on the projector (no change in behaviour). **Needs the owner on a
   Quest** for the final number.
+- `preview-mate-solve`'s `budget_exhausted` (M1.1): when true the preview ran out of its time budget and `alternatives`,
+  `branch_changes`, `blocked_by` or `conflicting` may be incomplete. Both mate panels parse it and say so (e.g. "Search
+  stopped early: there may be more solutions"), never as an error; an older backend omits it (read as false).
 
 ### M3. Glide preview (Flutter and VR; medium; standard agent, UI)
 
@@ -637,6 +779,7 @@ people, per-device keys (pairing version 2 in `docs/vr-headset-pairing.md`) so o
 
 ```
 M0 → M1 → M2 ─┐
+      ├→ M1.1 │ (beside M2; before M2's cap measurement if possible)
       └→ M5   ├─ mates done
 M3 (any time) │
 M4 (after M0) ┘
@@ -654,7 +797,7 @@ P0 (spikes can run during S) → P1 → P2 → P3 → P4 → P5
 
 | Kind | Phases | Why |
 |---|---|---|
-| Strongest model, high effort | M1, M4 rules, S0, P0 scope, P1 | Solver maths, protocol and data-model decisions that later phases build on |
+| Strongest model, high effort | M1, M1.1, M4 rules, S0, P0 scope, P1 | Solver maths, protocol and data-model decisions that later phases build on |
 | Standard model | M0, M2, M3, M5, S1 to S4, P2, P4, P5 | Client and service work with a clear spec and golden vectors or tests as the guard |
 | Needs the owner's hardware | M2 (Quest timing), M3 (glide feel), S0 spike, P0 spikes, P2, P3, P5 | Headless tests cannot judge feel, audio or frame rate |
 

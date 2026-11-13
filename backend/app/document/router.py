@@ -42,6 +42,7 @@ from app.document.assembly_group import (
     BranchChange,
     GroupError,
     GroupSolveResult,
+    PreviewBudget,
     bounding_radius,
     branch_alternatives,
     branch_options,
@@ -4951,6 +4952,7 @@ def _solve_new_mate(
     new_mate: Mate | None,
     requested=(),
     skip: frozenset[str] = frozenset(),
+    budget: PreviewBudget | None = None,
 ) -> _MateSolve:
     """Solves the new mate (`new_mate`, or a stored mate just edited in place: `new_mate=None`, its id in `skip`) the way
     the preview does, and - only here, in the create / edit flow - searches for earlier mates to move to their other branch
@@ -4971,7 +4973,7 @@ def _solve_new_mate(
     result, used = solve(part)
     if result.converged:
         return _MateSolve(result, used, last=result)
-    found = search_branch_changes(document, part, solve, driven, new_mate, skip, failed=result)
+    found = search_branch_changes(document, part, solve, driven, new_mate, skip, failed=result, budget=budget)
     if found.result is not None:
         return _MateSolve(found.result, found.used, found.changes, needs_confirmation=True, last=result)
     return _MateSolve(None, used, blocked_by=found.blocked_by, conflicting=found.conflicting, last=result)
@@ -5227,7 +5229,11 @@ def preview_mate_solve_endpoint(
     endpoint's own payload-shape validation.
 
     `replace_mate_id` previews an EDIT of that stored mate: the stored mate is left out of the solve and `payload` (its
-    revised values) stands in for it, so the old values do not fight the new ones."""
+    revised values) stands in for it, so the old values do not fight the new ones.
+
+    M1.1: the whole preview runs on one clock (`assembly_group.PREVIEW_SECONDS`): past it the branch search, the conflict step and the
+    alternatives each stop once they have had their minimum solves, and `budget_exhausted` says the lists may be incomplete."""
+    budget = PreviewBudget()
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
     solve_part = part
@@ -5302,12 +5308,18 @@ def preview_mate_solve_endpoint(
         # The preview PROPOSES branch changes (never applies them, never stores anything): a new mate that only fits with earlier
         # `auto` mates on their other branch converges here with `branch_changes`, and the ghost shows that placement.
         outcome = _solve_new_mate(
-            get_document(), solve_part, occurrence_id, movement, extra_mate, skip=frozenset({replace_mate_id}) if replace_mate_id else frozenset()
+            get_document(),
+            solve_part,
+            occurrence_id,
+            movement,
+            extra_mate,
+            skip=frozenset({replace_mate_id}) if replace_mate_id else frozenset(),
+            budget=budget,
         )
     except HTTPException:
         return MateSolvePreviewResponse(converged=False, transform=None)
     controls = mate_branch_controls(get_document(), solve_part, extra_mate)
-    alternatives = _preview_alternatives(solve_part, occurrence_id, movement, extra_mate, controls, replace_mate_id)
+    alternatives = _preview_alternatives(solve_part, occurrence_id, movement, extra_mate, controls, replace_mate_id, budget)
     if outcome.result is None:
         return MateSolvePreviewResponse(
             converged=False,
@@ -5316,6 +5328,7 @@ def preview_mate_solve_endpoint(
             conflicting=list(outcome.conflicting),
             controls=list(controls),
             alternatives=alternatives,
+            budget_exhausted=budget.exhausted,
         )
     resolved = outcome.result.branches.get(extra_mate.id)
     return MateSolvePreviewResponse(
@@ -5330,6 +5343,7 @@ def preview_mate_solve_endpoint(
         ),
         controls=list(controls),
         alternatives=alternatives,
+        budget_exhausted=budget.exhausted,
     )
 
 
@@ -5340,6 +5354,7 @@ def _preview_alternatives(
     new_mate: Mate,
     controls: tuple[str, ...],
     replace_mate_id: str | None,
+    budget: PreviewBudget | None = None,
 ) -> list[MateSolveAlternative]:
     """"Next solution": every branch combination of the new mate's controls that converges (`assembly_group.branch_alternatives`),
     each as the members it would move. Only the new mate's own branch varies; the others keep theirs, and nothing is searched."""
@@ -5350,7 +5365,7 @@ def _preview_alternatives(
     def solve(variant: Mate):
         return _solve_with_movement(document, part, driven_id, movement, extra_mates=(variant,))
 
-    alternatives = branch_alternatives(part, new_mate, controls, solve, bounding_radius(document, part, driven_id))
+    alternatives = branch_alternatives(part, new_mate, controls, solve, bounding_radius(document, part, driven_id), budget)
     return [
         MateSolveAlternative(
             alignment=alt.alignment,

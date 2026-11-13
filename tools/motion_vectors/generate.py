@@ -2,7 +2,7 @@
 """Golden vectors for the free-motion projector (docs/motion/projector-spec.md).
 
     python tools/motion_vectors/generate.py            # (re)writes docs/motion/vectors.json
-    python tools/motion_vectors/generate.py --check    # exits 1 if the committed file differs
+    python tools/motion_vectors/generate.py --check    # exits 1 if the committed file differs (numbers beyond the file's tolerance)
 
 numpy only. The math is the numpy transcription of `docs/constrained-drag-investigation/prototypes/geo.py`
 with the changes the spec makes normative: projection metric with follower weights, Gram-Schmidt in that
@@ -1811,6 +1811,33 @@ def self_check_log():
     assert np.abs(got.t - target.t).max() < 1e-9 and np.abs(got.r - target.r).max() < 1e-12, "orbit target must be reproduced"
 
 
+def _differences(committed, fresh, tol, where="", loose=False):
+    """Where `fresh` (this machine's output) differs from the committed file: numbers by more than `tol`, anything else exactly. A
+    `local_retract` case whose raw answer is not converged tightly (`residual_inf` > 1e-9) is a sensitive function of the linear
+    solver's rounding (numpy / BLAS builds differ): its `local_poses`, `local_followers`, `residual_inf` and `fallback_distance` are
+    not compared, as the spec (section 15) and the backend test already treat them; its `accepted` and shown poses still are."""
+    out = []
+    if isinstance(committed, dict) and isinstance(fresh, dict):
+        if sorted(committed) != sorted(fresh):
+            return [f"{where}: keys {sorted(set(committed) ^ set(fresh))}"]
+        unpinned = loose and committed.get("residual_inf", 0.0) > 1e-9
+        for k in committed:
+            if unpinned and k in ("local_poses", "local_followers", "residual_inf", "fallback_distance"):
+                continue
+            nested_loose = loose or (k == "expected" and committed.get("kind") == "local_retract")
+            out += _differences(committed[k], fresh[k], tol, f"{where}/{committed.get('id', k) if k == 'expected' else k}", nested_loose)
+        return out
+    if isinstance(committed, list) and isinstance(fresh, list):
+        if len(committed) != len(fresh):
+            return [f"{where}: length {len(committed)} != {len(fresh)}"]
+        for i, (a, b) in enumerate(zip(committed, fresh)):
+            out += _differences(a, b, tol, f"{where}[{i}]", loose)
+        return out
+    if isinstance(committed, (int, float)) and isinstance(fresh, (int, float)) and not isinstance(committed, bool) and not isinstance(fresh, bool):
+        return [] if abs(committed - fresh) <= tol else [f"{where}: {committed} != {fresh}"]
+    return [] if committed == fresh else [f"{where}: {committed!r} != {fresh!r}"]
+
+
 def main():
     self_check()
     self_check_log()
@@ -1849,8 +1876,15 @@ def main():
     }
     backend_text = json.dumps(backend_doc, indent=1) + "\n"
     if "--check" in sys.argv:
-        ok = OUT.exists() and OUT.read_text() == text and BACKEND_OUT.exists() and BACKEND_OUT.read_text() == backend_text
-        sys.exit(0 if ok else 1)
+        problems = []
+        for path, fresh in ((OUT, text), (BACKEND_OUT, backend_text)):
+            if not path.exists():
+                problems.append(f"{path.relative_to(REPO)}: missing")
+                continue
+            problems += [f"{path.relative_to(REPO)}: {p}" for p in _differences(json.loads(path.read_text()), json.loads(fresh), cleaned["tolerance"])]
+        for p in problems[:20]:
+            print(p)
+        sys.exit(0 if not problems else 1)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(text)
     BACKEND_OUT.parent.mkdir(parents=True, exist_ok=True)

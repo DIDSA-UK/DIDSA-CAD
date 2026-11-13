@@ -3966,6 +3966,9 @@ class MateSolvePreviewResponse(BaseModel):
     # from the parts' gear features); null for every other mate.
     coupler_value: float | None = None
     limit_value: float | None = None  # a limit mate preview: the measured value at the current poses
+    # M1.1: the preview ran out of its time budget (`assembly_group.PREVIEW_SECONDS`) before it tried everything: `alternatives`,
+    # `branch_changes`, `blocked_by` or `conflicting` may be shorter than with no clock. Each step still had its minimum solves.
+    budget_exhausted: bool = False
 
 
 class ComponentPatternAxisSchema(BaseModel):
