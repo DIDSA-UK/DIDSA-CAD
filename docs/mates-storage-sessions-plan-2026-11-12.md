@@ -32,7 +32,8 @@ The implementation session updates this table in its PR.
 | Phase | Summary | Repos | State |
 |---|---|---|---|
 | M0 | Mate benchmark: scaling scenes and first-time accuracy baseline | CAD | Done (PR #354; results: "M0 results" below) |
-| M1 | Rigid sets in the group solve | CAD backend | In review (results: "M1 results" below) |
+| M1 | Rigid sets in the group solve | CAD backend | Done (PR #355; results: "M1 results" below) |
+| M1.1 | Group solve follow-ups: mate geometry cache, ground-row pruning, one preview budget, missing tests | CAD backend | Not started |
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | Not started |
 | M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Not started |
 | M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Not started |
@@ -423,6 +424,36 @@ headset: "fits the caps" is the Python model's count against the declared caps, 
 side, no confidence interval. Pattern-copy sources are checked to stay out of sets, but no scene has a set next to a followed copy;
 couplers are excluded by the same rule as limits but only a limit is in the tests. The gears-marked tests were not run.
 
+### M1.1. Group solve follow-ups (CAD backend; medium; strongest agent, solver maths)
+
+Added 2026-11-13 from the M1 results ("What did not improve, or not enough"): the gaps M1 left that no later phase covers. Backend
+only, so it can run beside M2 (client only); doing it first makes M2's cap measurements better. Judge it with the same M0 benchmark,
+`before` on `main` and `after` on the branch, on one machine and pinned to the same cores, as M1 did.
+
+- **Cache resolved mate geometry.** `build_group_model` resolves every mate's geometry on every call: about 100 ms of the 160 ms
+  the 50-plate chain still costs with a wish, and the main reason it is about 13x a 2-plate solve. Cache the resolved local
+  `_Side` geometry (and the oriented, branch-resolved mates) per component state, keyed like `rigid_sets._detection_key` (mates
+  with their references and branches, the target parts' feature fingerprints, fixed / suppressed state), so a drag re-anchor or a
+  branch-search trial that changes nothing reuses it. Invalidation is the risk: a geometry edit, a pattern edit or a branch change
+  must miss. Target: the 50-plate chain within 2 to 3x a 2-plate one; the platform replay and `table_top_frame` unchanged.
+- **Drop redundant ground rows.** A set locked to the fixed parts keeps every mate that ties it to them: the fixed frames keep 100 to
+  340 rows (over the 64-row client cap) and solve only 1.5 to 2.2x faster. Keep only rows that add rank to the set's lock against
+  the ground (rank 6 is enough; the rest are checked once at the end, like the mates inside a set). The amber rule is unchanged:
+  a near mate still locks, and the least-squares share-out between disagreeing mates must stay what it is.
+- **One time budget for a whole preview.** `BRANCH_SEARCH_SECONDS` bounds only the branch search: alternatives, the conflict step
+  and the minimum solves come on top, so conflict previews still take 2.6 to 8.2 s on the bolted chains and the linkage. Put the
+  search, the conflict step and the alternatives under one budget for the whole `preview-mate-solve` (with the minimum solves
+  kept), and report when it ran out. This matters more once M3 makes the preview move the real part. A shorter search can name
+  fewer conflicting mates: say what changed on the M0 conflict cases.
+- **Tests M1 lacks.** A rigid set next to a coupler (a gear pair on a locked frame) and next to a followed pattern copy (a set
+  that includes the mover mated to a copy), each against the unreduced solve (`assembly_group.rigid_sets_enabled = False`).
+- **Vector check tolerance.** `tools/motion_vectors/generate.py --check` compares text byte for byte, so it already fails on a
+  machine whose numpy / BLAS round one unconverged case differently (seen on `main` during M1). Compare numbers with the vectors'
+  own tolerance instead.
+
+Not in M1.1: the bolted chains stay many bodies (each bolt spins: a real degree of freedom, not a rigid set); the client caps
+are M2's.
+
 ### M2. Client mirrors (Flutter and VR; medium; standard agent with the vectors as the guard)
 
 - `local_retraction.dart` and `local_retraction.gd` read v8; followers of a set are posed from the lead member each frame
@@ -637,6 +668,7 @@ people, per-device keys (pairing version 2 in `docs/vr-headset-pairing.md`) so o
 
 ```
 M0 → M1 → M2 ─┐
+      ├→ M1.1 │ (beside M2; before M2's cap measurement if possible)
       └→ M5   ├─ mates done
 M3 (any time) │
 M4 (after M0) ┘
@@ -654,7 +686,7 @@ P0 (spikes can run during S) → P1 → P2 → P3 → P4 → P5
 
 | Kind | Phases | Why |
 |---|---|---|
-| Strongest model, high effort | M1, M4 rules, S0, P0 scope, P1 | Solver maths, protocol and data-model decisions that later phases build on |
+| Strongest model, high effort | M1, M1.1, M4 rules, S0, P0 scope, P1 | Solver maths, protocol and data-model decisions that later phases build on |
 | Standard model | M0, M2, M3, M5, S1 to S4, P2, P4, P5 | Client and service work with a clear spec and golden vectors or tests as the guard |
 | Needs the owner's hardware | M2 (Quest timing), M3 (glide feel), S0 spike, P0 spikes, P2, P3, P5 | Headless tests cannot judge feel, audio or frame rate |
 
