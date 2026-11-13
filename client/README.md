@@ -49,7 +49,8 @@ assembly composer do not branch on where a project lives.
 - **File menu:** *Server projects...* (pick a project on the store, then a file in it) next to *Open...*; *Copy this project to the server...*
   next to *Save All* (every file of the open local folder goes into a new server project in one commit, and the session carries on
   there). A symbol in the Start button's quick menu (swipe up from Start) shows a server project's state (cloud done = synced, upload = to
-  send, warning = clash, cloud off = offline); tap it for *Sync now* and *Resolve...*. While a store is set up but the session saves to a
+  send, warning = clash, cloud off = offline); tap it for *Sync now* and *Resolve...*. On the desktop layout the same symbol is in the top bar,
+  next to Save. While a store is set up but the session saves to a
   local folder, a folder symbol is shown there instead, and its sheet leads to *Server projects...* and *Copy this project...*.
 - **Reads** are live and keep a local copy (`FileCache`, with the store's version). **Saves** name the version they replace; each save
   is first kept in a queue on the device (`SyncStore`, application-support folder, not the OS cache), then sent. **Offline** a project

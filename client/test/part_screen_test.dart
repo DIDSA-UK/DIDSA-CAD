@@ -7881,6 +7881,61 @@ void main() {
       expect(find.byKey(const ValueKey('quick-local-fab')), findsNothing);
     });
 
+    // The desktop layout has no quick menu: the same symbols sit in the top bar, next to Save.
+    Future<void> pumpDesktop(WidgetTester tester, {required StorageService storage, ProjectRoot? initialRoot}) async {
+      tester.view.physicalSize = const Size(1280, 800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final backend = _FakeDocumentBackend();
+      final sketchBackend = _FakeSketchBackend();
+      final layout =
+          LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: LayoutModeScope(
+            controller: layout,
+            child: PartScreen(
+              documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+              sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: storage,
+              initialProjectRoot: initialRoot,
+            ),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    }
+
+    testWidgets('desktop layout: a server project shows the cloud symbol in the top bar, and it opens the sync sheet', (tester) async {
+      await pumpDesktop(tester, storage: RoutingStorageService(local: _FakeStorageService(), remote: remote), initialRoot: root);
+      expect(find.byKey(const ValueKey('desktop-sync-button')), findsOneWidget);
+      expect(find.byKey(const ValueKey('desktop-local-button')), findsNothing);
+      expect(
+        tester.widget<Icon>(find.descendant(of: find.byKey(const ValueKey('desktop-sync-button')), matching: find.byType(Icon)).first).icon,
+        Icons.cloud_done_outlined,
+      );
+      await tester.tap(find.byKey(const ValueKey('desktop-sync-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('server-sync-sheet')), findsOneWidget);
+    });
+
+    testWidgets('desktop layout: a local session with a store set up shows the folder symbol', (tester) async {
+      await pumpDesktop(tester, storage: RoutingStorageService(local: _FakeStorageService(), remote: remote));
+      expect(find.byKey(const ValueKey('desktop-sync-button')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-local-button')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('desktop-local-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.textContaining('Nothing is being synced'), findsOneWidget);
+    });
+
+    testWidgets('desktop layout: no project store, no symbol', (tester) async {
+      await pumpDesktop(tester, storage: _FakeStorageService());
+      expect(find.byKey(const ValueKey('desktop-sync-button')), findsNothing);
+      expect(find.byKey(const ValueKey('desktop-local-button')), findsNothing);
+    });
+
     testWidgets('plain Save on a server project sends the file to the store', (tester) async {
       await pumpServerScreen(tester);
 

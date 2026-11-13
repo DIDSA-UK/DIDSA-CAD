@@ -26755,8 +26755,47 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// The desktop layout's sync status (the quick menu is the phone layout's): the same symbols, in the top bar next to Save. A cloud
+  /// symbol for a server project (live), a folder symbol while a store is set up but this session saves to a local folder, and
+  /// nothing at all when no store is set up.
+  Widget? _desktopSyncAction() {
+    final remote = _remote;
+    final root = _projectRoot;
+    if (remote == null) return null;
+    if (root is ServerProjectRoot) {
+      final status = remote.statusOf(root);
+      return ValueListenableBuilder<SyncSummary>(
+        valueListenable: status,
+        builder: (context, summary, _) {
+          final look = ServerSyncChip.describe(summary, Theme.of(context).colorScheme);
+          return IconButton(
+            key: const ValueKey('desktop-sync-button'),
+            tooltip: '${root.project}: ${look.label}',
+            icon: Badge(isLabelVisible: !summary.allSynced, smallSize: 8, child: Icon(look.icon, color: look.color)),
+            onPressed: () => showServerSyncSheet(
+              context,
+              remote,
+              root,
+              onSyncNow: _syncServerNow,
+              onResolve: () => _resolveServerConflicts(root),
+            ),
+          );
+        },
+      );
+    }
+    if (!remote.isConfigured) return null;
+    return IconButton(
+      key: const ValueKey('desktop-local-button'),
+      tooltip: 'Saving to a local folder, not the server',
+      icon: const Icon(Icons.folder_outlined),
+      onPressed: _showLocalSessionSheet,
+    );
+  }
+
   List<Widget> _desktopAppBarActions() {
+    final sync = _desktopSyncAction();
     return [
+      if (sync != null) sync,
       _buildDesktopLensSwitch(context),
       IconButton(
         tooltip: _isDirty ? 'Save (Ctrl+S) - unsaved changes' : 'Save (Ctrl+S)',
