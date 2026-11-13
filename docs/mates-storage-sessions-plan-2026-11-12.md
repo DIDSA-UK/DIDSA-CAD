@@ -37,7 +37,7 @@ The implementation session updates this table in its PR.
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | In review (caps not raised; results: "M2 results" below) |
 | M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Not started |
 | M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Not started |
-| M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Not started |
+| M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | In review (results: "M5 results" below) |
 | S0 | Storage scope doc and spikes | CAD, VR | Not started |
 | S1 | Project store service | CAD | Not started |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Not started |
@@ -640,6 +640,14 @@ Feel is not testable; the owner judges the glide time on the headset.
 - Tree: parts in one set share a bracket and read "Moves with <lead>"; fully fixed sets read as fixed.
 - Dragging any member of a floating set moves the set (falls out of M1); a short outline on the whole set at grab says why.
 - VR: the same outline pulse the mate highlight uses (`highlight_mate`).
+
+### M5 results (2026-11-13)
+
+Flutter: `ConstraintStatusDto.rigidSet` (absent = null); the Assembly tree rows of a set carry a coloured left bracket (one colour per set) and read "Moves with <lead>" (the lead: "Moves with N other parts"); at the grab of a member (`_onComponentGizmoDragStart`) a snack says "Moves as one with A, B: the mates lock them together." VR: the Assembly Tree window shows the same note and a shared row colour; grabbing a member outlines every part of the set with the mate highlight's body pulse (`MatesTool.pulse_rigid_set`). Tests: `assembly_tree_panel_test.dart` (rigid sets group), VR `occurrence_tree_model`, `mate_highlight`.
+
+Differences from the M5 bullets: (1) **Flutter has no 3D outline of the set at the grab**: the viewport's highlight is built from selected entities and one override, so a multi-part outline needs viewport work; the snack and the tree are what ships. (2) "Fully fixed sets read as fixed": a set locked to a fixed part has no `rigid_set` (M1 reports none), so its rows keep the existing fixed / fully constrained icon and show no set note; nothing new was built for it. (3) The bracket is a coloured left border per row, not one drawn bar across the rows: members need not be adjacent in the list.
+
+Not verified: nothing was looked at on screen (widget tests only), nothing on a headset; the colours and the pulse are unjudged.
 
 ### Not in this plan
 

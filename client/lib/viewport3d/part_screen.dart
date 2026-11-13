@@ -13106,6 +13106,9 @@ class _PartScreenState extends State<PartScreen> {
       if (mounted) _showSnack(message);
     });
     _dragSession = session;
+    // M5: say at the grab why other parts will move too (the grabbed part is in a rigid set).
+    final setNotice = rigidSetGrabNotice(_occurrences, _constraintStatusByOccurrenceId, occurrence.id);
+    if (setNotice != null) _showSnack(setNotice);
     _dragPump = Timer.periodic(const Duration(milliseconds: 50), (_) => _pumpConstrainedDrag(session));
     unawaited(session.begin().then((_) {
       if (!mounted || !identical(_dragSession, session)) return;

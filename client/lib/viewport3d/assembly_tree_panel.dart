@@ -46,6 +46,48 @@ String occurrenceDisplayName(List<OccurrenceDto> occurrences, int index) {
   return 'Component $ordinal';
 }
 
+/// M5: the occurrence ids of every member of rigid set [setId] (`ConstraintStatusDto.rigidSet`), in the order [occurrences] lists them.
+List<String> rigidSetMemberIds(List<OccurrenceDto> occurrences, Map<String, ConstraintStatusDto> status, String setId) =>
+    [for (final o in occurrences) if (status[o.id]?.rigidSet == setId) o.id];
+
+/// M5: what an occurrence's row says about its rigid set, or null when it is in none. The set's lead (the occurrence named by the set id) reads
+/// "Moves with N other part(s)"; every other member "Moves with" and the lead's name. Parts the mates lock together move as one: dragging any of them moves
+/// the set, and this is the answer to "why did that other part move?".
+String? rigidSetSubtitle(List<OccurrenceDto> occurrences, Map<String, ConstraintStatusDto> status, int index) {
+  final id = occurrences[index].id;
+  final setId = status[id]?.rigidSet;
+  if (setId == null) return null;
+  if (setId == id) {
+    final others = rigidSetMemberIds(occurrences, status, setId).length - 1;
+    if (others < 1) return null;
+    return 'Moves with $others other part${others == 1 ? '' : 's'}';
+  }
+  final lead = occurrences.indexWhere((o) => o.id == setId);
+  return lead < 0 ? 'Moves as one with other parts' : 'Moves with ${occurrenceDisplayName(occurrences, lead)}';
+}
+
+/// M5: a colour for the bracket on the left of every row of rigid set [setId]: one per set, by the set's place among the sets listed
+/// (sorted by id so it does not change as parts are hidden or reordered).
+Color rigidSetBracketColour(Map<String, ConstraintStatusDto> status, String setId) {
+  const palette = <Color>[Color(0xFF1E88E5), Color(0xFFF4511E), Color(0xFF43A047), Color(0xFF8E24AA), Color(0xFFFDD835), Color(0xFF00ACC1)];
+  final ids = <String>{for (final s in status.values) if (s.rigidSet != null) s.rigidSet!}.toList()..sort();
+  final at = ids.indexOf(setId);
+  return palette[(at < 0 ? 0 : at) % palette.length];
+}
+
+/// M5: the sentence shown when a drag grabs a member of a rigid set ([grabbedId]); null when it is in none (or alone).
+String? rigidSetGrabNotice(List<OccurrenceDto> occurrences, Map<String, ConstraintStatusDto> status, String grabbedId) {
+  final setId = status[grabbedId]?.rigidSet;
+  if (setId == null) return null;
+  final names = <String>[
+    for (var i = 0; i < occurrences.length; i++)
+      if (occurrences[i].id != grabbedId && status[occurrences[i].id]?.rigidSet == setId) occurrenceDisplayName(occurrences, i),
+  ];
+  if (names.isEmpty) return null;
+  final shown = names.length > 3 ? '${names.take(3).join(', ')} and ${names.length - 3} more' : names.join(', ');
+  return 'Moves as one with $shown: the mates lock them together.';
+}
+
 /// B4: `<base>:<n>` for a part placed more than once (n = 1-based ordinal among the occurrences placing the same part,
 /// in list order - display-time only, so it renumbers after a delete); a part placed once keeps the plain `<base>`.
 String _withInstanceOrdinal(List<OccurrenceDto> occurrences, int index, String base) {
@@ -817,6 +859,12 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
     );
   }
 
+  /// M5: the "Moves with ..." line of a rigid-set member (null outside a set).
+  Widget? _rigidSetNote(int index) {
+    final text = rigidSetSubtitle(widget.occurrences, widget.constraintStatusByOccurrenceId, index);
+    return text == null ? null : Text(text, key: const Key('rigid-set-note'), maxLines: 1, overflow: TextOverflow.ellipsis, style: _rowSubtitleStyle);
+  }
+
   Widget _buildOccurrenceTile(BuildContext context, int index) {
     final occurrence = widget.occurrences[index];
     final selected = occurrence.id == widget.selectedOccurrenceId;
@@ -829,7 +877,8 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
     final unresolved = occurrence.resolvedPartId == null;
     final multiSelectMode = widget.isMultiSelectMode;
     final multiSelected = multiSelectMode && widget.selectedMultiSelectIds.contains(occurrence.id);
-    return Opacity(
+    final setId = widget.constraintStatusByOccurrenceId[occurrence.id]?.rigidSet;
+    final tile = Opacity(
       opacity: occurrence.hidden ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
         onOpen: widget.isMultiSelectMode || widget.onOccurrenceContextMenu == null ? null : (at) => widget.onOccurrenceContextMenu!(occurrence, at),
@@ -853,7 +902,7 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
                 )
               : occurrence.suppressed
                   ? const Text('Suppressed', maxLines: 1, overflow: TextOverflow.ellipsis, style: _rowSubtitleStyle)
-                  : null,
+                  : _rigidSetNote(index),
           // Bug fix (assembly testing): a narrow panel could push this Row of
           // up to 4 fixed-size badges past `ListTile`'s own `trailing` width
           // (laid out against the *whole tile width*, not just leftover
@@ -933,6 +982,15 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
               : () => widget.onOccurrenceLongPress(occurrence),
       ),
       ),
+    );
+    if (setId == null) return tile;
+    // M5: a bracket on the left, one colour per rigid set, so the parts that move as one read as a group wherever they sit in the list.
+    return DecoratedBox(
+      key: Key('rigid-set-bracket-${occurrence.id}'),
+      decoration: BoxDecoration(
+        border: Border(left: BorderSide(color: rigidSetBracketColour(widget.constraintStatusByOccurrenceId, setId), width: 3)),
+      ),
+      child: tile,
     );
   }
 
