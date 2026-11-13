@@ -2358,6 +2358,11 @@ class MateSolvePreviewDto {
   /// M4: the answer carried `suggested_type` at all (it was asked for with `type: "auto"`, and the backend knows the rule).
   final bool suggestionAnswered;
 
+  /// M4.1: the distance the preview was solved with when it was asked to measure (`measureValue`, a Distance with no value): the two picks
+  /// as far apart as they are now, in mm. `null` when they cannot be measured, or the request did not ask ([measureAnswered]).
+  final double? measuredValue;
+  final bool measureAnswered;
+
   const MateSolvePreviewDto({
     required this.converged,
     this.transform,
@@ -2373,6 +2378,8 @@ class MateSolvePreviewDto {
     this.budgetExhausted = false,
     this.suggestedType,
     this.suggestionAnswered = false,
+    this.measuredValue,
+    this.measureAnswered = false,
   });
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
@@ -2403,6 +2410,8 @@ class MateSolvePreviewDto {
         budgetExhausted: json['budget_exhausted'] == true,
         suggestedType: json['suggested_type'] as String?,
         suggestionAnswered: json.containsKey('suggested_type'),
+        measuredValue: (json['measured_value'] as num?)?.toDouble(),
+        measureAnswered: json.containsKey('measured_value'),
       );
 }
 
@@ -6145,6 +6154,8 @@ class DocumentApiClient {
     // [MateSolvePreviewDto.suggestedType]) or `peg_in_hole`.
     List<List<double>?>? pickPoints,
     List<double>? viewDirection,
+    // M4.1: a Distance with no [value]: preview it at the distance the picks are apart now ([MateSolvePreviewDto.measuredValue]).
+    bool measureValue = false,
   }) =>
       _send(
         () => _httpClient.post(
@@ -6169,6 +6180,7 @@ class DocumentApiClient {
                 if (limitMax != null) 'limit_max': limitMax,
                 if (pickPoints != null) 'pick_points': pickPoints,
                 if (viewDirection != null) 'view_direction': viewDirection,
+                if (measureValue) 'measure_value': true,
               }),
             ),
         (body) => MateSolvePreviewDto.fromJson(body as Map<String, dynamic>),

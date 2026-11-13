@@ -4520,6 +4520,12 @@ class _PartScreenState extends State<PartScreen> {
   String? _mateSuggestionKey;
   String? _mateSuggestedType;
 
+  /// M4.1: the picks a Distance was last measured for ([_mateMeasuredKey]), what was measured, and a counter that makes the value field
+  /// show a value filled in from the measurement.
+  String? _mateMeasuredKey;
+  double? _mateMeasuredValue;
+  int _mateValueFieldGeneration = 0;
+
   /// M4: where each pick of the current pair landed ([PartViewport.onSelectionPickPoint]), sent as `pick_points` / `view_direction`.
   final Map<SelectionEntityRef, MatePickPoint> _matePickPoints = {};
 
@@ -5326,6 +5332,8 @@ class _PartScreenState extends State<PartScreen> {
     _matePickPoints.clear();
     _mateSuggestionKey = null;
     _mateSuggestedType = null;
+    _mateMeasuredKey = null;
+    _mateMeasuredValue = null;
     _mateValue = null;
     _mateLimitMin = null;
     _mateLimitMax = null;
@@ -5435,6 +5443,8 @@ class _PartScreenState extends State<PartScreen> {
     final askType = picksKey != _mateSuggestionKey &&
         mateAsksForSuggestedType(userChoseType: _mateTypeChosen, picksComplete: _matePicksComplete, type: _mateType);
     final wireType = askType ? 'auto' : _mateWireType;
+    // M4.1: a Distance with nothing typed yet is previewed where the parts are, and the value box starts on that distance.
+    final measure = mateMeasuresValue(type: _mateType, value: _mateValue, askingType: askType, picksKey: picksKey, measuredKey: _mateMeasuredKey);
     final geometryKey = '$wireType|$picksKey|$_mateAllowRotation';
     if (geometryKey != _mateGeometryKey) {
       // Another pair of faces / type: an earlier Aligned / Flip choice does not carry over.
@@ -5466,8 +5476,17 @@ class _PartScreenState extends State<PartScreen> {
         limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
         pickPoints: _mateIsWidth ? null : matePickPointsFor(_selectedEntities, _matePickPoints),
         viewDirection: _mateIsWidth ? null : mateViewDirectionFor(_selectedEntities, _matePickPoints),
+        measureValue: measure,
       );
       if (!mounted || token != _matePreviewRequestToken) return;
+      if (measure) {
+        _mateMeasuredKey = picksKey;
+        _mateMeasuredValue = result.measuredValue;
+        if (result.measuredValue != null && _mateValue == null) {
+          _mateValue = result.measuredValue; // what the ghost holds; the next preview (and Confirm) sends it like a typed value
+          _mateValueFieldGeneration++;
+        }
+      }
       if (askType) {
         _mateSuggestionKey = picksKey;
         _mateSuggestedType = result.suggestedType;
@@ -27859,6 +27878,8 @@ class _PartScreenState extends State<PartScreen> {
                       autoValue: _mateAutoValue,
                       allowRotation: _mateAllowRotation,
                       suggestedType: _mateSuggestedType,
+                      measuredValue: _mateMeasuredValue,
+                      valueFieldGeneration: _mateValueFieldGeneration,
                       onMateTypeChanged: (type) {
                         setState(() {
                           _mateTypeChosen = true; // M4: the user's own type stays (no more suggestions this session)

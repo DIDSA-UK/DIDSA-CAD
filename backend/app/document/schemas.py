@@ -3790,6 +3790,10 @@ class MateCreate(BaseModel):
     # without them. Sent so a later rule needs only a backend change.
     pick_points: list[list[float] | None] | None = None
     view_direction: list[float] | None = None
+    # M4.1: preview only. A DISTANCE sent with this and NO `value` is previewed at the distance its two picks are apart now (measured at
+    # the stored poses, `app.document.mate_measure`), on the side the part is on now; the answer carries it as `measured_value`. Without
+    # it a distance with no value is `converged: false`, as before.
+    measure_value: bool = False
 
     @field_validator("pick_points")
     @classmethod
@@ -4004,12 +4008,19 @@ class MateSolvePreviewResponse(BaseModel):
     # byte-identical); with a suggestion the rest of the answer is the solve of that type, with none it is `converged: false`.
     suggested_type: Literal["coincident", "concentric", "peg_in_hole"] | None = None
     type_was_auto: bool = Field(default=False, exclude=True)
+    # M4.1: the distance the preview was solved with when the request asked for it (`MateCreate.measure_value`, no value): the client shows
+    # it in its value box. ONLY in the answer to such a request (null = the picks cannot be measured as a distance).
+    measured_value: float | None = None
+    measure_asked: bool = Field(default=False, exclude=True)
 
     @model_serializer(mode="wrap")
     def _suggestion_only_when_asked(self, handler):
         data = handler(self)
-        if not self.type_was_auto and isinstance(data, dict):
-            data.pop("suggested_type", None)
+        if isinstance(data, dict):
+            if not self.type_was_auto:
+                data.pop("suggested_type", None)
+            if not self.measure_asked:
+                data.pop("measured_value", None)
         return data
 
 

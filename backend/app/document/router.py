@@ -39,6 +39,7 @@ from app.document.assembly import (
     top_level_occurrence_id,
 )
 from app.document.assembly_group import (
+    mate_world_geometries,
     BranchChange,
     GroupError,
     GroupSolveResult,
@@ -62,6 +63,7 @@ from app.document.occurrence_paths import resolve_path
 from app.document.pattern_dissolve import PatternDissolveError, dissolve_component_pattern
 from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES, REFERENCE_PLANE_IDS
 from app.document.limit import current_limit_value, prepare_limit, validate_limit_fields
+from app.document.mate_measure import measured_distance
 from app.document.mate_suggest import SUGGEST_PEG_IN_HOLE, peg_concentric_alignment, peg_in_hole_faces, suggestion_or_none
 from app.document.coupler import prepare_coupler
 from app.document.assembly_group import GroupSolveQuality
@@ -5267,7 +5269,38 @@ def preview_mate_solve_endpoint(
     runs exactly the code it ran before M4. `pick_points` / `view_direction` are accepted and not used."""
     if payload.type in (_TYPE_AUTO, SUGGEST_PEG_IN_HOLE):
         return _preview_m4(part_id, occurrence_id, payload, movement, replace_mate_id)
+    if payload.measure_value and payload.type == "distance" and payload.value is None:
+        return _preview_measured(part_id, occurrence_id, payload, movement, replace_mate_id)
     return _preview_mate_solve(part_id, occurrence_id, payload, movement, replace_mate_id)
+
+
+def _preview_measured(
+    part_id: str, occurrence_id: str, payload: MateCreate, movement: MovementMode, replace_mate_id: str | None
+) -> MateSolvePreviewResponse:
+    """M4.1: a Distance with no value, previewed where the parts already are (SOLIDWORKS' order: parallel at the current distance, then the
+    user types the one they want). The distance is measured at the stored poses (`mate_measure.measured_distance`); the preview is then
+    the ordinary one with that value, so the side is Closest (where the part is now; a facing gap keeps Phase 4's outside side)."""
+    part = get_part_or_404(part_id)
+    _get_occurrence_or_404(part, occurrence_id)
+    if len(payload.references) != 2:
+        raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
+    measured = None
+    try:
+        for ref in payload.references:
+            _validate_mate_entity_ref(part, ref, payload.type)
+        probe = Mate(id="measure", type=MateType.DISTANCE, references=[_mate_entity_ref_to_domain(ref) for ref in payload.references])
+        first, second = mate_world_geometries(get_document(), part, probe)
+        measured = measured_distance(first, second)
+    except HTTPException:
+        measured = None
+    if measured is None:
+        return MateSolvePreviewResponse(converged=False, transform=None, measured_value=None, measure_asked=True)
+    fields = payload.model_dump(exclude_unset=True)
+    fields["value"] = measured
+    answer = _preview_mate_solve(part_id, occurrence_id, MateCreate(**fields), movement, replace_mate_id)
+    answer.measured_value = measured
+    answer.measure_asked = True
+    return answer
 
 
 def _preview_mate_solve(

@@ -37,6 +37,7 @@ The implementation session updates this table in its PR.
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | Done (merged; caps not raised; results: "M2 results" below) |
 | M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Done (merged) |
 | M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | In review: the type rule shipped (with Peg in hole); no pick-point rule met the standard, so none shipped (results: "M4 results" below) |
+| M4.1 | A Distance previewed where the parts are (SOLIDWORKS' order: parallel, the measured distance, then type the one you want) | CAD backend + both clients | In review (results: "M4.1 results" below) |
 | M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Done (merged; results: "M5 results" below) |
 | S0 | Storage scope doc and spikes | CAD, VR | Not started |
 | S1 | Project store service | CAD | Not started |
@@ -790,6 +791,44 @@ widget and the API client, not as a whole `PartScreen` with a backend (its test 
 pick point is not exercised by a test (only the conversion it uses). The suggestion's quality on real models is unmeasured (the benchmark's
 type table is 14 synthetic scenes). With no suggestion the client makes a second preview request (one more round trip) before a ghost shows.
 VR's live-backend tests (`ci_e2e.sh`) were not run for M4.
+
+### M4.1. A Distance where the parts are (backend + both clients; small)
+
+Owner's request after M4 (SOLIDWORKS' flow: the faces are made parallel, the box shows the distance measured now, the user types the one
+they want). Not a better guess: the side stays Closest (where the part is), so right-first-time does not change. What changes is the
+order: a ghost before any typing, and a value box that starts on the real distance.
+
+### M4.1 results (2026-11-13)
+
+**Built.** `preview-mate-solve` with `type: "distance"`, no `value` and `measure_value: true` (opt-in, preview only) measures the picks at the
+stored poses (`app/document/mate_measure.py`: two planes, a plane and a point, two axes, two points; mm, never negative, rounded to a
+micrometre) and answers the ordinary preview at that distance with `measured_value` (the key only in such an answer; null and `converged: false`
+when the picks cannot be measured). A request without the flag is unchanged (the M4 byte-identical replay still passes, including its
+"no value" cases). **Flutter:** with no value typed for the current picks the panel asks once, shows the ghost, and fills the value box with
+the measured distance ("Measured: the distance now. Type the one you want."); typing replaces it; Confirm with the measured value is allowed.
+**VR:** before, a Distance with nothing typed was previewed at 0 (flush); now at the measured distance, `mate_value` starts on it (not counted
+as typed), the status line and the tablet's value line say so, and the wheel's keyboard starts on it (empty until the answer is in; empty keeps
+it). An older backend gets the old preview in both clients.
+
+**Measured** (`python -m tests.bench_mates_m0 measured --trials 60`: the accuracy run's seeds and starts, every Distance scene; median travel
+of the part's centre in the first ghost, typed value vs measured):
+- The branch is the same as the typed preview's in **every one of the 2280 trials**, so right first time once the value is typed is exactly the
+  M0 / M4 row: no change, as expected.
+- The measured ghost moves the part **less** in 25 of the 38 scene x start rows (far starts: 64 -> 20 to 28 mm on the same-facing and gap
+  scenes, 53 -> 26 mm for the vertex; near starts: 6 to 9 -> 0 to 3 mm for gaps and the vertex), the same in the 6 seated rows (the stored mate
+  already fixes the distance), and **more** in 7: the tumbled same-facing starts (inset-10 medium 52 -> 64, upside-down 87 -> 154 mm; overhang-3
+  medium 49 -> 53, upside-down 62 -> 117; inset-2 medium 52 -> 58, upside-down 62 -> 120; overhang-25 upside-down 60 -> 71). There the picked face
+  starts on the far side of the part, so holding its current height while turning the part over carries the part further than going straight to
+  the typed distance. So "nothing jumps" is true for a part that is roughly in place, not for one dropped the wrong way up.
+
+**Tests.** Backend `tests/test_mate_measured_distance_m41.py` (10); Flutter `test/mate_measured_distance_m41_test.dart` (6); VR
+`tests/mates_measured_distance.gd` (10 SMOKE lines). Full runs: backend without the gears marker 3094 passed, 1 skipped, **1 failed:
+`test_rigid_sets.py::test_previews_answer_as_before[chain-3-conflict]`, which fails the same way on `main` when run on its own** (an empty
+`conflicting` list: most likely the preview's time budget on a cold process; it passed inside the M4 full run) and is not from M4 or M4.1;
+the 464 gears-marked tests not run. `flutter test`: all 3886 passed. VR `tests/ci.sh`: 4397 SMOKE lines, 0 failures.
+
+**Not verified.** Whether seeing the ghost before typing saves anyone time or mistakes: no test can say; it needs the owner in the app and on
+the headset. Nothing ran on a device or headset.
 
 ### M5. Show rigid sets (Flutter and VR; small; standard agent)
 

@@ -408,6 +408,62 @@ def _accuracy_rows(scene: "guess.GuessScene", label: str, payload: dict | None, 
     return rows
 
 
+# ---- M4.1: a Distance previewed where the parts already are ---------------------------------
+
+def _centre_travel(scene: "guess.GuessScene", start: dict, shown: dict | None) -> float | None:
+    """How far the first ghost moves the driven part's centre from its start (mm)."""
+    if shown is None:
+        return None
+    from app.document.assembly import apply_transform_to_point
+
+    return float(np.linalg.norm(np.array(apply_transform_to_point(guess._rt(shown), scene.centre)) - np.array(apply_transform_to_point(guess._rt(start), scene.centre))))
+
+
+def run_measured(trials: int, only: tuple[str, ...] = ()) -> list[dict]:
+    """Per Distance scene and start class (the accuracy trials' seeds and starts): the first ghost when the value is typed first (the scene's
+    value: what a client needed before M4.1) and when it is measured (`measure_value`, no value). Records how far each moves the part's centre,
+    and whether the measured preview stays on the side the typed one takes (the side is Closest either way: the value changes only the gap)."""
+    rows = []
+    for name, factory in guess.SCENES.items():
+        if only and name not in only:
+            continue
+        scene = factory()
+        if scene.payload["type"] != "distance":
+            continue
+        body = {k: v for k, v in scene.payload.items() if k != "value"}
+        for kind in scene.start_classes():
+            rng = np.random.default_rng(_seed(name, kind))
+            typed_moves, measured_moves, same_side, measured_ok = [], [], 0, 0
+            for _ in range(trials):
+                start = guess.start_pose(scene, kind, rng)
+                guess.trial_picks(scene, rng)  # keep the random stream in step with the accuracy run
+                guess.set_pose(scene, start)
+                typed = guess.preview(scene)
+                measured = guess.preview(scene, **{**body, "measure_value": True, "value": None})
+                if typed["converged"]:
+                    typed_moves.append(_centre_travel(scene, start, guess.shown_transform(typed)))
+                if measured["converged"]:
+                    measured_ok += 1
+                    measured_moves.append(_centre_travel(scene, start, guess.shown_transform(measured)))
+                    same_side += (measured.get("resolved") or {}) == (typed.get("resolved") or {})
+            guess.set_pose(scene, scene.true_pose)
+            rows.append({"scene": name, "start": kind, "trials": trials, "measured_converged": measured_ok, "same_branch": same_side,
+                         "typed_travel_mm": statistics.median(typed_moves) if typed_moves else None,
+                         "measured_travel_mm": statistics.median(measured_moves) if measured_moves else None})
+        print(f"  measured-distance {name}", file=sys.stderr, flush=True)
+    return rows
+
+
+def print_measured(rows: list[dict]) -> None:
+    print("\n### M4.1: a Distance previewed where the parts already are (median travel of the part's centre in the first ghost)\n")
+    print("Typed = the value typed first (needed before M4.1); measured = no value, `measure_value` (the ghost holds the current distance).\n")
+    print("| scene | start | typed: median travel mm | measured: median travel mm | measured converged | same branch as typed |")
+    print("|---|---|---|---|---|---|")
+    for r in rows:
+        print(f"| {r['scene']} | {r['start']} | {_ms(r['typed_travel_mm']) if r['typed_travel_mm'] is not None else 'n/a'} | "
+              f"{_ms(r['measured_travel_mm']) if r['measured_travel_mm'] is not None else 'n/a'} | {r['measured_converged']} of {r['trials']} | {r['same_branch']} of {r['trials']} |")
+
+
 # ---- M4: the type the picks suggest ----------------------------------------------------
 
 _TYPE_BEFORE_M4 = "coincident"  # both clients' type control started on Coincident before M4 (Flutter `kMateTypes.first`, VR `mate_type`)
@@ -514,7 +570,7 @@ def print_accuracy(rows: list[dict]) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("what", choices=("scaling", "accuracy", "all"))
+    parser.add_argument("what", choices=("scaling", "accuracy", "measured", "all"))
     parser.add_argument("--quick", action="store_true", help="scaling: the small sizes only")
     parser.add_argument("--trials", type=int, default=60, help="accuracy: trials per scene and start class (default 60, as Phase 4)")
     parser.add_argument("--family", action="append", default=[], help="scaling: only this family (chain, chain+bolts, frame, linkage; repeatable)")
@@ -534,6 +590,9 @@ def main(argv: list[str] | None = None) -> None:
         print_accuracy(out["accuracy"])
         out["types"] = run_types(tuple(args.scene))
         print_types(out["types"])
+    if args.what == "measured":
+        out["measured"] = run_measured(args.trials, tuple(args.scene))
+        print_measured(out["measured"])
     if args.json:
         Path(args.json).write_text(json.dumps(out, indent=1))
 

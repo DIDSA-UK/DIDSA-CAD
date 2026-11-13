@@ -32,6 +32,14 @@ bool mateAsksForSuggestedType({required bool userChoseType, required bool picksC
 /// predates M4 and said nothing).
 String mateTypeAfterSuggestion(String current, MateSolvePreviewDto answer) => answer.suggestedType ?? current;
 
+/// M4.1: whether the next preview asks the backend to measure the Distance (no value typed yet, and these picks not measured yet): the
+/// ghost then shows the parts parallel where they are, and the value box starts on the measured distance (SOLIDWORKS' order).
+bool mateMeasuresValue({required String type, required double? value, required bool askingType, required String picksKey, required String? measuredKey}) =>
+    type == 'distance' && value == null && !askingType && picksKey != measuredKey;
+
+/// The note under the value field while it shows the measured distance.
+const String kMateMeasuredValueNote = 'Measured: the distance now. Type the one you want.';
+
 /// The note under the type control while it shows the backend's suggestion.
 const String kMateSuggestedTypeNote = 'Suggested from the picks: change it if it is not what you want.';
 
@@ -411,6 +419,11 @@ class MatePanel extends StatelessWidget {
   /// meaningless (but still passed) while `mateType != 'concentric'`.
   final bool allowRotation;
 
+  /// M4.1: the distance the backend measured for the current picks ([kMateMeasuredValueNote] while [value] is still it), and a counter the
+  /// parent bumps when it fills [value] in, so the value field shows it.
+  final double? measuredValue;
+  final int valueFieldGeneration;
+
   /// M4: the type the backend suggested for the current picks (`null` = none, or not asked). While [mateType] is it, the type
   /// control says so ([kMateSuggestedTypeNote]); the user can still pick another.
   final String? suggestedType;
@@ -474,6 +487,8 @@ class MatePanel extends StatelessWidget {
     this.autoValue,
     required this.allowRotation,
     this.suggestedType,
+    this.measuredValue,
+    this.valueFieldGeneration = 0,
     required this.onMateTypeChanged,
     required this.onValueChanged,
     required this.onAllowRotationChanged,
@@ -545,14 +560,23 @@ class MatePanel extends StatelessWidget {
           ),
           if (mateTypeHasValueField(mateType)) ...[
             const SizedBox(height: 8),
-            TextFormField(
-              key: ValueKey('mate-value-$mateType'),
-              initialValue: value?.toString() ?? '',
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(labelText: mateValueLabel(mateType), helperText: mateValueHelper(mateType, autoValue: value == null ? autoValue : null)),
-              autovalidateMode: AutovalidateMode.always,
-              validator: (text) => mateValueError(mateType, text ?? ''),
-              onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
+            KeyedSubtree(
+              // a new generation rebuilds the field, so a value filled in from the measurement (M4.1) shows
+              key: ValueKey('mate-value-generation-$valueFieldGeneration'),
+              child: TextFormField(
+                key: ValueKey('mate-value-$mateType'),
+                initialValue: value?.toString() ?? '',
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: mateValueLabel(mateType),
+                  helperText: measuredValue != null && value == measuredValue
+                      ? kMateMeasuredValueNote
+                      : mateValueHelper(mateType, autoValue: value == null ? autoValue : null),
+                ),
+                autovalidateMode: AutovalidateMode.always,
+                validator: (text) => mateValueError(mateType, text ?? ''),
+                onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
+              ),
             ),
           ],
           if (isLimitMateType(mateType) && onLimitChanged != null) ...[
