@@ -19,7 +19,7 @@ import 'package:didsa_cad_client/storage/storage_service.dart';
 /// [PlanTranslator]'s own `AiAddComponentStep` case, so every other method
 /// is left unimplemented (mirroring this file's own "only fake what's
 /// actually called" convention for its `MockClient` handlers).
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   _FakeStorageService(this._filesByRelativePath);
 
   final Map<String, Uint8List> _filesByRelativePath;
@@ -48,7 +48,7 @@ class _FakeStorageService implements StorageService {
   Future<ProjectRoot?> lastUsedProjectRoot() => throw UnimplementedError();
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) => throw UnimplementedError();
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) => throw UnimplementedError();
 
   @override
   Future<DateTime?> lastModified(FileHandle handle) => throw UnimplementedError();

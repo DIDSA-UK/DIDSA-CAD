@@ -48,7 +48,7 @@ class _FakeAiProvider implements AiProvider {
 /// never HTTP - see `ai_plan_translator.dart`). Every other method throws if
 /// reached, the same "fail loud on an unexpected call" posture
 /// `ai_plan_translator_test.dart`'s own `_FakeStorageService` already uses.
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   final Map<String, Uint8List> writtenFiles = {};
 
   @override
@@ -65,7 +65,7 @@ class _FakeStorageService implements StorageService {
   }
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     writtenFiles[relativePath] = bytes;
     return DesktopFileHandle(root: root as DesktopProjectRoot, relativePath: relativePath, path: relativePath);
   }

@@ -1,7 +1,8 @@
 # Shared storage: scope (S0)
 
 Phase S0 of `docs/mates-storage-sessions-plan-2026-11-12.md` (Part 2). Written 2026-11-13 from reading both repos on `main`
-(CAD `3469f1c`, VR `089a0c9`). Nothing here is built yet except the Quest spike (DIDSA-VR, Launcher > Servers > **Check storage**).
+(CAD `3469f1c`, VR `089a0c9`). **Built since:** the store (S1, `project-store/`) and the flat app's side (S2, `client/lib/storage/server/`; its results and
+where it differs from section 7 are in "S2 results" of the plan). The DIDSA-VR side (S3) is not built. The Quest spike is in DIDSA-VR (Launcher > Servers > **Check storage**).
 The owner's decisions are in section 8: **all eight recommendations accepted on 2026-11-13**, so S1 builds them as written.
 
 ## 1. What this does, in one paragraph
@@ -145,7 +146,7 @@ keep that possible later; it is not in S1 to S4.
 
 ## 7. The two apps
 
-**Flat app (S2).** A `ServerProjectRoot` / `ServerFileHandle` next to the existing sealed variants, and a `RemoteStorageService` behind
+**Flat app (S2, built; see "S2 results" in the plan for the differences).** A `ServerProjectRoot` / `ServerFileHandle` next to the existing sealed variants, and a `RemoteStorageService` behind
 `StorageService`, so Open, Save, Save All and the composer do not change above it. Two things the interface lacks today and S2 adds:
 
 1. **a write that names the version it replaces** (`writeFile(..., baseVersion:)`; the local services ignore it), and

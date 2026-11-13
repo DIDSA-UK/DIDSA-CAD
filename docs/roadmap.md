@@ -682,6 +682,10 @@ Anything promoted out of this list should get its own scoping doc before it is b
   own service beside the backend, with a version check on every write.
   Decision #4 is superseded in part, #6 is kept for the backend, and
   composition stays on the client (no server-side composition).
+  **Update, 2026-11-13:** the store (S1) and the flat app's server projects
+  (S2: Server projects, local copy and queue, conflicts, Save All as one
+  commit) are built; the DIDSA-VR side is S3. See "S2 results" in
+  `docs/mates-storage-sessions-plan-2026-11-12.md`.
 - **A sketch's origin point reportedly doesn't line up with the correct 3D
   viewport origin.** User report (2026-07-21), investigated the same day -
   every basis-resolution path audited (backend `basis_for_sketch`, client

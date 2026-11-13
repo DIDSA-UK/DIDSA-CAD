@@ -10,8 +10,9 @@ import 'dart:io';
 /// `Occurrence.external_ref`, `backend/app/document/models.py`, is exactly
 /// such a relative path, never a platform-specific absolute one).
 ///
-/// Three variants: desktop (a plain OS directory), Android SAF (a tree
-/// URI), and iOS (a persisted security-scoped bookmark).
+/// Four variants: desktop (a plain OS directory), Android SAF (a tree
+/// URI), iOS (a persisted security-scoped bookmark), and a project on the
+/// project store (`ServerProjectRoot`, `docs/shared-storage-scope.md`).
 sealed class ProjectRoot {
   const ProjectRoot();
 
@@ -96,4 +97,29 @@ final class IosProjectRoot extends ProjectRoot {
 
   @override
   int get hashCode => bookmarkBase64.hashCode;
+}
+
+/// A project kept on the project store (`project-store/`, `docs/shared-storage-scope.md`): the store's address plus the project's
+/// name. The store's key is **not** part of the root (a root is persisted and shown); it is read from the server settings
+/// (`ApiConfig.storeApiKey`) each time the store is called. Served by `RemoteStorageService`.
+final class ServerProjectRoot extends ProjectRoot {
+  const ServerProjectRoot({required this.serverUrl, required this.project});
+
+  /// The store's base URL without a trailing slash, e.g. `https://store.example.com`.
+  final String serverUrl;
+
+  /// The project's name: a top-level folder of the store.
+  final String project;
+
+  @override
+  String get displayName => project;
+
+  @override
+  String get persistedKey => 'server:$serverUrl|$project';
+
+  @override
+  bool operator ==(Object other) => other is ServerProjectRoot && other.serverUrl == serverUrl && other.project == project;
+
+  @override
+  int get hashCode => Object.hash(serverUrl, project);
 }

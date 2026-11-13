@@ -5,6 +5,7 @@ import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'file_lookup_rule.dart';
 import 'folder_shift.dart';
+import 'local_file_stamps.dart';
 import 'project_file_index.dart';
 import 'reference_report.dart';
 import 'relative_path.dart';
@@ -98,10 +99,18 @@ class ComposedAssemblyGraph {
 /// same relative path, hit the same cache entry in [_resolvedByPath], and
 /// end up as one Part entry in the composed payload either way.
 class AssemblyGraphComposer {
-  AssemblyGraphComposer({required StorageService storageService, FileCache? fileCache, ProjectFileIndex? fileIndex})
-      : _storageService = storageService,
+  AssemblyGraphComposer({
+    required StorageService storageService,
+    FileCache? fileCache,
+    ProjectFileIndex? fileIndex,
+    LocalFileStamps? stamps,
+  })  : _storageService = storageService,
         _fileCache = fileCache ?? FileCache(),
-        fileIndex = fileIndex ?? ProjectFileIndex(storageService);
+        fileIndex = fileIndex ?? ProjectFileIndex(storageService),
+        stamps = stamps ?? LocalFileStamps();
+
+  /// The modified time each local file had when it was read here (Save All's "changed on disk meanwhile?" check).
+  final LocalFileStamps stamps;
 
   final StorageService _storageService;
   final FileCache _fileCache;
@@ -144,7 +153,8 @@ class AssemblyGraphComposer {
         }
         final bytes = await _storageService.readFile(handle);
         final lastModified = await _storageService.lastModified(handle);
-        await _fileCache.put(root, relativePath, bytes, lastKnownModified: lastModified);
+        stamps.record(root, relativePath, lastModified);
+        if (root is! ServerProjectRoot) await _fileCache.put(root, relativePath, bytes, lastKnownModified: lastModified);
         return jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
       } on StorageException {
         final cached = await _fileCache.get(root, relativePath);
@@ -165,7 +175,8 @@ class AssemblyGraphComposer {
         if (handle != null) {
           final bytes = await _storageService.readFile(handle);
           final lastModified = await _storageService.lastModified(handle);
-          await _fileCache.put(root, relativePath, bytes, lastKnownModified: lastModified);
+          stamps.record(root, relativePath, lastModified);
+          if (root is! ServerProjectRoot) await _fileCache.put(root, relativePath, bytes, lastKnownModified: lastModified);
           payload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
         }
       } on StorageException {
@@ -256,22 +267,42 @@ class AssemblyGraphComposer {
         return;
       }
 
-      if (index == null) {
+      // A server project's store answers "which file has this Part id?" by itself (`GET .../parts/{part_id}`): steps 1 and 2 of
+      // the rule depend on the files with that id only, so a found / ask answer needs no file list at all. Anything else goes on
+      // to the whole index below, exactly as for a local folder.
+      FileLookup? byIdOnly;
+      if (index == null && storedId != null) {
+        final withId = await fileIndex.pathsWithPartId(root, storedId);
+        if (withId != null) {
+          final quick = findFile(
+            externalRef: externalRef,
+            refPartId: storedId,
+            atPath: live == null ? null : IndexedFile(path, liveId),
+            index: [
+              for (final candidate in withId)
+                if (live != null || candidate != path) IndexedFile(candidate, storedId),
+            ],
+          );
+          if (quick.result == LookupResult.found || quick.result == LookupResult.ask) byIdOnly = quick;
+        }
+      }
+      if (byIdOnly == null && index == null) {
         // The walk does one binder call per directory on Android: a big folder can take seconds, so say so.
         onSearching?.call();
         index = await fileIndex.build(root);
       }
       final usable = [
-        for (final entry in index!)
+        for (final entry in index ?? const <IndexedFile>[])
           // The unreadable file at the path itself is no candidate for anything.
           if (live != null || entry.path != path) entry
       ];
-      var lookup = findFile(
-        externalRef: externalRef,
-        refPartId: storedId,
-        atPath: live == null ? null : IndexedFile(path, liveId),
-        index: usable,
-      );
+      var lookup = byIdOnly ??
+          findFile(
+            externalRef: externalRef,
+            refPartId: storedId,
+            atPath: live == null ? null : IndexedFile(path, liveId),
+            index: usable,
+          );
       // Item 1c: a shift learned from an earlier reference. A shifted file with the stored id is found; for a reference with no
       // stored id it is [LookupResult.likely] (the same ask-first path as 1b). Never overrides a plain id match.
       if (shifts.isNotEmpty && lookup.result != LookupResult.found && lookup.result != LookupResult.ask) {

@@ -1,3 +1,4 @@
+import 'dart:io' show Platform;
 import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,6 +21,9 @@ class ApiConfig {
   static const String localServerOnWifiPrefKey = 'local_server_on_wifi';
   static const String relayUrlPrefKey = 'browser_relay_url';
   static const String relayApiKeyPrefKey = 'browser_relay_api_key';
+  static const String storeUrlPrefKey = 'project_store_url';
+  static const String storeApiKeyPrefKey = 'project_store_api_key';
+  static const String deviceNamePrefKey = 'project_store_device_name';
 
   static String _baseUrl = '';
   static String _apiKey = '';
@@ -27,6 +31,9 @@ class ApiConfig {
   static bool _localServerOnWifi = false;
   static String _relayUrl = '';
   static String _relayApiKey = '';
+  static String _storeUrl = '';
+  static String _storeApiKey = '';
+  static String _deviceName = '';
   static String? _sessionId;
 
   /// The backend base URL, e.g. `https://cad-api.snail-shell.uk` - empty
@@ -59,6 +66,35 @@ class ApiConfig {
 
   /// The relay's own key (`BROWSER_RELAY_API_KEY`), not the CAD key.
   static String get relayApiKey => _relayApiKey;
+
+  /// The project store (`project-store/`, shared storage, `docs/shared-storage-scope.md`): its address and its own key
+  /// (`PROJECT_STORE_API_KEY`, never the CAD key). Entered once in the server settings. Empty until set.
+  static String get storeUrl => _storeUrl;
+  static String get storeApiKey => _storeApiKey;
+
+  /// Whether the store can be called at all: both its address and its key are set.
+  static bool get storeConfigured => _storeUrl.isNotEmpty && _storeApiKey.isNotEmpty;
+
+  /// The name this device gives the store (`X-Device-Name`): what other devices see as "who changed it". Settable; blank means the
+  /// platform default ([defaultDeviceName]). Never used as identity.
+  static String get deviceName => _deviceName;
+
+  /// [deviceName], or the platform's own when none was set.
+  static String get effectiveDeviceName => _deviceName.isNotEmpty ? _deviceName : defaultDeviceName();
+
+  /// "Desktop" style default: the computer's name where it has a real one, otherwise the platform ("Android", "iOS").
+  static String defaultDeviceName() {
+    final host = Platform.localHostname.trim();
+    if (host.isNotEmpty && host.toLowerCase() != 'localhost') return host;
+    return switch (Platform.operatingSystem) {
+      'android' => 'Android',
+      'ios' => 'iOS',
+      'macos' => 'Mac',
+      'windows' => 'Windows PC',
+      'linux' => 'Linux PC',
+      final other => other,
+    };
+  }
 
   /// Whether both [baseUrl] and [apiKey] are non-empty - drives whether
   /// [ConnectionScreen] can pre-fill its fields and offer Connect on cold
@@ -100,6 +136,26 @@ class ApiConfig {
     _localServerOnWifi = prefs.getBool(localServerOnWifiPrefKey) ?? false;
     _relayUrl = prefs.getString(relayUrlPrefKey) ?? '';
     _relayApiKey = prefs.getString(relayApiKeyPrefKey) ?? '';
+    _storeUrl = prefs.getString(storeUrlPrefKey) ?? '';
+    _storeApiKey = prefs.getString(storeApiKeyPrefKey) ?? '';
+    _deviceName = prefs.getString(deviceNamePrefKey) ?? '';
+  }
+
+  /// Saves (or, with empty strings, clears) the project store's address and key.
+  static Future<void> saveStore({required String storeUrl, required String storeApiKey}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = storeUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    await prefs.setString(storeUrlPrefKey, url);
+    await prefs.setString(storeApiKeyPrefKey, storeApiKey.trim());
+    _storeUrl = url;
+    _storeApiKey = storeApiKey.trim();
+  }
+
+  /// Saves the device name sent to the store (blank: use the platform default).
+  static Future<void> saveDeviceName(String name) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(deviceNamePrefKey, name.trim());
+    _deviceName = name.trim();
   }
 
   /// Saves (or, with empty strings, clears) the browser relay handed to a VR headset when pairing.

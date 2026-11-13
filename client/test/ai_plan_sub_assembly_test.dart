@@ -94,7 +94,7 @@ Map<String, Object> _castorZip({bool withSubAssemblyInManifest = true}) => {
       },
     };
 
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   final Map<String, Uint8List> files = {};
 
   void put(String relativePath, Map<String, dynamic> payload) {

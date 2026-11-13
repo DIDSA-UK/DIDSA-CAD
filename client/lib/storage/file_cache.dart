@@ -12,11 +12,15 @@ import 'project_root.dart';
 /// when this cache last saved them and (if known) what the source file's
 /// own last-modified time was at that point.
 class CachedFile {
-  const CachedFile({required this.bytes, required this.cachedAt, this.lastKnownModified});
+  const CachedFile({required this.bytes, required this.cachedAt, this.lastKnownModified, this.serverVersion});
 
   final Uint8List bytes;
   final DateTime cachedAt;
   final DateTime? lastKnownModified;
+
+  /// A server project's file: the store's version these bytes are (shared storage, `docs/shared-storage-scope.md` section 7: the
+  /// cache is the server project's local copy). Null for a local folder's entry.
+  final int? serverVersion;
 }
 
 /// The "cached last-known-good snapshot" half of the reference-staleness
@@ -45,7 +49,10 @@ class FileCache {
 
   Future<Directory> _cacheDir() async {
     final override = _cacheDirectoryOverride;
-    if (override != null) return override;
+    if (override != null) {
+      if (!await override.exists()) await override.create(recursive: true);
+      return override;
+    }
     final base = await getApplicationCacheDirectory();
     final dir = Directory(p.join(base.path, 'didsa-file-cache'));
     await dir.create(recursive: true);
@@ -56,13 +63,14 @@ class FileCache {
     return sha256.convert(utf8.encode('${root.persistedKey}::$relativePath')).toString();
   }
 
-  Future<void> put(ProjectRoot root, String relativePath, Uint8List bytes, {DateTime? lastKnownModified}) async {
+  Future<void> put(ProjectRoot root, String relativePath, Uint8List bytes, {DateTime? lastKnownModified, int? serverVersion}) async {
     final dir = await _cacheDir();
     final key = _keyFor(root, relativePath);
     await File(p.join(dir.path, '$key.bin')).writeAsBytes(bytes, flush: true);
     final meta = {
       'cachedAtMs': DateTime.now().millisecondsSinceEpoch,
       'lastKnownModifiedMs': lastKnownModified?.millisecondsSinceEpoch,
+      if (serverVersion != null) 'serverVersion': serverVersion,
     };
     await File(p.join(dir.path, '$key.meta.json')).writeAsString(jsonEncode(meta));
   }
@@ -90,6 +98,7 @@ class FileCache {
       lastKnownModified: lastKnownModifiedMs != null
           ? DateTime.fromMillisecondsSinceEpoch(lastKnownModifiedMs)
           : null,
+      serverVersion: meta['serverVersion'] as int?,
     );
   }
 

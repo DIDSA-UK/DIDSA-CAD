@@ -1,4 +1,5 @@
 import 'dart:async' show unawaited;
+import 'dart:convert';
 import 'dart:io' show Platform;
 
 import 'package:material_ui/material_ui.dart';
@@ -15,6 +16,7 @@ import 'server_management/battery_optimization_controller.dart';
 import 'server_management/server_management_screen.dart';
 import 'server_management/termux_controller.dart';
 import 'sketch/sketcher_settings_screen.dart';
+import 'storage/server/store_client.dart';
 import 'tool_chooser_screen.dart';
 import 'viewport3d/svg_icon.dart';
 import 'vr_pairing/headset_pairing_screen.dart';
@@ -55,6 +57,15 @@ class ConnectionScreen extends StatefulWidget {
 class _ConnectionScreenState extends State<ConnectionScreen> {
   final _serverUrlController = TextEditingController();
   final _apiKeyController = TextEditingController();
+  final _storeUrlController = TextEditingController();
+  final _storeKeyController = TextEditingController();
+  final _deviceNameController = TextEditingController();
+
+  /// The project store section's own feedback (a check's result, or "the server offered this address").
+  String? _storeMessage;
+  bool _storeMessageIsError = false;
+  bool _storeBusy = false;
+  bool _obscureStoreKey = true;
 
   bool _obscureApiKey = true;
   bool _busy = false;
@@ -94,6 +105,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
     setState(() {
       _serverUrlController.text = ApiConfig.baseUrl;
       _apiKeyController.text = ApiConfig.apiKey;
+      _storeUrlController.text = ApiConfig.storeUrl;
+      _storeKeyController.text = ApiConfig.storeApiKey;
+      _deviceNameController.text = ApiConfig.deviceName;
     });
     // Cold launch only, not a "Connection Settings" revisit - this screen's
     // own doc comment on [_loadExisting] already notes it's shared between
@@ -139,6 +153,9 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
   void dispose() {
     _serverUrlController.dispose();
     _apiKeyController.dispose();
+    _storeUrlController.dispose();
+    _storeKeyController.dispose();
+    _deviceNameController.dispose();
     super.dispose();
   }
 
@@ -183,6 +200,7 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
         throw Exception('health check returned ${response.statusCode}');
       }
       await ApiConfig.save(baseUrl: url, apiKey: key);
+      _offerStoreFromHealth(response.body);
       TextInput.finishAutofillContext();
       if (!mounted) return;
       if (widget.isSettingsRevisit) {
@@ -197,6 +215,145 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
       if (widget.httpClient == null) client.close();
       if (mounted) setState(() => _busy = false);
     }
+  }
+
+  /// The backend's `/health` says where its project store is (`project_store`, never a key) when it was told: offered as the
+  /// default address when none is set. The key is still typed once below.
+  void _offerStoreFromHealth(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      final offered = decoded is Map ? decoded['project_store'] : null;
+      if (offered is String && offered.trim().isNotEmpty && _storeUrlController.text.trim().isEmpty && ApiConfig.storeUrl.isEmpty) {
+        // Kept as the default address (never the key, which the backend does not know), so Connect on a cold launch, which moves
+        // on to the next screen, still leaves it there for the store section.
+        unawaited(ApiConfig.saveStore(storeUrl: offered.trim(), storeApiKey: ApiConfig.storeApiKey));
+        if (!mounted) return;
+        setState(() {
+          _storeUrlController.text = offered.trim();
+          _storeMessage = 'The server offered this project store address. Enter the store key and save.';
+          _storeMessageIsError = false;
+        });
+      }
+    } on FormatException {
+      // An older backend, or a proxy page: nothing is offered.
+    }
+  }
+
+  Future<void> _saveStore() async {
+    final url = _storeUrlController.text.trim();
+    final key = _storeKeyController.text.trim();
+    setState(() {
+      _storeBusy = true;
+      _storeMessage = null;
+    });
+    await ApiConfig.saveStore(storeUrl: url, storeApiKey: key);
+    await ApiConfig.saveDeviceName(_deviceNameController.text);
+    String? problem;
+    if (url.isNotEmpty && key.isNotEmpty) {
+      final client = StoreClient(
+        StoreSettings(url: url, apiKey: key, deviceName: ApiConfig.effectiveDeviceName),
+        httpClient: widget.httpClient,
+      );
+      try {
+        await client.health();
+      } on StoreUnreachable {
+        problem = 'Saved, but the project store could not be reached at $url.';
+      } on StoreAuthError {
+        problem = 'Saved, but the project store refused the key.';
+      } on StoreError catch (error) {
+        problem = 'Saved, but the project store answered: ${error.detail}';
+      } finally {
+        client.close();
+      }
+    }
+    if (!mounted) return;
+    setState(() {
+      _storeBusy = false;
+      _storeMessageIsError = problem != null;
+      _storeMessage = problem ?? (url.isEmpty ? 'Project store cleared.' : 'Saved. The project store answered.');
+    });
+  }
+
+  Widget _storeSection() {
+    InputDecoration decoration(String label, {String? hint, Widget? suffix}) => InputDecoration(
+          labelText: label,
+          hintText: hint,
+          labelStyle: const TextStyle(color: Colors.white70),
+          hintStyle: const TextStyle(color: Colors.white38),
+          border: const OutlineInputBorder(),
+          suffixIcon: suffix,
+        );
+    return Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        key: const ValueKey('project-store-settings'),
+        tilePadding: EdgeInsets.zero,
+        iconColor: Colors.white70,
+        collapsedIconColor: Colors.white70,
+        initiallyExpanded: ApiConfig.storeConfigured || _storeUrlController.text.isNotEmpty,
+        title: const Text('Project store (shared projects)', style: TextStyle(color: Colors.white70)),
+        childrenPadding: const EdgeInsets.only(bottom: 8),
+        children: [
+          TextField(
+            key: const ValueKey('store-url-field'),
+            controller: _storeUrlController,
+            keyboardType: TextInputType.url,
+            style: const TextStyle(color: Colors.white),
+            decoration: decoration('Store address', hint: 'https://store.example.com'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('store-key-field'),
+            controller: _storeKeyController,
+            obscureText: _obscureStoreKey,
+            style: const TextStyle(color: Colors.white),
+            decoration: decoration(
+              'Store key',
+              suffix: IconButton(
+                icon: Icon(_obscureStoreKey ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: Colors.white70),
+                onPressed: () => setState(() => _obscureStoreKey = !_obscureStoreKey),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey('device-name-field'),
+            controller: _deviceNameController,
+            style: const TextStyle(color: Colors.white),
+            decoration: decoration('This device\'s name', hint: ApiConfig.defaultDeviceName()),
+          ),
+          const SizedBox(height: 4),
+          const Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              'Other devices see this name next to a change. It is a label, not a login.',
+              style: TextStyle(color: Colors.white38, fontSize: 12),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Align(
+            alignment: Alignment.centerRight,
+            child: OutlinedButton(
+              key: const ValueKey('store-save-button'),
+              style: OutlinedButton.styleFrom(foregroundColor: Colors.white70, side: const BorderSide(color: Colors.white24)),
+              onPressed: _storeBusy ? null : _saveStore,
+              child: _storeBusy
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70))
+                  : const Text('Save and check'),
+            ),
+          ),
+          if (_storeMessage != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                _storeMessage!,
+                key: const ValueKey('store-message'),
+                style: TextStyle(color: _storeMessageIsError ? Colors.redAccent : Colors.white70),
+              ),
+            ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -334,6 +491,8 @@ class _ConnectionScreenState extends State<ConnectionScreen> {
                     Text(_error!, style: const TextStyle(color: Colors.redAccent), textAlign: TextAlign.center),
                   ],
                   const SizedBox(height: 16),
+                  _storeSection(),
+                  const SizedBox(height: 4),
                   // Controls an on-device standalone backend (Termux +
                   // proot-distro) via Termux's RUN_COMMAND intent - shown
                   // both on cold launch and on a settings revisit, unlike

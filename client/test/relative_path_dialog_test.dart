@@ -13,7 +13,7 @@ import 'package:didsa_cad_client/viewport3d/relative_path_dialog.dart';
 /// other method throws `UnimplementedError`, the same "small test fakes are
 /// copy-pasted, not shared" convention `assembly_document_client_test.dart`'s
 /// own fake already documents.
-class _FakeStorageService implements StorageService {
+class _FakeStorageService with FileByFileCommit implements StorageService {
   _FakeStorageService({
     this.files = const [],
     this.throwOnList = false,
@@ -75,7 +75,7 @@ class _FakeStorageService implements StorageService {
   Future<Uint8List> readFile(FileHandle handle) => throw UnimplementedError();
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) =>
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) =>
       throw UnimplementedError();
 
   @override

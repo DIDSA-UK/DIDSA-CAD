@@ -41,7 +41,7 @@ The implementation session updates this table in its PR.
 | M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Done (merged; results: "M5 results" below) |
 | S0 | Storage scope doc and spikes | CAD, VR | In review: `docs/shared-storage-scope.md`; the Quest spike is built and waits for the owner's run (results: "S0 results" below) |
 | S1 | Project store service | CAD | Done in this PR (`project-store/`; results: "S1 results" below) |
-| S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Not started |
+| S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Done in this PR (`client/lib/storage/server/`; results: "S2 results" below) |
 | S3 | VR: server projects, cache, offline | VR | Not started |
 | S4 | Sync hardening and set-up polish | all | Not started |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
@@ -957,6 +957,94 @@ were NOT run. Docker was built for amd64 only, not the Pi's arm64. Performance (
 - Local cache of every opened file (`file_cache.dart`), a queue of unsent saves, a sync state per file (synced, to send,
   conflict) and a status chip. Offline: open from the cache, save to the queue, sync on reconnect with the version check.
 - File menu: "Server projects" next to the local project folder; "Copy this project to the server".
+
+### S2 results (2026-11-13)
+
+**Built** (`client/` only; no store or backend change, no VR change). `docs/shared-storage-scope.md` sections 6, 7 and 9 as written, with the
+differences below.
+
+- **Storage layer:** `ServerProjectRoot` / `ServerFileHandle` beside the sealed local variants; `RemoteStorageService` and a
+  `RoutingStorageService` (`lib/storage/`), which `createStorageService()` now returns (`createLocalStorageService()` is the old
+  platform pick), so Open, Save, Save All, the composer, the AI screen and the relative-path dialogs reach a server project with no change
+  above the interface. Two additions to `StorageService`: `writeFile(..., {int? baseVersion})` (the three local services and every test
+  fake ignore it) and `supportsCommit` / `commit` (a `FileByFileCommit` mixin gives the local services the file-by-file version).
+- **Store client** (`server/store_client.dart`): every store status becomes a typed error: 401, 412 (with `current`), 409 on a commit (every
+  clash), 413 (told apart from a tunnel's 413 by the JSON body), 400 / 422 (the store's message shown), 428 (reported as a bug in the app,
+  and the client always sends `If-Match` or `If-None-Match`, so it should never occur), 404, and an unreachable store (`StoreUnreachable`,
+  which queues). `X-Device-Name` is sent on every call (non-ASCII characters replaced so the header is legal) and trusted for nothing.
+- **Local copy, queue, sync state** (`server/sync_state.dart`): `FileCache` is the server project's local copy (it now also keeps the
+  store's version of each file). The queue of unsent saves, each file's base version, the last file list, the feed cursor and the "mine" copies
+  are in a `SyncStore` in the application-support folder, **not** the OS cache folder, because the queue holds the only copy of a save the
+  store has not got and the OS may clear a cache. The chip (`ServerSyncChip`) shows Synced / N to send / Clash / Offline, and its sheet has
+  Sync now, Resolve and Discard (for a save the store will not take).
+- **Saves:** every save is staged in the queue first, then sent: a single file as `PUT` with the version it replaces; Save All as one
+  `commit` (uploads, then one all-or-nothing request). Sent: done. Store unreachable: stays queued, "saved on this device". Stale (412 or
+  409): stays queued flagged as a clash with what the store says is current, `SyncConflictException` (a `StorageException`) tells the
+  caller, and nothing was written. A file whose bytes equal the version it was read at is not sent. 413 / the tunnel limit: a clear message
+  (a file over 100 MB that fails while the store still answers `/health` is explained as the Cloudflare tunnel's limit; no chunking) and the
+  save stays queued with a Discard button.
+- **Sync** (`sync(root)`; a 20 s timer while a server project is open, plus Sync now): the change feed from the saved cursor first (an empty
+  answer costs no file list), saved saves that the feed shows are now stale are flagged as clashes without sending, cached copies of files
+  others changed are refreshed, then the queue goes as one commit. A cursor the store rejects falls back to comparing with the tree.
+- **Conflicts** (`sync_conflict_dialog.dart`): per file, who changed it and when ("Changed by Quest 3 on ...", "Renamed to X by Phone",
+  "Deleted by ...", "A file with this name was added by ..."), Keep mine / Take theirs / Save mine as a copy. Keep mine on a deleted or
+  renamed file writes it at the old path again. Take theirs loads theirs (or removes the local file if theirs is a delete) and keeps my bytes
+  until the next sync after the one that finishes the resolution; "Put back as a file" is in the service (`restoreKeptCopyAsFile`), not yet
+  in a screen. The copy is `<name> (<device>, <date>).didsa` (a number is added if the name is taken) with a new document, Part and sketch
+  id (`remintNativeIdentity`, as Save As). A commit 409 queues every change of the commit, flags the clashes and writes nothing; after the
+  choices `sync` sends the commit again. After Take theirs / a copy the open session no longer matches the store, so the note offers Reopen.
+- **File menu and settings:** "Server projects..." next to Open and "Copy this project to the server..." next to Save All (phone menu and
+  desktop menu bar; hidden when the screen has no store service). The store's address, key and this device's name are entered once in
+  Connection Settings (`ApiConfig.storeUrl`, `storeApiKey`, `deviceName`; the default name is the computer's name, else the platform). If
+  `/health` carries `project_store`, that address is saved as the default when none is set (the key is never known to the backend). No
+  pairing keys (S3).
+- **S0-8:** Save All on a local folder compares each file's modified time with the one this session saw when it read or wrote it
+  (`LocalFileStamps`, filled by the composer and by saving) and, when any is later, asks: Overwrite / Skip these files / Cancel. A file the
+  session never read or wrote is not checked. Plain Save is not checked (the scope says Save All).
+- **Moved-files rule against the store:** `ProjectFileIndex.build` / `partIdAt` read the file list the store already has (each file's root
+  Part id is in it) instead of reading every file, and the composer first asks `GET .../parts/{part_id}` for a reference's id: when that
+  gives one file or several (found / ask) no list is built at all; anything else goes on to the whole list, as for a folder. Files saved
+  but not sent yet are included from their own bytes.
+
+**Differs from the scope, and why:**
+- **A single-file Save is a `PUT` (412 on a stale one), not a commit of one file**, as the build brief asked; both paths share the queue.
+- **The base version** is the version of the file the first time it was read in a session (`beginSession` is called when a project is
+  opened), or the version a later write made: a later re-read (Add Component, a second compose) does not move it, so a stale Part in the
+  open session can never be saved over a newer version without a clash. The scope did not say this.
+- **"Take theirs ... until the next successful sync"** is read as the next sync after the one that finishes the resolution (otherwise it
+  would be dropped at once).
+- **The copy's `<device>` is this device's name** (whoever makes the copy), not the other side's; the scope's wording was ambiguous.
+- **Renaming a file in a server project is online only** (a commit `move`; offline it says so, and a file with an unsent save must be synced
+  first). The scope did not mention rename.
+- **A commit refused with 400 for one bad file** leaves its changes queued with the store's message in the chip's sheet, where each can be
+  discarded; the store does not say which file it was, so the client cannot drop the right one by itself.
+- **The change feed is used for sync, not for the file list**: it has no hashes or sizes, so a changed file list is fetched as a tree.
+- The queue is not in `FileCache` itself (see above); `FileCache` only gained the version field and now creates a given directory.
+
+**Tests:** `test/remote_storage_service_test.dart` (47: reads, versioned writes, the stale write, every store status, offline queue and
+restart, sync on reconnect with the feed first, the three choices, deleted / renamed clash, Save All as one commit including a 409 that
+writes nothing and the retry, an expired upload, rename, the moved-files lookup counted by requests, copy to server, settings),
+`test/server_projects_widget_test.dart` (19: the store section of the settings, the project list, the conflict dialog, the changed-on-disk
+dialog, the chip), PartScreen groups in `test/part_screen_test.dart` (10: the menu entries, Save All as one commit, a clash and Keep mine,
+Decide later and the chip, offline then Sync now, and the S0-8 question with Skip / Overwrite / Cancel), and
+`test/assembly_document_client_test.dart` (9 new: Save All as one commit through a commit-capable storage, a clash propagating, an all-or-nothing
+failure, queued files reported apart, and the S0-8 check with Skip / Overwrite / Cancel / no question), and
+`test/live/server_store_live_test.dart` (12, against the real store). The fake store is `test/support/fake_project_store.dart`. A few
+mutations were tried (a write that always creates instead of replacing, a 409 that does not flag the clashes, a copy that keeps its Part
+id, a re-read that moves the base version, the S0-8 check off, the composer's part-index shortcut off); each broke a test.
+**The real-store test does fit the existing e2e conventions** (a plain `test()` in `test/live/`, skipped unless an environment variable is
+set, as `moved_files_live_test.dart` is); it is run by a new workflow, `.github/workflows/client-store-e2e.yml`, which starts the store
+(uvicorn, a temp root, its own key) and runs it. The older live test is not run by any workflow; this one is.
+
+**Verification and what is not:** `flutter analyze` is clean and the full client suite passes (Flutter 3.47.9, the version
+`client-verify.yml` pins; see the PR for the counts). The 12 live tests passed against `project-store` started locally from this branch
+(`PROJECT_STORE_API_KEY=dev PROJECT_STORE_ROOT=/tmp/store python -m uvicorn app.main:app --port 8200`). Not verified: nothing has run
+against the owner's Pi, the Cloudflare tunnel (the 100 MB behaviour is the documented limit plus a simulated cut-off connection) or a synced
+Drive / NAS root; headless tests cannot judge how the conflict dialog, the chip or the sheet feel or look on a phone or a desktop, and the
+widget tests drive the phone layout only for the File menu; Android SAF and iOS bookmark paths are unchanged and untested for server
+projects (a server project never touches them, but the app was not run on either); the 20 s sync timer and the app being killed mid-sync
+are covered by the persisted queue's design and the restart test, not by a test that kills the process; very large projects (the
+queue holds every unsent file in memory while it is sent) were not measured.
 
 ### S3. VR (medium; standard agent)
 

@@ -1,9 +1,11 @@
 import 'dart:convert';
 
 import '../storage/native_file_listing.dart';
+import '../storage/part_id_index.dart';
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
 import 'file_lookup_rule.dart';
+import 'relative_path.dart' show isNativeProjectFileName;
 
 /// A native file's root Part id (`document.root_part_id`, else its first Part's id) from its decoded JSON, or null.
 String? rootPartIdOf(Object? payload) {
@@ -34,6 +36,15 @@ class ProjectFileIndex {
 
   /// The root Part id of the file at [relativePath], or null when it is missing or can't be read as a native file.
   Future<String?> partIdAt(ProjectRoot root, String relativePath) async {
+    // A server project: the store's index knows every file's id, so no file is read.
+    final Object indexed = _storage;
+    if (indexed is PartIdIndex && indexed.hasPartIndex(root)) {
+      try {
+        return await indexed.partIdAt(root, relativePath);
+      } on StorageException {
+        return null;
+      }
+    }
     try {
       final handle = await _storage.resolve(root, relativePath);
       if (handle == null) return null;
@@ -53,11 +64,38 @@ class ProjectFileIndex {
     }
   }
 
+  /// The paths whose root Part id is [partId], asked of the store's part index (`GET .../parts/{part_id}`) so nothing is read or
+  /// listed; null when [root] has no such index (a local folder).
+  Future<List<String>?> pathsWithPartId(ProjectRoot root, String partId) async {
+    final Object indexed = _storage;
+    if (indexed is! PartIdIndex || !indexed.hasPartIndex(root)) return null;
+    try {
+      return await indexed.pathsWithPartId(root, partId);
+    } on StorageException {
+      return null;
+    }
+  }
+
   /// Drops what is cached for [relativePath] (it was just written, so its id may have changed).
   void forget(ProjectRoot root, String relativePath) => _ids.remove(_key(root, relativePath));
 
   /// Every native file under [root] (at most [maxFiles]), each with its root Part id, in path order.
   Future<List<IndexedFile>> build(ProjectRoot root) async {
+    // A server project: one list from the store (each file's id is in it) instead of reading every file.
+    final Object indexed = _storage;
+    if (indexed is PartIdIndex && indexed.hasPartIndex(root)) {
+      try {
+        final entries = await indexed.indexEntries(root) ?? const [];
+        return [
+          for (final entry in entries)
+            if (isNativeProjectFileName(entry.path) && !entry.path.split('/').any((segment) => segment.startsWith('.')))
+              IndexedFile(entry.path, entry.partId),
+        ].take(maxFiles).toList()
+          ..sort((a, b) => a.path.compareTo(b.path));
+      } on StorageException {
+        return const [];
+      }
+    }
     final List<String> paths;
     try {
       paths = [

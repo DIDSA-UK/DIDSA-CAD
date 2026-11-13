@@ -23,7 +23,7 @@ import 'storage_service.dart';
 /// Android only. iOS has no SAF and needs its own security-scoped-bookmark
 /// mechanism - not built yet, tracked as a known gap in
 /// `docs/assembly-scope.md` rather than guessed at here.
-class SafStorageService implements StorageService {
+class SafStorageService with FileByFileCommit implements StorageService {
   SafStorageService({SafUtil? safUtil, SafStream? safStream, RecentProjectStore? recentProjectStore})
     : _safUtil = safUtil ?? SafUtil(),
       _safStream = safStream ?? SafStream(),
@@ -84,7 +84,7 @@ class SafStorageService implements StorageService {
   }
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     final safRoot = _requireSafRoot(root);
     final segments = _splitRelativePath(relativePath);
     if (segments.isEmpty) {

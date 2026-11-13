@@ -1,0 +1,74 @@
+name: Client - project store end to end
+
+# The flat app's storage layer (client/lib/storage/server/) against the REAL project store (project-store/), not the in-memory fake the
+# client's own tests use: statuses, headers, the commit, the change feed and the part index as the store really answers them.
+# Its own workflow, so a change to the store alone runs it (client-verify.yml only runs for client/** and also builds an APK).
+
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "client/lib/storage/**"
+      - "client/lib/assembly/**"
+      - "client/test/live/server_store_live_test.dart"
+      - "client/test/support/**"
+      - "project-store/**"
+      - ".github/workflows/client-store-e2e.yml"
+  pull_request:
+    paths:
+      - "client/lib/storage/**"
+      - "client/lib/assembly/**"
+      - "client/test/live/server_store_live_test.dart"
+      - "project-store/**"
+  workflow_dispatch: {}
+
+jobs:
+  store-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: project-store/requirements.txt
+
+      - run: pip install -r project-store/requirements.txt
+
+      # A throwaway store: a temp root and its own key, one worker (as the service requires), on the port the test file's header uses.
+      - name: Start the project store
+        working-directory: project-store
+        run: |
+          mkdir -p "$RUNNER_TEMP/store"
+          PROJECT_STORE_API_KEY=e2e-store-key PROJECT_STORE_ROOT="$RUNNER_TEMP/store" \
+            nohup python -m uvicorn app.main:app --port 8200 > "$RUNNER_TEMP/store.log" 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf -H "X-API-Key: e2e-store-key" http://127.0.0.1:8200/health && break
+            sleep 1
+          done
+          curl -sf -H "X-API-Key: e2e-store-key" http://127.0.0.1:8200/health
+
+      # The same pin as client-verify.yml; move them together.
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.9
+          cache: true
+
+      - name: Install dependencies
+        working-directory: client
+        run: flutter pub get
+
+      - name: Run the storage layer against the real store
+        working-directory: client
+        env:
+          DIDSA_LIVE_STORE: http://127.0.0.1:8200
+          DIDSA_LIVE_STORE_KEY: e2e-store-key
+        run: flutter test test/live/server_store_live_test.dart
+
+      - name: The store's log (on failure)
+        if: ${{ failure() }}
+        run: cat "$RUNNER_TEMP/store.log"

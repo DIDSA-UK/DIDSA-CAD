@@ -1,15 +1,18 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import '../api/document_api_client.dart';
 import '../storage/project_root.dart';
+import '../storage/server/sync_conflicts.dart';
 import '../storage/storage_service.dart';
 import 'assembly_graph_composer.dart';
+import 'local_file_stamps.dart';
 import 'project_file_index.dart';
 import 'reference_report.dart';
 import 'remint_identity.dart';
 import 'save_all.dart';
 
-export 'save_all.dart' show PartSaveFailure, SaveAllResult;
+export 'save_all.dart' show ChangedOnDiskChoice, PartSaveFailure, SaveAllResult;
 
 /// The result of opening a `.didsa` assembly file - everything a caller
 /// (Phase 3's screen) needs to keep working with the session the backend
@@ -163,6 +166,20 @@ class AssemblyDocumentClient {
     bool remintIdentity = false,
     Map<String, dynamic>? extras,
   }) async {
+    final bytes = await _partBytes(root, partId, remintIdentity: remintIdentity, extras: extras);
+    await _storageService.writeFile(root, relativePath, bytes);
+    _composer.fileIndex.forget(root, relativePath);
+    await _stampLocalFile(root, relativePath);
+  }
+
+  /// One Part's file contents, as [savePart] writes them (the export with on-disk reference ids stamped, session ids stripped,
+  /// optionally with a fresh identity, and the client-only [extras] merged in).
+  Future<Uint8List> _partBytes(
+    ProjectRoot root,
+    String partId, {
+    bool remintIdentity = false,
+    Map<String, dynamic>? extras,
+  }) async {
     var exported = stripSessionResolvedIds(
       await _stampOnDiskRefIds(root, await _documentApiClient.exportNative(partId: partId)),
     );
@@ -173,9 +190,44 @@ class AssemblyDocumentClient {
     // backend's `import_native` ignores it and `_openComposedProject` reads
     // it back. Without this a project-mode save silently dropped it.
     if (extras != null && extras.isNotEmpty) exported = {...exported, ...extras};
-    final bytes = utf8.encode(jsonEncode(exported));
-    await _storageService.writeFile(root, relativePath, bytes);
-    _composer.fileIndex.forget(root, relativePath);
+    return Uint8List.fromList(utf8.encode(jsonEncode(exported)));
+  }
+
+  /// After this session wrote a local file: its modified time now is the one Save All compares against next time.
+  Future<void> _stampLocalFile(ProjectRoot root, String relativePath) async {
+    if (root is ServerProjectRoot) return;
+    try {
+      final handle = await _storageService.resolve(root, relativePath);
+      if (handle != null) stamps.record(root, relativePath, await _storageService.lastModified(handle));
+    } catch (_) {
+      // Best effort, and never a reason to fail a save that was written: not being able to stat the file only means the next
+      // Save All has nothing to compare for it.
+    }
+  }
+
+  /// The modified times this session saw when it read or wrote local files (Save All's "changed on disk meanwhile?" check).
+  LocalFileStamps get stamps => _composer.stamps;
+
+  /// Of [relativePaths] under the LOCAL folder [root], those whose modified time is later than when this session read or wrote
+  /// them: someone (a sync client, another program, another device) changed the file meanwhile. A file this session never read
+  /// or wrote, one that is gone, or a time the platform does not give is not reported. Always empty for a server project.
+  Future<List<String>> changedOnDisk(ProjectRoot root, Iterable<String> relativePaths) async {
+    if (root is ServerProjectRoot) return const [];
+    final changed = <String>[];
+    for (final path in relativePaths) {
+      final recorded = stamps.of(root, path);
+      if (recorded == null) continue;
+      try {
+        final handle = await _storageService.resolve(root, path);
+        if (handle == null) continue;
+        final now = await _storageService.lastModified(handle);
+        if (now != null && now.isAfter(recorded)) changed.add(path);
+      } catch (_) {
+        // A file that cannot be stat-ed is not reported as changed (the write that follows reports its own failure).
+        continue;
+      }
+    }
+    return changed;
   }
 
   /// Finding moved files: a resolved reference is saved with the id its file has **on disk**, not the id in the session. They
@@ -238,6 +290,8 @@ class AssemblyDocumentClient {
     Map<String, dynamic> fullSessionExport,
     Map<String, String> relativePathByPartId, {
     Map<String, Map<String, dynamic>> extrasByPartId = const {},
+    Future<ChangedOnDiskChoice> Function(List<String> changed)? onChangedOnDisk,
+    String? commitMessage,
   }) async {
     final stamped = stampExternalRefs(
       documentPayload: fullSessionExport,
@@ -245,12 +299,67 @@ class AssemblyDocumentClient {
     );
     await _documentApiClient.importNative(stamped);
 
-    final saved = <String>[];
-    final failures = <PartSaveFailure>[];
     // A file placed by another is written first, so the id a reference to it holds on disk is already the new one (a re-minted
     // file is saved with its session ids).
-    for (final partId in _placedFirst(relativePathByPartId.keys, stamped)) {
+    final order = _placedFirst(relativePathByPartId.keys, stamped);
+
+    // A server project: one all-or-nothing commit (`docs/shared-storage-scope.md` section 6). A clash throws
+    // `SyncConflictException` (nothing written, every clash listed) for the caller to settle; the store's queue holds the changes.
+    if (_storageService.supportsCommit(root)) {
+      final failures = <PartSaveFailure>[];
+      final changes = <FileChange>[];
+      final partIdByPath = <String, String>{};
+      for (final partId in order) {
+        final path = relativePathByPartId[partId]!;
+        try {
+          changes.add(FileChange(path: path, bytes: await _partBytes(root, partId, extras: extrasByPartId[partId])));
+          partIdByPath[path] = partId;
+        } on StorageException catch (e) {
+          failures.add(PartSaveFailure(partId: partId, relativePath: path, message: e.message));
+        }
+      }
+      if (changes.isEmpty) return SaveAllResult(savedRelativePaths: const [], failures: failures);
+      try {
+        final outcome = await _storageService.commit(root, changes, message: commitMessage);
+        for (final change in changes) {
+          _composer.fileIndex.forget(root, change.path);
+        }
+        return SaveAllResult(savedRelativePaths: outcome.sent, queuedRelativePaths: outcome.queued, failures: failures);
+      } on StorageException catch (e) {
+        if (e is SyncConflictException) rethrow;
+        // The commit is all or nothing: none of the files were written.
+        return SaveAllResult(
+          savedRelativePaths: const [],
+          failures: [
+            ...failures,
+            for (final change in changes) PartSaveFailure(partId: partIdByPath[change.path]!, relativePath: change.path, message: e.message),
+          ],
+        );
+      }
+    }
+
+    // A local folder: file by file. First S0-8: a file that changed on disk since this session read it is not overwritten
+    // without asking.
+    final skipped = <String>[];
+    if (onChangedOnDisk != null) {
+      final changed = await changedOnDisk(root, order.map((id) => relativePathByPartId[id]!));
+      if (changed.isNotEmpty) {
+        switch (await onChangedOnDisk(changed)) {
+          case ChangedOnDiskChoice.cancel:
+            return SaveAllResult(savedRelativePaths: const [], failures: const [], cancelled: true);
+          case ChangedOnDiskChoice.skipChanged:
+            skipped.addAll(changed);
+          case ChangedOnDiskChoice.overwrite:
+            break;
+        }
+      }
+    }
+
+    final saved = <String>[];
+    final failures = <PartSaveFailure>[];
+    for (final partId in order) {
       final entry = MapEntry(partId, relativePathByPartId[partId]!);
+      if (skipped.contains(entry.value)) continue;
       try {
         await savePart(root, entry.key, entry.value, extras: extrasByPartId[entry.key]);
         saved.add(entry.value);
@@ -258,7 +367,7 @@ class AssemblyDocumentClient {
         failures.add(PartSaveFailure(partId: entry.key, relativePath: entry.value, message: e.message));
       }
     }
-    return SaveAllResult(savedRelativePaths: saved, failures: failures);
+    return SaveAllResult(savedRelativePaths: saved, failures: failures, skippedRelativePaths: skipped);
   }
 }
 

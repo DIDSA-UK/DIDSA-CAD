@@ -18,7 +18,7 @@ import 'storage_service.dart';
 /// `_openNativeFile` et al.) - see that file's own history for the
 /// `_canPersistFilePathForReuse` desktop-only gate this class now
 /// generalizes.
-class DesktopStorageService implements StorageService {
+class DesktopStorageService with FileByFileCommit implements StorageService {
   DesktopStorageService({RecentProjectStore? recentProjectStore})
     : _recentProjectStore = recentProjectStore ?? RecentProjectStore();
 
@@ -72,7 +72,7 @@ class DesktopStorageService implements StorageService {
   }
 
   @override
-  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes) async {
+  Future<FileHandle> writeFile(ProjectRoot root, String relativePath, Uint8List bytes, {int? baseVersion}) async {
     final desktopRoot = _requireDesktopRoot(root);
     final fullPath = _fullPath(desktopRoot, relativePath);
     try {

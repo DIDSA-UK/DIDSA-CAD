@@ -47,7 +47,7 @@ import '../assembly/reference_report.dart';
 import '../assembly/references_sheet.dart';
 import '../assembly/relative_path.dart';
 import '../assembly/remint_identity.dart';
-import '../assembly/save_all.dart' show stampExternalRefs;
+import '../assembly/save_all.dart' show ChangedOnDiskChoice, stampExternalRefs;
 import 'assembly_component_selection_drawer.dart';
 import 'component_context_menu.dart';
 import 'component_gizmo.dart';
@@ -68,6 +68,12 @@ import '../storage/native_file_listing.dart';
 import '../storage/picked_file.dart' show savedFileNameFromUri;
 import '../storage/project_root.dart';
 import '../storage/storage_service.dart';
+import '../storage/routing_storage_service.dart';
+import '../storage/server/remote_storage_service.dart';
+import '../storage/server/server_projects_dialog.dart';
+import '../storage/server/server_sync_chip.dart';
+import '../storage/server/sync_conflict_dialog.dart';
+import '../storage/server/sync_conflicts.dart';
 import '../storage/storage_service_factory.dart';
 import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
@@ -2262,6 +2268,16 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartScreen.initialProjectRoot], mirroring [_lastSavedFileName]'s own
   /// convention.
   ProjectRoot? _projectRoot;
+
+  /// The project store service behind [_storageService] (null when the storage given has none: a test's fake folder service).
+  RemoteStorageService? get _remote {
+    final storage = _storageService;
+    return storage is RoutingStorageService ? storage.remote : null;
+  }
+
+  /// While a server project is open: sends a queued save when the store can be reached again (the "sync on reconnect").
+  Timer? _serverSyncTimer;
+  bool _serverSyncing = false;
 
   /// Which root-relative path each Part id currently loaded in this session
   /// is known to live at within [_projectRoot] - seeded by "Open Project…"
@@ -11471,6 +11487,7 @@ class _PartScreenState extends State<PartScreen> {
     _assemblyDocumentClient = widget.assemblyDocumentClient ??
         AssemblyDocumentClient(storageService: _storageService, documentApiClient: _api);
     _projectRoot = widget.initialProjectRoot;
+    _watchServerProject();
     _relativePathByPartId = Map.of(widget.initialRelativePathByPartId);
     _referenceReports.value = widget.initialReferenceReports;
     if (widget.initialReferenceReports.isNotEmpty) {
@@ -11979,6 +11996,12 @@ class _PartScreenState extends State<PartScreen> {
   /// fails silently, and [_isDirty] stays true until a write really succeeds.
   Future<void> _recoverFromFailedSave(String relativePath, String reason) async {
     if (!mounted) return;
+    // A server project is not a folder grant that can be lost: the root stays, the reason is shown, and a save the store could not
+    // take is still in the queue or was refused for a reason the message says (the sync chip shows what waits).
+    if (_projectRoot is ServerProjectRoot) {
+      setState(() => _errorMessage = "Couldn't write $relativePath: $reason");
+      return;
+    }
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text("Couldn't write $relativePath: $reason. Choose where to save it.")),
     );
@@ -12136,6 +12159,7 @@ class _PartScreenState extends State<PartScreen> {
     final unsavedBefore = _unsavedPartIds;
     final written = <String>[];
     final failures = <_SaveFailure>[];
+    var clashed = false;
     await _runGuarded(() async {
       final fullSessionExport = await _api.exportNative();
       final parts = ((fullSessionExport['document'] as Map?)?['parts'] as List?) ?? const [];
@@ -12176,6 +12200,9 @@ class _PartScreenState extends State<PartScreen> {
           await _assemblyDocumentClient.savePart(root, id, paths[id]!, extras: _extrasFor(id));
           written.add(id);
           setState(() => _markPartWritten(id));
+        } on SyncConflictException {
+          // The store says another device changed this file: the save waits in the queue as a clash (below).
+          clashed = true;
         } on StorageException catch (e) {
           failures.add(_SaveFailure(partId: id, name: names[id]!, relativePath: paths[id]!, reason: e.message));
         }
@@ -12183,11 +12210,19 @@ class _PartScreenState extends State<PartScreen> {
     });
     if (!mounted) return;
 
+    if (clashed && root is ServerProjectRoot) {
+      await _resolveServerConflicts(root);
+      if (!mounted || failures.isEmpty) return;
+    }
+
     if (failures.isEmpty) {
       if (written.isNotEmpty) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(written.length == 1 ? 'Saved' : 'Saved ${written.length} files')),
-        );
+        final queued = _queuedNote(root);
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(
+            SnackBar(content: Text(queued ?? (written.length == 1 ? 'Saved' : 'Saved ${written.length} files'))),
+          );
       }
       return;
     }
@@ -12654,6 +12689,8 @@ class _PartScreenState extends State<PartScreen> {
   /// seeded with `initialRelativePathByPartId` so a later Save/Save All
   /// already knows where each Part it composed in lives.
   Future<void> _openComposedProject(ProjectRoot root, String relativePath) async {
+    // A server project: the base version of every file is the one read now (`RemoteStorageService.beginSession`).
+    if (root is ServerProjectRoot) _remote?.beginSession(root);
     OpenedAssembly? opened;
     await _runGuarded(() async {
       try {
@@ -12879,6 +12916,7 @@ class _PartScreenState extends State<PartScreen> {
     _surfaceDebounce?.cancel();
     _sectionPreviewDebounce?.cancel();
     _busyOverlayTimer?.cancel();
+    _serverSyncTimer?.cancel();
     _jobPollTimer?.cancel();
     _dragPump?.cancel();
     _presenterFadeTimer?.cancel();
@@ -15730,17 +15768,36 @@ class _PartScreenState extends State<PartScreen> {
     if (relativePathByPartId.isEmpty) return;
 
     SaveAllResult? result;
+    var clashed = false;
     await _runGuarded(() async {
-      result = await _assemblyDocumentClient.saveAll(
-        root,
-        exported,
-        relativePathByPartId,
-        extrasByPartId: {if (_part != null) _part!.id: _rootClientExtras()},
-      );
+      try {
+        result = await _assemblyDocumentClient.saveAll(
+          root,
+          exported,
+          relativePathByPartId,
+          extrasByPartId: {if (_part != null) _part!.id: _rootClientExtras()},
+          // Decision S0-8: a local file that changed on disk since it was read is not overwritten without asking.
+          onChangedOnDisk: (changed) =>
+              mounted ? showChangedOnDiskDialog(context, changed) : Future.value(ChangedOnDiskChoice.cancel),
+          commitMessage: 'Save All',
+        );
+      } on SyncConflictException {
+        clashed = true;
+      }
     });
     if (!mounted) return;
+    if (clashed && root is ServerProjectRoot) {
+      await _resolveServerConflicts(root);
+      return;
+    }
     final saveResult = result;
     if (saveResult == null) return;
+    if (saveResult.cancelled) {
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(content: Text('Save All cancelled: nothing was written')));
+      return;
+    }
     if (saveResult.hasFailures) {
       final failedNames = saveResult.failures.map((f) => f.relativePath).join(', ');
       setState(() => _errorMessage = 'Saved ${saveResult.savedRelativePaths.length} of '
@@ -15752,11 +15809,222 @@ class _PartScreenState extends State<PartScreen> {
       // unsaved work on disk, so [_isDirty] staying `true` is the safe
       // choice, matching [_isDirty]'s own "never a false negative" doc
       // comment.
-      setState(() => _isDirty = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Saved ${saveResult.savedRelativePaths.length} file(s)')),
-      );
+      final skipped = saveResult.skippedRelativePaths;
+      // Files the user chose to leave as they are on disk are still unsaved work.
+      if (skipped.isEmpty) setState(() => _isDirty = false);
+      final queued = saveResult.queuedRelativePaths.isNotEmpty ? _queuedNote(root) : null;
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              queued ??
+                  (skipped.isEmpty
+                      ? 'Saved ${saveResult.savedRelativePaths.length} file(s)'
+                      : 'Saved ${saveResult.savedRelativePaths.length} file(s); left ${skipped.length} that changed on disk'),
+            ),
+          ),
+        );
     }
+  }
+
+  // ------------------------------------------------------------------------ server projects (shared storage, S2)
+
+  /// The status line for a save that went to the queue: null when nothing is waiting.
+  String? _queuedNote(ProjectRoot root) {
+    final remote = _remote;
+    if (remote == null || root is! ServerProjectRoot) return null;
+    final status = remote.statusOf(root).value;
+    if (status.toSend == 0) return null;
+    return status.online == false
+        ? 'Saved on this device. It will be sent to the server when it can be reached.'
+        : '${status.toSend} save(s) are waiting to be sent to the server.';
+  }
+
+  /// Starts (or stops) the timer that sends queued saves when the store is reachable again, for the open server project.
+  void _watchServerProject() {
+    _serverSyncTimer?.cancel();
+    _serverSyncTimer = null;
+    final root = _projectRoot;
+    final remote = _remote;
+    if (root is! ServerProjectRoot || remote == null) return;
+    _serverSyncTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      final status = remote.statusOf(root).value;
+      if (status.toSend > 0 || status.online == false) unawaited(_syncServerNow(quiet: true));
+    });
+  }
+
+  /// "Sync now" / the periodic sync: the change feed, then the queue as one commit. A clash opens the conflict dialog.
+  Future<void> _syncServerNow({bool quiet = false}) async {
+    final root = _projectRoot;
+    final remote = _remote;
+    if (root is! ServerProjectRoot || remote == null || _serverSyncing) return;
+    _serverSyncing = true;
+    try {
+      final report = await remote.sync(root);
+      if (!mounted) return;
+      if (report.conflicts.isNotEmpty) {
+        if (!quiet) await _resolveServerConflicts(root);
+        return;
+      }
+      if (!quiet) {
+        final text = report.error ??
+            (!report.reachable
+                ? 'The project store cannot be reached. Saves stay on this device.'
+                : report.sent.isEmpty
+                    ? 'Everything is in sync.'
+                    : 'Sent ${report.sent.length} file(s) to the server.');
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text(text)));
+      } else if (report.sent.isNotEmpty) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(SnackBar(content: Text('Sent ${report.sent.length} saved file(s) to the server.')));
+      }
+    } finally {
+      _serverSyncing = false;
+    }
+  }
+
+  /// The conflict dialog for every save the store refused, then sends the queue again ("resolve each, then send the commit again").
+  /// The saves stay queued as clashes when the user decides later (the chip offers this again).
+  Future<void> _resolveServerConflicts(ServerProjectRoot root) async {
+    final remote = _remote;
+    if (remote == null) return;
+    for (var round = 0; round < 3; round++) {
+      final conflicts = await remote.conflicts(root);
+      if (conflicts.isEmpty || !mounted) return;
+      final choices = await showSyncConflictDialog(context, conflicts);
+      if (!mounted) return;
+      if (choices == null) {
+        ScaffoldMessenger.of(context)
+          ..clearSnackBars()
+          ..showSnackBar(const SnackBar(content: Text('Nothing was written. The saves are kept; tap the sync chip to decide.')));
+        return;
+      }
+      ResolveResult resolved;
+      try {
+        resolved = await remote.resolveConflicts(root, choices);
+      } on StorageException catch (e) {
+        if (mounted) setState(() => _errorMessage = e.message);
+        return;
+      }
+      final report = await remote.sync(root);
+      if (!mounted) return;
+      if (report.conflicts.isNotEmpty) continue;
+      if (report.error != null) {
+        setState(() => _errorMessage = report.error);
+        return;
+      }
+      final copies = resolved.copies;
+      final text = StringBuffer(report.reachable ? 'Saved.' : 'Saved on this device; it will be sent when the server can be reached.');
+      if (copies.isNotEmpty) text.write(' Your version is saved as ${copies.values.join(', ')}.');
+      if (resolved.reload) {
+        final away = choices.values.where((c) => c != ConflictChoice.keepMine).length;
+        text.write(' The open project no longer matches the server for $away file(s).');
+      } else {
+        setState(() => _isDirty = false);
+      }
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            duration: const Duration(seconds: 10),
+            content: Text(text.toString()),
+            action: resolved.reload ? SnackBarAction(label: 'Reopen', onPressed: () => unawaited(_reopenServerProject(root))) : null,
+          ),
+        );
+      return;
+    }
+  }
+
+  /// Opens the project's root file again from the server (after Take theirs / Save a copy, the session no longer matches the store).
+  Future<void> _reopenServerProject(ServerProjectRoot root) async {
+    final rootId = _part?.id;
+    final rootPath = rootId == null ? null : _relativePathByPartId[rootId];
+    if (rootPath == null || !mounted) return;
+    await _openComposedProject(root, rootPath);
+  }
+
+  /// File > Server projects…: choose a project on the store, then a file in it, and open it like any project file.
+  Future<void> _onServerProjectsPressed() async {
+    setState(() => _toolbarOpen = false);
+    final remote = _remote;
+    if (remote == null) return;
+    if (!remote.isConfigured) {
+      setState(() => _errorMessage = 'Set the project store address and key in Connection Settings (File > Exit) first.');
+      return;
+    }
+    if (!await _confirmExitPart() || !mounted) return;
+    final project = await showServerProjectsDialog(context, remote);
+    if (project == null || !mounted) return;
+    remote.beginSession(project);
+    var root = project;
+    final relativePath = await showOpenProjectPathPromptDialog(
+      context,
+      storageService: _storageService,
+      root: root,
+      onRootChanged: (newRoot) {
+        if (newRoot is ServerProjectRoot) root = newRoot;
+      },
+    );
+    if (relativePath == null || !mounted) return;
+    Uint8List? bytes;
+    await _runGuarded(() async {
+      try {
+        final handle = await _storageService.resolve(root, relativePath);
+        if (handle == null) throw StorageException('File not found: $relativePath');
+        bytes = await _storageService.readFile(handle);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      }
+    });
+    if (bytes == null || !mounted) return;
+    final decoded = _decodeNativeFileOrShowError(bytes!);
+    if (decoded == null) return;
+    if (isBundleShapedNativeFile(decoded)) {
+      await _openBundlePayload(decoded, fileName: relativePath, filePath: null);
+      return;
+    }
+    await _openComposedProject(root, relativePath);
+  }
+
+  /// File > Copy this project to the server…: every file of the open local project folder goes into a new server project in one
+  /// commit, and this session carries on in that server project (paths are relative, so they stay valid).
+  Future<void> _onCopyToServerPressed() async {
+    setState(() => _toolbarOpen = false);
+    final remote = _remote;
+    if (remote == null) return;
+    if (!remote.isConfigured) {
+      setState(() => _errorMessage = 'Set the project store address and key in Connection Settings (File > Exit) first.');
+      return;
+    }
+    final local = _projectRoot ?? await _ensureProjectRoot();
+    if (local == null || !mounted) return;
+    if (local is ServerProjectRoot) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This project is already on the server.')));
+      return;
+    }
+    final name = await showCopyToServerDialog(context, suggestedName: local.displayName);
+    if (name == null || name.isEmpty || !mounted) return;
+    ServerProjectRoot? created;
+    await _runGuarded(() async {
+      try {
+        final storage = _storageService;
+        final localService = storage is RoutingStorageService ? storage.local : storage;
+        created = await remote.copyProjectToServer(localService, local, name);
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      }
+    });
+    final root = created;
+    if (root == null || !mounted) return;
+    setState(() => _projectRoot = root);
+    _watchServerProject();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Copied to the server as "${root.project}". This session now works on the server copy.')),
+    );
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
@@ -26372,10 +26640,12 @@ class _PartScreenState extends State<PartScreen> {
           menuChildren: [
             item('New', idle(_startNewPart), keys: 'Ctrl+N'),
             item('Open…', idle(_onOpenPressed), keys: 'Ctrl+O'),
+            if (_remote != null) item('Server projects…', idle(_onServerProjectsPressed)),
             const Divider(height: 1),
             item('Save', idle(_saveNativeFile), keys: 'Ctrl+S'),
             item('Save As…', idle(_saveAsNativeFile), keys: 'Ctrl+Shift+S'),
             item('Save All', idle(_onSaveAllPressed)),
+            if (_remote != null) item('Copy this project to the server…', idle(_onCopyToServerPressed)),
             const Divider(height: 1),
             item('Export…', idle(_exportPart)),
             item('Import geometry…', idle(_importGeometry)),
@@ -27682,6 +27952,19 @@ class _PartScreenState extends State<PartScreen> {
                 // Item 4: the multi-select action bar now lives in the tree
                 // panel's header (`multiSelectHeader`); the bottom sheet that
                 // used to cover the tree's lowest rows is gone.
+                // Shared storage (S2): the sync chip of an open server project: Synced / N to send / Clash / Offline. Tap for the
+                // sync sheet.
+                if (_projectRoot is ServerProjectRoot && _remote != null)
+                  Positioned(
+                    left: 8,
+                    bottom: 8,
+                    child: ServerSyncChip(
+                      remote: _remote!,
+                      root: _projectRoot as ServerProjectRoot,
+                      onSyncNow: _syncServerNow,
+                      onResolve: () => _resolveServerConflicts(_projectRoot as ServerProjectRoot),
+                    ),
+                  ),
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen && !_chromeHidden,
@@ -27704,6 +27987,8 @@ class _PartScreenState extends State<PartScreen> {
                     hasUnsavedChanges: _isDirty,
                     onOpen: _onOpenPressed,
                     onSaveAll: _onSaveAllPressed,
+                    onServerProjects: _remote == null ? null : _onServerProjectsPressed,
+                    onCopyToServer: _remote == null ? null : _onCopyToServerPressed,
                     onStartNew: _startNewPart,
                     onExportPart: _exportPart,
                     onImportGeometry: _importGeometry,
