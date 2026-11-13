@@ -941,11 +941,14 @@ stale PUT, whole-commit 409 (files and DB compared before and after), a failure 
 outside edits, the feed, the index after a rename, retention, every refused path. A few mutations (scan off, retention rule, conflict
 check, rollback) were tried and each broke a test.
 
-**Not verified:** nothing has run on the owner's Pi, behind the Cloudflare tunnel, or with a synced Drive / NAS folder as the root
+**Verification and what is not:** nothing has run on the owner's Pi, behind the Cloudflare tunnel, or with a synced Drive / NAS folder as the root
 (scan and `os.replace` behaviour there is untested; a change that keeps both size and mtime is missed by design). The 100 MB tunnel
-limit is documented, not measured. The Docker image was NOT built (no Docker daemon in the session). The backend suite was NOT run
-(no OCCT here; gears-marked tests not run either): only the `/health` tests were run, with OCC and the routers stubbed, so CI is the real check.
-Performance (a big first scan, a 100 MB JSON parse for a part id) and SD-card wear were not measured. No client exists yet.
+limit is documented, not measured. The image was built and its tests run inside it (206 passed, 1 skipped: the test that reads the backend's data file, which is
+not in the image); a container was started with a volume and answered 401 / 200 / 201 / 412 as expected, and refused to start without a
+key. The sandbox's proxy needed its CA added to pip in a scratch copy of the Dockerfile (as `browser-relay/README.md` describes); the
+repo's Dockerfile is unchanged, so a build behind such a proxy needs the same. The full backend suite was run natively (conda env from
+`backend/environment.yml`, `CAD_API_KEY=test-api-key`, `-m "not gears"`, `-n auto`): 3098 passed, 1 skipped. The gears-marked tests
+were NOT run. Docker was built for amd64 only, not the Pi's arm64. Performance (a big first scan, a 100 MB JSON parse for a part id) and SD-card wear were not measured. No client exists yet.
 
 ### S2. Flutter (medium to large; standard agent)
 
