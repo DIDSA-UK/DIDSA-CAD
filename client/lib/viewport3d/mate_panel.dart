@@ -15,6 +15,34 @@ import 'keyboard_shortcuts.dart';
 /// else client-side needs a richer type for this yet.
 const List<String> kMateTypes = ['coincident', 'concentric', 'parallel', 'distance', 'angle', 'gear', 'rack_pinion', 'screw', 'limit_distance', 'limit_angle'];
 
+/// M4 (`docs/mates-storage-sessions-plan-2026-11-12.md`): a peg in a hole - Concentric on two circular edges plus Coincident on the
+/// flat faces they lie on, previewed and created as ONE action (the backend stores the two mates together). Offered for a new mate
+/// only (a stored mate is one or the other); the backend suggests it for a circular edge on each side.
+const String kPegInHoleMateType = 'peg_in_hole';
+
+/// The types a new mate can be (the panel's list): [kMateTypes] with [kPegInHoleMateType] after Concentric.
+const List<String> kNewMateTypes = ['coincident', 'concentric', kPegInHoleMateType, 'parallel', 'distance', 'angle', 'gear', 'rack_pinion', 'screw', 'limit_distance', 'limit_angle'];
+
+/// M4: whether the next preview asks the backend to choose the type from the picks (`type: "auto"`): the two picks of a two-pick
+/// mate are made, and the user has not picked a type by hand since the panel opened. Once they have, their type stays.
+bool mateAsksForSuggestedType({required bool userChoseType, required bool picksComplete, required String type}) =>
+    !userChoseType && picksComplete && !isMultiPickMateType(type);
+
+/// M4: the type the panel shows after an `auto` preview answered: the suggestion, or [current] when there is none (or the backend
+/// predates M4 and said nothing).
+String mateTypeAfterSuggestion(String current, MateSolvePreviewDto answer) => answer.suggestedType ?? current;
+
+/// M4.1: whether the next preview asks the backend to measure the Distance (no value typed yet, and these picks not measured yet): the
+/// ghost then shows the parts parallel where they are, and the value box starts on the measured distance (SOLIDWORKS' order).
+bool mateMeasuresValue({required String type, required double? value, required bool askingType, required String picksKey, required String? measuredKey}) =>
+    type == 'distance' && value == null && !askingType && picksKey != measuredKey;
+
+/// The note under the value field while it shows the measured distance.
+const String kMateMeasuredValueNote = 'Measured: the distance now. Type the one you want.';
+
+/// The note under the type control while it shows the backend's suggestion.
+const String kMateSuggestedTypeNote = 'Suggested from the picks: change it if it is not what you want.';
+
 /// The coupler ("motion") mates (`docs/gears-and-motion-plan.md`): they place nothing, they keep a relation between how far the two
 /// parts MOVE. Two axis picks (a round face, a circular or a straight edge; the rack's second a straight edge), a value (ratio, travel
 /// per turn, lead) and a sense. `value` stays empty for gear and rack and pinion to take it from the parts' gear features.
@@ -60,6 +88,7 @@ String mateTypeLabel(String type) => switch (type) {
       'screw' => 'Screw',
       'limit_distance' => 'Limit distance',
       'limit_angle' => 'Limit angle',
+      kPegInHoleMateType => 'Peg in hole',
       kWidthMateType => 'Width',
       kSymmetricMateType => 'Symmetric',
       _ => type,
@@ -363,7 +392,7 @@ class MateBranchControls extends StatelessWidget {
 /// rotation about (and translation along) the shared axis free; unchecking
 /// this additionally locks the spin DOF - see `assembly_solver.py`'s own
 /// CONCENTRIC branch for how.
-bool mateTypeHasAllowRotation(String type) => type == 'concentric';
+bool mateTypeHasAllowRotation(String type) => type == 'concentric' || type == kPegInHoleMateType;
 
 /// Phase 6: the bottom-sheet-style panel [PartScreen] opens while picking a
 /// Mate's two references - structural clone of [FilletPanel]'s
@@ -389,6 +418,15 @@ class MatePanel extends StatelessWidget {
   /// Test report item 4: [mateTypeHasAllowRotation]'s own live value -
   /// meaningless (but still passed) while `mateType != 'concentric'`.
   final bool allowRotation;
+
+  /// M4.1: the distance the backend measured for the current picks ([kMateMeasuredValueNote] while [value] is still it), and a counter the
+  /// parent bumps when it fills [value] in, so the value field shows it.
+  final double? measuredValue;
+  final int valueFieldGeneration;
+
+  /// M4: the type the backend suggested for the current picks (`null` = none, or not asked). While [mateType] is it, the type
+  /// control says so ([kMateSuggestedTypeNote]); the user can still pick another.
+  final String? suggestedType;
 
   final ValueChanged<String> onMateTypeChanged;
   final ValueChanged<double?> onValueChanged;
@@ -448,6 +486,9 @@ class MatePanel extends StatelessWidget {
     this.branchControls,
     this.autoValue,
     required this.allowRotation,
+    this.suggestedType,
+    this.measuredValue,
+    this.valueFieldGeneration = 0,
     required this.onMateTypeChanged,
     required this.onValueChanged,
     required this.onAllowRotationChanged,
@@ -507,10 +548,11 @@ class MatePanel extends StatelessWidget {
             ),
           const SizedBox(height: 8),
           DropdownButtonFormField<String>(
+            key: ValueKey('mate-type-$mateType'),
             initialValue: mateType,
-            decoration: const InputDecoration(labelText: 'Mate type'),
+            decoration: InputDecoration(labelText: 'Mate type', helperText: suggestedType != null && suggestedType == mateType ? kMateSuggestedTypeNote : null),
             items: [
-              for (final type in [...kMateTypes, if (widthPick != null) ...[kWidthMateType, kSymmetricMateType]]) DropdownMenuItem(value: type, child: Text(mateTypeLabel(type))),
+              for (final type in [...kNewMateTypes, if (widthPick != null) ...[kWidthMateType, kSymmetricMateType]]) DropdownMenuItem(value: type, child: Text(mateTypeLabel(type))),
             ],
             onChanged: (type) {
               if (type != null) onMateTypeChanged(type);
@@ -518,14 +560,23 @@ class MatePanel extends StatelessWidget {
           ),
           if (mateTypeHasValueField(mateType)) ...[
             const SizedBox(height: 8),
-            TextFormField(
-              key: ValueKey('mate-value-$mateType'),
-              initialValue: value?.toString() ?? '',
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              decoration: InputDecoration(labelText: mateValueLabel(mateType), helperText: mateValueHelper(mateType, autoValue: value == null ? autoValue : null)),
-              autovalidateMode: AutovalidateMode.always,
-              validator: (text) => mateValueError(mateType, text ?? ''),
-              onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
+            KeyedSubtree(
+              // a new generation rebuilds the field, so a value filled in from the measurement (M4.1) shows
+              key: ValueKey('mate-value-generation-$valueFieldGeneration'),
+              child: TextFormField(
+                key: ValueKey('mate-value-$mateType'),
+                initialValue: value?.toString() ?? '',
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: mateValueLabel(mateType),
+                  helperText: measuredValue != null && value == measuredValue
+                      ? kMateMeasuredValueNote
+                      : mateValueHelper(mateType, autoValue: value == null ? autoValue : null),
+                ),
+                autovalidateMode: AutovalidateMode.always,
+                validator: (text) => mateValueError(mateType, text ?? ''),
+                onChanged: (text) => onValueChanged(parseMateValue(mateType, text)),
+              ),
             ),
           ],
           if (isLimitMateType(mateType) && onLimitChanged != null) ...[

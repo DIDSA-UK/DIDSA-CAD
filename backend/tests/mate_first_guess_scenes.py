@@ -319,6 +319,61 @@ def axis_distance_scene() -> GuessScene:
                       _axis_signature(shaft_b, d_ref, shaft_a, f_ref, fixed_pose), {DRIVEN: _hole_pick(shaft_b, d_ref, 20.0), FIXED: _hole_pick(shaft_a, f_ref, 20.0)})
 
 
+def headed_pin_part(name: str, shaft_radius: float, shaft_length: float, head_radius: float, head_length: float) -> dict:
+    """A pin on the z axis: a shaft (z 0..`shaft_length`) under a wider head (up to `shaft_length + head_length`). The shaft's top
+    edge lies on the head's underside (the shoulder a peg-in-hole seats on the plate)."""
+    from tests.motion_scaling_scenes import _measure_faces
+    from tests.test_assembly_solver import _add_point
+
+    part = _create_part(name)
+    body_id = None
+    for radius, start, end in ((shaft_radius, 0.0, shaft_length), (head_radius, shaft_length, shaft_length + head_length)):
+        sketch = client.post(f"/document/parts/{part['id']}/features/sketch", json={"plane": "XY"}).json()
+        centre = _add_point(sketch["sketch_id"], 0.0, 0.0)
+        assert client.post(f"/sketch/sketches/{sketch['sketch_id']}/circles", json={"center_point_id": centre["id"], "radius": radius, "angle": 0.0}).status_code == 201
+        boss = client.post(
+            f"/document/parts/{part['id']}/extrude-features",
+            json={"sketch_feature_id": sketch["id"], "extrude_type": "boss", "start_distance": start, "end_distance": end, "target_body_ids": [body_id] if body_id else []},
+        )
+        assert boss.status_code == 201, boss.text
+        body_id = body_id or client.get(f"/document/parts/{part['id']}/mesh").json()[0]["body_id"]
+    size = (2 * head_radius, 2 * head_radius, shaft_length + head_length)
+    return {"id": part["id"], "body_id": body_id, "size": size, "faces": _measure_faces(part["id"], body_id)}
+
+
+def circle_edge(part: dict, radius: float, centre: tuple[float, float, float]) -> dict:
+    """The circular edge of `part` with this radius and centre (part-local), as a mate reference."""
+    for index in range(64):
+        measured = client.post(f"/document/parts/{part['id']}/measure", json={"refs": [{"body_id": part["body_id"], "shape_type": "edge", "index": index}]})
+        if measured.status_code != 200:
+            break
+        m = measured.json()
+        if m.get("radius") is not None and abs(m["radius"] - radius) < 1e-6 and all(abs(a - b) < 1e-6 for a, b in zip(m["center"], centre)):
+            return {"subshape_ref": {"body_id": part["body_id"], "shape_type": "edge", "index": index}}
+    raise AssertionError(f"no circular edge of radius {radius} at {centre}")
+
+
+def peg_in_hole_scene() -> GuessScene:
+    """M4: a headed pin dropped into a plate's bore: the pin's shoulder edge (the shaft's top rim, on the head's underside) and the
+    bore's top rim, previewed as one `peg_in_hole` (Concentric on the edges + Coincident on the head's underside and the plate's top).
+    Truth: the shaft in the bore, the head resting on the plate. `notes["old_default"]` is the payload a client sent before M4 for the
+    same picks (its type control started on Coincident, which on two circular edges is a plain Concentric: the pin is not seated)."""
+    plate = box_part("BorePlate", 60.0, 40.0, 10.0, holes=((30.0, 20.0, 5.0),))
+    pin = headed_pin_part("HeadedPin", 5.0, 20.0, 9.0, 5.0)
+    root, fixed_pose, true_pose = _assemble("peg-in-hole", plate, pin, (30.0, 20.0, -10.0))
+    d_ref, f_ref = circle_edge(pin, 5.0, (0.0, 0.0, 20.0)), circle_edge(plate, 5.0, (30.0, 20.0, 10.0))
+    payload = {"type": "peg_in_hole", "references": _refs(d_ref, f_ref)}
+    axis = _axis_signature(pin, hole(pin), plate, hole(plate, (30.0, 20.0)), fixed_pose)
+    seat = _plane_signature(pin, (0, 0, -1), plate, (0, 0, 1), fixed_pose)
+
+    def signature(transform: dict) -> tuple:
+        return (*axis(transform), *seat(transform))
+
+    picks = {DRIVEN: Pick((5.0, 0.0, 20.0)), FIXED: Pick((35.0, 20.0, 10.0))}  # on each rim (an edge pick does not wander)
+    return GuessScene("peg-in-hole", "m4", "peg", root, payload, true_pose, (0.0, 0.0, 12.5), (0.0, 0.0, 1.0), signature, picks,
+                      notes={"old_default": {"type": "coincident", "references": payload["references"]}})
+
+
 SCENES: dict[str, Callable[[], GuessScene]] = {
     # the nine mates of the Phase 4 bench
     "stack": stack_scene,
@@ -335,6 +390,8 @@ SCENES: dict[str, Callable[[], GuessScene]] = {
     "overhang-25": lambda: _same_facing("overhang-25", "m4", 25.0, inset=False),
     "inset-10-seated": lambda: _same_facing("inset-10-seated", "m4", 10.0, inset=True, seated=True),
     "overhang-3-seated": lambda: _same_facing("overhang-3-seated", "m4", 3.0, inset=False, seated=True),
+    # M4's type rule: two circular edges are a peg in a hole (Concentric + Coincident as one action)
+    "peg-in-hole": peg_in_hole_scene,
 }
 
 

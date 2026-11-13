@@ -1,6 +1,7 @@
+import math
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from app.document.models import (
     BevelGearType,
@@ -3759,7 +3760,12 @@ class MateCreate(BaseModel):
     (payload shape here, referential/geometric validity in the router/
     resolver, this codebase's standing split)."""
 
-    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw", "limit_distance", "limit_angle"]
+    # M4 (`docs/mates-storage-sessions-plan-2026-11-12.md`): two more values, never sent by an older client. `auto` is for
+    # `preview-mate-solve` only (a create refuses it with 422): the backend picks the type from the two picks
+    # (`app.document.mate_suggest`) and answers with `suggested_type` and the solve of that suggestion. `peg_in_hole` (two circular
+    # edges, each on a flat face) is Concentric on the edges plus Coincident on the flat faces they lie on, previewed and created as
+    # one action (a create stores the two mates together, atomically with `solve=`).
+    type: Literal["coincident", "concentric", "parallel", "distance", "angle", "gear", "rack_pinion", "screw", "limit_distance", "limit_angle", "auto", "peg_in_hole"]
     references: list[MateEntityRefResponse]
     value: float | None = None
     flipped: bool = False
@@ -3778,6 +3784,34 @@ class MateCreate(BaseModel):
     branch_changes: list[BranchChangeRequest] = []
     limit_min: float | None = None  # limit mates only, see `MateResponse`
     limit_max: float | None = None
+    # M4: where on each picked entity the pick landed, in `references` order, each LOCAL to its own occurrence (mm; null for a side
+    # with no pick point), and (flat app only) the view direction at the pick, world space. Accepted and checked, but NOT USED by any
+    # solve: no pick-point tie-break met the M4 benchmark's standard (the plan's "M4 results"), so the answer is the same with or
+    # without them. Sent so a later rule needs only a backend change.
+    pick_points: list[list[float] | None] | None = None
+    view_direction: list[float] | None = None
+    # M4.1: preview only. A DISTANCE sent with this and NO `value` is previewed at the distance its two picks are apart now (measured at
+    # the stored poses, `app.document.mate_measure`), on the side the part is on now; the answer carries it as `measured_value`. Without
+    # it a distance with no value is `converged: false`, as before.
+    measure_value: bool = False
+
+    @field_validator("pick_points")
+    @classmethod
+    def _two_local_points(cls, value):
+        if value is None:
+            return value
+        if len(value) != 2 or any(p is not None and (len(p) != 3 or not all(math.isfinite(x) for x in p)) for p in value):
+            raise ValueError("pick_points: one entry per reference, each null or three finite numbers (mm, local to its occurrence)")
+        return value
+
+    @field_validator("view_direction")
+    @classmethod
+    def _a_direction(cls, value):
+        if value is None:
+            return value
+        if len(value) != 3 or not all(math.isfinite(x) for x in value) or math.sqrt(sum(x * x for x in value)) < 1e-12:
+            raise ValueError("view_direction: three finite numbers, not all zero")
+        return value
 
 
 class MateUpdate(BaseModel):
@@ -3969,6 +4003,25 @@ class MateSolvePreviewResponse(BaseModel):
     # M1.1: the preview ran out of its time budget (`assembly_group.PREVIEW_SECONDS`) before it tried everything: `alternatives`,
     # `branch_changes`, `blocked_by` or `conflicting` may be shorter than with no clock. Each step still had its minimum solves.
     budget_exhausted: bool = False
+    # M4: the type the two picks suggest (`app.document.mate_suggest`): "coincident", "concentric", "peg_in_hole", or null for no
+    # suggestion. ONLY in the answer to a `type: "auto"` request (left out of every other answer, so an older client's answers stay
+    # byte-identical); with a suggestion the rest of the answer is the solve of that type, with none it is `converged: false`.
+    suggested_type: Literal["coincident", "concentric", "peg_in_hole"] | None = None
+    type_was_auto: bool = Field(default=False, exclude=True)
+    # M4.1: the distance the preview was solved with when the request asked for it (`MateCreate.measure_value`, no value): the client shows
+    # it in its value box. ONLY in the answer to such a request (null = the picks cannot be measured as a distance).
+    measured_value: float | None = None
+    measure_asked: bool = Field(default=False, exclude=True)
+
+    @model_serializer(mode="wrap")
+    def _suggestion_only_when_asked(self, handler):
+        data = handler(self)
+        if isinstance(data, dict):
+            if not self.type_was_auto:
+                data.pop("suggested_type", None)
+            if not self.measure_asked:
+                data.pop("measured_value", None)
+        return data
 
 
 class ComponentPatternAxisSchema(BaseModel):

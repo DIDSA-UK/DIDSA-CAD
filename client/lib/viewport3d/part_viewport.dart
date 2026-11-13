@@ -18,6 +18,7 @@ import 'component_gizmo.dart';
 import 'create_plane_geometry_3d.dart';
 import 'edge_batching.dart';
 import 'mesh_geometry.dart';
+import 'mate_pick_point.dart';
 import 'controls_preferences.dart';
 import 'box_select.dart';
 import 'view_cube.dart' show ViewCubeBasis, normalToUp, viewCubeEyeAndUp;
@@ -831,6 +832,11 @@ class PartViewport extends StatefulWidget {
   /// from [selectedEntities] (Item 4's toggle rule).
   final void Function(SelectionEntityRef entity)? onSelectionToggle;
 
+  /// M4: fired just before [onSelectionToggle] for a tap on an occurrence's face / edge / corner, with where it landed: the hit point
+  /// local to that occurrence (mm; `null` when the instance is not known here) and the picking ray's direction (world). The mate
+  /// panel sends them as `pick_points` / `view_direction`.
+  final void Function(SelectionEntityRef entity, MatePickPoint pick)? onSelectionPickPoint;
+
   /// Desktop input D2: fired at the start of every committed select click,
   /// ahead of [onConstraintOverlayItemTap] / [onSelectionToggle] /
   /// [onClearSelection], with how that click applies: [SelectClick.replace]
@@ -1125,6 +1131,7 @@ class PartViewport extends StatefulWidget {
     this.selectionMode = false,
     this.selectedEntities = const {},
     this.onSelectionToggle,
+    this.onSelectionPickPoint,
     this.onSelectClick,
     this.onContextMenuRequested,
     this.onTurntableChanged,
@@ -5967,8 +5974,23 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (click != SelectClick.toggle) widget.onClearSelection?.call();
       return null;
     }
+    _reportPickPoint(hit);
     widget.onSelectionToggle?.call(hit.entity);
     return hit.entity;
+  }
+
+  /// M4: [PartViewport.onSelectionPickPoint] for [hit] when it is on an occurrence (see there).
+  void _reportPickPoint(HoverHit hit) {
+    final callback = widget.onSelectionPickPoint;
+    final cursor = _cursorPosition;
+    if (callback == null || cursor == null || hit.entity.occurrenceId.isEmpty) return;
+    final ray = _camera.cameraFor(_viewportSize).screenPointToRay(cursor, _viewportSize);
+    final direction = ray.direction.normalized();
+    final world = pointAtRayDistance(ray, hit.rayT);
+    callback(
+      hit.entity,
+      MatePickPoint(local: occurrenceLocalPoint(world, widget.assemblyInstances, hit.entity.occurrenceId), viewDirection: [direction.x, direction.y, direction.z]),
+    );
   }
 
   // ---- P25: marquee-select (long-press-then-drag, selection mode only) ---
