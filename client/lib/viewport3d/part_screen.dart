@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import 'package:vector_math/vector_math.dart' as vm;
@@ -111,6 +112,7 @@ import 'mate_panel.dart';
 import 'width_pick.dart';
 import 'component_pattern_panel.dart';
 import 'measurement_panel.dart';
+import 'mate_preview_glide.dart';
 import 'assembly_instance_render.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
@@ -570,7 +572,7 @@ class _DeleteUndoEntry extends _AssemblyUndoEntry {
   final List<ComponentPatternDto> patterns;
 }
 
-class _PartScreenState extends State<PartScreen> {
+class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateMixin {
   late final DocumentApiClient _api;
 
   /// Owned by this screen (regardless of whether [PartScreen.sketchApiFactory]
@@ -1041,9 +1043,16 @@ class _PartScreenState extends State<PartScreen> {
     // [_displayOccurrences]'s own doc comment for why no client-only overlay
     // is folded in here anymore.
     // Scenes (S3): while a scene shows, its poses and visibility (the composition over the real instances).
-    final overlaid = _assemblyMesh == null
+    var overlaid = _assemblyMesh == null
         ? const <AssemblyOccurrenceInstanceDto>[]
         : (_sceneMode ? _sceneInstances : _assemblyMesh!.instances);
+    // M3: the parts a mate preview is gliding (or has just confirmed) are drawn at their glide pose.
+    if (_glideWorld.isNotEmpty) {
+      final glideFocus = _focusStack?.currentOccurrencePath ?? const <String>[];
+      for (final e in _glideWorld.entries) {
+        overlaid = overrideInstanceTransform(overlaid, targetOccurrencePath: [...glideFocus, e.key], transform: e.value);
+      }
+    }
     final liveTransform = _gizmoLiveTransform;
     final targetOccurrence = _gizmoTargetOccurrence;
     if (liveTransform == null || targetOccurrence == null) return overlaid;
@@ -4636,7 +4645,100 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartViewport.matePreviewMembers] renders as translucent ghosts. Empty whenever there's nothing to show (fewer than 2
   /// entities picked yet, no drivable Occurrence, or the dry-run solve
   /// didn't converge) - see that method's own doc comment.
-  List<MatePreviewMember> _matePreviewMembers = const [];
+  List<MatePreviewMember> _matePreviewMembersValue = const [];
+
+  /// M3: what the viewport ghosts. With the glide preview on (the Controls setting "Mate preview: move the part", the default) the real parts glide instead
+  /// ([_glide], drawn through [_glideWorld]) and the only ghost is the outline that stays at their stored pose; with it off it is the translucent copy at the
+  /// solved pose, as before.
+  List<MatePreviewMember> get _matePreviewMembers {
+    if (!ControlsPreferences.matePreviewGlide) return _matePreviewMembersValue;
+    return _glideCommitted ? const [] : _glideOutline;
+  }
+
+  /// The outline [_glide] leaves at the stored poses, rebuilt only when the preview changes (a new list every frame would re-sync the viewport's ghosts every frame).
+  List<MatePreviewMember> _glideOutline = const [];
+
+  set _matePreviewMembers(List<MatePreviewMember> value) {
+    _matePreviewMembersValue = value;
+    if (!ControlsPreferences.matePreviewGlide) {
+      if (_glide.isActive) _endMatePreviewGlide();
+      return;
+    }
+    if (_glideCommitted) return; // a confirmed preview stays where it is until the refreshed poses are in
+    _glide.retarget(value, _glideNow());
+    _glideOutline = _glide.outline();
+    _glideWorld = _glideWorldNow();
+    _startGlideTimer();
+  }
+
+  /// M3: the glide's model, its clock (a [Ticker], so it follows the frame clock - and a test's `pump`), and the world poses it draws (see [_displayAssemblyInstances]).
+  final MatePreviewGlide _glide = MatePreviewGlide();
+  Ticker? _glideTicker;
+  double _glideBase = 0; // seconds of earlier runs of the ticker (its own clock restarts at 0 each time)
+  double _glideElapsed = 0;
+  Map<String, RigidTransformDto> _glideWorld = const {};
+  bool _glideCommitted = false;
+
+  double _glideNow() => _glideBase + _glideElapsed;
+
+  Map<String, RigidTransformDto> _glideWorldNow() {
+    final now = _glideNow();
+    return {for (final e in _glide.posesAt(now).entries) e.key: _worldOfLocal(e.value)};
+  }
+
+  void _startGlideTimer() {
+    final ticker = _glideTicker ??= createTicker((elapsed) {
+      _glideElapsed = elapsed.inMicroseconds / 1e6;
+      if (!mounted) return;
+      final now = _glideNow();
+      final dropped = _glide.settle(now);
+      final animating = _glide.isAnimating(now);
+      setState(() => _glideWorld = _glideWorldNow());
+      if (!animating && !dropped) _stopGlideTicker();
+    });
+    if (!ticker.isActive) {
+      _glideElapsed = 0;
+      ticker.start();
+    }
+  }
+
+  void _stopGlideTicker() {
+    final ticker = _glideTicker;
+    if (ticker == null || !ticker.isActive) return;
+    _glideBase += _glideElapsed;
+    _glideElapsed = 0;
+    ticker.stop();
+  }
+
+  /// Confirm: the parts stay exactly where the preview put them while the stored poses are written and re-read ([_endMatePreviewGlide] then drops the overlay).
+  void _commitMatePreviewGlide() {
+    if (!ControlsPreferences.matePreviewGlide || !_glide.isActive) return;
+    _glideCommitted = true;
+    _glide.commit();
+    _glideWorld = _glideWorldNow();
+  }
+
+  /// The refreshed poses are in (or the screen is leaving): the overlay goes.
+  void _endMatePreviewGlide() {
+    _stopGlideTicker();
+    _glideCommitted = false;
+    _glide.clear();
+    _glideOutline = const [];
+    if (mounted) setState(() => _glideWorld = const {});
+  }
+
+  /// A confirmed preview was refused after all: the parts glide back.
+  void _abortMatePreviewGlideCommit() {
+    if (!_glideCommitted) return;
+    _glideCommitted = false;
+    _glide.cancel(_glideNow());
+    _glideOutline = _glide.outline();
+    if (mounted) {
+      setState(() => _glideWorld = _glideWorldNow());
+      _startGlideTimer();
+    }
+  }
+
 
   /// [_scheduleMatePreview]'s own monotonic guard - mirrors
   /// [_measureRequestToken]'s identical "no Feature/Occurrence is mutated,
@@ -5503,6 +5605,7 @@ class _PartScreenState extends State<PartScreen> {
         limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
       );
       if (!mounted) return;
+      _commitMatePreviewGlide(); // M3: the part is already where the mate put it
       if (keepOpen) {
         setState(() {
           _mateAppliedCount++;
@@ -5522,8 +5625,10 @@ class _PartScreenState extends State<PartScreen> {
       }
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+      _endMatePreviewGlide();
     } on ApiException catch (e) {
       if (!mounted) return;
+      _abortMatePreviewGlideCommit();
       setState(() {
         _mateSaving = false;
         _mateError = e.message;
@@ -12806,6 +12911,7 @@ class _PartScreenState extends State<PartScreen> {
 
   @override
   void dispose() {
+    _glideTicker?.dispose();
     _referenceReports.dispose();
     _referencesNotice.dispose();
     _folderChangeOffer.dispose();
@@ -25237,6 +25343,7 @@ class _PartScreenState extends State<PartScreen> {
     dialogRefresh = null;
     // Cancel, Save and a dismissed dialog all end the live preview.
     _matePreviewRequestToken++;
+    if (save == true) _commitMatePreviewGlide(); // M3: Save keeps the part where the preview put it; Cancel (or a dismissed dialog) glides it back
     if (mounted) setState(() => _matePreviewMembers = const []);
     if (save != true || !mounted) return;
     try {
@@ -25258,8 +25365,10 @@ class _PartScreenState extends State<PartScreen> {
       if (!mounted) return;
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+      _endMatePreviewGlide();
     } on ApiException catch (e) {
       if (!mounted) return;
+      _abortMatePreviewGlideCommit();
       setState(() => _errorMessage = e.message);
     }
   }

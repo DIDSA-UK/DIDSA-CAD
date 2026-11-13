@@ -29,6 +29,7 @@ import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
+import 'package:didsa_cad_client/viewport3d/controls_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
 import 'package:didsa_cad_client/viewport3d/measurement_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_context_menu.dart';
@@ -82,6 +83,11 @@ class _FakeDocumentBackend {
 
   /// M1: makes `POST .../mates` answer 422.
   bool failMateCreate = false;
+
+  /// M3: what `POST .../occurrences/{id}/preview-mate-solve` answers (null = 404, no preview). A `POST .../mates` carrying `solve` stores the poses of its
+  /// `members` on the occurrences, as the backend's atomic create does.
+  Map<String, dynamic>? previewMateSolveAnswer;
+  int previewMateSolveCount = 0;
 
   /// Bug fix regression coverage ("patterns have stopped showing in the
   /// feature tree... this was working before"): how many times `GET
@@ -858,6 +864,12 @@ class _FakeDocumentBackend {
       constraintStatusRequests++;
       return _json(constraintStatusMatch.group(1) == 'part-1' ? constraintStatus : <String, dynamic>{}, 200);
     }
+    final previewMatch = RegExp(r'^/document/parts/part-1/occurrences/([^/]+)/preview-mate-solve$').firstMatch(path);
+    if (previewMatch != null && method == 'POST') {
+      previewMateSolveCount++;
+      final answer = previewMateSolveAnswer;
+      return answer == null ? http.Response('no preview', 404) : _json(answer, 200);
+    }
     final matesGetMatch = RegExp(r'^/document/parts/([^/]+)/mates$').firstMatch(path);
     if (matesGetMatch != null && method == 'GET') {
       return _json(matesGetMatch.group(1) == 'part-1' ? mates : <dynamic>[], 200);
@@ -874,6 +886,12 @@ class _FakeDocumentBackend {
         'allow_rotation': body['allow_rotation'] ?? true,
       };
       mates.add(mate);
+      if (request.url.queryParameters.containsKey('solve') && previewMateSolveAnswer != null) {
+        for (final member in (previewMateSolveAnswer!['members'] as List)) {
+          final target = occurrences.firstWhere((o) => o['id'] == member['occurrence_id'], orElse: () => const {});
+          if (target.isNotEmpty) target['transform'] = member['transform'];
+        }
+      }
       return _json(mate, 201);
     }
     final mateDeleteMatch = RegExp(r'^/document/parts/part-1/mates/([^/]+)$').firstMatch(path);
@@ -6011,6 +6029,100 @@ void main() {
       await _pumpUntil(tester, () => backend.mates.length == 2);
       await tester.pump(const Duration(milliseconds: 400));
       expect(find.byType(MatePanel), findsNothing, reason: 'OK closes the tool');
+    });
+
+    // M3: the glide preview. The fake answers the preview with occ-2 moved 30 mm along x.
+    Map<String, dynamic> previewMoving(double x) => {
+          'converged': true,
+          'transform': {'translation': [x, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+          'members': [
+            {
+              'occurrence_id': 'occ-2',
+              'transform': {'translation': [x, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+            },
+          ],
+        };
+
+    double shownX(WidgetTester tester, String id) => tester
+        .widget<PartViewport>(find.byType(PartViewport))
+        .assemblyInstances
+        .firstWhere((i) => i.occurrencePath.last == id)
+        .worldTransform
+        .translation[0];
+
+    Future<_FakeDocumentBackend> openForPreview(WidgetTester tester, {required bool glide}) async {
+      SharedPreferences.setMockInitialValues({ControlsPreferences.matePreviewGlidePrefKey: glide});
+      await ControlsPreferences.load();
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      backend.previewMateSolveAnswer = previewMoving(30);
+      await tapStartCommand(tester, 'Mate');
+      await pickTwoFaces(tester);
+      await _pumpUntil(tester, () => backend.previewMateSolveCount > 0);
+      await tester.pump(const Duration(milliseconds: 600)); // the glide (0.25 s) is over
+      return backend;
+    }
+
+    testWidgets('M3: the preview glides the REAL part to the solved pose, leaves an outline at its stored pose, stores nothing; Cancel glides it back', (tester) async {
+      final backend = await openForPreview(tester, glide: true);
+      expect(shownX(tester, 'occ-2'), closeTo(30, 1e-6), reason: 'the part itself moved');
+      expect(shownX(tester, 'occ-1'), 0, reason: 'the part not in the answer did not');
+      final outline = tester.widget<PartViewport>(find.byType(PartViewport)).matePreviewMembers;
+      expect(outline.length, 1);
+      expect(outline.single.previous.translation[0], 0, reason: 'the outline is at the stored pose');
+      expect(outline.single.next.translation[0], 0);
+      expect(((backend.occurrences.firstWhere((o) => o['id'] == 'occ-2')['transform'] as Map)['translation'] as List)[0], 0.0, reason: 'a preview stores nothing');
+      tester.widget<MatePanel>(find.byType(MatePanel)).onCancel();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(shownX(tester, 'occ-2'), closeTo(0, 1e-6), reason: 'Cancel glides it home');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).matePreviewMembers, isEmpty);
+    });
+
+    testWidgets('M3: Confirm keeps the part where the preview put it (nothing jumps back) and the outline goes', (tester) async {
+      final backend = await openForPreview(tester, glide: true);
+      tester.widget<MatePanel>(find.byType(MatePanel)).onConfirm!();
+      await _pumpUntil(tester, () => backend.mates.length == 1);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(shownX(tester, 'occ-2'), closeTo(30, 1e-6));
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).matePreviewMembers, isEmpty);
+      expect(((backend.occurrences.firstWhere((o) => o['id'] == 'occ-2')['transform'] as Map)['translation'] as List)[0], 30.0, reason: 'the backend stored it');
+    });
+
+    testWidgets('M3: a failed Confirm glides the part back (the mate was refused, so the part must not stay moved)', (tester) async {
+      final backend = await openForPreview(tester, glide: true);
+      backend.failMateCreate = true;
+      tester.widget<MatePanel>(find.byType(MatePanel)).onConfirm!();
+      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(backend.mates, isEmpty);
+      expect(shownX(tester, 'occ-2'), closeTo(30, 1e-6), reason: 'the preview is still showing (nothing was committed), Cancel would put it back');
+      tester.widget<MatePanel>(find.byType(MatePanel)).onCancel();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(shownX(tester, 'occ-2'), closeTo(0, 1e-6));
+    });
+
+    testWidgets('M3: with "Mate preview: move the part" off the old ghost shows at the solved pose and the part stays at its stored pose', (tester) async {
+      await openForPreview(tester, glide: false);
+      expect(shownX(tester, 'occ-2'), 0, reason: 'the real part does not move');
+      final ghost = tester.widget<PartViewport>(find.byType(PartViewport)).matePreviewMembers;
+      expect(ghost.single.next.translation[0], 30);
+      expect(ghost.single.previous.translation[0], 0);
+      SharedPreferences.setMockInitialValues({});
+      await ControlsPreferences.load();
+    });
+
+    testWidgets('M3: a preview that does not converge moves nothing', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      await ControlsPreferences.load();
+      final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')]);
+      backend.previewMateSolveAnswer = {'converged': false, 'transform': null, 'members': <dynamic>[]};
+      await tapStartCommand(tester, 'Mate');
+      await pickTwoFaces(tester);
+      await _pumpUntil(tester, () => backend.previewMateSolveCount > 0);
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(shownX(tester, 'occ-2'), 0);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).matePreviewMembers, isEmpty);
     });
 
     Future<void> openSelectOther(WidgetTester tester) async {

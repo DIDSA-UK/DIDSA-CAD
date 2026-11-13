@@ -35,7 +35,7 @@ The implementation session updates this table in its PR.
 | M1 | Rigid sets in the group solve | CAD backend | Done (PR #355; results: "M1 results" below) |
 | M1.1 | Group solve follow-ups: mate geometry cache, ground-row pruning, one preview budget, missing tests | CAD backend | In review (results: "M1.1 results" below) |
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | In review (caps not raised; results: "M2 results" below) |
-| M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Not started |
+| M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | In review (results: "M3 results" below) |
 | M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Not started |
 | M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | In review (results: "M5 results" below) |
 | S0 | Storage scope doc and spikes | CAD, VR | Not started |
@@ -621,6 +621,16 @@ No backend change: `preview-mate-solve` already returns every moved member.
 
 Tests: widget / headless tests for start, replace, cancel and confirm; a failed preview leaves the part at its start.
 Feel is not testable; the owner judges the glide time on the headset.
+
+### M3 results (2026-11-13)
+
+Flutter: `viewport3d/mate_preview_glide.dart` (the model: where each previewed occurrence is at a time; 0.25 s, cubic ease in-out; retarget / cancel / commit / outline), `PartScreen` (a `Ticker` drives it; the glide poses are drawn through the same instance override the constrained drag uses; the ghost that remains is the outline at the stored pose; `_confirmMate` and the Edit mate dialog commit the glide so the part stays put until the refreshed poses are in, and a refused confirm glides it back), and the Controls setting "Mate preview: move the part" (`ControlsPreferences.matePreviewGlide`, default on; off = the old translucent copy). VR: `mates_tool.gd` (the same behaviour on the real node: outline at the start, Clear / a changed pick / a failed preview glide back, Create keeps the part there and PATCHes the STORED pose), and **the edit-mate preview VR did not have**: Flip / Lock rotation / Value on a placing mate preview first (`preview-mate-solve` with `replace_mate_id`), with an Apply change / Cancel row on the Mates page.
+
+Tests: `mate_preview_glide_test.dart` (7: the model and the setting), `part_screen_test.dart` (5 `M3:` tests through the real screen with a fake backend: the part itself moves and the outline sits at the stored pose, a preview stores nothing, Cancel glides home, Confirm keeps the part at the solved pose with nothing jumping and the backend storing it, a refused Confirm leaves the preview to Cancel, the setting off keeps the copy, a non-converging preview moves nothing); VR `tests/mate_glide.gd`.
+
+What the plan says that was not done or differs: (1) the **Edit mate dialog in Flutter** glides through the same code (it already previewed with `replace_mate_id`) but no test drives that dialog; (2) the outline is the translucent ghost at the stored pose (the viewport's existing ghost), not a thin line drawing; (3) VR has no Settings switch for the old see-through copy (`MatesTool.preview_glide` exists, the flat app's setting is in Controls); (4) in a VR sandbox (relaxed) or with a grounded driven part the mate is stored, not solved, so the preview goes back instead of staying.
+
+**Needs the owner:** the glide time (0.25 s) and ease, how the outline reads, whether the part hiding the picks is a problem on a phone, and whether Apply / Cancel is the right step for a VR edit. Not verified: nothing was looked at on a screen or a headset.
 
 ### M4. A better first guess (backend + both clients; medium; strongest agent for the rules, bench as the judge)
 
