@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -69,4 +70,11 @@ API_FEATURES = [
 @app.get("/health")
 def health() -> dict:
     box = BRepPrimAPI_MakeBox(10.0, 10.0, 10.0).Shape()
-    return {"status": "ok", "occt_shape_valid": not box.IsNull(), "git_branch": _GIT_BRANCH, "api_features": API_FEATURES}
+    body = {"status": "ok", "occt_shape_valid": not box.IsNull(), "git_branch": _GIT_BRANCH, "api_features": API_FEATURES}
+    # The project store (`project-store/`, docs/shared-storage-scope.md) is a different service; the backend only says where it
+    # is, when told (PROJECT_STORE_URL: its public address, never its key). It never reads or writes a project file itself.
+    store_url = os.environ.get("PROJECT_STORE_URL", "").strip()
+    if store_url:
+        body["project_store"] = store_url
+        body["api_features"] = [*API_FEATURES, "project_store"]
+    return body

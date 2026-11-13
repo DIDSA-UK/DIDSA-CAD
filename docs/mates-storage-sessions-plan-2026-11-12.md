@@ -40,7 +40,7 @@ The implementation session updates this table in its PR.
 | M4.1 | A Distance previewed where the parts are (SOLIDWORKS' order: parallel, the measured distance, then type the one you want) | CAD backend + both clients | Done (merged with M4; results: "M4.1 results" below) |
 | M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Done (merged; results: "M5 results" below) |
 | S0 | Storage scope doc and spikes | CAD, VR | In review: `docs/shared-storage-scope.md`; the Quest spike is built and waits for the owner's run (results: "S0 results" below) |
-| S1 | Project store service | CAD | Not started |
+| S1 | Project store service | CAD | Done in this PR (`project-store/`; results: "S1 results" below) |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Not started |
 | S3 | VR: server projects, cache, offline | VR | Not started |
 | S4 | Sync hardening and set-up polish | all | Not started |
@@ -910,6 +910,45 @@ unreduced preview ran out of time).
   `docs/vr-headset-pairing.md`), so a paired client finds it with no typing.
 - No locks (the long-term vision doc rules out PDM-style locking): optimistic version check, and on conflict the user
   picks Keep mine (as a new version) / Take theirs / Save mine as a copy.
+
+### S1 results (2026-11-13)
+
+**Built** (`project-store/`, its README is the reference): FastAPI + stdlib `sqlite3` (WAL), one worker, one lock; its own
+`PROJECT_STORE_API_KEY` and `PROJECT_STORE_ROOT` (it refuses to start without either); every endpoint of scope section 5 with the
+status codes given there (412 stale single write, 428 no precondition, 409 commit listing every clash with nothing written, 413 over
+200 MB); uploads for commits (valid an hour); a version counter per file with the SHA-256 alongside; kept versions by content hash in
+`.didsa-store/blobs`; the change feed with a cursor; the part-id index; `X-Device-Name` recorded as "modified by". The "changed outside
+the store" scan is stat-first and hashes only on a difference (size or mtime); it runs before every read of a tree, feed, index,
+project list or file and before any write (a commit scans the whole project). Retention: last 20 versions and anything under 30 days,
+whichever keeps more; a deleted file's versions 30 days. The part id is `document.root_part_id` read from the JSON of a native file,
+nothing else. The backend's `/health` gains `project_store` (from `PROJECT_STORE_URL`, never the key) and `"project_store"` in
+`api_features`, only when set. Compose gained the `project-store` service; `.github/workflows/project-store-verify.yml` runs its
+tests (the relay's tests still run in no workflow). The backend is unchanged otherwise and the store imports no backend code.
+Scope doc: section 8 marked accepted; section 5's `/health` row corrected (needs the key).
+
+**Differs from the scope, and why:**
+- A path ending `versions` or `versions/<digits>` is refused (it would collide with the history routes); `parts/{id}` answers 200 with
+  an empty list for an unknown id; the tree and commit responses carry a `cursor` (so a client can start the feed where its tree ends).
+- A move in a commit appears in the feed as a `delete` (with `moved_to`) and a `put` (with `moved_from`). A move onto an existing file
+  is a clash (`target_exists`); a new file where a folder is (or the other way round) is a clash (`path_conflict`).
+- A save that changes nothing makes no new version (200, `unchanged: true`).
+- A version counter outlives retention: a long-deleted file keeps its delete record, so a stale copy cannot match a file re-created later.
+- `PROJECT_STORE_API_KEY` is not the pairing code's `pk`: S2 / S3 add that. No `p` / `pk` here.
+- Licence: `project-store/` is GPL-3.0-only like `browser-relay/` (REUSE.toml / LICENSING.md); the owner may prefer AGPL (a hosted service).
+
+**Tests:** `project-store/tests` (pytest, TestClient, temp dir per test, injected clock, threads for the races): every endpoint,
+stale PUT, whole-commit 409 (files and DB compared before and after), a failure part-way through a commit rolled back, races,
+outside edits, the feed, the index after a rename, retention, every refused path. A few mutations (scan off, retention rule, conflict
+check, rollback) were tried and each broke a test.
+
+**Verification and what is not:** nothing has run on the owner's Pi, behind the Cloudflare tunnel, or with a synced Drive / NAS folder as the root
+(scan and `os.replace` behaviour there is untested; a change that keeps both size and mtime is missed by design). The 100 MB tunnel
+limit is documented, not measured. The image was built and its tests run inside it (206 passed, 1 skipped: the test that reads the backend's data file, which is
+not in the image); a container was started with a volume and answered 401 / 200 / 201 / 412 as expected, and refused to start without a
+key. The sandbox's proxy needed its CA added to pip in a scratch copy of the Dockerfile (as `browser-relay/README.md` describes); the
+repo's Dockerfile is unchanged, so a build behind such a proxy needs the same. The full backend suite was run natively (conda env from
+`backend/environment.yml`, `CAD_API_KEY=test-api-key`, `-m "not gears"`, `-n auto`): 3098 passed, 1 skipped. The gears-marked tests
+were NOT run. Docker was built for amd64 only, not the Pi's arm64. Performance (a big first scan, a 100 MB JSON parse for a part id) and SD-card wear were not measured. No client exists yet.
 
 ### S2. Flutter (medium to large; standard agent)
 
