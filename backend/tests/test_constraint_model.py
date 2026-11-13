@@ -17,7 +17,10 @@ from app.document.assembly_group import apply_delta, build_group_model, pose_del
 from app.document.constraint_model import (
     MODEL_VERSION,
     PAIR_MODEL_VERSION,
+    RIGID_MODEL_VERSION,
     ConstraintModel,
+    RigidMetric,
+    expand_rigid_sets,
     apply_delta as apply_pose,
     export_constraint_model,
     pose_to_rigid,
@@ -408,6 +411,7 @@ def test_backend_retraction_reproduces_the_golden_vectors():
     cases = [x for x in doc["cases"] if x["kind"] == "local_retract"]
     assert len(cases) >= 12
     assert sum(1 for x in cases if x["input"]["model"]["version"] == 7) >= 8  # the follower-side cases (constraint model v7) are in the file
+    assert sum(1 for x in cases if x["input"]["model"]["version"] == RIGID_MODEL_VERSION) >= 4  # the rigid-set cases (v8, M1)
     for case in cases:
         inp, exp = case["input"], case["expected"]
         cm = ConstraintModel(inp["model"])
@@ -416,7 +420,11 @@ def test_backend_retraction_reproduces_the_golden_vectors():
 
         poses = [pose_of(p) for p in inp["poses"]]
         wishes = [pose_of(p) for p in inp["wishes"]]
-        w = weights(len(poses), inp["lever_arm"], follower=inp["local_follower"])
+        rigid = inp["model"]["version"] == RIGID_MODEL_VERSION
+        if rigid:  # v8: the members are rigid-set leads; a set weighs what its members do, its followers wish to stay at rest
+            w = RigidMetric.from_spec(inp["model"], inp["lever_arm"], follower=inp["local_follower"])
+        else:
+            w = weights(len(poses), inp["lever_arm"], follower=inp["local_follower"])
         wish_step = float(np.linalg.norm(np.concatenate([wishes[0][1] - poses[0][1], rotvec_from_rot(wishes[0][0] @ poses[0][0].T) * inp["lever_arm"]])))
         iters = int(min(c["local_iters_max"], max(c["local_iters"], c["local_iters"] + math.ceil((wish_step - c["local_trust"]) / c["local_trust"]))))
         got, held = sqp_nearest_limits(inp["model"], None, poses, wishes, w, iters=iters, polish=c["local_polish"])
@@ -428,6 +436,12 @@ def test_backend_retraction_reproduces_the_golden_vectors():
                 break  # a raw answer not converged TIGHTLY is a sensitive function of the linear solve; only tight ones are pinned
             assert np.max(np.abs(p[1] - np.array(exp["local_poses"][i]["translation"]))) < 1e-9, case["id"]
             assert np.max(np.abs(p[0].reshape(9) - np.array(exp["local_poses"][i]["rotation"]))) < 1e-9, case["id"]
+        if rigid and exp["residual_inf"] <= 1e-9:
+            expanded = expand_rigid_sets(inp["model"], got)
+            assert sorted(exp["local_followers"]) == sorted(set(expanded) - set(inp["model"]["members"])), case["id"]
+            for oid, pose in exp["local_followers"].items():
+                assert np.max(np.abs(expanded[oid][1] - np.array(pose["translation"]))) < 1e-9, case["id"]
+                assert np.max(np.abs(expanded[oid][0].reshape(9) - np.array(pose["rotation"]))) < 1e-9, case["id"]
         if exp["residual_inf"] <= 1e-9:
             assert abs(residual_inf(cm, got) - exp["residual_inf"]) < 1e-9, case["id"]
         elif exp["residual_inf"] > ACCEPT_RESIDUAL:

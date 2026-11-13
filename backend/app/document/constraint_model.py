@@ -21,6 +21,7 @@ PAIR_MODEL_VERSION = 4  # 4: a side may carry `pair` (the mid-plane of two faces
 COUPLER_MODEL_VERSION = 5  # 5: coupler mates (gear / rack_pinion / screw: rows on the MOVE of each side from its `anchor` pose); emitted ONLY when the model has one
 LIMIT_MODEL_VERSION = 6  # 6: limit mates (limit_distance / limit_angle: an inequality row with `min` / `max`, held only when violated); emitted ONLY when the model has one
 FOLLOW_MODEL_VERSION = 7  # 7: a side (and a `pair`) may carry `follow` (a pattern copy that follows its source member, see `assembly.pattern_step`); a superset of 6, emitted ONLY when some side has one
+RIGID_MODEL_VERSION = 8  # 8: `members` are rigid-set LEADS and `rigid_sets` carries each lead's followers as fixed offsets (`RigidMetric`); a superset of 7, emitted ONLY when the group has a rigid set (`app.document.rigid_sets`)
 COUPLER_TYPES = ("gear", "rack_pinion", "screw")
 LIMIT_TYPES = ("limit_distance", "limit_angle")
 SUPPORTED_TYPES = ("coincident", "concentric", "parallel", "angle", "distance", *COUPLER_TYPES, *LIMIT_TYPES)
@@ -588,16 +589,22 @@ def residual_inf(model: ConstraintModel, poses) -> float:
     return float(np.max(np.abs(r))) if r.size else 0.0
 
 
-def min_norm_steps(model: ConstraintModel, poses, w: np.ndarray, iters: int, rot_cap: float = ROT_CAP, lam_abs: float = LAM_ABS):
-    """Constraint-only Newton steps (least move in the metric `w`): the polish."""
+def min_norm_steps(model: ConstraintModel, poses, w, iters: int, rot_cap: float = ROT_CAP, lam_abs: float = LAM_ABS):
+    """Constraint-only Newton steps (least move in the metric `w`: a vector, or a `RigidMetric` for a v8 model): the polish."""
     cur = list(poses)
     for _ in range(iters):
         r, jac = model.residual(cur)
         if not r.size or float(np.max(np.abs(r))) < 1e-12:
             break
-        a = jac / w
-        m = a @ a.T + lam_abs * np.eye(len(a))
-        dx = -(a.T @ np.linalg.solve(m, r)) / w
+        if isinstance(w, RigidMetric):
+            _f, finv = w.factor(cur)
+            a = jac @ finv
+            m = a @ a.T + lam_abs * np.eye(len(a))
+            dx = -(finv @ (a.T @ np.linalg.solve(m, r)))
+        else:
+            a = jac / w
+            m = a @ a.T + lam_abs * np.eye(len(a))
+            dx = -(a.T @ np.linalg.solve(m, r)) / w
         dx = _cap_rotation(dx, model.k, rot_cap)
         cur = [apply_delta(cur[i], dx[6 * i : 6 * i + 6]) for i in range(model.k)]
     return cur
@@ -624,11 +631,20 @@ def sqp_nearest(
     `y = y0 - A^T (A A^T + lam I)^-1 (A y0 + r)`, `y0 = W g` (trust-scaled), `A = J W^-1`, `dx = W^-1 y`, then `polish`
     constraint-only steps. A fixed iteration count: bounded latency, deterministic."""
     cur = list(poses)
+    rigid = isinstance(w, RigidMetric)
+    if rigid and w.rest is None:
+        w = w.with_rest(poses)  # the followers wish to stay where this retraction starts them
     for _ in range(iters):
         r, jac = model.residual(cur)
-        g = np.concatenate([log_delta(cur[i], wishes[i]) for i in range(model.k)])
-        a = jac / w
-        y0 = w * g
+        if rigid:
+            # v8: `y = F dx` with `F` the Cholesky factor of each set's summed member metric; `y0` the least-squares wish of the set
+            _f, finv = w.factor(cur)
+            a = jac @ finv
+            y0 = w.target(cur, wishes)
+        else:
+            g = np.concatenate([log_delta(cur[i], wishes[i]) for i in range(model.k)])
+            a = jac / w
+            y0 = w * g
         n0 = float(np.linalg.norm(y0))
         if trust and n0 > trust:
             y0 = y0 * (trust / n0)
@@ -637,15 +653,18 @@ def sqp_nearest(
             y = y0 - a.T @ np.linalg.solve(m, a @ y0 + r)
         else:
             y = y0
-        dx = _cap_rotation(y / w, model.k, rot_cap)
+        dx = _cap_rotation(finv @ y if rigid else y / w, model.k, rot_cap)
         cur = [apply_delta(cur[i], dx[6 * i : 6 * i + 6]) for i in range(model.k)]
     if polish:
         cur = min_norm_steps(model, cur, w, polish, rot_cap=rot_cap, lam_abs=lam_abs)
     return cur
 
 
-def wish_cost(poses, wishes, w: np.ndarray) -> float:
-    """The objective the retraction minimises: weighted squared distance of every member from its wished pose."""
+def wish_cost(poses, wishes, w) -> float:
+    """The objective the retraction minimises: weighted squared distance of every member from its wished pose (for a v8 model,
+    `w` a `RigidMetric`: every lead from its wish and every follower from its rest pose)."""
+    if isinstance(w, RigidMetric):
+        return w.cost(poses, wishes)
     g = np.concatenate([log_delta(poses[i], wishes[i]) for i in range(len(poses))])
     return float(np.sum((w * g) ** 2))
 
@@ -665,3 +684,155 @@ def sqp_nearest_limits(spec: dict, anchors, poses, wishes, w: np.ndarray, iters:
             break
         active.update(violated)
     return cand, active
+
+
+# ---- v8: rigid sets ------------------------------------------------------------------------------------------------
+#
+# `app.document.rigid_sets` merges members that the mates lock to each other into one body: the model's `members` are then the
+# sets' LEADS, and `rigid_sets` lists, per lead, its followers with their constant offset from the lead (`r`, `t`: the follower's
+# pose is `(R_L r, R_L t + t_L)`). Mates inside a set are not in the model (they cannot change). The weighting keeps the meaning
+# of the per-member one: a set costs what its members would cost moving separately, so a set of twenty followers is twenty
+# times as reluctant to move as one. In the lead's twist chart `[v, w]` (origin velocity of the lead, rotation vector) a
+# follower whose origin sits at world offset `d = R_L t` from the lead's moves by `Ad(d) [v, w] = [v + w x d, w]`, so a set's
+# metric is the 6 x 6 `M = sum_m Ad(d_m)^T diag(s_m^2) Ad(d_m)` (`s_m` the member's weight row; the lead's `Ad` is the identity)
+# and its factor `F` the upper-triangular Cholesky factor (`F^T F = M`, positive diagonal: unique). A lead without followers
+# keeps `F = diag(s)`. Every formula that read `W x` / `J W^-1` / `W g` reads `F x` / `J F^-1` / `F^-T (sum_m Ad^T s_m^2 g_m)`.
+
+
+def _ad(d) -> np.ndarray:
+    """`[[I, -[d]x], [0, I]]`: a lead twist `[v, w]` to the twist of a point (a follower's origin) at world offset `d`."""
+    out = np.eye(6)
+    out[:3, 3:] = -skew(d)
+    return out
+
+
+class RigidMetric:
+    """The weighting of a v8 model (members = rigid-set leads). `lead_weights` (6 per lead) are the leads' own weight rows;
+    `followers[i]` the `(r, t, weight row)` of lead `i`'s followers; `rest[i]` the pose of lead `i` its followers wish to stay at
+    (their rest pose is `rest[i]` times the offset; `None` = the retraction's start poses, see `with_rest`)."""
+
+    def __init__(self, lead_weights: np.ndarray, followers, rest=None):
+        self.lead_weights = np.asarray(lead_weights, float)
+        self.k = len(self.lead_weights) // 6
+        self.followers = [list(f) for f in followers]
+        self.rest = None if rest is None else list(rest)
+
+    @classmethod
+    def from_spec(cls, spec: dict, lever: float, grabbed: int = 0, follower: float = LOCAL_FOLLOWER, rest=None) -> "RigidMetric":
+        """The metric of a v8 `spec` in the local retraction's weighting (`weights`): the grabbed lead at full weight, every other
+        lead and every follower (those of the grabbed lead's set too) at `follower`."""
+        k = len(spec["members"])
+        base = np.array([1.0, 1.0, 1.0, lever, lever, lever])
+        followers: list[list] = [[] for _ in range(k)]
+        for entry in spec.get("rigid_sets") or []:
+            followers[int(entry["member"])] = [
+                (np.array(f["r"], float), np.array(f["t"], float), base * follower) for f in entry["followers"]
+            ]
+        return cls(weights(k, lever, grabbed, follower), followers, rest)
+
+    def with_rest(self, rest) -> "RigidMetric":
+        out = RigidMetric(self.lead_weights, self.followers, rest)
+        out.__dict__["_cache"] = self.__dict__.setdefault("_cache", {})
+        return out
+
+    def follower_poses(self, poses) -> list[list]:
+        """Each lead's followers' poses with the leads at `poses`."""
+        return [[(poses[i][0] @ r, poses[i][0] @ t + poses[i][1]) for r, t, _w in self.followers[i]] for i in range(self.k)]
+
+    def _arrays(self, i: int):
+        """Lead `i`'s followers as arrays: offsets `t` (m x 3) and squared weight rows (m x 6), cached."""
+        cache = self.__dict__.setdefault("_cache", {})
+        if i not in cache:
+            fol = self.followers[i]
+            cache[i] = (np.array([t for _r, t, _w in fol], float).reshape(-1, 3), np.array([w * w for _r, _t, w in fol], float).reshape(-1, 6))
+        return cache[i]
+
+    @staticmethod
+    def _ad_stack(d: np.ndarray) -> np.ndarray:
+        """`_ad` of every row of `d` (m x 3) -> (m, 6, 6)."""
+        m = len(d)
+        out = np.tile(np.eye(6), (m, 1, 1))
+        out[:, 0, 4], out[:, 0, 5] = d[:, 2], -d[:, 1]
+        out[:, 1, 3], out[:, 1, 5] = -d[:, 2], d[:, 0]
+        out[:, 2, 3], out[:, 2, 4] = d[:, 1], -d[:, 0]
+        return out
+
+    def factor(self, poses) -> tuple[np.ndarray, np.ndarray]:
+        """`(F, F^-1)`, block-diagonal (6 x 6 per lead), at the leads' `poses` (the followers' world offsets turn with the lead)."""
+        n = 6 * self.k
+        f, finv = np.zeros((n, n)), np.zeros((n, n))
+        for i in range(self.k):
+            s = self.lead_weights[6 * i : 6 * i + 6]
+            blk = slice(6 * i, 6 * i + 6)
+            if not self.followers[i]:
+                f[blk, blk] = np.diag(s)
+                finv[blk, blk] = np.diag(1.0 / s)
+                continue
+            t, w2 = self._arrays(i)
+            ad = self._ad_stack(t @ poses[i][0].T)
+            m = np.diag(s * s) + np.einsum("mki,mk,mkj->ij", ad, w2, ad)
+            upper = np.linalg.cholesky(m).T
+            f[blk, blk] = upper
+            finv[blk, blk] = np.linalg.inv(upper)
+        return f, finv
+
+    def _follower_moves(self, i: int, cur, home) -> np.ndarray:
+        """`log_delta` from each follower of lead `i` at `cur` (the lead's pose) to it at `home` (m x 6): every follower turns with its
+        lead, so the rotation part is the lead's; the translation part is `(R_h - R_c) t + (t_h - t_c)`."""
+        t, _w2 = self._arrays(i)
+        out = np.empty((len(t), 6))
+        out[:, :3] = t @ (home[0] - cur[0]).T + (home[1] - cur[1])
+        out[:, 3:] = rotvec_from_rot(home[0] @ cur[0].T)
+        return out
+
+    def target(self, poses, wishes) -> np.ndarray:
+        """`y0` of the retraction: per lead `F^-T (s^2 g_lead + sum_m Ad_m^T s_m^2 g_m)`, `g` = `log_delta` to the lead's wish and to
+        each follower's rest pose: the least-squares fit of one rigid move of the set to what each of its members wishes."""
+        rest = self.rest if self.rest is not None else list(poses)
+        _f, finv = self.factor(poses)
+        out = np.zeros(6 * self.k)
+        for i in range(self.k):
+            s = self.lead_weights[6 * i : 6 * i + 6]
+            g = log_delta(poses[i], wishes[i])
+            if not self.followers[i]:
+                out[6 * i : 6 * i + 6] = s * g
+                continue
+            t, w2 = self._arrays(i)
+            ad = self._ad_stack(t @ poses[i][0].T)
+            b = s * s * g + np.einsum("mki,mk->i", ad, w2 * self._follower_moves(i, poses[i], rest[i]))
+            out[6 * i : 6 * i + 6] = finv[6 * i : 6 * i + 6, 6 * i : 6 * i + 6].T @ b
+        return out
+
+    def cost(self, poses, wishes) -> float:
+        """Weighted squared distance of every lead from its wish and every follower from its rest pose (`wish_cost` of the set)."""
+        rest = self.rest if self.rest is not None else list(poses)
+        total = 0.0
+        for i in range(self.k):
+            total += float(np.sum((self.lead_weights[6 * i : 6 * i + 6] * log_delta(poses[i], wishes[i])) ** 2))
+            if self.followers[i]:
+                _t, w2 = self._arrays(i)
+                total += float(np.sum(w2 * self._follower_moves(i, poses[i], rest[i]) ** 2))
+        return total
+
+
+def expand_rigid_sets(spec: dict, poses) -> dict:
+    """`{occurrence id: (R, t)}` of every member of a v8 `spec`'s group - the leads at `poses` and each follower at its lead's
+    pose times its offset. For a model without `rigid_sets` it is just the leads."""
+    out = {oid: poses[i] for i, oid in enumerate(spec["members"])}
+    for entry in spec.get("rigid_sets") or []:
+        r_lead, t_lead = poses[int(entry["member"])]
+        for f in entry["followers"]:
+            out[f["id"]] = (r_lead @ np.array(f["r"], float), r_lead @ np.array(f["t"], float) + t_lead)
+    return out
+
+
+def with_rigid_sets(spec: dict, followers: dict[str, list[tuple[str, np.ndarray, np.ndarray]]]) -> dict:
+    """`spec` (exported from a model whose members are the sets' leads) as version 8: `rigid_sets` = per lead with followers,
+    `{"member": lead index, "followers": [{"id", "r", "t"}]}` (the offset `(r, t)`: the follower's pose in its lead's frame)."""
+    ids = list(spec["members"])
+    sets = [
+        {"member": ids.index(lead), "followers": [{"id": oid, "r": r.tolist(), "t": t.tolist()} for oid, r, t in entries]}
+        for lead, entries in followers.items()
+        if entries
+    ]
+    return {**spec, "version": RIGID_MODEL_VERSION, "rigid_sets": sets}

@@ -432,5 +432,5 @@ def test_constraint_status_endpoint_returns_status_and_dof_per_occurrence():
     root = _fully_constrained_box_scene()
     response = client.get(f"/document/parts/{root}/constraint-status")
     assert response.status_code == 200
-    assert response.json() == {"occ-A": {"status": "fully_constrained", "dof": 0, "free_motions": []}}
+    assert response.json() == {"occ-A": {"status": "fully_constrained", "dof": 0, "free_motions": [], "rigid_set": None}}
     assert client.get("/document/parts/not-a-part/constraint-status").status_code == 404

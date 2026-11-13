@@ -32,13 +32,18 @@ def test_scaling_scene_builds_and_solves(factory, variant):
     assert result.converged
     assert result.dof == (scene.expected_dof_fixed if variant == "fixed" else scene.expected_dof_floating)
     verdict = client_verdict(result.constraint_model, client_caps())
-    assert verdict["members"] == len(model.member_ids) and verdict["rows"] > 0
+    # M1: the client model has one member per rigid set (version 8) - every M0 scene has a set, so fewer members than the group
+    assert verdict["version"] == 8 and verdict["members"] == result.solved_bodies < len(model.member_ids) and verdict["rows"] >= 0
+    assert not verdict["shipped_reads"]  # the shipped clients parse up to v7: they keep projecting until M2
 
 
-def test_a_big_chain_is_refused_by_the_client_caps():
+def test_a_big_chain_now_fits_the_client_caps_as_one_body():
+    # M0 measured this chain refused (10 members, 144 rows); with rigid sets (M1) it is one body and no rows - it would fit the caps
+    # once a client reads constraint model v8 (M2)
     scene = scaling.chain_scene(10)
     result = solve_group(get_document(), get_document().parts[scene.root], scene.mover, None)
-    assert client_verdict(result.constraint_model, client_caps())["refused"]
+    verdict = client_verdict(result.constraint_model, client_caps())
+    assert not verdict["refused"] and verdict["members"] == 1 and verdict["rows"] == 0 and verdict["followers"] == 9
 
 
 @pytest.mark.parametrize("name", ["stack", "inset-10", "gap-6-above", "pin-in-post"])

@@ -52,7 +52,7 @@ def test_the_flank_mates_remove_every_free_motion():
     document, part = _doc(root)
     assert constraint_report(document, part)["occ-A"] == ("fully_constrained", 0, [])
     body = client.get(f"/document/parts/{root}/constraint-status").json()["occ-A"]
-    assert body == {"status": "fully_constrained", "dof": 0, "free_motions": []}
+    assert body == {"status": "fully_constrained", "dof": 0, "free_motions": [], "rigid_set": None}
 
 
 def test_an_unmated_occurrence_is_free_in_all_six():
