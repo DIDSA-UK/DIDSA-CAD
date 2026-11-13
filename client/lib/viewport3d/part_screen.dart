@@ -12917,6 +12917,7 @@ class _PartScreenState extends State<PartScreen> {
     _sectionPreviewDebounce?.cancel();
     _busyOverlayTimer?.cancel();
     _serverSyncTimer?.cancel();
+    _statusUnlisten?.call();
     _jobPollTimer?.cancel();
     _dragPump?.cancel();
     _presenterFadeTimer?.cancel();
@@ -15101,6 +15102,19 @@ class _PartScreenState extends State<PartScreen> {
             ),
             onPressed: _toggleSelectionMode,
           ),
+        // Shared storage (S2): the sync status of an open server project, as a symbol (cloud done / upload / warning / off), live.
+        // It lives here, not over the viewport, so it never covers the triad. Tap for the sync sheet.
+        if (_projectRoot is ServerProjectRoot && _remote != null)
+          _syncQuickButton(_projectRoot as ServerProjectRoot, _remote!)
+        else if (_remote != null && _remote!.isConfigured)
+          // A project store is set up but this session saves to a local folder: say so (a folder symbol, where the cloud
+          // symbol would be), with the way into a server project one tap away.
+          QuickColumnButton(
+            key: const ValueKey('quick-local-fab'),
+            tooltip: 'Saving to a local folder, not the server',
+            child: const Icon(Icons.folder_outlined),
+            onPressed: _showLocalSessionSheet,
+          ),
         QuickColumnButton(
           key: const ValueKey('quick-visibility-fab'),
           tooltip: 'Visibility',
@@ -15109,6 +15123,68 @@ class _PartScreenState extends State<PartScreen> {
           onPressed: () => setState(() => _visibilityPanelOpen = true),
         ),
       ];
+
+  void _showLocalSessionSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          key: const ValueKey('local-session-sheet'),
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Text('This session saves to a local folder, not the project store. Nothing is being synced.'),
+            ),
+            ListTile(
+              key: const ValueKey('local-sheet-server-projects'),
+              leading: const Icon(Icons.cloud_outlined),
+              title: const Text('Server projects…'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                unawaited(_onServerProjectsPressed());
+              },
+            ),
+            ListTile(
+              key: const ValueKey('local-sheet-copy'),
+              leading: const Icon(Icons.cloud_upload_outlined),
+              title: const Text('Copy this project to the server…'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                unawaited(_onCopyToServerPressed());
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  QuickColumnButton _syncQuickButton(ServerProjectRoot root, RemoteStorageService remote) {
+    final status = remote.statusOf(root);
+    final scheme = Theme.of(context).colorScheme;
+    final look = ServerSyncChip.describe(status.value, scheme);
+    return QuickColumnButton(
+      key: const ValueKey('quick-sync-fab'),
+      tooltip: '${root.project}: ${look.label}',
+      badge: !status.value.allSynced,
+      child: ValueListenableBuilder<SyncSummary>(
+        valueListenable: status,
+        builder: (context, summary, _) {
+          final live = ServerSyncChip.describe(summary, Theme.of(context).colorScheme);
+          return Icon(live.icon, color: live.color);
+        },
+      ),
+      onPressed: () => showServerSyncSheet(
+        context,
+        remote,
+        root,
+        onSyncNow: _syncServerNow,
+        onResolve: () => _resolveServerConflicts(root),
+      ),
+    );
+  }
 
   /// The Start menu's last-used tab per lens, for the session.
   final Map<AssemblyLens, String> _startMenuTabByLens = {};
@@ -15842,12 +15918,22 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Starts (or stops) the timer that sends queued saves when the store is reachable again, for the open server project.
+  VoidCallback? _statusUnlisten;
+
   void _watchServerProject() {
     _serverSyncTimer?.cancel();
     _serverSyncTimer = null;
+    _statusUnlisten?.call();
+    _statusUnlisten = null;
     final root = _projectRoot;
     final remote = _remote;
     if (root is! ServerProjectRoot || remote == null) return;
+    final status = remote.statusOf(root);
+    void rebuildOnStatus() {
+      if (mounted) setState(() {});
+    }
+    status.addListener(rebuildOnStatus);
+    _statusUnlisten = () => status.removeListener(rebuildOnStatus);
     _serverSyncTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       final status = remote.statusOf(root).value;
       if (status.toSend > 0 || status.online == false) unawaited(_syncServerNow(quiet: true));
@@ -28020,19 +28106,6 @@ class _PartScreenState extends State<PartScreen> {
                 // Item 4: the multi-select action bar now lives in the tree
                 // panel's header (`multiSelectHeader`); the bottom sheet that
                 // used to cover the tree's lowest rows is gone.
-                // Shared storage (S2): the sync chip of an open server project: Synced / N to send / Clash / Offline. Tap for the
-                // sync sheet.
-                if (_projectRoot is ServerProjectRoot && _remote != null)
-                  Positioned(
-                    left: 8,
-                    bottom: 8,
-                    child: ServerSyncChip(
-                      remote: _remote!,
-                      root: _projectRoot as ServerProjectRoot,
-                      onSyncNow: _syncServerNow,
-                      onResolve: () => _resolveServerConflicts(_projectRoot as ServerProjectRoot),
-                    ),
-                  ),
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen && !_chromeHidden,

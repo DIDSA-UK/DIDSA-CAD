@@ -1309,6 +1309,27 @@ Future<void> switchLens(WidgetTester tester, String to) async {
   await _settleSheet(tester);
 }
 
+/// The sync status symbol of an open server project lives in the Start button's quick column (it must not cover the triad).
+/// Opens the column, reports whether the button is there, and closes the column again.
+Future<bool> _syncButtonPresent(WidgetTester tester) async {
+  await openQuickColumn(tester);
+  final present = find.byKey(const ValueKey('quick-sync-fab')).evaluate().isNotEmpty;
+  await tester.tap(find.byKey(const ValueKey('start-fab')));
+  await _settleSheet(tester);
+  return present;
+}
+
+/// The symbol the sync button shows right now (cloud done = synced, upload = to send, warning = clash, cloud off = offline).
+Future<IconData?> _syncIcon(WidgetTester tester) async {
+  await openQuickColumn(tester);
+  final icon = tester.widget<Icon>(
+    find.descendant(of: find.byKey(const ValueKey('quick-sync-fab')), matching: find.byType(Icon)).first,
+  );
+  await tester.tap(find.byKey(const ValueKey('start-fab')));
+  await _settleSheet(tester);
+  return icon.icon;
+}
+
 /// File menu > [entry] (the phone layout's quick-menu panel).
 Future<void> _fileMenuTap(WidgetTester tester, String entry) async {
   await openToolbar(tester);
@@ -7742,18 +7763,18 @@ void main() {
         ),
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      expect(await _syncButtonPresent(tester), isFalse);
       await openToolbar(tester);
       await tester.tap(find.text('File'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(find.text('Server projects…'), findsNothing);
       expect(find.text('Copy this project to the server…'), findsNothing);
-      expect(find.byKey(const ValueKey('server-sync-chip')), findsNothing);
     });
 
     testWidgets('Save All on a server project is ONE commit, and the chip says Synced', (tester) async {
       await pumpServerScreen(tester);
-      expect(find.byKey(const ValueKey('server-sync-chip')), findsOneWidget);
+      expect(await _syncButtonPresent(tester), isTrue);
 
       await tapFileMenu(tester, 'Save All');
 
@@ -7762,7 +7783,7 @@ void main() {
       expect(store.livePaths('Gearbox'), containsAll(['Part 1.didsa', 'Component 1.didsa']));
       expect(store.count('POST /projects/Gearbox/commit'), 1);
       expect(store.count('PUT'), 0);
-      expect(find.text('Synced'), findsOneWidget);
+      expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
 
     // The owner's sequence (13 Nov): a brand-new part, then File > Server projects into a new (empty) project: there is no file to
@@ -7784,7 +7805,7 @@ void main() {
 
     testWidgets('Server projects into an empty project: the session starts saving there, and Save All sends the file', (tester) async {
       await pumpNewSession(tester);
-      expect(find.byKey(const ValueKey('server-sync-chip')), findsNothing);
+      expect(await _syncButtonPresent(tester), isFalse);
 
       await tapFileMenu(tester, 'Server projects…');
       expect(find.byKey(const ValueKey('server-project-Gearbox')), findsOneWidget);
@@ -7792,7 +7813,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
 
-      expect(find.byKey(const ValueKey('server-sync-chip')), findsOneWidget);
+      expect(await _syncButtonPresent(tester), isTrue);
       expect(find.textContaining('now saves into "Gearbox"'), findsOneWidget);
 
       await tapFileMenu(tester, 'Save All');
@@ -7802,7 +7823,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
       expect(store.livePaths('Gearbox'), ['Part 1.didsa'], reason: 'requests: ${store.requests}');
-      expect(find.text('Synced'), findsOneWidget);
+      expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
 
     testWidgets('Server projects into a project that has files asks: save the current work there, or open a file', (tester) async {
@@ -7815,16 +7836,49 @@ void main() {
       await tester.pump(const Duration(milliseconds: 600));
       expect(find.byKey(const ValueKey('server-project-choice')), findsOneWidget);
       expect(find.text('1 file in this project.'), findsOneWidget);
-      expect(find.byKey(const ValueKey('server-sync-chip')), findsNothing);
 
       await tester.tap(find.byKey(const ValueKey('server-project-save-here')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
-      expect(find.byKey(const ValueKey('server-sync-chip')), findsOneWidget);
+      expect(await _syncButtonPresent(tester), isTrue);
 
       await tapFileMenu(tester, 'Save');
       await tester.pump(const Duration(milliseconds: 600));
       expect(store.livePaths('Gearbox'), containsAll(['Existing.didsa', 'Part 1.didsa']), reason: 'requests: ${store.requests}');
+    });
+
+    testWidgets('a local-folder session shows a folder symbol (not synced), and it leads to Server projects', (tester) async {
+      await pumpNewSession(tester);
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-sync-fab')), findsNothing);
+      expect(find.byKey(const ValueKey('quick-local-fab')), findsOneWidget);
+      expect(tester.widget<Icon>(find.descendant(of: find.byKey(const ValueKey('quick-local-fab')), matching: find.byType(Icon)).first).icon, Icons.folder_outlined);
+
+      await tester.tap(find.byKey(const ValueKey('quick-local-fab')));
+      await _settleSheet(tester);
+      expect(find.byKey(const ValueKey('local-session-sheet')), findsOneWidget);
+      expect(find.textContaining('Nothing is being synced'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('local-sheet-server-projects')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.byKey(const ValueKey('server-projects-dialog')), findsOneWidget);
+    });
+
+    testWidgets('a screen with no project store shows no folder symbol either', (tester) async {
+      final backend = _FakeDocumentBackend();
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            storageService: _FakeStorageService(),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await openQuickColumn(tester);
+      expect(find.byKey(const ValueKey('quick-local-fab')), findsNothing);
     });
 
     testWidgets('plain Save on a server project sends the file to the store', (tester) async {
@@ -7849,7 +7903,7 @@ void main() {
       expect(find.byKey(const ValueKey('sync-conflict-dialog')), findsOneWidget);
       expect(find.textContaining('Changed by Quest 3'), findsOneWidget);
       expect(store.versionOf('Gearbox', 'Part 1.didsa'), 2, reason: 'nothing was written');
-      expect(find.text('Clash'), findsOneWidget);
+      expect(remote.statusOf(root).value.clash, 1);
 
       await tester.tap(find.byKey(const ValueKey('conflict-keepMine-Part 1.didsa')));
       await tester.pump();
@@ -7859,7 +7913,7 @@ void main() {
 
       expect(store.versionOf('Gearbox', 'Part 1.didsa'), 3);
       expect(jsonDecode(utf8.decode(store.bytesOf('Gearbox', 'Part 1.didsa')!))['document']['parts'][0]['name'], 'Edited here');
-      expect(find.text('Synced'), findsOneWidget);
+      expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
 
     testWidgets('Decide later leaves the clash queued: nothing written, and the chip offers the dialog again', (tester) async {
@@ -7873,7 +7927,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(store.versionOf('Gearbox', 'Part 1.didsa'), 2);
-      expect(find.text('Clash'), findsOneWidget);
+      expect(await _syncIcon(tester), Icons.warning_amber_rounded);
       await tester.pump(const Duration(milliseconds: 600));
       expect(find.textContaining('Nothing was written'), findsOneWidget);
       // The note sits where the chip is: let it go, as a user would, before tapping the chip.
@@ -7881,7 +7935,8 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 500));
 
-      await tester.tap(find.byKey(const ValueKey('server-sync-chip')));
+      await openQuickColumn(tester);
+      await tester.tap(find.byKey(const ValueKey('quick-sync-fab')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.byKey(const ValueKey('sync-sheet-resolve')));
@@ -7900,11 +7955,12 @@ void main() {
 
       await tester.pump(const Duration(milliseconds: 600));
       expect(find.textContaining('Saved on this device'), findsOneWidget);
-      expect(find.text('1 to send · offline'), findsOneWidget);
+      expect(await _syncIcon(tester), Icons.cloud_upload_outlined);
       expect(store.versionOf('Gearbox', 'Part 1.didsa'), 1);
 
       store.offline = false;
-      await tester.tap(find.byKey(const ValueKey('server-sync-chip')));
+      await openQuickColumn(tester);
+      await tester.tap(find.byKey(const ValueKey('quick-sync-fab')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.byKey(const ValueKey('sync-sheet-sync')));
@@ -7912,7 +7968,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(store.versionOf('Gearbox', 'Part 1.didsa'), 2);
-      expect(find.text('Synced'), findsOneWidget);
+      expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
   });
 

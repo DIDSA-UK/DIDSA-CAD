@@ -1023,6 +1023,9 @@ differences below.
   opening one of its files, so choosing a new (empty) project did nothing and later Saves went to the local folder flow (no chip, no
   request to the store). Now an empty project is adopted as the session's project (Save / Save All write there), a project with files asks
   "Save current work here" or "Open a file", and Copy to the server from a folder with no files says so and still adopts the new project.
+- **The status indicator moved into the quick menu (13 Nov, owner's request: the chip covered the triad), as symbols:** cloud done /
+  upload / warning / cloud off for a server project, and a folder symbol while a store is set up but the session saves locally (so
+  "not syncing" is visible, not just the absence of a chip).
 - The queue is not in `FileCache` itself (see above); `FileCache` only gained the version field and now creates a given directory.
 
 **Tests:** `test/remote_storage_service_test.dart` (47: reads, versioned writes, the stale write, every store status, offline queue and
