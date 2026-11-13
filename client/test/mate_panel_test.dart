@@ -62,6 +62,21 @@ void main() {
       expect(mateBranchNotice(const [], [mate('m1', 'concentric')], conflicting: ['m1']), contains('conflicts'));
     });
 
+    test('a preview that ran out of its budget says the search stopped early, as a note (M2)', () {
+      expect(mateBranchNotice(const [], const [], budgetExhausted: true), kMateSearchStoppedEarlyNote);
+      expect(kMateSearchStoppedEarlyNote, 'Search stopped early: there may be more solutions.');
+      expect(mateBranchNotice(const [], const [], budgetExhausted: false), isNull);
+      // after the sentence a conflict already has, not instead of it
+      final both = mateBranchNotice(const [], [mate('m1', 'concentric')], conflicting: ['m1'], budgetExhausted: true)!;
+      expect(both, contains('conflicts'));
+      expect(both, endsWith(kMateSearchStoppedEarlyNote));
+      final changed = mateBranchNotice([change('m1')], [mate('m1', 'distance')], budgetExhausted: true)!;
+      expect(changed, contains('OK or Next applies it'));
+      expect(changed, endsWith(kMateSearchStoppedEarlyNote));
+      // the same words the notice builder gives the dialog and the panel: read from the DTO
+      expect(const MateSolvePreviewDto(converged: true, budgetExhausted: true).budgetExhausted, isTrue);
+    });
+
     test('an unknown mate id falls back to "a mate"', () {
       expect(mateBranchNotice([change('gone')], const []), contains('a mate'));
     });
@@ -282,6 +297,29 @@ void main() {
       expect(find.byKey(const ValueKey('mate-branch-notice')), findsNothing);
       await tester.pumpWidget(panel(notice: 'To fit, an earlier mate moves.'));
       expect(find.text('To fit, an earlier mate moves.'), findsOneWidget);
+    });
+
+    testWidgets('shows "Search stopped early" as an ordinary note (not the error colour) when the preview ran out of budget (M2)', (tester) async {
+      final note = mateBranchNotice(const [], const [], budgetExhausted: const MateSolvePreviewDto(converged: true, budgetExhausted: true).budgetExhausted);
+      await tester.pumpWidget(wrap(MatePanel(
+        selectedEntities: const {},
+        bodyNames: const {},
+        mateType: 'distance',
+        value: 5,
+        onMateTypeChanged: (_) {},
+        onValueChanged: (_) {},
+        allowRotation: false,
+        onAllowRotationChanged: (_) {},
+        saving: false,
+        error: null,
+        notice: note,
+        onConfirm: null,
+        onCancel: () {},
+      )));
+      final text = tester.widget<Text>(find.byKey(const ValueKey('mate-branch-notice')));
+      expect(text.data, 'Search stopped early: there may be more solutions.');
+      final error = Theme.of(tester.element(find.byKey(const ValueKey('mate-branch-notice')))).colorScheme.error;
+      expect(text.style?.color, isNot(error));
     });
 
     testWidgets('shows a dropdown listing every Mate type', (tester) async {

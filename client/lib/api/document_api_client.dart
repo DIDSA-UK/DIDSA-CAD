@@ -2341,6 +2341,10 @@ class MateSolvePreviewDto {
   /// A limit mate preview: the measured value (mm / degrees) at the current poses, to type a range against.
   final double? limitValue;
 
+  /// M1.1: the preview ran out of its time budget, so [alternatives], [branchChanges], [blockedBy] or [conflicting] may be incomplete (there may be
+  /// more solutions). Not an error. A backend that predates the field omits it: read as `false`.
+  final bool budgetExhausted;
+
   const MateSolvePreviewDto({
     required this.converged,
     this.transform,
@@ -2353,6 +2357,7 @@ class MateSolvePreviewDto {
     this.alternatives = const [],
     this.couplerValue,
     this.limitValue,
+    this.budgetExhausted = false,
   });
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
@@ -2380,6 +2385,7 @@ class MateSolvePreviewDto {
         ],
         couplerValue: (json['coupler_value'] as num?)?.toDouble(),
         limitValue: (json['limit_value'] as num?)?.toDouble(),
+        budgetExhausted: json['budget_exhausted'] == true,
       );
 }
 

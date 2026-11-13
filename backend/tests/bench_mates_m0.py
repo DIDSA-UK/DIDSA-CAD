@@ -80,13 +80,13 @@ def client_model_rows(spec: dict) -> int:
     return rows + sum(1 for m in spec["mates"] if m.get("type") in _LIMIT_TYPES)
 
 
-_SHIPPED_CLIENT_MAX_VERSION = 7  # the newest constraint model the shipped Flutter / VR clients parse (v8, rigid sets, is M2)
+_SHIPPED_CLIENT_MAX_VERSION = 8  # the newest constraint model the Flutter / VR clients parse (v8, rigid sets: read since M2)
 
 
 def client_verdict(spec: dict | None, caps: tuple[int, int]) -> dict:
     """`refused` = over the caps (members or rows). For a version-8 model (M1 rigid sets) `members` are the sets' leads and `rows`
-    exclude the mates inside a set; `shipped_reads` says whether the shipped clients parse the version at all (they return null for
-    v8 and keep projecting until M2), so `refused: false` there means "would fit once M2 reads v8"."""
+    exclude the mates inside a set; `shipped_reads` says whether the clients parse the version at all (before M2 they returned null for v8
+    and kept projecting; since M2 both read it), so `refused: false` means the local solve runs for this group."""
     if spec is None:
         return {"version": None, "members": None, "rows": None, "refused": True, "why": "no model exported", "shipped_reads": False}
     members, rows = len(spec["members"]), client_model_rows(spec)

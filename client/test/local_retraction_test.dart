@@ -64,6 +64,7 @@ void main() {
     expect((constants['local_coupler_model_version'] as num?)?.toInt() ?? kLocalCouplerModelVersion, kLocalCouplerModelVersion);
     expect((constants['local_limit_model_version'] as num).toInt(), kLocalLimitModelVersion);
     expect((constants['local_follow_model_version'] as num).toInt(), kLocalFollowModelVersion);
+    expect((constants['local_rigid_model_version'] as num).toInt(), kLocalRigidModelVersion);
     expect((constants['local_limit_rounds'] as num).toInt(), kLocalLimitRounds);
     expect((constants['local_limit_tol'] as num).toDouble(), kLocalLimitTol);
     expect(cases.length, greaterThanOrEqualTo(12));
@@ -100,6 +101,21 @@ void main() {
           _expectPose(r.localPoses[i], (exp['local_poses'] as List)[i], '$id local[$i]', tol);
         }
         _expectPose(r.poses[i], (exp['poses'] as List)[i], '$id shown[$i]', tol);
+      }
+      // Version 8: every follower with its lead at the shown / the raw local answer (the same pins as the leads').
+      if (exp.containsKey('followers')) {
+        expect(model.hasSets, isTrue, reason: '$id has rigid sets');
+        final shown = exp['followers'] as Map<String, dynamic>;
+        final local = exp['local_followers'] as Map<String, dynamic>;
+        expect(r.followers.keys.toSet(), shown.keys.toSet(), reason: '$id follower ids');
+        expect(model.followerIds.toSet(), shown.keys.toSet(), reason: '$id follower ids (model)');
+        shown.forEach((fid, want) => _expectPose(r.followers[fid]!, want, '$id follower $fid shown', tol));
+        if ((exp['residual_inf'] as num) <= 1e-9) {
+          local.forEach((fid, want) => _expectPose(r.localFollowers[fid]!, want, '$id follower $fid local', tol));
+        }
+      } else {
+        expect(model.hasSets, isFalse, reason: '$id has no sets');
+        expect(r.followers, isEmpty);
       }
       if ((exp['residual_inf'] as num) <= 1e-9) {
         expect((r.residualInf - (exp['residual_inf'] as num).toDouble()).abs(), lessThan(tol), reason: '$id residual');
@@ -142,7 +158,7 @@ void main() {
     test('a valid model parses', () => expect(LocalRetractor.tryParse(base()), isNotNull));
     test('null, another version, an unknown mate type, a missing side field or an out-of-range member -> projection only', () {
       expect(LocalRetractor.tryParse(null), isNull);
-      expect(LocalRetractor.tryParse(base()..['version'] = kLocalFollowModelVersion + 1), isNull); // (was kLocalLimitModelVersion + 1 before version 7 existed)
+      expect(LocalRetractor.tryParse(base()..['version'] = kLocalRigidModelVersion + 1), isNull); // (was kLocalFollowModelVersion + 1 before version 8 existed)
       expect(LocalRetractor.tryParse(base()..['version'] = 1), isNull, reason: 'the pre-branch model (sign-agnostic residuals) is not evaluated');
       expect(LocalRetractor.tryParse(base()..['version'] = 2), isNull, reason: 'a version-2 model has no swing sense for an ANGLE about a hinge');
       final unknown = base();
@@ -155,14 +171,15 @@ void main() {
       (((badMember['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['member'] = 5;
       expect(LocalRetractor.tryParse(badMember), isNull);
     });
-    test('every golden model carries the current version (7 when a side follows, 6 when a limit is in it, 5 when a coupler mate is in it, else 4 exactly when a side has a pair) and a branch on each mate', () {
+    test('every golden model carries the current version (8 when it has rigid sets, 7 when a side follows, 6 when a limit is in it, 5 when a coupler mate is in it, else 4 exactly when a side has a pair) and a branch on each mate', () {
       for (final c in cases) {
         final model = (c['input'] as Map<String, dynamic>)['model'] as Map<String, dynamic>;
         final hasPair = (model['mates'] as List).any((m) => ((m as Map)['a'] as Map).containsKey('pair') || (m['b'] as Map).containsKey('pair'));
         final hasCoupler = (model['mates'] as List).any((m) => const ['gear', 'rack_pinion', 'screw'].contains((m as Map)['type']));
         final hasLimit = (model['mates'] as List).any((m) => const ['limit_distance', 'limit_angle'].contains((m as Map)['type']));
         final hasFollow = (model['mates'] as List).any((m) => ((m as Map)['a'] as Map).containsKey('follow') || (m['b'] as Map).containsKey('follow'));
-        expect(model['version'], hasFollow ? kLocalFollowModelVersion : hasLimit ? kLocalLimitModelVersion : hasCoupler ? kLocalCouplerModelVersion : hasPair ? kLocalPairModelVersion : kLocalModelVersion,
+        final hasSets = model['rigid_sets'] != null;
+        expect(model['version'], hasSets ? kLocalRigidModelVersion : hasFollow ? kLocalFollowModelVersion : hasLimit ? kLocalLimitModelVersion : hasCoupler ? kLocalCouplerModelVersion : hasPair ? kLocalPairModelVersion : kLocalModelVersion,
             reason: c['id'] as String);
         for (final m in model['mates'] as List) {
           final mate = m as Map<String, dynamic>;
@@ -275,6 +292,147 @@ void main() {
       });
       test('a version-4 model without any pair is still an ordinary model', () {
         expect(LocalRetractor.tryParse(base()..['version'] = kLocalPairModelVersion), isNotNull);
+      });
+    });
+    group('version 8 (rigid sets)', () {
+      Map<String, dynamic> setModel(String id) =>
+          jsonDecode(jsonEncode((cases.firstWhere((c) => c['id'] == id)['input'] as Map<String, dynamic>)['model'])) as Map<String, dynamic>;
+      const rigidIds = <String>[
+        'local-rigid-bolt-turn-3deg-x',
+        'local-rigid-bolt-slide-and-spin',
+        'local-rigid-grab-the-set-turn-5deg-y',
+        'local-rigid-set-on-fixed-bolt-turn-20deg',
+      ];
+      Map<String, dynamic> firstSet(Map<String, dynamic> m) => (m['rigid_sets'] as List).first as Map<String, dynamic>;
+
+      test('every local-rigid model parses as version 8 and moves its leads only; the followers are the model\'s followerIds', () {
+        for (final id in rigidIds) {
+          final spec = setModel(id);
+          expect(spec['version'], kLocalRigidModelVersion, reason: id);
+          final model = LocalRetractor.tryParse(spec)!;
+          expect(model.hasSets, isTrue, reason: id);
+          expect(model.members, (spec['members'] as List).length, reason: id);
+          expect(model.followerIds, ['rib', 'cover'], reason: id);
+        }
+      });
+
+      test('a version-8 model with no rigid_sets is an ordinary model (and so is an empty list)', () {
+        final spec = base()..['version'] = kLocalRigidModelVersion;
+        expect(LocalRetractor.tryParse(spec)?.hasSets, isFalse);
+        expect(LocalRetractor.tryParse(spec..['rigid_sets'] = <Object>[])?.hasSets, isFalse);
+      });
+
+      test('rigid_sets outside version 8 is malformed, whatever the version', () {
+        for (final v in <int>[kLocalModelVersion, kLocalPairModelVersion, kLocalCouplerModelVersion, kLocalLimitModelVersion, kLocalFollowModelVersion]) {
+          expect(LocalRetractor.tryParse(setModel(rigidIds.first)..['version'] = v), isNull, reason: 'rigid_sets in version $v');
+        }
+        // a version-7 model (a followed pattern copy) that gains one
+        final v7 = setModel('local-follow-linear-slide-and-spin');
+        expect(LocalRetractor.tryParse(v7), isNotNull);
+        v7['rigid_sets'] = setModel(rigidIds.first)['rigid_sets'];
+        expect(LocalRetractor.tryParse(v7), isNull);
+      });
+
+      test('malformed sets are ignored: a lead index out of range, a lead listed twice, a follower that is a lead or a duplicate, a bad offset', () {
+        for (final bad in <int>[-1, 2, 7]) {
+          expect(LocalRetractor.tryParse(setModel(rigidIds.first)..['rigid_sets'] = [firstSet(setModel(rigidIds.first))..['member'] = bad]), isNull, reason: 'lead $bad');
+        }
+        final twice = setModel(rigidIds.first);
+        twice['rigid_sets'] = [firstSet(twice), jsonDecode(jsonEncode(firstSet(twice))) as Map<String, dynamic>];
+        expect(LocalRetractor.tryParse(twice), isNull, reason: 'the same lead twice');
+        final isLead = setModel(rigidIds.first);
+        ((firstSet(isLead)['followers'] as List).first as Map<String, dynamic>)['id'] = (isLead['members'] as List).first;
+        expect(LocalRetractor.tryParse(isLead), isNull, reason: 'a follower that is also a lead');
+        final dup = setModel(rigidIds.first);
+        ((firstSet(dup)['followers'] as List).last as Map<String, dynamic>)['id'] = 'rib';
+        expect(LocalRetractor.tryParse(dup), isNull, reason: 'two followers with one id');
+        final noId = setModel(rigidIds.first);
+        ((firstSet(noId)['followers'] as List).first as Map<String, dynamic>).remove('id');
+        expect(LocalRetractor.tryParse(noId), isNull, reason: 'a follower without an id');
+        final badT = setModel(rigidIds.first);
+        ((firstSet(badT)['followers'] as List).first as Map<String, dynamic>)['t'] = <double>[1, 2];
+        expect(LocalRetractor.tryParse(badT), isNull, reason: 'an offset with 2 numbers');
+        final badR = setModel(rigidIds.first);
+        ((firstSet(badR)['followers'] as List).first as Map<String, dynamic>)['r'] = <List<double>>[<double>[1, 0, 0], <double>[0, 1, 0]];
+        expect(LocalRetractor.tryParse(badR), isNull, reason: 'a 2 x 3 rotation');
+        final empty = setModel(rigidIds.first);
+        firstSet(empty)['followers'] = <Object>[];
+        expect(LocalRetractor.tryParse(empty), isNull, reason: 'a set with no follower');
+        final noFollowers = setModel(rigidIds.first);
+        firstSet(noFollowers).remove('followers');
+        expect(LocalRetractor.tryParse(noFollowers), isNull, reason: 'a set without the followers list');
+      });
+
+      test('a mate side on a lead index out of range stays malformed in version 8, and the member cap counts leads, not followers', () {
+        final bad = setModel(rigidIds.first);
+        (((bad['mates'] as List).first as Map<String, dynamic>)['a'] as Map<String, dynamic>)['member'] = 2;
+        expect(LocalRetractor.tryParse(bad), isNull);
+        expect(LocalRetractor.tryParse(setModel(rigidIds.first), maxMembers: 2), isNotNull);
+        expect(LocalRetractor.tryParse(setModel(rigidIds.first), maxMembers: 1), isNull);
+      });
+
+      test('a lead without followers keeps the diagonal path bit for bit: a version-8 twin of a version-3 model answers identically', () {
+        final c = cases.firstWhere((x) => x['id'] == 'local-floating-bolt-slide-and-spin');
+        final inp = c['input'] as Map<String, dynamic>;
+        final plain = LocalRetractor.tryParse(inp['model'] as Map<String, dynamic>)!;
+        final twin = LocalRetractor.tryParse(jsonDecode(jsonEncode(inp['model'])) as Map<String, dynamic>..['version'] = kLocalRigidModelVersion)!;
+        final poses = [for (final p in inp['poses'] as List) _poseIn(p)];
+        final wishes = [for (final p in inp['wishes'] as List) _poseIn(p)];
+        final lever = (inp['lever_arm'] as num).toDouble();
+        final a = plain.retract(poses, wishes, localScale(plain.members, lever));
+        final b = twin.retract(poses, wishes, localScale(twin.members, lever));
+        for (var i = 0; i < a.length; i++) {
+          expect(b[i].t, a[i].t);
+          expect(b[i].r.m, a[i].r.m);
+        }
+      });
+
+      test('the followers stay rigid with their lead whatever the lead does: expandFollowers is the offset applied to the answer', () {
+        // two leads (bolt, plate), the set on the plate; the bolt (grabbed, index 0) keeps the diagonal metric
+        final c = cases.firstWhere((x) => x['id'] == 'local-rigid-bolt-slide-and-spin');
+        final inp = c['input'] as Map<String, dynamic>;
+        final model = LocalRetractor.tryParse(inp['model'] as Map<String, dynamic>)!;
+        final poses = [for (final p in inp['poses'] as List) _poseIn(p)];
+        final wishes = [for (final p in inp['wishes'] as List) _poseIn(p)];
+        final lever = (inp['lever_arm'] as num).toDouble();
+        final got = model.retract(poses, wishes, localScale(2, lever));
+        final followers = model.expandFollowers(got);
+        expect(followers.keys, ['rib', 'cover']);
+        // every follower stays rigid with its lead: the relative pose is the offset, whatever the lead did
+        final off = (inp['model'] as Map<String, dynamic>)['rigid_sets'] as List;
+        for (final f in (off.first as Map<String, dynamic>)['followers'] as List) {
+          final fm = f as Map<String, dynamic>;
+          final rel = got[1].r.transposed * followers[fm['id']]!.r;
+          final want = Mat3(<double>[for (final row in fm['r'] as List) ..._dl(row)]);
+          for (var i = 0; i < 9; i++) {
+            expect((rel.m[i] - want.m[i]).abs(), lessThan(1e-12));
+          }
+          final d = <double>[for (var i = 0; i < 3; i++) followers[fm['id']]!.t[i] - got[1].t[i]];
+          final local = got[1].r.transposed.mulVec(d);
+          final t = _dl(fm['t']);
+          for (var i = 0; i < 3; i++) {
+            expect((local[i] - t[i]).abs(), lessThan(1e-9));
+          }
+        }
+      });
+
+      test('the set weighs what its members would: a set of followers resists a grab more than the bare lead (the golden says how much)', () {
+        // The same lead and wish with and without the followers: the bare plate gives way further than the set.
+        final c = cases.firstWhere((x) => x['id'] == 'local-rigid-grab-the-set-turn-5deg-y');
+        final inp = c['input'] as Map<String, dynamic>;
+        final spec = inp['model'] as Map<String, dynamic>;
+        final bare = jsonDecode(jsonEncode(spec)) as Map<String, dynamic>..remove('rigid_sets');
+        bare['version'] = kLocalFollowModelVersion;
+        final poses = [for (final p in inp['poses'] as List) _poseIn(p)];
+        final wishes = [for (final p in inp['wishes'] as List) _poseIn(p)];
+        final lever = (inp['lever_arm'] as num).toDouble();
+        final withSet = LocalRetractor.tryParse(spec)!.retract(poses, wishes, localScale(2, lever));
+        final alone = LocalRetractor.tryParse(bare)!.retract(poses, wishes, localScale(2, lever));
+        double turn(Pose p) => norm3(rotvecFromRot(p.r));
+        final goal = norm3(rotvecFromRot(wishes[0].r));
+        expect(turn(alone[0]), closeTo(goal, 5e-4), reason: 'the bare lead all but reaches the wish (only the bolt, at the follower weight, resists)');
+        expect(turn(withSet[0]), lessThan(turn(alone[0]) - 1e-5), reason: 'the set keeps its followers near where they were');
+        expect(turn(withSet[0]), greaterThan(0));
       });
     });
     test('groups bigger than the limit are not solved locally', () {

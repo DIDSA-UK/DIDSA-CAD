@@ -4722,7 +4722,8 @@ class _PartScreenState extends State<PartScreen> {
     _mateLimitCurrent = isLimitMateType(_mateType) ? result?.limitValue : null;
     _mateNotice = result == null
         ? null
-        : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
+        : mateBranchNotice(result.branchChanges, _mates,
+            blockedBy: result.blockedBy, conflicting: result.conflicting, budgetExhausted: result.budgetExhausted);
   }
 
   /// Vertex/edge/face only - `component: false` (unlike [_measureSelectionFilter],
@@ -25082,7 +25083,8 @@ class _PartScreenState extends State<PartScreen> {
         branchChanges = result?.branchChanges ?? const [];
         branchNotice = result == null
             ? null
-            : mateBranchNotice(result.branchChanges, _mates, blockedBy: result.blockedBy, conflicting: result.conflicting);
+            : mateBranchNotice(result.branchChanges, _mates,
+                blockedBy: result.blockedBy, conflicting: result.conflicting, budgetExhausted: result.budgetExhausted);
         dialogRefresh?.call();
       }
 

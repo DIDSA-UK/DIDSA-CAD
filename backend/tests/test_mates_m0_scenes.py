@@ -34,12 +34,12 @@ def test_scaling_scene_builds_and_solves(factory, variant):
     verdict = client_verdict(result.constraint_model, client_caps())
     # M1: the client model has one member per rigid set (version 8) - every M0 scene has a set, so fewer members than the group
     assert verdict["version"] == 8 and verdict["members"] == result.solved_bodies < len(model.member_ids) and verdict["rows"] >= 0
-    assert not verdict["shipped_reads"]  # the shipped clients parse up to v7: they keep projecting until M2
+    assert verdict["shipped_reads"]  # M2: the Flutter and VR clients read version 8 (before it they parsed up to v7 and kept projecting)
 
 
 def test_a_big_chain_now_fits_the_client_caps_as_one_body():
     # M0 measured this chain refused (10 members, 144 rows); with rigid sets (M1) it is one body and no rows - it would fit the caps
-    # once a client reads constraint model v8 (M2)
+    # once a client reads constraint model v8 (it does since M2)
     scene = scaling.chain_scene(10)
     result = solve_group(get_document(), get_document().parts[scene.root], scene.mover, None)
     verdict = client_verdict(result.constraint_model, client_caps())

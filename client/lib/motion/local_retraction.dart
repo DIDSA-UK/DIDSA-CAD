@@ -34,7 +34,13 @@ const double kLocalAcceptResidual = 1e-6;
 /// projector's grabbed pose: on a curved mate the projector is the one that is off by a fraction of a far wish.
 const double kLocalAcceptDistance = 0.5;
 
-/// Bigger groups / systems stay on the projection (cost grows ~ rows³).
+/// Bigger groups / systems stay on the projection (cost grows ~ rows³). With version 8 `members` are the sets' LEADS, so these caps count bodies, not parts.
+///
+/// M2 re-measured them on the reduced models of the 22 M0 scaling scenes (`test/local_retraction_m0_bench_test.dart`, desktop only, one frame = 3 to 4
+/// iterations + polish): 18 of the 22 fit and cost 0.03 to 0.75 ms a frame (up to 2 ms in a native-compiled run; the 4-lead linkage is the dearest); the four bolted chains do not: 7 leads / 76 rows
+/// 3 to 7 ms, 9 / 80 rows 5 to 7 ms, 17 to 19 leads / 176 to 180 rows 31 to 88 ms. The caps are NOT raised: even the cheapest bolted chain costs about 3 to 10 times the
+/// dearest scene inside them, on a desktop; no device of the flat app was measured and a phone is several times slower. Raising them to 9 / 80 would admit
+/// chain-5-bolts (`docs/mates-storage-sessions-plan-2026-11-12.md`, "M2 results").
 const int kLocalMaxMembers = 8;
 const int kLocalMaxRows = 64;
 const int kLocalModelVersion = 3;
@@ -57,6 +63,12 @@ const int kLocalLimitModelVersion = 6;
 /// when some side has one; a superset of 3 to 6 (limits, couplers, pairs may sit alongside).
 const int kLocalFollowModelVersion = 7;
 
+/// Version 8 = rigid sets (`docs/motion/projector-spec.md` §4b, "Version 8"): the model's members are the sets' LEADS and `rigid_sets` gives
+/// every lead's followers as constant offsets `(r, t)` (a follower's pose is `(R_L r, R_L t + t_L)`). A set weighs what its members would, so the
+/// retraction uses the set metric `F` (upper Cholesky factor of `M = diag(s_L²) + Σ Ad(d_m)ᵀ diag(s_m²) Ad(d_m)`) for a lead that has followers, and
+/// the plain diagonal for every other. Emitted by the backend only when the group has a set; a superset of 3 to 7.
+const int kLocalRigidModelVersion = 8;
+
 /// Active-set rounds of one retraction, and how far (mm / degrees) a value may sit outside its range before the limit counts as violated.
 const int kLocalLimitRounds = 3;
 const double kLocalLimitTol = 1e-6;
@@ -75,6 +87,15 @@ class _Follow {
   final bool keepRotation;
 
   const _Follow(this.rs, this.ts, this.keepRotation);
+}
+
+/// One follower of a rigid-set lead (version 8): its id and its constant offset from the lead, `(R_L r, R_L t + t_L)`.
+class _Offset {
+  final String id;
+  final Mat3 r;
+  final List<double> t;
+
+  const _Offset(this.id, this.r, this.t);
 }
 
 class _Side {
@@ -206,12 +227,18 @@ class LocalFrameResult {
   final double residualInf;
   final double fallbackDistance;
 
+  /// Version 8: every follower's pose (by occurrence id) with the leads at [poses] / [localPoses]; empty for a model without sets.
+  final Map<String, Pose> followers;
+  final Map<String, Pose> localFollowers;
+
   const LocalFrameResult({
     required this.accepted,
     required this.poses,
     required this.localPoses,
     required this.residualInf,
     required this.fallbackDistance,
+    this.followers = const <String, Pose>{},
+    this.localFollowers = const <String, Pose>{},
   });
 }
 
@@ -234,7 +261,31 @@ class LocalRetractor {
   /// Version 5: the pose each member had at the latest accepted anchor (the base of a coupler's rows), by member index; null = the exported ones.
   List<Pose>? _anchors;
 
-  LocalRetractor._(this.members, this.memberIds, this._mates, this.rows);
+  /// Version 8: per lead (by member index) its followers; every list is empty for a model without sets.
+  final List<List<_Offset>> _followers;
+
+  LocalRetractor._(this.members, this.memberIds, this._mates, this.rows, [List<List<_Offset>>? followers])
+      : _followers = followers ?? List<List<_Offset>>.generate(members, (_) => const <_Offset>[]);
+
+  /// Whether the model has rigid sets (version 8 with followers).
+  bool get hasSets => _followers.any((f) => f.isNotEmpty);
+
+  /// The followers' occurrence ids, in lead order (empty without sets). `memberIds` + `followerIds` are every occurrence the model moves.
+  List<String> get followerIds => <String>[
+        for (final f in _followers)
+          for (final o in f) o.id,
+      ];
+
+  /// Every follower's pose (by id) with the leads at [leads] (one pose per member, the model's order): `(R_L r, R_L t + t_L)`.
+  Map<String, Pose> expandFollowers(List<Pose> leads) {
+    final out = <String, Pose>{};
+    for (var i = 0; i < members; i++) {
+      for (final o in _followers[i]) {
+        out[o.id] = _compose(leads[i], o);
+      }
+    }
+    return out;
+  }
 
   /// Whether the model holds a coupler mate (rows measured from anchors).
   bool get hasCoupler => _mates.any((m) => _couplerTypes.contains(m.type));
@@ -245,8 +296,9 @@ class LocalRetractor {
   }
 
   /// Parses an anchor's `constraint_model`; `null` (= keep projecting) for no model, another `version`, an unknown mate type,
-  /// a side missing geometry its residual needs, or a group the local solve is not meant for (spec §4b.2).
-  static LocalRetractor? tryParse(Map<String, dynamic>? json, {int maxMembers = kLocalMaxMembers}) {
+  /// a side missing geometry its residual needs, or a group the local solve is not meant for (spec §4b.2): more than [maxMembers] members
+  /// (version 8: leads) or [maxRows] residual rows (a benchmark passes bigger ones to measure what a cap would cost).
+  static LocalRetractor? tryParse(Map<String, dynamic>? json, {int maxMembers = kLocalMaxMembers, int maxRows = kLocalMaxRows}) {
     if (json == null) return null;
     try {
       final version = (json['version'] as num?)?.toInt();
@@ -254,10 +306,12 @@ class LocalRetractor {
           version != kLocalPairModelVersion &&
           version != kLocalCouplerModelVersion &&
           version != kLocalLimitModelVersion &&
-          version != kLocalFollowModelVersion) {
+          version != kLocalFollowModelVersion &&
+          version != kLocalRigidModelVersion) {
         return null;
       }
-      final v6 = version == kLocalLimitModelVersion || version == kLocalFollowModelVersion; // 7 is a superset of 6 (limits, couplers, pairs)
+      // 7 is a superset of 6 (limits, couplers, pairs) and 8 of 7 (and adds the rigid sets).
+      final v6 = version == kLocalLimitModelVersion || version == kLocalFollowModelVersion || version == kLocalRigidModelVersion;
       final ids = <String>[for (final m in json['members'] as List) m as String];
       if (ids.isEmpty || ids.length > maxMembers) return null;
       final mates = <_Mate>[];
@@ -290,6 +344,7 @@ class LocalRetractor {
         if (version == kLocalModelVersion && (side.a.pair != null || side.b.pair != null)) return null;
         // `follow` belongs to version 7 only.
         if (version != kLocalFollowModelVersion &&
+            version != kLocalRigidModelVersion &&
             (side.a.follow != null || side.b.follow != null || side.a.pair?.follow != null || side.b.pair?.follow != null)) {
           return null;
         }
@@ -297,18 +352,51 @@ class LocalRetractor {
         if (version != kLocalCouplerModelVersion && !v6 && (side.a.anchorR != null || side.b.anchorR != null)) return null;
         mates.add(side);
       }
-      final probe = LocalRetractor._(ids.length, ids, mates, 0);
+      // `rigid_sets` belongs to version 8 only; the leads are `members`, so a set names one by index and a follower's id is none of the members'.
+      final followers = _parseSets(json['rigid_sets'], version == kLocalRigidModelVersion, ids);
+      if (followers == null) return null;
+      final probe = LocalRetractor._(ids.length, ids, mates, 0, followers);
       // A dry evaluation at identity poses: throws on a missing field, tells the row count.
       final identity = <Pose>[for (var i = 0; i < ids.length; i++) Pose(<double>[0, 0, 0], Mat3.identity())];
       final r = probe._evaluate(identity, false).$1;
-      if (r.length + mates.where((m) => _limitTypes.contains(m.type)).length > kLocalMaxRows) return null;
+      if (r.length + mates.where((m) => _limitTypes.contains(m.type)).length > maxRows) return null;
       for (final m in mates.where((m) => _limitTypes.contains(m.type))) {
         probe._limitRow(m, identity); // throws (-> null) for a side missing the geometry the limit measures
       }
-      return LocalRetractor._(ids.length, ids, mates, r.length);
+      return LocalRetractor._(ids.length, ids, mates, r.length, followers);
     } catch (_) {
       return null;
     }
+  }
+
+  /// The `rigid_sets` of a version-8 model as followers per lead; `null` = malformed (a `rigid_sets` outside version 8, a lead index out of range
+  /// or listed twice, a follower with no id, a bad offset, an id used twice or that is also a lead).
+  static List<List<_Offset>>? _parseSets(Object? raw, bool v8, List<String> leads) {
+    final out = List<List<_Offset>>.generate(leads.length, (_) => const <_Offset>[]);
+    if (raw == null) return out;
+    if (!v8 || raw is! List) return null;
+    final seen = <String>{...leads};
+    final used = <int>{};
+    for (final e in raw) {
+      final entry = e as Map<String, dynamic>;
+      final lead = (entry['member'] as num).toInt();
+      if (lead < 0 || lead >= leads.length || !used.add(lead)) return null;
+      final list = <_Offset>[];
+      for (final f in entry['followers'] as List) {
+        final fm = f as Map<String, dynamic>;
+        final id = fm['id'];
+        if (id is! String || !seen.add(id)) return null;
+        final rows = fm['r'] as List;
+        final t = _vec(fm['t']);
+        if (rows.length != 3 || t.length != 3) return null;
+        final r = <double>[for (final row in rows) ..._vec(row)];
+        if (r.length != 9) return null;
+        list.add(_Offset(id, Mat3(r), t));
+      }
+      if (list.isEmpty) return null;
+      out[lead] = list;
+    }
+    return out;
   }
 
   /// A coupler's two sides each need an axis (`axis_origin`, `direction`), a member side its anchor, and a positive value.
@@ -792,16 +880,20 @@ class LocalRetractor {
 
   List<Pose> _retractOnce(List<Pose> poses, List<Pose> wishes, List<double> w, int iterations, int polish) {
     var cur = List<Pose>.of(poses);
+    final sets = hasSets;
     for (var it = 0; it < iterations; it++) {
       final (r, jac) = _evaluate(cur, true);
+      final fin = sets ? _factors(cur, w) : null; // version 8: F⁻¹ of every lead that has followers (null for the others)
       final g = <double>[];
       for (var i = 0; i < members; i++) {
         g.addAll(poseDelta(wishes[i], cur[i]));
       }
-      final a = <List<double>>[
-        for (final row in jac) <double>[for (var c = 0; c < n; c++) row[c] / w[c]],
-      ];
-      var y0 = <double>[for (var c = 0; c < n; c++) w[c] * g[c]];
+      final a = fin == null
+          ? <List<double>>[
+              for (final row in jac) <double>[for (var c = 0; c < n; c++) row[c] / w[c]],
+            ]
+          : <List<double>>[for (final row in jac) _rightMul(row, w, fin)];
+      var y0 = fin == null ? <double>[for (var c = 0; c < n; c++) w[c] * g[c]] : _target(cur, poses, g, w, fin);
       var n0 = 0.0;
       for (final x in y0) {
         n0 += x * x;
@@ -821,7 +913,7 @@ class LocalRetractor {
       } else {
         y = y0;
       }
-      cur = _step(cur, _capRotation(<double>[for (var c = 0; c < n; c++) y[c] / w[c]]));
+      cur = _step(cur, _capRotation(_unscale(y, w, fin)));
     }
     for (var it = 0; it < polish; it++) {
       final (r, jac) = _evaluate(cur, true);
@@ -831,13 +923,187 @@ class LocalRetractor {
         big = math.max(big, x.abs());
       }
       if (big < 1e-12) break;
-      final a = <List<double>>[
-        for (final row in jac) <double>[for (var c = 0; c < n; c++) row[c] / w[c]],
-      ];
+      final fin = sets ? _factors(cur, w) : null;
+      final a = fin == null
+          ? <List<double>>[
+              for (final row in jac) <double>[for (var c = 0; c < n; c++) row[c] / w[c]],
+            ]
+          : <List<double>>[for (final row in jac) _rightMul(row, w, fin)];
       final corr = _correction(a, r);
-      cur = _step(cur, _capRotation(<double>[for (var c = 0; c < n; c++) -corr[c] / w[c]]));
+      cur = _step(cur, _capRotation(_unscale(<double>[for (final x in corr) -x], w, fin)));
     }
     return cur;
+  }
+
+  // ---- rigid sets (version 8): the set metric -----------------------------------------------------------------------
+
+  /// A follower's pose with its lead at [lead]: `(R_L r, R_L t + t_L)`.
+  static Pose _compose(Pose lead, _Offset o) {
+    final off = lead.r.mulVec(o.t);
+    return Pose(<double>[off[0] + lead.t[0], off[1] + lead.t[1], off[2] + lead.t[2]], lead.r * o.r);
+  }
+
+  /// `F⁻¹` (6×6 row-major, upper triangular) of every lead that has followers, at the leads' [cur] poses; `null` for a lead without any (it keeps
+  /// the diagonal metric, bit for bit as before version 8). `M = diag(s_L²) + Σ_m Ad(d_m)ᵀ diag(s_m²) Ad(d_m)` with `d_m = R_L t_m` the follower's
+  /// world offset, `s_L` the lead's weight row of [w] and `s_m` a follower's = the grabbed row `[1,1,1,L,L,L]` (the first member's `w`) ×
+  /// [kLocalFollower]; `F` is its upper Cholesky factor (`FᵀF = M`).
+  List<List<double>?> _factors(List<Pose> cur, List<double> w) {
+    return <List<double>?>[
+      for (var i = 0; i < members; i++)
+        _followers[i].isEmpty ? null : _invUpperCholesky(_setMetric(i, cur[i], w)),
+    ];
+  }
+
+  /// A follower's weight row: the grabbed member's `[1,1,1,L,L,L]` × [kLocalFollower].
+  static List<double> _followerRow(List<double> w) => <double>[for (var c = 0; c < 6; c++) w[c] * kLocalFollower];
+
+  /// `Ad(d)` = `[[I, -[d]x], [0, I]]` (6×6 row-major): a lead twist `[v, w]` to the twist of a point at world offset `d` from the lead's origin.
+  static List<double> _ad(List<double> d) {
+    final m = List<double>.filled(36, 0.0);
+    for (var i = 0; i < 6; i++) {
+      m[i * 6 + i] = 1.0;
+    }
+    // -[d]x = [[0, d2, -d1], [-d2, 0, d0], [d1, -d0, 0]]
+    m[0 * 6 + 4] = d[2];
+    m[0 * 6 + 5] = -d[1];
+    m[1 * 6 + 3] = -d[2];
+    m[1 * 6 + 5] = d[0];
+    m[2 * 6 + 3] = d[1];
+    m[2 * 6 + 4] = -d[0];
+    return m;
+  }
+
+  List<double> _setMetric(int lead, Pose pose, List<double> w) {
+    final m = List<double>.filled(36, 0.0);
+    for (var c = 0; c < 6; c++) {
+      m[c * 6 + c] = w[6 * lead + c] * w[6 * lead + c];
+    }
+    final fs = _followerRow(w);
+    for (final o in _followers[lead]) {
+      final ad = _ad(pose.r.mulVec(o.t));
+      for (var i = 0; i < 6; i++) {
+        for (var j = 0; j < 6; j++) {
+          var acc = 0.0;
+          for (var k = 0; k < 6; k++) {
+            acc += ad[k * 6 + i] * fs[k] * fs[k] * ad[k * 6 + j];
+          }
+          m[i * 6 + j] += acc;
+        }
+      }
+    }
+    return m;
+  }
+
+  /// `U⁻¹` for the upper Cholesky factor `U` (`UᵀU = M`, positive diagonal) of the symmetric positive-definite 6×6 [m].
+  static List<double> _invUpperCholesky(List<double> m) {
+    final l = List<double>.filled(36, 0.0); // lower factor, M = L Lᵀ, U = Lᵀ
+    for (var i = 0; i < 6; i++) {
+      for (var j = 0; j <= i; j++) {
+        var sum = m[i * 6 + j];
+        for (var k = 0; k < j; k++) {
+          sum -= l[i * 6 + k] * l[j * 6 + k];
+        }
+        if (i == j) {
+          if (sum <= 0) throw StateError('rigid-set metric is not positive definite');
+          l[i * 6 + i] = math.sqrt(sum);
+        } else {
+          l[i * 6 + j] = sum / l[j * 6 + j];
+        }
+      }
+    }
+    // inverse of U (upper): column by column back substitution; U[i][j] = l[j][i]
+    final inv = List<double>.filled(36, 0.0);
+    for (var c = 0; c < 6; c++) {
+      for (var r = c; r >= 0; r--) {
+        var sum = r == c ? 1.0 : 0.0;
+        for (var k = r + 1; k <= c; k++) {
+          sum -= l[k * 6 + r] * inv[k * 6 + c];
+        }
+        inv[r * 6 + c] = sum / l[r * 6 + r];
+      }
+    }
+    return inv;
+  }
+
+  /// One Jacobian row times the metric's inverse: `row · F⁻¹` (a lead with followers: its 6-block times its `F⁻¹`; any other column `/ w`).
+  List<double> _rightMul(List<double> row, List<double> w, List<List<double>?> fin) {
+    final out = List<double>.filled(n, 0.0);
+    for (var i = 0; i < members; i++) {
+      final inv = fin[i];
+      if (inv == null) {
+        for (var c = 6 * i; c < 6 * i + 6; c++) {
+          out[c] = row[c] / w[c];
+        }
+      } else {
+        for (var c = 0; c < 6; c++) {
+          var sum = 0.0;
+          for (var k = 0; k <= c; k++) {
+            sum += row[6 * i + k] * inv[k * 6 + c];
+          }
+          out[6 * i + c] = sum;
+        }
+      }
+    }
+    return out;
+  }
+
+  /// `F⁻¹ y`: the step in the twist coordinates (`y / w` without sets).
+  List<double> _unscale(List<double> y, List<double> w, List<List<double>?>? fin) {
+    if (fin == null) return <double>[for (var c = 0; c < n; c++) y[c] / w[c]];
+    final out = List<double>.filled(n, 0.0);
+    for (var i = 0; i < members; i++) {
+      final inv = fin[i];
+      if (inv == null) {
+        for (var c = 6 * i; c < 6 * i + 6; c++) {
+          out[c] = y[c] / w[c];
+        }
+      } else {
+        for (var r = 0; r < 6; r++) {
+          var sum = 0.0;
+          for (var c = r; c < 6; c++) {
+            sum += inv[r * 6 + c] * y[6 * i + c];
+          }
+          out[6 * i + r] = sum;
+        }
+      }
+    }
+    return out;
+  }
+
+  /// `y0` of a retraction with sets: a lead without followers `w ∘ g`; a lead with them `F⁻ᵀ (s_L² ∘ g_L + Σ_m Ad_mᵀ (s_m² ∘ g_m))`, `g_m` the move
+  /// taking follower `m` back to its REST pose (its lead's pose at the START of the retraction, [start], times its offset).
+  List<double> _target(List<Pose> cur, List<Pose> start, List<double> g, List<double> w, List<List<double>?> fin) {
+    final out = List<double>.filled(n, 0.0);
+    final fs = _followerRow(w);
+    for (var i = 0; i < members; i++) {
+      final inv = fin[i];
+      if (inv == null) {
+        for (var c = 6 * i; c < 6 * i + 6; c++) {
+          out[c] = w[c] * g[c];
+        }
+        continue;
+      }
+      final acc = <double>[for (var c = 0; c < 6; c++) w[6 * i + c] * w[6 * i + c] * g[6 * i + c]];
+      for (final o in _followers[i]) {
+        final moved = _compose(cur[i], o);
+        final home = _compose(start[i], o);
+        final gm = poseDelta(home, moved);
+        final ad = _ad(cur[i].r.mulVec(o.t));
+        for (var r = 0; r < 6; r++) {
+          for (var k = 0; k < 6; k++) {
+            acc[r] += ad[k * 6 + r] * fs[k] * fs[k] * gm[k];
+          }
+        }
+      }
+      for (var r = 0; r < 6; r++) {
+        var sum = 0.0;
+        for (var c = 0; c <= r; c++) {
+          sum += inv[c * 6 + r] * acc[c]; // F⁻ᵀ[r][c] = F⁻¹[c][r]
+        }
+        out[6 * i + r] = sum;
+      }
+    }
+    return out;
   }
 
   /// One frame: retract from [poses] (the previous displayed poses) towards [wishes] (grabbed: the hand; followers:
@@ -863,6 +1129,8 @@ class LocalRetractor {
       localPoses: got,
       residualInf: res,
       fallbackDistance: dist,
+      followers: hasSets ? expandFollowers(ok ? got : fallback) : const <String, Pose>{},
+      localFollowers: hasSets ? expandFollowers(got) : const <String, Pose>{},
     );
   }
 }
