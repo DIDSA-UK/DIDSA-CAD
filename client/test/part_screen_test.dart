@@ -7765,6 +7765,15 @@ void main() {
       expect(find.text('Synced'), findsOneWidget);
     });
 
+    testWidgets('plain Save on a server project sends the file to the store', (tester) async {
+      await pumpServerScreen(tester);
+
+      await tapFileMenu(tester, 'Save');
+      await tester.pump(const Duration(milliseconds: 600));
+
+      expect(store.livePaths('Gearbox'), isNotEmpty, reason: 'requests: ${store.requests}');
+    });
+
     testWidgets('a clash on Save All writes nothing, shows who changed it, and Keep mine then lands the commit', (tester) async {
       final backend = await pumpServerScreen(tester);
       await tapFileMenu(tester, 'Save All');
