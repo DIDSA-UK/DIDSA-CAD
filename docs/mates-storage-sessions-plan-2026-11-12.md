@@ -33,11 +33,11 @@ The implementation session updates this table in its PR.
 |---|---|---|---|
 | M0 | Mate benchmark: scaling scenes and first-time accuracy baseline | CAD | Done (PR #354; results: "M0 results" below) |
 | M1 | Rigid sets in the group solve | CAD backend | Done (PR #355; results: "M1 results" below) |
-| M1.1 | Group solve follow-ups: mate geometry cache, ground-row pruning, one preview budget, missing tests | CAD backend | In review (results: "M1.1 results" below) |
-| M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | In review (caps not raised; results: "M2 results" below) |
-| M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Not started |
-| M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Not started |
-| M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | In review (results: "M5 results" below) |
+| M1.1 | Group solve follow-ups: mate geometry cache, ground-row pruning, one preview budget, missing tests | CAD backend | Done (merged; results: "M1.1 results" below) |
+| M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | Done (merged; caps not raised; results: "M2 results" below) |
+| M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Done (merged) |
+| M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | In review: the type rule shipped (with Peg in hole); no pick-point rule met the standard, so none shipped (results: "M4 results" below) |
+| M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Done (merged; results: "M5 results" below) |
 | S0 | Storage scope doc and spikes | CAD, VR | Not started |
 | S1 | Project store service | CAD | Not started |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Not started |
@@ -634,6 +634,129 @@ Feel is not testable; the owner judges the glide time on the headset.
   brings the two pick points nearer; for alignment prefer the root that turns the picked face towards the other part.
   Must show a net gain on the M0 bench with zero harmed cases, or it does not ship (the Phase 4 rule's standard).
 - Target: 83% to 90% or better overall; same-facing distance 54% to 75% or better.
+
+### M4 results (2026-11-13)
+
+**In one line:** the type rule shipped (backend + both clients, with Peg in hole as one action); **no pick-point rule shipped**, because every
+rule I could state in words harmed at least one scene and start-class row. The targets (overall 90 %, same-facing 75 %) are **not met**: every
+row of the M0 benchmark is exactly where it was. Everything below is the benchmark's synthetic scenes; nothing was run on a device or a
+headset, and none of it says the first guess is better in real use.
+
+**Step 0, the baseline on `main` (`22643c4`, M0 to M3 and M5 merged).** `CAD_API_KEY=test-api-key python -m tests.bench_mates_m0 accuracy
+--trials 60 --json ...`, pinned to 2 cores with 2 BLAS threads (as M1 / M1.1). Machine: Intel Xeon @ 2.30GHz, 4 cores, Linux 6.18.44; Python
+3.11.18, numpy 2.4.6, OCCT 8.0.1.2 (not M0's machine: M0's was 2.10GHz). **All 50 scene x start-class rows are identical to M0's** (right first
+time, extra clicks, no way to the truth, not converged); only the preview times differ (another machine). No row moved since M0, and I think
+that is expected: M1 and M1.1 changed how a group is solved (rigid sets, the geometry cache, one preview clock), not which root Closest
+chooses. Every accuracy scene is one free part mated to a fixed base, so the reduced model is the full one, the branch is still resolved from
+the same start pose, and the alternatives are the same; M1 and M1.1 had each already reported the 50 rows unchanged. M2, M3 and M5 are
+client work. So M4 was judged against M0's numbers as they stand.
+
+**The benchmark, extended first** (`tests/bench_mates_m0.py`, `tests/mate_first_guess_scenes.py`). The scenes the M0 plan listed (same-facing
+inset and overhang with realistic pick points, upside-down starts) were already added by M0 (`inset-2`, `overhang-25`, the picks in
+`GuessScene.picks`, the `upside_down` class); what was missing was *sending* the picks. Now every trial sends its jittered pick points as
+`pick_points` (`--no-pick-points` turns that off). New: a **peg-in-hole** scene (a headed pin and a plate's bore; the pin's shoulder edge and
+the bore's rim) run twice, as `peg_in_hole` (the suggestion) and as `[before M4]` (Coincident on the two edges: what both clients started on
+before M4, which on two circles is a plain Concentric), and a **type table** (per scene: its type, the suggestion, whether a client starts on
+the right type before and after). The summaries keep M0's population (the peg rows are listed apart), so they compare with M0's.
+
+**Before (main) and after (this branch), every row.** Right first time per start class, 60 trials each; extra clicks per mate over near +
+medium + far. The after-run sent pick points; the before-run could not (main has no such field).
+
+| scene | near before / after | medium before / after | far before / after | upside_down before / after | extra clicks (near+medium+far) before / after |
+|---|---|---|---|---|---|
+| stack | 100.0% / 100.0% | 100.0% / 100.0% | 100.0% / 100.0% | 100.0% / 100.0% | 0.000 / 0.000 |
+| parallel | 100.0% / 100.0% | 53.3% / 53.3% | 63.3% / 63.3% | 0.0% / 0.0% | 0.278 / 0.278 |
+| pin-in-post | 100.0% / 100.0% | 56.7% / 56.7% | 80.0% / 80.0% | 0.0% / 0.0% | 0.211 / 0.211 |
+| axis-distance-25 | 100.0% / 100.0% | 65.0% / 65.0% | 71.7% / 71.7% | 0.0% / 0.0% | 0.211 / 0.211 |
+| inset-10 | 95.0% / 95.0% | 36.7% / 36.7% | 46.7% / 46.7% | 0.0% / 0.0% | 0.500 / 0.500 |
+| overhang-3 | 55.0% / 55.0% | 23.3% / 23.3% | 38.3% / 38.3% | 0.0% / 0.0% | 0.611 / 0.611 |
+| gap-6-above | 100.0% / 100.0% | 58.3% / 58.3% | 70.0% / 70.0% | 0.0% / 0.0% | 0.333 / 0.333 |
+| gap-6-under | 100.0% / 100.0% | 68.3% / 68.3% | 66.7% / 66.7% | 0.0% / 0.0% | 0.333 / 0.333 |
+| vertex-6-above | 100.0% / 100.0% | 100.0% / 100.0% | 100.0% / 100.0% | 100.0% / 100.0% | 0.000 / 0.000 |
+| inset-2 | 70.0% / 70.0% | 38.3% / 38.3% | 45.0% / 45.0% | 0.0% / 0.0% | 0.600 / 0.600 |
+| overhang-25 | 100.0% / 100.0% | 30.0% / 30.0% | 43.3% / 43.3% | 0.0% / 0.0% | 0.422 / 0.422 |
+| inset-10-seated | 100.0% / 100.0% | 100.0% / 100.0% | 100.0% / 100.0% | n/a | 0.000 / 0.000 |
+| overhang-3-seated | 100.0% / 100.0% | 100.0% / 100.0% | 100.0% / 100.0% | n/a | 0.000 / 0.000 |
+| peg-in-hole (new), as Peg in hole | n/a / 100.0% | n/a / 100.0% | n/a / 100.0% | n/a / 100.0% | n/a / 0.000 |
+| peg-in-hole (new), as Coincident on the edges (what a client sent before M4) | n/a / 0.0% | n/a / 0.0% | n/a / 0.0% | n/a / 0.0% | n/a / no way to the truth in 240 of 240 |
+
+Headline (M0's population, unchanged by M4): Phase 4 set near + medium + far **75.9 %** (target 83 % to 90 %: not met; 83.3 % was the old
+Phase 4 doc's number on scenes that could not be found, see "M0 results"); same-facing distances on a free part **51.8 %** (target 75 %: not
+met); upside-down starts 18.2 %; every scene and start class 63.5 %, 0.440 extra clicks per mate.
+
+**Rule 1, the type from the picks: shipped.** `app/document/mate_suggest.py` (the plan's table, every row tested in
+`tests/test_mate_first_guess_m4.py`): two round faces or circular edges (any mix) Concentric; two flat faces (or planes) Coincident; a flat
+face and a round face (or a circular edge) no suggestion; anything with a corner, a straight edge or a Width mid-plane no suggestion; a
+circular edge on each side, each lying on a flat face, **Peg in hole** (two circles not on flat faces stay Concentric). `preview-mate-solve`
+with `type: "auto"` answers `suggested_type` (the key only in that answer, possibly null) and, with a suggestion, exactly the preview of that
+type; with none, `converged: false`. `type: "peg_in_hole"` previews Concentric on the edges plus Coincident on the two flat faces (touching,
+the Coincident default) as one solve, and a create stores both mates or neither (`solve=` atomic as before; 422 `not_a_peg_in_hole`,
+`auto_type_not_creatable`). The Concentric's alignment is the one that agrees with touching faces (from the same resolved geometry the
+solver uses) unless the request names one, so a pin dropped upside down still seats: that is a rule of the action itself ("the faces touch"),
+not a tie-break.
+Measured: right type first **1 of 14 scenes before, 3 after, none harmed** (stack stays Coincident; pin-in-post now starts on Concentric:
+before, Coincident on two cylinders already behaved as a Concentric, so its placement rows do not change, only the type it is called; the peg
+now starts on Peg in hole). The peg scene is right first time in **100 % of every start class (0 % before)**. Said plainly: the peg scene is
+built to the rule's own definition (a shoulder resting on the plate), so 100 % shows the action does what it says, not that users want it;
+the other twelve scenes keep their placement rows because the benchmark sends their type explicitly (the suggestion changes the type a
+client starts on, not how a given type is placed). Where the suggestion is wrong for a scene's intent (a Distance between two faces is
+suggested Coincident; Parallel likewise; an axis distance is suggested Concentric), it is wrong before M4 too (Coincident), so no row is
+harmed, but the user still has to change the type there.
+Clients: **Flutter** (`part_screen.dart`, `mate_panel.dart`): until the user picks a type in the panel, the first preview of each new pair
+of picks sends `auto`; the panel then shows the suggestion (the type list gained "Peg in hole" after Concentric, and the type field says
+"Suggested from the picks: change it if it is not what you want."); no suggestion, or a backend older than M4 (422 on `auto`), previews the
+type shown as before. **VR** (`mates_tool.gd`): the same, with the tool's type set from outside (tablet, wheel, a test) counting as the
+user's choice until the tool is switched on again; "Peg in hole" is on the tablet and on the wheel's Type ring after Concentric (with its own icon; the ring
+has eight wedges now, unjudged on the headset); the status line says the type was suggested; the tablet's type buttons now follow the tool's type.
+
+**Rule 2, pick points as a tie-break: not shipped.** No candidate met the standard (net gain and zero harmed rows). How I looked: the
+baseline's 3000 previews were replayed and every alternative (each branch combination solved from the same start) dumped with its
+geometry and both pick points; each candidate then chose among the alternatives. For these scenes (one new mate, a free part, a fixed base)
+that is what the rule would do in the server, without a server build per idea (`tests/m4_pick_rule_study.py`, `dump` then `evaluate`). The
+failures first: on the free scenes the misses at medium / far are the alignment (the start's dot product picks it, a coin toss when the part
+is tumbled), plus the side for same-facing distances; every upside-down miss is the alignment, and there the start is not a tie at all (the
+part is clearly the wrong way up). Candidates, each a rule in words, numbers as right-first-time over the 50 rows (baseline 63.5 %, Phase 4
+set 75.9 %) and the rows they harm:
+
+| candidate (only for a Closest branch) | all rows | Phase 4 set | rows harmed (previews lost) |
+|---|---|---|---|
+| Same-facing distance: the side that brings the two pick points nearer (the plan's rule) | 63.5 % | 75.9 % | none, and no effect: for two parallel planes the two sides are mirror translations along the normal, so the pick points are exactly as far apart on both sides (a true tie, every time) |
+| Same-facing distance: the side the driven pick point is on at the start (instead of the face's origin) | 63.5 % | 75.8 % | 3 (inset-10 medium -1, overhang-3 far -1, inset-2 near -2; it helps 4) |
+| Alignment, when the start leaves it undecided (the two directions within 45 deg of perpendicular): the root that turns the driven picked face towards the other pick (the plan's rule, for plane-plane distances) | 65.1 % | 78.1 % | 4 (overhang-3 medium -9, far -6; overhang-25 medium -13, far -10); it helps insets (+30, +14, +24, +11) and gaps (+4, +1, +2): towards the other face is right for an inset and wrong for an overhang |
+| the same within 30 deg | 64.9 % | 77.7 % | 4 (the same rows) |
+| the same for Parallel and Coincident too | 64.9 % | 77.7 % | 6 (also parallel medium -5, far -1) |
+| Alignment tie (45 deg): the two picked faces face each other | 62.6 % | 77.4 % | 8 (every same-facing row: the facing root is the gap reading of a same-facing pair) |
+| the same, and the driven pick lies over the fixed face | 64.2 % | 77.4 % | 4 (inset-10 medium -1, overhang-3 medium -2, inset-2 medium -1, overhang-25 medium -2; it helps the gaps +17, +1, +8, +2): the closest to the standard, still not shippable |
+| Always (not as a tie-break) prefer the face turned towards the other pick | 55.8 % | 75.2 % | 9 |
+| Always prefer faces that face each other | 45.8 % | 70.0 % | 18 |
+
+Why none works on this benchmark: from the picks alone (a face on each part) a same-facing distance and a facing gap look the same, so
+every "facing" preference trades one for the other, and the inset / overhang choice is the user's (the Phase 4 doc found the same). I did not
+tune thresholds against the rows to find a combination that happens to harm nothing. The view direction (flat app) is not in the benchmark,
+so no rule could be judged on it.
+**What did ship for pick points:** the wire only. `MateCreate.pick_points` (one per reference, local to its occurrence, mm, null allowed) and
+`view_direction` are accepted and checked (422 for a wrong shape), and **no solve reads them**: a test pins that the answer is the same with
+and without them. Both clients send them (Flutter: the hit point taken into the occurrence's frame plus the view direction; VR: the laser's
+hit point, local mm, no view direction), so a later rule needs only a backend change. Drop them if that is not wanted.
+
+**An older client keeps working.** A request without `auto` / `peg_in_hole` runs exactly the pre-M4 code path, and
+`tests/test_mate_first_guess_m4.py::test_legacy_previews_are_byte_identical` replays 37 legacy previews (8 scenes, near and far starts, `auto`
+and `group` movement, and in-progress payloads) against answers recorded on `main` before M4 (`tests/data/m4_legacy_previews.json`,
+recorder `tests/m4_legacy_cases.py`) and compares the response **bytes**. Caveat: the recording is floating-point output from one machine; a
+CI runner with another BLAS could in principle differ in the last digit (it did not between two runs here).
+
+**Tests.** The full backend suite without the gears marker: 3085 passed, 1 skipped (pre-existing); the 464 gears-marked tests were deselected and **not run** (they were not touched). `flutter test` in `client/`: all 3880 passed (50 skipped, as before). The bench edits were checked by the after-run above. Backend: `tests/test_mate_first_guess_m4.py` (43: every row of the rule table, pick kinds on real geometry, `suggested_type` on
+the wire and its solve equal to the explicit type's, the no-suggestion answer, no key in a legacy answer, the byte-identical replay, pick points
+change nothing and are validated, the peg from near / far / upside-down starts against the old Coincident, the atomic two-mate create, a
+refused create leaves nothing, `auto` cannot be created). Flutter: `test/mate_first_guess_m4_test.dart` (14: DTO with / without / null
+`suggested_type`, the request bodies, starting on the suggestion and changing it in the panel, the pick-point maths). VR:
+`tests/mates_suggested_type.gd` (21 SMOKE lines).
+
+**Not verified, said plainly.** Nothing ran on a headset, a phone or a desktop window; the Flutter flow was tested as functions, a panel
+widget and the API client, not as a whole `PartScreen` with a backend (its test fake has no preview route), and the viewport's capture of the
+pick point is not exercised by a test (only the conversion it uses). The suggestion's quality on real models is unmeasured (the benchmark's
+type table is 14 synthetic scenes). With no suggestion the client makes a second preview request (one more round trip) before a ghost shows.
+VR's live-backend tests (`ci_e2e.sh`) were not run for M4.
 
 ### M5. Show rigid sets (Flutter and VR; small; standard agent)
 

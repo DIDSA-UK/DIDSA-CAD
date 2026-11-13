@@ -335,12 +335,19 @@ def _seed(scene_name: str, kind: str) -> int:
     return sum(ord(c) * (i + 1) for i, c in enumerate(f"{scene_name}/{kind}")) % (2**31)
 
 
-def one_preview(scene: "guess.GuessScene", start: dict) -> dict:
+def one_preview(scene: "guess.GuessScene", start: dict, picks: dict | None = None, payload: dict | None = None) -> dict:
     """One trial: the part at `start`, the mate previewed with nothing named. `clicks`: 0 = right first time, else the fewer of
-    branch toggles (Aligned / Flip side) and Next-solution presses that reach the truth; None = no alternative reaches it."""
+    branch toggles (Aligned / Flip side) and Next-solution presses that reach the truth; None = no alternative reaches it.
+    M4: `picks` (this trial's pick points, `guess.trial_picks`) are sent as `pick_points`; `payload` replaces the scene's mate (the
+    "before M4" type of the peg-in-hole scene)."""
     guess.set_pose(scene, start)
+    named = {}
+    if picks is not None:
+        named["pick_points"] = [picks[guess.DRIVEN], picks[guess.FIXED]]
+    if payload is not None:
+        named = {**payload, **named}
     began = time.perf_counter()
-    ghost = guess.preview(scene)
+    ghost = guess.preview(scene, **named)
     elapsed = (time.perf_counter() - began) * 1000.0
     if not ghost["converged"]:
         return {"first": False, "clicks": None, "converged": False, "ms": elapsed}
@@ -357,34 +364,84 @@ def one_preview(scene: "guess.GuessScene", start: dict) -> dict:
     return {"first": False, "clicks": None, "converged": True, "ms": elapsed}
 
 
-def run_accuracy(trials: int, only: tuple[str, ...] = ()) -> list[dict]:
+def run_accuracy(trials: int, only: tuple[str, ...] = (), send_picks: bool = True) -> list[dict]:
+    """Every scene and start class. M4: each trial sends its pick points (`send_picks`); a scene with `notes["old_default"]` (the
+    peg in a hole) is also run with the payload a client sent before M4, as the row `<scene> [before M4]`."""
     rows = []
     for name, factory in guess.SCENES.items():
         if only and name not in only:
             continue
         scene = factory()
         assert scene.correct(scene.true_pose), name
-        for kind in scene.start_classes():
-            rng = np.random.default_rng(_seed(name, kind))
-            first = unreachable = not_converged = clicks = 0
-            times, samples = [], []
-            for _ in range(trials):
-                start = guess.start_pose(scene, kind, rng)
-                picks = guess.trial_picks(scene, rng)
-                outcome = one_preview(scene, start)
-                first += outcome["first"]
-                not_converged += not outcome["converged"]
-                unreachable += outcome["clicks"] is None
-                clicks += outcome["clicks"] or 0
-                times.append(outcome["ms"])
-                samples.append({"start": start, "pick_points": picks, "first": outcome["first"], "clicks": outcome["clicks"]})
-            guess.set_pose(scene, scene.true_pose)
-            rows.append({
-                "scene": name, "group": scene.group, "kind": scene.kind, "seated": scene.seated, "start": kind, "trials": trials, "first": first,
-                "clicks": clicks, "unreachable": unreachable, "not_converged": not_converged, "preview_ms": statistics.median(times), "samples": samples,
-            })
+        variants = [(name, None)]
+        if scene.notes.get("old_default"):
+            variants.append((f"{name} [before M4]", scene.notes["old_default"]))
+        for label, payload in variants:
+            rows.extend(_accuracy_rows(scene, label, payload, trials, send_picks))
         print(f"  measured {name}", file=sys.stderr, flush=True)
     return rows
+
+
+def _accuracy_rows(scene: "guess.GuessScene", label: str, payload: dict | None, trials: int, send_picks: bool) -> list[dict]:
+    rows = []
+    name = scene.name
+    for kind in scene.start_classes():
+        rng = np.random.default_rng(_seed(name, kind))
+        first = unreachable = not_converged = clicks = 0
+        times, samples = [], []
+        for _ in range(trials):
+            start = guess.start_pose(scene, kind, rng)
+            picks = guess.trial_picks(scene, rng)
+            outcome = one_preview(scene, start, picks if send_picks else None, payload)
+            first += outcome["first"]
+            not_converged += not outcome["converged"]
+            unreachable += outcome["clicks"] is None
+            clicks += outcome["clicks"] or 0
+            times.append(outcome["ms"])
+            samples.append({"start": start, "pick_points": picks, "first": outcome["first"], "clicks": outcome["clicks"]})
+        guess.set_pose(scene, scene.true_pose)
+        rows.append({
+            "scene": label, "group": scene.group, "kind": scene.kind, "seated": scene.seated, "start": kind, "trials": trials, "first": first,
+            "clicks": clicks, "unreachable": unreachable, "not_converged": not_converged, "preview_ms": statistics.median(times), "samples": samples,
+            "pick_points_sent": send_picks,
+        })
+    return rows
+
+
+# ---- M4: the type the picks suggest ----------------------------------------------------
+
+_TYPE_BEFORE_M4 = "coincident"  # both clients' type control started on Coincident before M4 (Flutter `kMateTypes.first`, VR `mate_type`)
+
+
+def run_types(only: tuple[str, ...] = ()) -> list[dict]:
+    """Per scene: the scene's own mate type, what `type: "auto"` suggests for its two picks, and whether a client starts on the right
+    type before M4 (always Coincident) and after (the suggestion, else still Coincident)."""
+    rows = []
+    for name, factory in guess.SCENES.items():
+        if only and name not in only:
+            continue
+        scene = factory()
+        guess.set_pose(scene, scene.true_pose)
+        answer = guess.preview(scene, type="auto")
+        suggested = answer.get("suggested_type")
+        after = suggested or _TYPE_BEFORE_M4
+        truth = scene.payload["type"]
+        rows.append({"scene": name, "type": truth, "suggested": suggested, "right_before": _TYPE_BEFORE_M4 == truth, "right_after": after == truth,
+                     "auto_converged": answer["converged"], "auto_correct": bool(answer["converged"] and scene.correct(guess.shown_transform(answer)))})
+    return rows
+
+
+def print_types(rows: list[dict]) -> None:
+    print("\n### M4: the type the picks suggest (`type: \"auto\"`, part at its true pose)\n")
+    print("Before M4 both clients started on Coincident; after, on the suggestion (Coincident when there is none).\n")
+    print("| scene | its type | suggested | right type first, before | after | auto preview at the truth is right |")
+    print("|---|---|---|---|---|---|")
+    for r in rows:
+        print(f"| {r['scene']} | {r['type']} | {r['suggested'] or 'none'} | {'yes' if r['right_before'] else 'no'} | {'yes' if r['right_after'] else 'no'} | "
+              f"{'yes' if r['auto_correct'] else ('no' if r['suggested'] else 'n/a')} |")
+    before, after = sum(r["right_before"] for r in rows), sum(r["right_after"] for r in rows)
+    harmed = [r["scene"] for r in rows if r["right_before"] and not r["right_after"]]
+    print(f"\nRight type first: {before} of {len(rows)} scenes before, {after} after; harmed: {', '.join(harmed) or 'none'}.")
 
 
 def _share(rows: list[dict]) -> str:
@@ -423,6 +480,9 @@ def print_accuracy(rows: list[dict]) -> None:
             and (not three or r["start"] != "upside_down") and (seated is None or r["seated"] == seated)
         ]
 
+    peg_rows = [r for r in rows if r["kind"] == "peg"]
+    rows = [r for r in rows if r["kind"] != "peg"]  # M0's population: the summaries below stay comparable with M0's
+
     print("\n| summary | right first time | extra clicks per mate |")
     print("|---|---|---|")
     summaries = [
@@ -440,6 +500,11 @@ def print_accuracy(rows: list[dict]) -> None:
         ("Upside-down starts, the other mates (7)", [r for r in pick(start="upside_down") if r["kind"] != "same_facing"]),
         ("Every scene and start class", rows),
     ]
+    if peg_rows:
+        summaries += [
+            ("M4 peg in a hole, Peg in hole (the suggestion), every start class", [r for r in peg_rows if "[before M4]" not in r["scene"]]),
+            ("M4 peg in a hole, Coincident on the edges (before M4), every start class", [r for r in peg_rows if "[before M4]" in r["scene"]]),
+        ]
     for label, subset in summaries:
         print(f"| {label} | {_share(subset)} | {_clicks(subset)} |")
 
@@ -454,6 +519,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--trials", type=int, default=60, help="accuracy: trials per scene and start class (default 60, as Phase 4)")
     parser.add_argument("--family", action="append", default=[], help="scaling: only this family (chain, chain+bolts, frame, linkage; repeatable)")
     parser.add_argument("--scene", action="append", default=[], help="accuracy: only this scene (repeatable)")
+    parser.add_argument("--no-pick-points", action="store_true", help="accuracy: do not send pick_points (M4 sends them by default)")
     parser.add_argument("--json", help="also write the raw results here")
     args = parser.parse_args(argv)
     info = machine()
@@ -464,8 +530,10 @@ def main(argv: list[str] | None = None) -> None:
         out["scaling"] = run_scaling(args.quick, tuple(args.family))
         print_scaling(out["scaling"], client_caps())
     if args.what in ("accuracy", "all"):
-        out["accuracy"] = run_accuracy(args.trials, tuple(args.scene))
+        out["accuracy"] = run_accuracy(args.trials, tuple(args.scene), send_picks=not args.no_pick_points)
         print_accuracy(out["accuracy"])
+        out["types"] = run_types(tuple(args.scene))
+        print_types(out["types"])
     if args.json:
         Path(args.json).write_text(json.dumps(out, indent=1))
 

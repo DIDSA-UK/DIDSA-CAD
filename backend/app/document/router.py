@@ -62,6 +62,7 @@ from app.document.occurrence_paths import resolve_path
 from app.document.pattern_dissolve import PatternDissolveError, dissolve_component_pattern
 from app.document.models import BRANCH_AUTO, BRANCH_USER, COUPLER_TYPES, LIMIT_TYPES, REFERENCE_PLANE_IDS
 from app.document.limit import current_limit_value, prepare_limit, validate_limit_fields
+from app.document.mate_suggest import SUGGEST_PEG_IN_HOLE, peg_concentric_alignment, peg_in_hole_faces, suggestion_or_none
 from app.document.coupler import prepare_coupler
 from app.document.assembly_group import GroupSolveQuality
 from app.document.bevel_pair import resolve_member_profile_shifts
@@ -4325,7 +4326,24 @@ def create_mate(
     the usual 422 `mate_solve_did_not_converge` is returned and nothing is stored (a refused mate used to stay behind,
     leaving the assembly over-constrained). `X-Movement-Used` says which solve produced the stored poses."""
     part = get_part_or_404(part_id)
+    if payload.type == _TYPE_AUTO:
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "auto_type_not_creatable", "detail": 'type "auto" is for preview-mate-solve: create the suggested_type it answered with'},
+        )
     _validate_mate_create(part, payload)
+    companion = None
+    program_alignment = payload.type == SUGGEST_PEG_IN_HOLE and "alignment" not in payload.model_fields_set
+    if payload.type == SUGGEST_PEG_IN_HOLE:
+        # M4: Concentric on the two circular edges plus Coincident on the flat faces they lie on, stored together (and, with `solve=`,
+        # only if the two together converge). The answer is the Concentric; the Coincident is in the next mates listing.
+        peg = _peg_in_hole_mates(get_document(), part, payload, str(uuid.uuid4()))
+        if peg is None:
+            raise HTTPException(
+                status_code=422,
+                detail={"type": "not_a_peg_in_hole", "detail": "A peg in a hole needs a circular edge on each part, each lying on a flat face."},
+            )
+        payload, companion = peg
     mate = Mate(
         id=str(uuid.uuid4()),
         type=MateType(payload.type),
@@ -4349,17 +4367,27 @@ def create_mate(
     else:
         validate_mate_geometry(get_document(), part, mate)  # never store a mate no solve can use
         mate = _mate_with_branch_fields(get_document(), part, mate, payload.model_fields_set)
+        if program_alignment:
+            mate.branch_source = BRANCH_AUTO  # the peg's alignment was the program's (touching faces), not the user's
     if solve is not None:
         driven = _mate_solve_target(part, mate, occurrence_id)
         if driven is not None:
-            outcome = _solve_new_mate(get_document(), part, driven, solve, mate, payload.branch_changes)
+            if companion is None:
+                outcome = _solve_new_mate(get_document(), part, driven, solve, mate, payload.branch_changes)
+            else:
+                solve_part = dataclasses.replace(part, mates=[*part.mates, companion])
+                outcome = _solve_new_mate(get_document(), solve_part, driven, solve, mate, payload.branch_changes, skip=frozenset({companion.id}))
             if outcome.result is None or outcome.needs_confirmation:
                 raise _mate_solve_refused(driven, outcome, solve)
             _apply_branch_changes(part, outcome.changes)
             _commit_group(part, outcome.result)
             _fill_new_mate_branch(mate, outcome.result)
+            if companion is not None:
+                _fill_new_mate_branch(companion, outcome.result)
             response.headers["X-Movement-Used"] = outcome.used
             _note_near(response, outcome.result)
+    if companion is not None:
+        part.mates.append(companion)
     part.mates.append(mate)
     return _mate_response(mate, part)
 
@@ -5232,7 +5260,26 @@ def preview_mate_solve_endpoint(
     revised values) stands in for it, so the old values do not fight the new ones.
 
     M1.1: the whole preview runs on one clock (`assembly_group.PREVIEW_SECONDS`): past it the branch search, the conflict step and the
-    alternatives each stop once they have had their minimum solves, and `budget_exhausted` says the lists may be incomplete."""
+    alternatives each stop once they have had their minimum solves, and `budget_exhausted` says the lists may be incomplete.
+
+    M4: `type: "auto"` picks the type from the two picks (`app.document.mate_suggest`) and answers with `suggested_type` and the solve
+    of that suggestion; `type: "peg_in_hole"` previews Concentric plus Coincident as one action (`_preview_m4`). Every other request
+    runs exactly the code it ran before M4. `pick_points` / `view_direction` are accepted and not used."""
+    if payload.type in (_TYPE_AUTO, SUGGEST_PEG_IN_HOLE):
+        return _preview_m4(part_id, occurrence_id, payload, movement, replace_mate_id)
+    return _preview_mate_solve(part_id, occurrence_id, payload, movement, replace_mate_id)
+
+
+def _preview_mate_solve(
+    part_id: str,
+    occurrence_id: str,
+    payload: MateCreate,
+    movement: MovementMode,
+    replace_mate_id: str | None,
+    companion: Mate | None = None,
+) -> MateSolvePreviewResponse:
+    """The preview itself (see `preview_mate_solve_endpoint`). `companion` (M4, a peg in a hole only): a second hypothetical mate
+    solved together with `payload`'s, never searched or varied (its branch is the Coincident default, touching faces)."""
     budget = PreviewBudget()
     part = get_part_or_404(part_id)
     occurrence = _get_occurrence_or_404(part, occurrence_id)
@@ -5240,6 +5287,10 @@ def preview_mate_solve_endpoint(
     if replace_mate_id is not None:
         _get_mate_or_404(part, replace_mate_id)
         solve_part = dataclasses.replace(part, mates=[m for m in part.mates if m.id != replace_mate_id])
+    skip = frozenset({replace_mate_id}) if replace_mate_id else frozenset()
+    if companion is not None:
+        solve_part = dataclasses.replace(solve_part, mates=[*solve_part.mates, companion])
+        skip = skip | {companion.id}
     if len(payload.references) != 2:
         raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
     if occurrence.fixed:
@@ -5313,7 +5364,7 @@ def preview_mate_solve_endpoint(
             occurrence_id,
             movement,
             extra_mate,
-            skip=frozenset({replace_mate_id}) if replace_mate_id else frozenset(),
+            skip=skip,
             budget=budget,
         )
     except HTTPException:
@@ -5345,6 +5396,66 @@ def preview_mate_solve_endpoint(
         alternatives=alternatives,
         budget_exhausted=budget.exhausted,
     )
+
+
+_TYPE_AUTO = "auto"
+_PEG_COMPANION_ID = "peg-in-hole-coincident"
+
+
+def _peg_in_hole_mates(document: Document, part: Part, payload: MateCreate, mate_id: str) -> tuple[MateCreate, Mate] | None:
+    """A peg in a hole as the Concentric request it is plus its Coincident companion: the Concentric on the two circular edges (its
+    alignment, unless the request names one, the one that agrees with the touching faces: `peg_concentric_alignment`) and a plain
+    Coincident on the flat faces the edges lie on (default branch: touching faces), with id `mate_id`. None when the picks are not two
+    circular edges each on a flat face."""
+    references = [_mate_entity_ref_to_domain(ref) for ref in payload.references]
+    try:
+        faces = peg_in_hole_faces(document, part, references)
+        alignment = peg_concentric_alignment(document, part, references, faces) if faces is not None else None
+    except HTTPException:
+        return None
+    if faces is None:
+        return None
+    fields = payload.model_dump(exclude_unset=True)
+    fields["type"] = "concentric"
+    if "alignment" not in payload.model_fields_set and alignment is not None:
+        fields["alignment"] = alignment
+    concentric = MateCreate(**fields)
+    companion = _mate_with_branch_fields(document, part, Mate(id=mate_id, type=MateType.COINCIDENT, references=list(faces)), set())
+    return concentric, companion
+
+
+def _preview_m4(
+    part_id: str, occurrence_id: str, payload: MateCreate, movement: MovementMode, replace_mate_id: str | None
+) -> MateSolvePreviewResponse:
+    """M4: `type: "auto"` (the suggested type, then its solve) and `type: "peg_in_hole"` (Concentric + Coincident solved together)."""
+    part = get_part_or_404(part_id)
+    _get_occurrence_or_404(part, occurrence_id)
+    if len(payload.references) != 2:
+        raise HTTPException(status_code=422, detail="A Mate must have exactly 2 references")
+    was_auto = payload.type == _TYPE_AUTO
+    document = get_document()
+    suggestion: str | None = SUGGEST_PEG_IN_HOLE
+    if was_auto:
+        try:
+            for ref in payload.references:
+                _validate_mate_entity_ref(part, ref)
+            suggestion = suggestion_or_none(document, part, [_mate_entity_ref_to_domain(ref) for ref in payload.references])
+        except HTTPException:
+            suggestion = None
+    if suggestion is None:
+        return MateSolvePreviewResponse(converged=False, transform=None, suggested_type=None, type_was_auto=was_auto)
+    if suggestion == SUGGEST_PEG_IN_HOLE:
+        peg = _peg_in_hole_mates(document, part, payload, _PEG_COMPANION_ID)
+        if peg is None:
+            return MateSolvePreviewResponse(converged=False, transform=None, suggested_type=None, type_was_auto=was_auto)
+        answer = _preview_mate_solve(part_id, occurrence_id, peg[0], movement, replace_mate_id, companion=peg[1])
+    else:
+        fields = payload.model_dump(exclude_unset=True)
+        fields["type"] = suggestion
+        answer = _preview_mate_solve(part_id, occurrence_id, MateCreate(**fields), movement, replace_mate_id)
+    answer.suggested_type = suggestion if was_auto else None
+    answer.type_was_auto = was_auto
+    return answer
 
 
 def _preview_alternatives(

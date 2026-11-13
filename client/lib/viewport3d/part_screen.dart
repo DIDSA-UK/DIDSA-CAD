@@ -108,6 +108,7 @@ import 'merge_panel.dart';
 import 'mate_context_menu.dart';
 import 'pattern_context_menu.dart';
 import 'mate_panel.dart';
+import 'mate_pick_point.dart';
 import 'width_pick.dart';
 import 'component_pattern_panel.dart';
 import 'measurement_panel.dart';
@@ -4510,6 +4511,18 @@ class _PartScreenState extends State<PartScreen> {
   String _mateType = kMateTypes.first;
   double? _mateValue;
 
+  /// M4 (`docs/mates-storage-sessions-plan-2026-11-12.md`): the user picked a type by hand since the panel opened (then their type
+  /// stays); until then the first preview of each new pair of picks asks the backend for the type (`type: "auto"`).
+  bool _mateTypeChosen = false;
+
+  /// M4: the picks the backend was last asked to suggest a type for ([_mateSuggestionKey]) and its answer ([_mateSuggestedType], `null`
+  /// = no suggestion: the type stays as it was).
+  String? _mateSuggestionKey;
+  String? _mateSuggestedType;
+
+  /// M4: where each pick of the current pair landed ([PartViewport.onSelectionPickPoint]), sent as `pick_points` / `view_direction`.
+  final Map<SelectionEntityRef, MatePickPoint> _matePickPoints = {};
+
   /// A limit mate's typed range and the measured value of the picked pair now (the preview's `limit_value`).
   double? _mateLimitMin;
   double? _mateLimitMax;
@@ -5291,6 +5304,7 @@ class _PartScreenState extends State<PartScreen> {
       _mateActive = true;
       _entitiesBeforeMate = _selectedEntities;
       _mateType = kMateTypes.first;
+      _mateTypeChosen = false;
       _mateAllowRotation = true;
       _mateAppliedCount = 0;
       _resetMateForNext();
@@ -5309,6 +5323,9 @@ class _PartScreenState extends State<PartScreen> {
   /// override. Call inside `setState`.
   void _resetMateForNext() {
     _selectedEntities = {};
+    _matePickPoints.clear();
+    _mateSuggestionKey = null;
+    _mateSuggestedType = null;
     _mateValue = null;
     _mateLimitMin = null;
     _mateLimitMax = null;
@@ -5413,7 +5430,12 @@ class _PartScreenState extends State<PartScreen> {
       return;
     }
     final references = _mateWireReferences();
-    final geometryKey = '$_mateWireType|${[for (final r in references) r.toJson()]}|$_mateAllowRotation';
+    // M4: the first preview of a new pair of picks asks the backend for the type (until the user picks one by hand).
+    final picksKey = '${[for (final r in references) r.toJson()]}';
+    final askType = picksKey != _mateSuggestionKey &&
+        mateAsksForSuggestedType(userChoseType: _mateTypeChosen, picksComplete: _matePicksComplete, type: _mateType);
+    final wireType = askType ? 'auto' : _mateWireType;
+    final geometryKey = '$wireType|$picksKey|$_mateAllowRotation';
     if (geometryKey != _mateGeometryKey) {
       // Another pair of faces / type: an earlier Aligned / Flip choice does not carry over.
       _mateGeometryKey = geometryKey;
@@ -5433,23 +5455,46 @@ class _PartScreenState extends State<PartScreen> {
       final result = await _api.previewMateSolve(
         focusPartId,
         drivenOccurrenceId,
-        type: _mateWireType,
+        type: wireType,
         references: references,
-        value: _mateWireValue,
+        value: askType ? null : _mateWireValue,
         allowRotation: _mateAllowRotation,
         movement: _mateMovement,
         alignment: _mateAlignment,
         secondaryFlip: _mateSecondaryFlip,
         limitMin: isLimitMateType(_mateType) ? _mateLimitMin : null,
         limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
+        pickPoints: _mateIsWidth ? null : matePickPointsFor(_selectedEntities, _matePickPoints),
+        viewDirection: _mateIsWidth ? null : mateViewDirectionFor(_selectedEntities, _matePickPoints),
       );
       if (!mounted || token != _matePreviewRequestToken) return;
+      if (askType) {
+        _mateSuggestionKey = picksKey;
+        _mateSuggestedType = result.suggestedType;
+        if (result.suggestedType == null) {
+          // No suggestion (or a backend that predates M4): keep the type shown and preview it as before.
+          unawaited(_scheduleMatePreview());
+          return;
+        }
+        // The answer is the preview of the suggested type: start the panel on it (the user can still change it).
+        setState(() {
+          _mateType = mateTypeAfterSuggestion(_mateType, result);
+          _mateGeometryKey = '$_mateWireType|$picksKey|$_mateAllowRotation';
+        });
+      }
       setState(() {
         _matePreviewMembers = result.converged ? _matePreviewMembersFrom(result, drivenOccurrenceId) : const [];
         _applyMateBranchPreview(result);
       });
     } on ApiException {
       if (!mounted || token != _matePreviewRequestToken) return;
+      if (askType) {
+        // A backend that refuses `type: "auto"` (older than M4): stop asking for these picks and preview the type shown.
+        _mateSuggestionKey = picksKey;
+        _mateSuggestedType = null;
+        unawaited(_scheduleMatePreview());
+        return;
+      }
       setState(() {
         _matePreviewMembers = const [];
         _applyMateBranchPreview(null);
@@ -5501,6 +5546,8 @@ class _PartScreenState extends State<PartScreen> {
         branchChanges: _mateBranchChanges,
         limitMin: isLimitMateType(_mateType) ? _mateLimitMin : null,
         limitMax: isLimitMateType(_mateType) ? _mateLimitMax : null,
+        pickPoints: _mateIsWidth ? null : matePickPointsFor(_selectedEntities, _matePickPoints),
+        viewDirection: _mateIsWidth ? null : mateViewDirectionFor(_selectedEntities, _matePickPoints),
       );
       if (!mounted) return;
       if (keepOpen) {
@@ -27406,6 +27453,9 @@ class _PartScreenState extends State<PartScreen> {
                   selectionMode: _selectionMode,
                   selectedEntities: _selectedEntities,
                   onSelectionToggle: _toggleSelectedEntity,
+                  onSelectionPickPoint: (entity, pick) {
+                    if (_mateActive) _matePickPoints[entity] = pick;
+                  },
                   onSelectClick: (click) => _selectClick = click,
                   // Desktop input D4: a right click without a drag.
                   onContextMenuRequested: (hit, at) => unawaited(_onViewportContextMenu(hit, at)),
@@ -27808,8 +27858,10 @@ class _PartScreenState extends State<PartScreen> {
                       branchControls: _mateBranchControls(),
                       autoValue: _mateAutoValue,
                       allowRotation: _mateAllowRotation,
+                      suggestedType: _mateSuggestedType,
                       onMateTypeChanged: (type) {
                         setState(() {
+                          _mateTypeChosen = true; // M4: the user's own type stays (no more suggestions this session)
                           // Width and the two-pick types pick different things: switching starts the picks over.
                           if (isMultiPickMateType(type) != _mateIsWidth || type != _mateType && isMultiPickMateType(type)) {
                             _selectedEntities = {};

@@ -2350,6 +2350,14 @@ class MateSolvePreviewDto {
   /// more solutions). Not an error. A backend that predates the field omits it: read as `false`.
   final bool budgetExhausted;
 
+  /// M4: the type the two picks suggest (`coincident`, `concentric`, `peg_in_hole`), answered only to a `type: "auto"` request
+  /// ([suggestionAnswered]); `null` = no suggestion (the rest of the answer is then `converged: false`). With a suggestion the rest of
+  /// the answer is the preview of that type. A backend that predates M4 never sends it.
+  final String? suggestedType;
+
+  /// M4: the answer carried `suggested_type` at all (it was asked for with `type: "auto"`, and the backend knows the rule).
+  final bool suggestionAnswered;
+
   const MateSolvePreviewDto({
     required this.converged,
     this.transform,
@@ -2363,6 +2371,8 @@ class MateSolvePreviewDto {
     this.couplerValue,
     this.limitValue,
     this.budgetExhausted = false,
+    this.suggestedType,
+    this.suggestionAnswered = false,
   });
 
   factory MateSolvePreviewDto.fromJson(Map<String, dynamic> json) => MateSolvePreviewDto(
@@ -2391,6 +2401,8 @@ class MateSolvePreviewDto {
         couplerValue: (json['coupler_value'] as num?)?.toDouble(),
         limitValue: (json['limit_value'] as num?)?.toDouble(),
         budgetExhausted: json['budget_exhausted'] == true,
+        suggestedType: json['suggested_type'] as String?,
+        suggestionAnswered: json.containsKey('suggested_type'),
       );
 }
 
@@ -5990,6 +6002,10 @@ class DocumentApiClient {
     // A limit mate's range (`limit_distance` / `limit_angle`); either bound may be left out.
     double? limitMin,
     double? limitMax,
+    // M4: where each pick landed, local to its occurrence (mm, references order, null for a side without one), and the view
+    // direction at the pick (world). Sent only when given; the backend accepts them and does not use them yet.
+    List<List<double>?>? pickPoints,
+    List<double>? viewDirection,
   }) =>
       _send(
         () => _httpClient.post(
@@ -6010,6 +6026,8 @@ class DocumentApiClient {
                 if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
                 if (limitMin != null) 'limit_min': limitMin,
                 if (limitMax != null) 'limit_max': limitMax,
+                if (pickPoints != null) 'pick_points': pickPoints,
+                if (viewDirection != null) 'view_direction': viewDirection,
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),
@@ -6123,6 +6141,10 @@ class DocumentApiClient {
     bool? secondaryFlip,
     double? limitMin,
     double? limitMax,
+    // M4: as [createMate]'s. [type] may also be `auto` (the backend picks the type from the picks and answers with
+    // [MateSolvePreviewDto.suggestedType]) or `peg_in_hole`.
+    List<List<double>?>? pickPoints,
+    List<double>? viewDirection,
   }) =>
       _send(
         () => _httpClient.post(
@@ -6145,6 +6167,8 @@ class DocumentApiClient {
                 if (secondaryFlip != null) 'secondary_flip': secondaryFlip,
                 if (limitMin != null) 'limit_min': limitMin,
                 if (limitMax != null) 'limit_max': limitMax,
+                if (pickPoints != null) 'pick_points': pickPoints,
+                if (viewDirection != null) 'view_direction': viewDirection,
               }),
             ),
         (body) => MateSolvePreviewDto.fromJson(body as Map<String, dynamic>),
