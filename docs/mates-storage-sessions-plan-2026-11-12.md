@@ -570,6 +570,9 @@ future input to the build that is not in the key (a new document-level setting r
 - VR: re-run `docs/local-retraction-benchmark.md` on the reduced models. If a typical group is now 1 to 3 bodies the
   GDScript solve may fit a frame; if not, VR stays on the projector (no change in behaviour). **Needs the owner on a
   Quest** for the final number.
+- `preview-mate-solve`'s `budget_exhausted` (M1.1): when true the preview ran out of its time budget and `alternatives`,
+  `branch_changes`, `blocked_by` or `conflicting` may be incomplete. Both mate panels parse it and say so (e.g. "Search
+  stopped early: there may be more solutions"), never as an error; an older backend omits it (read as false).
 
 ### M3. Glide preview (Flutter and VR; medium; standard agent, UI)
 
