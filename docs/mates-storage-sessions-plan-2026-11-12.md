@@ -750,7 +750,7 @@ the wire and its solve equal to the explicit type's, the no-suggestion answer, n
 change nothing and are validated, the peg from near / far / upside-down starts against the old Coincident, the atomic two-mate create, a
 refused create leaves nothing, `auto` cannot be created). Flutter: `test/mate_first_guess_m4_test.dart` (14: DTO with / without / null
 `suggested_type`, the request bodies, starting on the suggestion and changing it in the panel, the pick-point maths). VR:
-`tests/mates_suggested_type.gd` (21 SMOKE lines).
+`tests/mates_suggested_type.gd` (21 SMOKE lines); VR `tests/ci.sh`: 4387 SMOKE lines, 0 failures.
 
 **Not verified, said plainly.** Nothing ran on a headset, a phone or a desktop window; the Flutter flow was tested as functions, a panel
 widget and the API client, not as a whole `PartScreen` with a backend (its test fake has no preview route), and the viewport's capture of the
