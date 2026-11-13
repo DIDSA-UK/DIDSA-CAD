@@ -995,7 +995,7 @@ differences below.
   choices `sync` sends the commit again. After Take theirs / a copy the open session no longer matches the store, so the note offers Reopen.
 - **File menu and settings:** "Server projects..." next to Open and "Copy this project to the server..." next to Save All (phone menu and
   desktop menu bar; hidden when the screen has no store service). The store's address, key and this device's name are entered once in
-  Connection Settings (`ApiConfig.storeUrl`, `storeApiKey`, `deviceName`; the default name is the computer's name, else the platform). If
+  the Storage screen (home screen > Storage; `ApiConfig.storeUrl`, `storeApiKey`, `deviceName`; the default name is the computer's name, else the platform). If
   `/health` carries `project_store`, that address is saved as the default when none is set (the key is never known to the backend). No
   pairing keys (S3).
 - **S0-8:** Save All on a local folder compares each file's modified time with the one this session saw when it read or wrote it
@@ -1026,6 +1026,10 @@ differences below.
 - **The status indicator moved into the quick menu (13 Nov, owner's request: the chip covered the triad), as symbols:** cloud done /
   upload / warning / cloud off for a server project, and a folder symbol while a store is set up but the session saves locally (so
   "not syncing" is visible, not just the absence of a chip).
+- **Home screen (13 Nov, owner's request, same PR):** the old connection screen is replaced by a logo-and-five-tiles home screen in three
+  styles (Blueprint, Instrument panel, Drawing sheet) chosen from a settings wheel, with Server and Storage screens, status lights
+  (green / red / grey), CAD tools and the VR headset greyed without a server, and the sub-menus themed to match (`client/lib/home/`,
+  `client/README.md`). "Cloud storage" is the user-facing name for the project store. Not checked on a device: how the three styles look.
 - The queue is not in `FileCache` itself (see above); `FileCache` only gained the version field and now creates a given directory.
 
 **Tests:** `test/remote_storage_service_test.dart` (47: reads, versioned writes, the stale write, every store status, offline queue and

@@ -53,7 +53,7 @@ import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
 import 'edge_fade_scroll_row.dart';
-import '../connection_screen.dart';
+import '../home/home_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
 import '../gear/gear_chain_design_screen.dart';
@@ -11737,7 +11737,7 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted) return;
 
     await Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (context) => const ConnectionScreen()),
+      MaterialPageRoute(builder: (context) => const HomeScreen()),
       (route) => false,
     );
   }
@@ -16039,7 +16039,7 @@ class _PartScreenState extends State<PartScreen> {
     final remote = _remote;
     if (remote == null) return;
     if (!remote.isConfigured) {
-      setState(() => _errorMessage = 'Set the project store address and key in Connection Settings (File > Exit) first.');
+      setState(() => _errorMessage = 'Set up cloud storage first: File > Exit, then Storage on the home screen.');
       return;
     }
     final project = await showServerProjectsDialog(context, remote);
@@ -16124,7 +16124,7 @@ class _PartScreenState extends State<PartScreen> {
     final remote = _remote;
     if (remote == null) return;
     if (!remote.isConfigured) {
-      setState(() => _errorMessage = 'Set the project store address and key in Connection Settings (File > Exit) first.');
+      setState(() => _errorMessage = 'Set up cloud storage first: File > Exit, then Storage on the home screen.');
       return;
     }
     final local = _projectRoot ?? await _ensureProjectRoot();

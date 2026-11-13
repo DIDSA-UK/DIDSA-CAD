@@ -36,6 +36,20 @@ flag passed explicitly every time: `flutter run -d windows
 `flutter_scene`'s own exception message for the exact wording this all
 comes from).
 
+## Home screen
+
+The first screen is the logo and five tiles (`lib/home/`): **Mesh tools** (on-device, always available), **CAD tools** (opens the tool
+chooser; needs a server), **Server** (address and API key, Connect with its health check, Use Local Server, Server Management),
+**Storage** (a local folder, and cloud storage: address, key, device name) and **Connect a VR headset** (needs a server). CAD tools and
+the headset are greyed with a lock when there is no server, but still answer a tap: the app looks again and, if the server is really not
+there, opens the Server screen saying why. Server and Storage carry a status light: green (answering), red (set up but not answering or
+the key refused), grey (not set up / local folder only), refreshed at launch, on return and every 30 s.
+
+The settings wheel (top right) chooses the **style** (three: Blueprint, Instrument panel, Drawing sheet; remembered) and holds the
+sketcher, mesh viewer and mouse/keyboard settings. Every sub-menu opened from home (Server, Storage, Settings, the tool chooser, Server
+Management, headset pairing) is shown in the chosen style's theme (`HomeThemed` / `pushHomeRoute`); the tools themselves keep the app's
+theme. File > Exit in the part editor returns here. Tests: `test/home_screen_test.dart`.
+
 ## Server projects (shared storage)
 
 A project can live on the project store (`project-store/`, `docs/shared-storage-scope.md`) instead of in a local folder. The flat app's
@@ -43,7 +57,7 @@ storage layer (`lib/storage/`) is one `StorageService` for both: a `RoutingStora
 `RemoteStorageService` (`lib/storage/server/`) and every other root to the platform's folder service, so Open, Save, Save All and the
 assembly composer do not branch on where a project lives.
 
-- **Set up once:** Connection Settings > "Project store (shared projects)": the store's address, its key (`PROJECT_STORE_API_KEY`, not
+- **Set up once:** home screen > Storage > Cloud storage: the store's address, its key (`PROJECT_STORE_API_KEY`, not
   the CAD key) and this device's name (sent as `X-Device-Name`; other devices see it as who changed a file; it is a label, not a login).
   If the backend's `/health` says where its store is (`project_store`), that address is offered as the default.
 - **File menu:** *Server projects...* (pick a project on the store, then a file in it) next to *Open...*; *Copy this project to the server...*

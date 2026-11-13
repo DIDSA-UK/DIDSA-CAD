@@ -180,7 +180,7 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
           if (ApiConfig.baseUrl.isNotEmpty && ApiConfig.baseUrl != _localAddress) ...[
             const SizedBox(height: 8),
             Text(
-              "Connection Settings currently points at ${ApiConfig.baseUrl}, not $_localAddress - "
+              "The Server screen currently points at ${ApiConfig.baseUrl}, not $_localAddress - "
               "point it at $_localAddress to actually use the server controlled here.",
               style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
             ),
@@ -189,7 +189,7 @@ class _ServerManagementScreenState extends State<ServerManagementScreen> {
             const SizedBox(height: 8),
             Text(
               "First start on this device: a random API key will be generated automatically and used "
-              "to start the server - use the \"Use Local Server\" button on Connection Settings "
+              "to start the server - use the \"Use Local Server\" button on the Server screen "
               "afterward to pick it up and connect.",
               style: Theme.of(context).textTheme.bodySmall?.copyWith(fontStyle: FontStyle.italic),
             ),

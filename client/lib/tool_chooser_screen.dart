@@ -42,7 +42,7 @@ class ToolChooserScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const backgroundColor = Color(0xFF1E1E2E);
+    final scheme = Theme.of(context).colorScheme;
     final desktop = LayoutModeScope.isDesktop(context);
     final tiles = <Widget>[
       _ToolTile(
@@ -103,16 +103,12 @@ class ToolChooserScreen extends StatelessWidget {
                     ),
     ];
     return Scaffold(
-      backgroundColor: backgroundColor,
       // A real (non-replacement) AppBar, now that the tiles below `push`
       // rather than `pushReplacement` - gives this screen its own back
       // affordance to `ConnectionScreen`/settings, and means the automatic
       // back arrow on whichever tool screen a tile leads to actually lands
       // back here instead of skipping past this screen entirely.
       appBar: AppBar(
-        backgroundColor: backgroundColor,
-        elevation: 0,
-        foregroundColor: Colors.white70,
         actions: [
           // Desktop input D5: mouse and keyboard settings, before any tool is open.
           IconButton(
@@ -137,9 +133,9 @@ class ToolChooserScreen extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Text(
+                    Text(
                       'What would you like to open?',
-                      style: TextStyle(color: Colors.white70, fontSize: 16),
+                      style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 16),
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 32),
@@ -185,9 +181,13 @@ class _ToolTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Material(
-      color: Colors.white.withValues(alpha: 0.08),
-      borderRadius: BorderRadius.circular(12),
+      color: scheme.surfaceContainerHighest,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: scheme.outlineVariant),
+      ),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onTap,
@@ -195,19 +195,19 @@ class _ToolTile extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
           child: Row(
             children: [
-              if (icon != null) SvgIcon(icon!, color: Colors.white70, size: 32) else Icon(materialIcon, color: Colors.white70, size: 32),
+              if (icon != null) SvgIcon(icon!, color: scheme.primary, size: 32) else Icon(materialIcon, color: scheme.primary, size: 32),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(label, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+                    Text(label, style: TextStyle(color: scheme.onSurface, fontSize: 16, fontWeight: FontWeight.w600)),
                     const SizedBox(height: 4),
-                    Text(subtitle, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                    Text(subtitle, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12)),
                   ],
                 ),
               ),
-              const Icon(Icons.chevron_right, color: Colors.white38),
+              Icon(Icons.chevron_right, color: scheme.onSurfaceVariant),
             ],
           ),
         ),
