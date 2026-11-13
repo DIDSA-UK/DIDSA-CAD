@@ -36,10 +36,10 @@ The implementation session updates this table in its PR.
 | M1.1 | Group solve follow-ups: mate geometry cache, ground-row pruning, one preview budget, missing tests | CAD backend | Done (merged; results: "M1.1 results" below) |
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | Done (merged; caps not raised; results: "M2 results" below) |
 | M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Done (merged) |
-| M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | In review: the type rule shipped (with Peg in hole); no pick-point rule met the standard, so none shipped (results: "M4 results" below) |
-| M4.1 | A Distance previewed where the parts are (SOLIDWORKS' order: parallel, the measured distance, then type the one you want) | CAD backend + both clients | In review (results: "M4.1 results" below) |
+| M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Done (merged, CAD #360 / VR #82): the type rule shipped (with Peg in hole); no pick-point rule met the standard, so none shipped (results: "M4 results" below) |
+| M4.1 | A Distance previewed where the parts are (SOLIDWORKS' order: parallel, the measured distance, then type the one you want) | CAD backend + both clients | Done (merged with M4; results: "M4.1 results" below) |
 | M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Done (merged; results: "M5 results" below) |
-| S0 | Storage scope doc and spikes | CAD, VR | Not started |
+| S0 | Storage scope doc and spikes | CAD, VR | In review: `docs/shared-storage-scope.md`; the Quest spike is built and waits for the owner's run (results: "S0 results" below) |
 | S1 | Project store service | CAD | Not started |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Not started |
 | S3 | VR: server projects, cache, offline | VR | Not started |
@@ -881,6 +881,23 @@ folder can be a synced drive folder or a network mount.
   compose file, own key, so a long upload never competes with OCCT and the backend stays stateless.
 - Spike (owner, Quest): where `user://` lives and how much space the cache may take.
 
+### S0 results (2026-11-13)
+
+`docs/shared-storage-scope.md`: what the store is (its own container, recommended; plain files on disk plus a hidden `.didsa-store/` with
+SQLite and content-addressed versions), its API (versions per file, `If-Match` on every write: 412 for a stale single write, 428 without a
+precondition, an all-or-nothing `commit` for Save All with 409 listing every clash, a change feed, a part-id index for the moved-files rule),
+the three conflict choices (the copy gets a new Part id), the flat app's `RemoteStorageService` and DIDSA-VR's **mirror folder** in its own
+storage (no storage layer under every file call, no *All files access*), and eight owner decisions with recommendations (section 8). It
+supersedes `assembly-scope.md` #4 in part and keeps #6 for the backend; composition stays on the client.
+Found while scoping: the pairing key `s` is reserved for the document session (the store uses `p` / `pk`); the flat app's Save All has
+no "changed on disk meanwhile" check for local folders (VR has one; recommended for S2).
+**The Quest spike** is built (DIDSA-VR Launcher > Servers > Check storage, `scripts/storage_probe.gd`, `tests/storage_probe.gd`) and run only
+on a desktop; the owner's answers go in DIDSA-VR `docs/android-build.md`, "Storage for server projects".
+Housekeeping in the same PR: the M4 / M4.1 rows marked done; the branch search's own clock (`BRANCH_SEARCH_SECONDS`) now sets
+`budget_exhausted` when it cuts the conflict step short (it used to answer `conflicting: []` as if nothing conflicted), and
+`test_rigid_sets.py::test_previews_answer_as_before` compares the two models with the clocks out of the way (it failed whenever the slower
+unreduced preview ran out of time).
+
 ### S1. Project store service (CAD repo, new `project-store/`; medium; standard agent)
 
 - `GET /projects`, `GET /projects/{id}/tree` (path, size, content hash, version, modified by, root part id).
@@ -889,7 +906,7 @@ folder can be a synced drive folder or a network mount.
 - Keeps the last N versions of each file (a refused or mistaken save can be recovered).
 - `GET /changes?since=<cursor>`: what changed, for sync after being offline.
 - A part-id index of the tree, so the moved-files rule works against the server.
-- Advertised by the backend's `/health` `api_features` and carried in the pairing code (`&s=<store>&sk=<key>`,
+- Advertised by the backend's `/health` `api_features` and carried in the pairing code (`&p=<store>&pk=<key>`: S0 found `s` is reserved for the document session,
   `docs/vr-headset-pairing.md`), so a paired client finds it with no typing.
 - No locks (the long-term vision doc rules out PDM-style locking): optimistic version check, and on conflict the user
   picks Keep mine (as a new version) / Take theirs / Save mine as a copy.

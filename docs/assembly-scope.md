@@ -127,6 +127,9 @@ pieces of the original brief, both tracked in §2k/§5, not silently dropped.**
    References store a relative path within the project root, never a raw
    absolute path/content-URI. Network storage = whatever the OS/SAF already
    exposes as a folder — no built-in SMB/WebDAV client.
+   **Superseded in part (2026-11-13, `docs/shared-storage-scope.md`):** a
+   local folder stays the default; a *server project*, served by the
+   project store beside the backend, is a second kind of project root.
 5. **Reference staleness**: always try to resolve to the latest version of
    a referenced file; if unreachable, fall back to a cached last-known-good
    snapshot, flagged stale in the UI.
@@ -136,6 +139,9 @@ pieces of the original brief, both tracked in §2k/§5, not silently dropped.**
    resolves. The client resolves every referenced file itself and ships a
    composed multi-file graph per request, the same shape as today's
    single-document requests.
+   **Kept (2026-11-13, `docs/shared-storage-scope.md`):** shared storage is
+   a separate service (the project store), so this backend still has no
+   files, and composition stays on the client.
 
 Codebase investigation found the mate-solving primitive is unusually
 de-risked: `backend/app/sketch/solver.py` already wraps `py_slvs.slvs.

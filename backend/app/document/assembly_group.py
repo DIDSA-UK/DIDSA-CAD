@@ -1726,7 +1726,13 @@ def search_branch_changes(
         if budget is not None and budget.expired():
             budget.exhausted = True
             return True
-        return time.monotonic() - started > seconds
+        if time.monotonic() - started > seconds:
+            # The search's own clock stops it short too: say so, or a conflict step cut off here answers `conflicting: []` as if
+            # nothing fought the new mate (the preview then showed no conflict and no "search stopped early" note).
+            if budget is not None:
+                budget.exhausted = True
+            return True
+        return False
 
     def run(trial: Part) -> tuple[GroupSolveResult, str]:
         outcome.solves += 1
