@@ -31,6 +31,8 @@ from app.paths import STORE_DIR_NAME, UnsafePath, is_valid_name_for_scan, valida
 KEEP_LAST_VERSIONS = 20
 KEEP_DAYS = 30
 UPLOAD_TTL_SECONDS = 3600
+CHUNK_SIZE = 32 * 1024 * 1024  # what a client is told to send per chunk (well under a Cloudflare tunnel's 100 MB request limit)
+MAX_CHUNK_BYTES = 64 * 1024 * 1024  # the most one chunk request may carry (413 past it)
 SWEEP_INTERVAL_SECONDS = 3600
 OUTSIDE = "outside"
 UNKNOWN_DEVICE = "unknown"
@@ -185,6 +187,7 @@ class Store:
         # NORMAL: a power cut may lose the last transaction but cannot corrupt the file, and it saves SD-card writes (scope, section 10).
         self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(_SCHEMA)
+        self._migrate_uploads()
         self._last_sweep = self.clock()
         self._pruned = False
         self.sweep()
@@ -192,6 +195,16 @@ class Store:
     def close(self) -> None:
         with self.lock:
             self.db.close()
+
+    def _migrate_uploads(self) -> None:
+        """S4: chunked uploads add `received` (bytes so far) and `complete` (0 while chunks are still coming) to `uploads`. A store made
+        before S4 has neither: its rows are one-shot uploads, so they are complete and `received` is their size."""
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(uploads)").fetchall()}
+        if "received" not in columns:
+            self.db.execute("ALTER TABLE uploads ADD COLUMN received INTEGER")
+            self.db.execute("UPDATE uploads SET received = size")
+        if "complete" not in columns:
+            self.db.execute("ALTER TABLE uploads ADD COLUMN complete INTEGER NOT NULL DEFAULT 1")
 
     # ------------------------------------------------------------ helpers
 
@@ -606,10 +619,100 @@ class Store:
             os.replace(staged.path, os.path.join(self.upload_dir, upload_id))
             now = self.clock()
             self.db.execute(
-                "INSERT INTO uploads (id, project, size, sha256, part_id, created_at) VALUES (?,?,?,?,?,?)",
-                (upload_id, project, staged.size, staged.sha256, staged.part_id, now),
+                "INSERT INTO uploads (id, project, size, sha256, part_id, created_at, received, complete) VALUES (?,?,?,?,?,?,?,1)",
+                (upload_id, project, staged.size, staged.sha256, staged.part_id, now, staged.size),
             )
             return {"upload_id": upload_id, "size": staged.size, "sha256": staged.sha256, "expires_at": iso(now + UPLOAD_TTL_SECONDS)}
+
+    # ---- chunked uploads (S4): a session declares the size and SHA-256, chunks arrive in order, `complete` checks the hash
+
+    def start_upload_session(self, project: str, size: int, sha256: str) -> dict:
+        if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+            raise BadRequest("size must be a whole number of bytes, at least 1")
+        if size > self.max_file_bytes:
+            raise TooLarge(f"a file may be at most {self.max_file_bytes} bytes")
+        if not isinstance(sha256, str) or len(sha256) != 64 or any(c not in "0123456789abcdef" for c in sha256.lower()):
+            raise BadRequest("sha256 must be the file's 64 hex characters")
+        with self.lock:
+            self._project_dir(project)
+            self.sweep_uploads()
+            upload_id = uuid.uuid4().hex
+            with open(os.path.join(self.upload_dir, upload_id), "wb"):
+                pass
+            now = self.clock()
+            self.db.execute(
+                "INSERT INTO uploads (id, project, size, sha256, part_id, created_at, received, complete) VALUES (?,?,?,?,NULL,?,0,0)",
+                (upload_id, project, size, sha256.lower(), now),
+            )
+            return {"upload_id": upload_id, "size": size, "received": 0, "chunk_size": CHUNK_SIZE, "complete": False,
+                    "expires_at": iso(now + UPLOAD_TTL_SECONDS)}
+
+    def _open_session(self, project: str, upload_id: str):
+        row = self.db.execute("SELECT * FROM uploads WHERE id = ?", (upload_id,)).fetchone()
+        if row is None or row["project"] != project or row["created_at"] < self.clock() - UPLOAD_TTL_SECONDS:
+            raise NotFound(f"upload {upload_id!r} is unknown, expired or belongs to another project", code="unknown_upload")
+        return row
+
+    def _session_info(self, row) -> dict:
+        return {"upload_id": row["id"], "size": row["size"], "received": row["received"], "complete": bool(row["complete"]),
+                "chunk_size": CHUNK_SIZE, "expires_at": iso(row["created_at"] + UPLOAD_TTL_SECONDS)}
+
+    def upload_status(self, project: str, upload_id: str) -> dict:
+        with self.lock:
+            return self._session_info(self._open_session(project, upload_id))
+
+    def add_chunk(self, project: str, upload_id: str, offset: int, staged: Staged) -> dict:
+        """Append `staged` (one chunk already on disk) at `offset`, which must be exactly the bytes received so far (409 with `received`
+        otherwise, so a client that lost a reply asks `upload_status` and carries on from there). The chunk file is consumed."""
+        try:
+            with self.lock:
+                row = self._open_session(project, upload_id)
+                if row["complete"]:
+                    raise Conflict("this upload is already complete", code="upload_complete", **self._session_info(row))
+                if offset != row["received"]:
+                    raise Conflict(f"expected offset {row['received']}, got {offset}", code="wrong_offset", **self._session_info(row))
+                if row["received"] + staged.size > row["size"]:
+                    raise BadRequest("this chunk goes past the size the upload declared", code="chunk_past_end")
+                target = os.path.join(self.upload_dir, upload_id)
+                with open(target, "r+b") as out:
+                    out.seek(offset)
+                    out.truncate()  # bytes past `received` (a chunk cut off half-way by a crash) are not part of the file
+                    with open(staged.path, "rb") as source:
+                        shutil.copyfileobj(source, out, _COPY_CHUNK)
+                received = offset + staged.size
+                self.db.execute("UPDATE uploads SET received = ?, created_at = ? WHERE id = ?", (received, self.clock(), upload_id))
+                return self._session_info(self._open_session(project, upload_id))
+        finally:
+            self.discard(staged)
+
+    def complete_upload(self, project: str, upload_id: str) -> dict:
+        """All bytes in: check the size and the declared SHA-256 (a mismatch discards the upload: it cannot be repaired), then it is an
+        ordinary upload, usable in a commit like the one-shot kind. Completing twice answers the same."""
+        with self.lock:
+            row = self._open_session(project, upload_id)
+            target = os.path.join(self.upload_dir, upload_id)
+            if row["complete"]:
+                return {"upload_id": upload_id, "size": row["size"], "sha256": row["sha256"], "expires_at": iso(row["created_at"] + UPLOAD_TTL_SECONDS)}
+            if row["received"] != row["size"]:
+                raise Conflict(f"{row['received']} of {row['size']} bytes received", code="incomplete", **self._session_info(row))
+            sha, size = _sha_of_file(target)
+            if sha != row["sha256"] or size != row["size"]:
+                self._drop_upload(upload_id)
+                raise BadRequest("the bytes received do not match the declared SHA-256; the upload was discarded, send it again", code="checksum_mismatch")
+            part_id = native.root_part_id(target, size)
+            now = self.clock()
+            self.db.execute("UPDATE uploads SET complete = 1, part_id = ?, created_at = ? WHERE id = ?", (part_id, now, upload_id))
+            return {"upload_id": upload_id, "size": size, "sha256": sha, "expires_at": iso(now + UPLOAD_TTL_SECONDS)}
+
+    def cancel_upload(self, project: str, upload_id: str) -> None:
+        with self.lock:
+            self._open_session(project, upload_id)
+            self._drop_upload(upload_id)
+
+    def _drop_upload(self, upload_id: str) -> None:
+        self.db.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        with contextlib.suppress(OSError):
+            os.unlink(os.path.join(self.upload_dir, upload_id))
 
     def sweep_uploads(self) -> None:
         cutoff = self.clock() - UPLOAD_TTL_SECONDS
@@ -621,7 +724,7 @@ class Store:
     def _take_upload(self, project: str, upload_id) -> Staged:
         row = self.db.execute("SELECT * FROM uploads WHERE id = ?", (upload_id,)).fetchone() if isinstance(upload_id, str) else None
         file_path = os.path.join(self.upload_dir, upload_id) if row is not None else None
-        if row is None or row["project"] != project or row["created_at"] < self.clock() - UPLOAD_TTL_SECONDS or not os.path.exists(file_path):
+        if row is None or row["project"] != project or not row["complete"] or row["created_at"] < self.clock() - UPLOAD_TTL_SECONDS or not os.path.exists(file_path):
             raise BadRequest(f"upload {upload_id!r} is unknown, expired or belongs to another project", code="unknown_upload")
         return Staged(file_path, row["sha256"], row["size"], row["part_id"])
 
