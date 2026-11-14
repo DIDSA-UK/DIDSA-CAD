@@ -33,6 +33,7 @@ class ControlsPreferences {
   static const String hideEdgesWhileMovingPrefKey = 'controls_hide_edges_while_moving';
   static const String edgeLimitPrefKey = 'controls_edge_limit';
   static const String showInputDebugPrefKey = 'controls_show_input_debug';
+  static const String matePreviewGlidePrefKey = 'controls_mate_preview_glide';
 
   static const NavigationPreset defaultPreset = NavigationPreset.solidworks;
   static const bool defaultInvertWheel = false;
@@ -51,6 +52,7 @@ class ControlsPreferences {
   static bool _hideEdgesWhileMoving = kHideEdgesWhileMovingDefault;
   static int _edgeLimit = kEdgeLimitDefault;
   static bool _showInputDebug = false;
+  static bool _matePreviewGlide = true;
 
   /// How many edge segments the part viewport is drawing now (set by the viewport; 0 = none or not known). The
   /// Controls screen shows it under the edge limit.
@@ -71,6 +73,10 @@ class ControlsPreferences {
   /// F-1 step 0: draw the input debug overlay in the 3D viewport (see `input_debug.dart`). Off by default.
   static bool get showInputDebug => _showInputDebug;
 
+  /// M3: how a mate preview shows - the real part glides to the mated position (and back on Cancel) when true (the default), a translucent
+  /// copy at that position when false (for a phone, where the moved part can hide the faces that were picked).
+  static bool get matePreviewGlide => _matePreviewGlide;
+
   /// Whether the Start button still draws its swipe-up hint (a once-per-install hint: never reset by [reset]).
   static bool get showQuickColumnHint => _quickColumnOpens < quickColumnHintLimit;
 
@@ -87,6 +93,7 @@ class ControlsPreferences {
     _hideEdgesWhileMoving = prefs.getBool(hideEdgesWhileMovingPrefKey) ?? kHideEdgesWhileMovingDefault;
     _edgeLimit = snapEdgeLimit(prefs.getInt(edgeLimitPrefKey) ?? kEdgeLimitDefault);
     _showInputDebug = prefs.getBool(showInputDebugPrefKey) ?? false;
+    _matePreviewGlide = prefs.getBool(matePreviewGlidePrefKey) ?? true;
   }
 
   /// Counts one more user-opened quick column, towards dropping the swipe hint.
@@ -139,6 +146,12 @@ class ControlsPreferences {
     await prefs.setBool(showInputDebugPrefKey, value);
   }
 
+  static Future<void> setMatePreviewGlide(bool value) async {
+    _matePreviewGlide = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(matePreviewGlidePrefKey, value);
+  }
+
   /// Puts every control back to its default.
   static Future<void> reset() async {
     await setPreset(defaultPreset);
@@ -148,5 +161,6 @@ class ControlsPreferences {
     await setHideEdgesWhileMoving(kHideEdgesWhileMovingDefault);
     await setEdgeLimit(kEdgeLimitDefault);
     await setShowInputDebug(false);
+    await setMatePreviewGlide(true);
   }
 }

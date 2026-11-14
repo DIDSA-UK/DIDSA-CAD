@@ -11,7 +11,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:didsa_cad_client/assembly/save_all.dart' show ChangedOnDiskChoice;
 import 'package:didsa_cad_client/config.dart';
-import 'package:didsa_cad_client/connection_screen.dart';
+import 'package:didsa_cad_client/home/server_screen.dart';
+import 'package:didsa_cad_client/home/storage_screen.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/server/remote_storage_service.dart';
 import 'package:didsa_cad_client/storage/server/server_projects_dialog.dart';
@@ -43,13 +44,13 @@ Future<void> _settle(WidgetTester tester) async {
 }
 
 void main() {
-  group('server settings: the project store', () {
+  group('cloud storage settings (the Storage screen)', () {
     setUp(() async {
       SharedPreferences.setMockInitialValues({'server_url': 'https://cad.test', 'api_key': 'cad-key'});
       await ApiConfig.load();
     });
 
-    Future<void> pumpSettings(WidgetTester tester, http.Client client) async {
+    Future<void> pumpScreen(WidgetTester tester, Widget screen) async {
       await tester.binding.setSurfaceSize(const Size(800, 1600));
       addTearDown(() => tester.binding.setSurfaceSize(null));
       await tester.pumpWidget(
@@ -57,25 +58,21 @@ void main() {
           home: Builder(
             builder: (context) => Scaffold(
               body: TextButton(
-                onPressed: () => Navigator.of(context).push(
-                  MaterialPageRoute(builder: (_) => ConnectionScreen(isSettingsRevisit: true, httpClient: client)),
-                ),
-                child: const Text('open settings'),
+                onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen)),
+                child: const Text('open screen'),
               ),
             ),
           ),
         ),
       );
-      await tester.tap(find.text('open settings'));
+      await tester.tap(find.text('open screen'));
       await _settle(tester);
     }
 
-    testWidgets('the address, key and device name are entered once and saved, and the store is checked', (tester) async {
+    testWidgets('the address, key and device name are entered once and saved, and cloud storage is checked', (tester) async {
       final store = FakeProjectStore();
-      await pumpSettings(tester, store.client);
+      await pumpScreen(tester, StorageScreen(httpClient: store.client));
 
-      await tester.tap(find.text('Project store (shared projects)'));
-      await _settle(tester);
       await tester.enterText(find.byKey(const ValueKey('store-url-field')), 'https://store.test/');
       await tester.enterText(find.byKey(const ValueKey('store-key-field')), 'store-key');
       await tester.enterText(find.byKey(const ValueKey('device-name-field')), 'Studio laptop');
@@ -88,15 +85,13 @@ void main() {
       expect(ApiConfig.effectiveDeviceName, 'Studio laptop');
       expect(ApiConfig.storeConfigured, isTrue);
       expect(find.byKey(const ValueKey('store-message')), findsOneWidget);
-      expect(find.textContaining('The project store answered'), findsOneWidget);
+      expect(find.textContaining('Cloud storage answered'), findsOneWidget);
       expect(store.devices.last, 'Studio laptop');
     });
 
     testWidgets('a wrong key is saved but reported', (tester) async {
       final store = FakeProjectStore(apiKey: 'right');
-      await pumpSettings(tester, store.client);
-      await tester.tap(find.text('Project store (shared projects)'));
-      await _settle(tester);
+      await pumpScreen(tester, StorageScreen(httpClient: store.client));
       await tester.enterText(find.byKey(const ValueKey('store-url-field')), 'https://store.test');
       await tester.enterText(find.byKey(const ValueKey('store-key-field')), 'wrong');
       await tester.tap(find.byKey(const ValueKey('store-save-button')));
@@ -111,15 +106,15 @@ void main() {
       expect(ApiConfig.effectiveDeviceName, ApiConfig.defaultDeviceName());
     });
 
-    testWidgets('/health project_store is offered as the default store address (never a key)', (tester) async {
+    testWidgets('/health project_store is offered as the default cloud storage address (never a key)', (tester) async {
       final backend = MockClient((request) async {
         expect(request.url.path, '/health');
         return http.Response(jsonEncode({'status': 'ok', 'api_features': <String>[], 'project_store': 'https://store.example.com'}), 200);
       });
-      await pumpSettings(tester, backend);
+      await pumpScreen(tester, ServerScreen(httpClient: backend));
       expect(ApiConfig.storeUrl, '');
 
-      await tester.tap(find.text('Connect'));
+      await tester.tap(find.byKey(const ValueKey('server-connect')));
       await _settle(tester);
 
       expect(ApiConfig.storeUrl, 'https://store.example.com');
@@ -130,16 +125,16 @@ void main() {
     testWidgets('an address already set is not replaced by what /health offers', (tester) async {
       await ApiConfig.saveStore(storeUrl: 'https://mine.example.com', storeApiKey: 'k');
       final backend = MockClient((request) async => http.Response(jsonEncode({'status': 'ok', 'project_store': 'https://store.example.com'}), 200));
-      await pumpSettings(tester, backend);
-      await tester.tap(find.text('Connect'));
+      await pumpScreen(tester, ServerScreen(httpClient: backend));
+      await tester.tap(find.byKey(const ValueKey('server-connect')));
       await _settle(tester);
       expect(ApiConfig.storeUrl, 'https://mine.example.com');
     });
 
     testWidgets('a backend with no project_store (an older one) offers nothing', (tester) async {
       final backend = MockClient((request) async => http.Response(jsonEncode({'status': 'ok'}), 200));
-      await pumpSettings(tester, backend);
-      await tester.tap(find.text('Connect'));
+      await pumpScreen(tester, ServerScreen(httpClient: backend));
+      await tester.tap(find.byKey(const ValueKey('server-connect')));
       await _settle(tester);
       expect(ApiConfig.storeUrl, '');
     });
@@ -190,7 +185,7 @@ void main() {
       );
       await tester.tap(find.text('go'));
       await _settle(tester);
-      expect(find.text('No projects on the server yet.'), findsOneWidget);
+      expect(find.text('No projects in cloud storage yet.'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('new-server-project')));
       await _settle(tester);
@@ -224,6 +219,27 @@ void main() {
       await tester.tap(find.text('Try again'));
       await _settle(tester);
       expect(find.text('Back'), findsOneWidget);
+    });
+
+    testWidgets('Open asks where: This device and Cloud storage are the two answers, and Cancel is neither', (tester) async {
+      for (final entry in {'open-source-device': OpenSource.device, 'open-source-cloud': OpenSource.cloud}.entries) {
+        OpenSource? result;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Builder(
+              builder: (context) => Scaffold(
+                body: TextButton(onPressed: () async => result = await showOpenSourceDialog(context, cloudHost: 'storage-2.snail-shell.uk'), child: const Text('go')),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('go'));
+        await _settle(tester);
+        expect(find.text('storage-2.snail-shell.uk'), findsOneWidget);
+        await tester.tap(find.byKey(ValueKey(entry.key)));
+        await _settle(tester);
+        expect(result, entry.value);
+      }
     });
 
     testWidgets('Copy to the server asks for the project name', (tester) async {

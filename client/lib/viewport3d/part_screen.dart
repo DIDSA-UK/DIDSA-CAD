@@ -6,6 +6,7 @@ import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 import 'package:vector_math/vector_math.dart' as vm;
@@ -53,7 +54,7 @@ import 'component_context_menu.dart';
 import 'component_gizmo.dart';
 import 'component_selection_toolbar.dart';
 import 'edge_fade_scroll_row.dart';
-import '../connection_screen.dart';
+import '../home/home_screen.dart';
 import '../didsa_logo_button.dart';
 import '../gear/bevel_design_screen.dart';
 import '../gear/gear_chain_design_screen.dart';
@@ -118,6 +119,7 @@ import 'mate_pick_point.dart';
 import 'width_pick.dart';
 import 'component_pattern_panel.dart';
 import 'measurement_panel.dart';
+import 'mate_preview_glide.dart';
 import 'assembly_instance_render.dart';
 import 'mesh_geometry.dart';
 import 'mirror_panel.dart';
@@ -577,7 +579,7 @@ class _DeleteUndoEntry extends _AssemblyUndoEntry {
   final List<ComponentPatternDto> patterns;
 }
 
-class _PartScreenState extends State<PartScreen> {
+class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateMixin {
   late final DocumentApiClient _api;
 
   /// Owned by this screen (regardless of whether [PartScreen.sketchApiFactory]
@@ -1048,9 +1050,16 @@ class _PartScreenState extends State<PartScreen> {
     // [_displayOccurrences]'s own doc comment for why no client-only overlay
     // is folded in here anymore.
     // Scenes (S3): while a scene shows, its poses and visibility (the composition over the real instances).
-    final overlaid = _assemblyMesh == null
+    var overlaid = _assemblyMesh == null
         ? const <AssemblyOccurrenceInstanceDto>[]
         : (_sceneMode ? _sceneInstances : _assemblyMesh!.instances);
+    // M3: the parts a mate preview is gliding (or has just confirmed) are drawn at their glide pose.
+    if (_glideWorld.isNotEmpty) {
+      final glideFocus = _focusStack?.currentOccurrencePath ?? const <String>[];
+      for (final e in _glideWorld.entries) {
+        overlaid = overrideInstanceTransform(overlaid, targetOccurrencePath: [...glideFocus, e.key], transform: e.value);
+      }
+    }
     final liveTransform = _gizmoLiveTransform;
     final targetOccurrence = _gizmoTargetOccurrence;
     if (liveTransform == null || targetOccurrence == null) return overlaid;
@@ -4671,7 +4680,100 @@ class _PartScreenState extends State<PartScreen> {
   /// [PartViewport.matePreviewMembers] renders as translucent ghosts. Empty whenever there's nothing to show (fewer than 2
   /// entities picked yet, no drivable Occurrence, or the dry-run solve
   /// didn't converge) - see that method's own doc comment.
-  List<MatePreviewMember> _matePreviewMembers = const [];
+  List<MatePreviewMember> _matePreviewMembersValue = const [];
+
+  /// M3: what the viewport ghosts. With the glide preview on (the Controls setting "Mate preview: move the part", the default) the real parts glide instead
+  /// ([_glide], drawn through [_glideWorld]) and the only ghost is the outline that stays at their stored pose; with it off it is the translucent copy at the
+  /// solved pose, as before.
+  List<MatePreviewMember> get _matePreviewMembers {
+    if (!ControlsPreferences.matePreviewGlide) return _matePreviewMembersValue;
+    return _glideCommitted ? const [] : _glideOutline;
+  }
+
+  /// The outline [_glide] leaves at the stored poses, rebuilt only when the preview changes (a new list every frame would re-sync the viewport's ghosts every frame).
+  List<MatePreviewMember> _glideOutline = const [];
+
+  set _matePreviewMembers(List<MatePreviewMember> value) {
+    _matePreviewMembersValue = value;
+    if (!ControlsPreferences.matePreviewGlide) {
+      if (_glide.isActive) _endMatePreviewGlide();
+      return;
+    }
+    if (_glideCommitted) return; // a confirmed preview stays where it is until the refreshed poses are in
+    _glide.retarget(value, _glideNow());
+    _glideOutline = _glide.outline();
+    _glideWorld = _glideWorldNow();
+    _startGlideTimer();
+  }
+
+  /// M3: the glide's model, its clock (a [Ticker], so it follows the frame clock - and a test's `pump`), and the world poses it draws (see [_displayAssemblyInstances]).
+  final MatePreviewGlide _glide = MatePreviewGlide();
+  Ticker? _glideTicker;
+  double _glideBase = 0; // seconds of earlier runs of the ticker (its own clock restarts at 0 each time)
+  double _glideElapsed = 0;
+  Map<String, RigidTransformDto> _glideWorld = const {};
+  bool _glideCommitted = false;
+
+  double _glideNow() => _glideBase + _glideElapsed;
+
+  Map<String, RigidTransformDto> _glideWorldNow() {
+    final now = _glideNow();
+    return {for (final e in _glide.posesAt(now).entries) e.key: _worldOfLocal(e.value)};
+  }
+
+  void _startGlideTimer() {
+    final ticker = _glideTicker ??= createTicker((elapsed) {
+      _glideElapsed = elapsed.inMicroseconds / 1e6;
+      if (!mounted) return;
+      final now = _glideNow();
+      final dropped = _glide.settle(now);
+      final animating = _glide.isAnimating(now);
+      setState(() => _glideWorld = _glideWorldNow());
+      if (!animating && !dropped) _stopGlideTicker();
+    });
+    if (!ticker.isActive) {
+      _glideElapsed = 0;
+      ticker.start();
+    }
+  }
+
+  void _stopGlideTicker() {
+    final ticker = _glideTicker;
+    if (ticker == null || !ticker.isActive) return;
+    _glideBase += _glideElapsed;
+    _glideElapsed = 0;
+    ticker.stop();
+  }
+
+  /// Confirm: the parts stay exactly where the preview put them while the stored poses are written and re-read ([_endMatePreviewGlide] then drops the overlay).
+  void _commitMatePreviewGlide() {
+    if (!ControlsPreferences.matePreviewGlide || !_glide.isActive) return;
+    _glideCommitted = true;
+    _glide.commit();
+    _glideWorld = _glideWorldNow();
+  }
+
+  /// The refreshed poses are in (or the screen is leaving): the overlay goes.
+  void _endMatePreviewGlide() {
+    _stopGlideTicker();
+    _glideCommitted = false;
+    _glide.clear();
+    _glideOutline = const [];
+    if (mounted) setState(() => _glideWorld = const {});
+  }
+
+  /// A confirmed preview was refused after all: the parts glide back.
+  void _abortMatePreviewGlideCommit() {
+    if (!_glideCommitted) return;
+    _glideCommitted = false;
+    _glide.cancel(_glideNow());
+    _glideOutline = _glide.outline();
+    if (mounted) {
+      setState(() => _glideWorld = _glideWorldNow());
+      _startGlideTimer();
+    }
+  }
+
 
   /// [_scheduleMatePreview]'s own monotonic guard - mirrors
   /// [_measureRequestToken]'s identical "no Feature/Occurrence is mutated,
@@ -5585,6 +5687,7 @@ class _PartScreenState extends State<PartScreen> {
         viewDirection: _mateIsWidth ? null : mateViewDirectionFor(_selectedEntities, _matePickPoints),
       );
       if (!mounted) return;
+      _commitMatePreviewGlide(); // M3: the part is already where the mate put it
       if (keepOpen) {
         setState(() {
           _mateAppliedCount++;
@@ -5604,8 +5707,10 @@ class _PartScreenState extends State<PartScreen> {
       }
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+      _endMatePreviewGlide();
     } on ApiException catch (e) {
       if (!mounted) return;
+      _abortMatePreviewGlideCommit();
       setState(() {
         _mateSaving = false;
         _mateError = e.message;
@@ -11737,7 +11842,7 @@ class _PartScreenState extends State<PartScreen> {
     if (!mounted) return;
 
     await Navigator.of(context).pushAndRemoveUntil(
-      MaterialPageRoute(builder: (context) => const ConnectionScreen()),
+      MaterialPageRoute(builder: (context) => const HomeScreen()),
       (route) => false,
     );
   }
@@ -12530,6 +12635,17 @@ class _PartScreenState extends State<PartScreen> {
   /// is kept rather than forced uniform.
   Future<void> _onOpenPressed() async {
     setState(() => _toolbarOpen = false);
+    // One Open for both places a project can live: with cloud storage set up, ask where first. (Cloud storage handles its own
+    // "discard unsaved work?" question, only if a file is opened.)
+    final remote = _remote;
+    if (remote != null && remote.isConfigured) {
+      final source = await showOpenSourceDialog(context, cloudHost: Uri.tryParse(remote.settings.url)?.host ?? remote.settings.url);
+      if (source == null || !mounted) return;
+      if (source == OpenSource.cloud) {
+        await _onServerProjectsPressed();
+        return;
+      }
+    }
     if (!await _confirmExitPart()) return;
     if (!mounted) return;
     if (_canPersistFilePathForReuse) {
@@ -12909,6 +13025,7 @@ class _PartScreenState extends State<PartScreen> {
 
   @override
   void dispose() {
+    _glideTicker?.dispose();
     _referenceReports.dispose();
     _referencesNotice.dispose();
     _folderChangeOffer.dispose();
@@ -12917,6 +13034,7 @@ class _PartScreenState extends State<PartScreen> {
     _sectionPreviewDebounce?.cancel();
     _busyOverlayTimer?.cancel();
     _serverSyncTimer?.cancel();
+    _statusUnlisten?.call();
     _jobPollTimer?.cancel();
     _dragPump?.cancel();
     _presenterFadeTimer?.cancel();
@@ -15101,6 +15219,19 @@ class _PartScreenState extends State<PartScreen> {
             ),
             onPressed: _toggleSelectionMode,
           ),
+        // Shared storage (S2): the sync status of an open server project, as a symbol (cloud done / upload / warning / off), live.
+        // It lives here, not over the viewport, so it never covers the triad. Tap for the sync sheet.
+        if (_projectRoot is ServerProjectRoot && _remote != null)
+          _syncQuickButton(_projectRoot as ServerProjectRoot, _remote!)
+        else if (_remote != null && _remote!.isConfigured)
+          // A project store is set up but this session saves to a local folder: say so (a folder symbol, where the cloud
+          // symbol would be), with the way into a server project one tap away.
+          QuickColumnButton(
+            key: const ValueKey('quick-local-fab'),
+            tooltip: 'Saving to a local folder, not the server',
+            child: const Icon(Icons.folder_outlined),
+            onPressed: _showLocalSessionSheet,
+          ),
         QuickColumnButton(
           key: const ValueKey('quick-visibility-fab'),
           tooltip: 'Visibility',
@@ -15109,6 +15240,68 @@ class _PartScreenState extends State<PartScreen> {
           onPressed: () => setState(() => _visibilityPanelOpen = true),
         ),
       ];
+
+  void _showLocalSessionSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          key: const ValueKey('local-session-sheet'),
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.fromLTRB(16, 16, 16, 4),
+              child: Text('This session saves to a local folder, not the project store. Nothing is being synced.'),
+            ),
+            ListTile(
+              key: const ValueKey('local-sheet-server-projects'),
+              leading: const Icon(Icons.cloud_outlined),
+              title: const Text('Open from cloud storage…'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                unawaited(_onServerProjectsPressed());
+              },
+            ),
+            ListTile(
+              key: const ValueKey('local-sheet-copy'),
+              leading: const Icon(Icons.cloud_upload_outlined),
+              title: const Text('Copy this project to cloud storage…'),
+              onTap: () {
+                Navigator.of(sheetContext).pop();
+                unawaited(_onCopyToServerPressed());
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  QuickColumnButton _syncQuickButton(ServerProjectRoot root, RemoteStorageService remote) {
+    final status = remote.statusOf(root);
+    final scheme = Theme.of(context).colorScheme;
+    final look = ServerSyncChip.describe(status.value, scheme);
+    return QuickColumnButton(
+      key: const ValueKey('quick-sync-fab'),
+      tooltip: '${root.project}: ${look.label}',
+      badge: !status.value.allSynced,
+      child: ValueListenableBuilder<SyncSummary>(
+        valueListenable: status,
+        builder: (context, summary, _) {
+          final live = ServerSyncChip.describe(summary, Theme.of(context).colorScheme);
+          return Icon(live.icon, color: live.color);
+        },
+      ),
+      onPressed: () => showServerSyncSheet(
+        context,
+        remote,
+        root,
+        onSyncNow: _syncServerNow,
+        onResolve: () => _resolveServerConflicts(root),
+      ),
+    );
+  }
 
   /// The Start menu's last-used tab per lens, for the session.
   final Map<AssemblyLens, String> _startMenuTabByLens = {};
@@ -15842,12 +16035,22 @@ class _PartScreenState extends State<PartScreen> {
   }
 
   /// Starts (or stops) the timer that sends queued saves when the store is reachable again, for the open server project.
+  VoidCallback? _statusUnlisten;
+
   void _watchServerProject() {
     _serverSyncTimer?.cancel();
     _serverSyncTimer = null;
+    _statusUnlisten?.call();
+    _statusUnlisten = null;
     final root = _projectRoot;
     final remote = _remote;
     if (root is! ServerProjectRoot || remote == null) return;
+    final status = remote.statusOf(root);
+    void rebuildOnStatus() {
+      if (mounted) setState(() {});
+    }
+    status.addListener(rebuildOnStatus);
+    _statusUnlisten = () => status.removeListener(rebuildOnStatus);
     _serverSyncTimer = Timer.periodic(const Duration(seconds: 20), (_) {
       final status = remote.statusOf(root).value;
       if (status.toSend > 0 || status.online == false) unawaited(_syncServerNow(quiet: true));
@@ -15947,19 +16150,60 @@ class _PartScreenState extends State<PartScreen> {
     await _openComposedProject(root, rootPath);
   }
 
-  /// File > Server projects…: choose a project on the store, then a file in it, and open it like any project file.
+  /// File > Open… > Cloud storage: choose a project on the store, then a file in it, and open it like any project file.
   Future<void> _onServerProjectsPressed() async {
     setState(() => _toolbarOpen = false);
     final remote = _remote;
     if (remote == null) return;
     if (!remote.isConfigured) {
-      setState(() => _errorMessage = 'Set the project store address and key in Connection Settings (File > Exit) first.');
+      setState(() => _errorMessage = 'Set up cloud storage first: File > Exit, then Storage on the home screen.');
       return;
     }
-    if (!await _confirmExitPart() || !mounted) return;
     final project = await showServerProjectsDialog(context, remote);
     if (project == null || !mounted) return;
     remote.beginSession(project);
+
+    // An empty project (a new one, say) has no file to open: this session simply starts saving into it, so Save and Save All
+    // write there. A project with files asks: open one of them, or save the current work into it.
+    List<String> existing = const [];
+    try {
+      existing = await _storageService.listFiles(project);
+    } on StorageException catch (e) {
+      if (mounted) setState(() => _errorMessage = e.message);
+      return;
+    }
+    if (!mounted) return;
+    if (existing.isEmpty) {
+      _adoptServerProject(project, markUnsaved: true, note: 'This session now saves into "${project.project}". Use Save or Save All.');
+      return;
+    }
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const ValueKey('server-project-choice'),
+        title: Text(project.project),
+        content: Text('${existing.length} file${existing.length == 1 ? '' : 's'} in this project.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+          TextButton(
+            key: const ValueKey('server-project-save-here'),
+            onPressed: () => Navigator.of(context).pop('save'),
+            child: const Text('Save current work here'),
+          ),
+          FilledButton(
+            key: const ValueKey('server-project-open'),
+            onPressed: () => Navigator.of(context).pop('open'),
+            child: const Text('Open a file…'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+    if (choice == 'save') {
+      _adoptServerProject(project, markUnsaved: true, note: 'This session now saves into "${project.project}". Use Save or Save All.');
+      return;
+    }
+    if (!await _confirmExitPart() || !mounted) return;
     var root = project;
     final relativePath = await showOpenProjectPathPromptDialog(
       context,
@@ -15990,20 +16234,20 @@ class _PartScreenState extends State<PartScreen> {
     await _openComposedProject(root, relativePath);
   }
 
-  /// File > Copy this project to the server…: every file of the open local project folder goes into a new server project in one
+  /// File > Copy this project to cloud storage…: every file of the open local project folder goes into a new server project in one
   /// commit, and this session carries on in that server project (paths are relative, so they stay valid).
   Future<void> _onCopyToServerPressed() async {
     setState(() => _toolbarOpen = false);
     final remote = _remote;
     if (remote == null) return;
     if (!remote.isConfigured) {
-      setState(() => _errorMessage = 'Set the project store address and key in Connection Settings (File > Exit) first.');
+      setState(() => _errorMessage = 'Set up cloud storage first: File > Exit, then Storage on the home screen.');
       return;
     }
     final local = _projectRoot ?? await _ensureProjectRoot();
     if (local == null || !mounted) return;
     if (local is ServerProjectRoot) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This project is already on the server.')));
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This project is already in cloud storage.')));
       return;
     }
     final name = await showCopyToServerDialog(context, suggestedName: local.displayName);
@@ -16020,11 +16264,38 @@ class _PartScreenState extends State<PartScreen> {
     });
     final root = created;
     if (root == null || !mounted) return;
-    setState(() => _projectRoot = root);
-    _watchServerProject();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Copied to the server as "${root.project}". This session now works on the server copy.')),
+    // A folder with no files copies nothing: say so, and the session still starts saving into the new project.
+    var hadFiles = true;
+    try {
+      hadFiles = (await _storageService.listFiles(root)).isNotEmpty;
+    } on StorageException {
+      hadFiles = true;
+    }
+    if (!mounted) return;
+    _adoptServerProject(
+      root,
+      markUnsaved: !hadFiles,
+      note: hadFiles
+          ? 'Copied to cloud storage as "${root.project}". This session now works on that copy.'
+          : 'The folder had no files to copy, so "${root.project}" is empty. This session now saves into it: use Save or Save All.',
     );
+  }
+
+  /// Makes [root] this session's project: the sync chip appears and Save / Save All write there. [markUnsaved]: the session's Parts are
+  /// not in that project yet, so each is written on the next Save (as when a lost folder is replaced).
+  void _adoptServerProject(ServerProjectRoot root, {required bool markUnsaved, required String note}) {
+    setState(() {
+      _projectRoot = root;
+      if (markUnsaved) {
+        _dirtyPartIds.addAll(_relativePathByPartId.keys);
+        final rootPartId = _part?.id;
+        if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+      }
+    });
+    _watchServerProject();
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text(note)));
   }
 
   /// The "Add" FAB's "Feature" entry - shows the second-level picker and
@@ -25571,6 +25842,7 @@ class _PartScreenState extends State<PartScreen> {
     dialogRefresh = null;
     // Cancel, Save and a dismissed dialog all end the live preview.
     _matePreviewRequestToken++;
+    if (save == true) _commitMatePreviewGlide(); // M3: Save keeps the part where the preview put it; Cancel (or a dismissed dialog) glides it back
     if (mounted) setState(() => _matePreviewMembers = const []);
     if (save != true || !mounted) return;
     try {
@@ -25592,8 +25864,10 @@ class _PartScreenState extends State<PartScreen> {
       if (!mounted) return;
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
+      _endMatePreviewGlide();
     } on ApiException catch (e) {
       if (!mounted) return;
+      _abortMatePreviewGlideCommit();
       setState(() => _errorMessage = e.message);
     }
   }
@@ -26601,8 +26875,47 @@ class _PartScreenState extends State<PartScreen> {
     );
   }
 
+  /// The desktop layout's sync status (the quick menu is the phone layout's): the same symbols, in the top bar next to Save. A cloud
+  /// symbol for a server project (live), a folder symbol while a store is set up but this session saves to a local folder, and
+  /// nothing at all when no store is set up.
+  Widget? _desktopSyncAction() {
+    final remote = _remote;
+    final root = _projectRoot;
+    if (remote == null) return null;
+    if (root is ServerProjectRoot) {
+      final status = remote.statusOf(root);
+      return ValueListenableBuilder<SyncSummary>(
+        valueListenable: status,
+        builder: (context, summary, _) {
+          final look = ServerSyncChip.describe(summary, Theme.of(context).colorScheme);
+          return IconButton(
+            key: const ValueKey('desktop-sync-button'),
+            tooltip: '${root.project}: ${look.label}',
+            icon: Badge(isLabelVisible: !summary.allSynced, smallSize: 8, child: Icon(look.icon, color: look.color)),
+            onPressed: () => showServerSyncSheet(
+              context,
+              remote,
+              root,
+              onSyncNow: _syncServerNow,
+              onResolve: () => _resolveServerConflicts(root),
+            ),
+          );
+        },
+      );
+    }
+    if (!remote.isConfigured) return null;
+    return IconButton(
+      key: const ValueKey('desktop-local-button'),
+      tooltip: 'Saving to a local folder, not the server',
+      icon: const Icon(Icons.folder_outlined),
+      onPressed: _showLocalSessionSheet,
+    );
+  }
+
   List<Widget> _desktopAppBarActions() {
+    final sync = _desktopSyncAction();
     return [
+      if (sync != null) sync,
       _buildDesktopLensSwitch(context),
       IconButton(
         tooltip: _isDirty ? 'Save (Ctrl+S) - unsaved changes' : 'Save (Ctrl+S)',
@@ -26640,12 +26953,11 @@ class _PartScreenState extends State<PartScreen> {
           menuChildren: [
             item('New', idle(_startNewPart), keys: 'Ctrl+N'),
             item('Open…', idle(_onOpenPressed), keys: 'Ctrl+O'),
-            if (_remote != null) item('Server projects…', idle(_onServerProjectsPressed)),
             const Divider(height: 1),
             item('Save', idle(_saveNativeFile), keys: 'Ctrl+S'),
             item('Save As…', idle(_saveAsNativeFile), keys: 'Ctrl+Shift+S'),
             item('Save All', idle(_onSaveAllPressed)),
-            if (_remote != null) item('Copy this project to the server…', idle(_onCopyToServerPressed)),
+            if (_remote != null) item('Copy this project to cloud storage…', idle(_onCopyToServerPressed)),
             const Divider(height: 1),
             item('Export…', idle(_exportPart)),
             item('Import geometry…', idle(_importGeometry)),
@@ -27952,19 +28264,6 @@ class _PartScreenState extends State<PartScreen> {
                 // Item 4: the multi-select action bar now lives in the tree
                 // panel's header (`multiSelectHeader`); the bottom sheet that
                 // used to cover the tree's lowest rows is gone.
-                // Shared storage (S2): the sync chip of an open server project: Synced / N to send / Clash / Offline. Tap for the
-                // sync sheet.
-                if (_projectRoot is ServerProjectRoot && _remote != null)
-                  Positioned(
-                    left: 8,
-                    bottom: 8,
-                    child: ServerSyncChip(
-                      remote: _remote!,
-                      root: _projectRoot as ServerProjectRoot,
-                      onSyncNow: _syncServerNow,
-                      onResolve: () => _resolveServerConflicts(_projectRoot as ServerProjectRoot),
-                    ),
-                  ),
                 Positioned.fill(
                   child: PartToolbar(
                     visible: _toolbarOpen && !_chromeHidden,
@@ -27987,7 +28286,6 @@ class _PartScreenState extends State<PartScreen> {
                     hasUnsavedChanges: _isDirty,
                     onOpen: _onOpenPressed,
                     onSaveAll: _onSaveAllPressed,
-                    onServerProjects: _remote == null ? null : _onServerProjectsPressed,
                     onCopyToServer: _remote == null ? null : _onCopyToServerPressed,
                     onStartNew: _startNewPart,
                     onExportPart: _exportPart,

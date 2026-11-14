@@ -36,6 +36,20 @@ flag passed explicitly every time: `flutter run -d windows
 `flutter_scene`'s own exception message for the exact wording this all
 comes from).
 
+## Home screen
+
+The first screen is the logo and five tiles (`lib/home/`): **Mesh tools** (on-device, always available), **CAD tools** (opens the tool
+chooser; needs a server), **Server** (address and API key, Connect with its health check, Use Local Server, Server Management),
+**Storage** (a local folder, and cloud storage: address, key, device name) and **Connect a VR headset** (needs a server). CAD tools and
+the headset are greyed with a lock when there is no server, but still answer a tap: the app looks again and, if the server is really not
+there, opens the Server screen saying why. Server and Storage carry a status light: green (answering), red (set up but not answering or
+the key refused), grey (not set up / local folder only), refreshed at launch, on return and every 30 s.
+
+The settings wheel (top right) chooses the **style** (three: Blueprint, Instrument panel, Drawing sheet; remembered) and holds the
+sketcher, mesh viewer and mouse/keyboard settings. Every sub-menu opened from home (Server, Storage, Settings, the tool chooser, Server
+Management, headset pairing) is shown in the chosen style's theme (`HomeThemed` / `pushHomeRoute`); the tools themselves keep the app's
+theme. File > Exit in the part editor returns here. Tests: `test/home_screen_test.dart`.
+
 ## Server projects (shared storage)
 
 A project can live on the project store (`project-store/`, `docs/shared-storage-scope.md`) instead of in a local folder. The flat app's
@@ -43,12 +57,15 @@ storage layer (`lib/storage/`) is one `StorageService` for both: a `RoutingStora
 `RemoteStorageService` (`lib/storage/server/`) and every other root to the platform's folder service, so Open, Save, Save All and the
 assembly composer do not branch on where a project lives.
 
-- **Set up once:** Connection Settings > "Project store (shared projects)": the store's address, its key (`PROJECT_STORE_API_KEY`, not
+- **Set up once:** home screen > Storage > Cloud storage: the store's address, its key (`PROJECT_STORE_API_KEY`, not
   the CAD key) and this device's name (sent as `X-Device-Name`; other devices see it as who changed a file; it is a label, not a login).
   If the backend's `/health` says where its store is (`project_store`), that address is offered as the default.
-- **File menu:** *Server projects...* (pick a project on the store, then a file in it) next to *Open...*; *Copy this project to the server...*
+- **File menu:** one *Open...* (with cloud storage set up it asks *This device* or *Cloud storage*; cloud storage lists the projects, then a file in one); *Copy this project to cloud storage...*
   next to *Save All* (every file of the open local folder goes into a new server project in one commit, and the session carries on
-  there). A small chip on a server project shows **Synced / N to send / Clash / Offline**; tap it for *Sync now* and *Resolve...*.
+  there). A symbol in the Start button's quick menu (swipe up from Start) shows a server project's state (cloud done = synced, upload = to
+  send, warning = clash, cloud off = offline); tap it for *Sync now* and *Resolve...*. On the desktop layout the same symbol is in the top bar,
+  next to Save. While a store is set up but the session saves to a
+  local folder, a folder symbol is shown there instead, and its sheet leads to *Server projects...* and *Copy this project...*.
 - **Reads** are live and keep a local copy (`FileCache`, with the store's version). **Saves** name the version they replace; each save
   is first kept in a queue on the device (`SyncStore`, application-support folder, not the OS cache), then sent. **Offline** a project
   opens from the local copy and saves wait in the queue; a timer and *Sync now* send them (the change feed from the saved cursor first,

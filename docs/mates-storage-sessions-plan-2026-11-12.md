@@ -35,13 +35,13 @@ The implementation session updates this table in its PR.
 | M1 | Rigid sets in the group solve | CAD backend | Done (PR #355; results: "M1 results" below) |
 | M1.1 | Group solve follow-ups: mate geometry cache, ground-row pruning, one preview budget, missing tests | CAD backend | Done (merged; results: "M1.1 results" below) |
 | M2 | Constraint model v8 in the Dart and GDScript mirrors; caps raised | CAD client, VR | Done (merged; caps not raised; results: "M2 results" below) |
-| M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Done (merged) |
+| M3 | Glide preview (Flutter and VR), VR edit-mate preview | CAD client, VR | Done (CAD #359 / VR #81; results: "M3 results" below) |
 | M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Done (merged, CAD #360 / VR #82): the type rule shipped (with Peg in hole); no pick-point rule met the standard, so none shipped (results: "M4 results" below) |
 | M4.1 | A Distance previewed where the parts are (SOLIDWORKS' order: parallel, the measured distance, then type the one you want) | CAD backend + both clients | Done (merged with M4; results: "M4.1 results" below) |
 | M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Done (merged; results: "M5 results" below) |
 | S0 | Storage scope doc and spikes | CAD, VR | In review: `docs/shared-storage-scope.md`; the Quest spike is built and waits for the owner's run (results: "S0 results" below) |
-| S1 | Project store service | CAD | Done in this PR (`project-store/`; results: "S1 results" below) |
-| S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Done in this PR (`client/lib/storage/server/`; results: "S2 results" below) |
+| S1 | Project store service | CAD | Done (PR #362: `project-store/`; results: "S1 results" below) |
+| S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Done (PR #363 and follow-ups: `client/lib/storage/server/`, `client/lib/home/`; results: "S2 results" below) |
 | S3 | VR: server projects, cache, offline | VR | Not started |
 | S4 | Sync hardening and set-up polish | all | Not started |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
@@ -623,6 +623,16 @@ No backend change: `preview-mate-solve` already returns every moved member.
 Tests: widget / headless tests for start, replace, cancel and confirm; a failed preview leaves the part at its start.
 Feel is not testable; the owner judges the glide time on the headset.
 
+### M3 results (2026-11-13)
+
+Flutter: `viewport3d/mate_preview_glide.dart` (the model: where each previewed occurrence is at a time; 0.25 s, cubic ease in-out; retarget / cancel / commit / outline), `PartScreen` (a `Ticker` drives it; the glide poses are drawn through the same instance override the constrained drag uses; the ghost that remains is the outline at the stored pose; `_confirmMate` and the Edit mate dialog commit the glide so the part stays put until the refreshed poses are in, and a refused confirm glides it back), and the Controls setting "Mate preview: move the part" (`ControlsPreferences.matePreviewGlide`, default on; off = the old translucent copy). VR: `mates_tool.gd` (the same behaviour on the real node: outline at the start, Clear / a changed pick / a failed preview glide back, Create keeps the part there and PATCHes the STORED pose), and **the edit-mate preview VR did not have**: Flip / Lock rotation / Value on a placing mate preview first (`preview-mate-solve` with `replace_mate_id`), with an Apply change / Cancel row on the Mates page.
+
+Tests: `mate_preview_glide_test.dart` (7: the model and the setting), `part_screen_test.dart` (5 `M3:` tests through the real screen with a fake backend: the part itself moves and the outline sits at the stored pose, a preview stores nothing, Cancel glides home, Confirm keeps the part at the solved pose with nothing jumping and the backend storing it, a refused Confirm leaves the preview to Cancel, the setting off keeps the copy, a non-converging preview moves nothing); VR `tests/mate_glide.gd`.
+
+What the plan says that was not done or differs: (1) the **Edit mate dialog in Flutter** glides through the same code (it already previewed with `replace_mate_id`) but no test drives that dialog; (2) the outline is the translucent ghost at the stored pose (the viewport's existing ghost), not a thin line drawing; (3) VR has no Settings switch for the old see-through copy (`MatesTool.preview_glide` exists, the flat app's setting is in Controls); (4) in a VR sandbox (relaxed) or with a grounded driven part the mate is stored, not solved, so the preview goes back instead of staying.
+
+**Needs the owner:** the glide time (0.25 s) and ease, how the outline reads, whether the part hiding the picks is a problem on a phone, and whether Apply / Cancel is the right step for a VR edit. Not verified: nothing was looked at on a screen or a headset.
+
 ### M4. A better first guess (backend + both clients; medium; strongest agent for the rules, bench as the judge)
 
 - **Type from the picks.** `preview-mate-solve` accepts `type: "auto"` and returns `suggested_type` with the solve: two
@@ -995,7 +1005,7 @@ differences below.
   choices `sync` sends the commit again. After Take theirs / a copy the open session no longer matches the store, so the note offers Reopen.
 - **File menu and settings:** "Server projects..." next to Open and "Copy this project to the server..." next to Save All (phone menu and
   desktop menu bar; hidden when the screen has no store service). The store's address, key and this device's name are entered once in
-  Connection Settings (`ApiConfig.storeUrl`, `storeApiKey`, `deviceName`; the default name is the computer's name, else the platform). If
+  the Storage screen (home screen > Storage; `ApiConfig.storeUrl`, `storeApiKey`, `deviceName`; the default name is the computer's name, else the platform). If
   `/health` carries `project_store`, that address is saved as the default when none is set (the key is never known to the backend). No
   pairing keys (S3).
 - **S0-8:** Save All on a local folder compares each file's modified time with the one this session saw when it read or wrote it
@@ -1019,6 +1029,17 @@ differences below.
 - **A commit refused with 400 for one bad file** leaves its changes queued with the store's message in the chip's sheet, where each can be
   discarded; the store does not say which file it was, so the client cannot drop the right one by itself.
 - **The change feed is used for sync, not for the file list**: it has no hashes or sizes, so a changed file list is fetched as a tree.
+- **Found on the owner's first real use (13 Nov) and fixed in this PR:** File > Server projects only switched a session into a project by
+  opening one of its files, so choosing a new (empty) project did nothing and later Saves went to the local folder flow (no chip, no
+  request to the store). Now an empty project is adopted as the session's project (Save / Save All write there), a project with files asks
+  "Save current work here" or "Open a file", and Copy to the server from a folder with no files says so and still adopts the new project.
+- **The status indicator moved into the quick menu (13 Nov, owner's request: the chip covered the triad), as symbols:** cloud done /
+  upload / warning / cloud off for a server project, and a folder symbol while a store is set up but the session saves locally (so
+  "not syncing" is visible, not just the absence of a chip).
+- **Home screen (13 Nov, owner's request, same PR):** the old connection screen is replaced by a logo-and-five-tiles home screen in three
+  styles (Blueprint, Instrument panel, Drawing sheet) chosen from a settings wheel, with Server and Storage screens, status lights
+  (green / red / grey), CAD tools and the VR headset greyed without a server, and the sub-menus themed to match (`client/lib/home/`,
+  `client/README.md`). "Cloud storage" is the user-facing name for the project store. Not checked on a device: how the three styles look.
 - The queue is not in `FileCache` itself (see above); `FileCache` only gained the version field and now creates a given directory.
 
 **Tests:** `test/remote_storage_service_test.dart` (47: reads, versioned writes, the stale write, every store status, offline queue and
