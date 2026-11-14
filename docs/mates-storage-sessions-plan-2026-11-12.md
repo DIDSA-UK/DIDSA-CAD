@@ -1111,12 +1111,8 @@ left out when no store is set). The headset reads them already; a code without t
 lines, the whole suite 4623 / 0 failures; and `e2e_cloud_store` (31 lines) against the real store from this repo's `main`, which `tests/ci_e2e.sh` starts and the e2e workflow installs the requirements for.
 Four mutations (no precondition, refreshing a held file, a remint that keeps ids, a send that does not clear the queue) each broke tests.
 
-**Found while checking CI (not S3):** the VR e2e job is red on VR `main` too, in `e2e_gear_train`, `e2e_limit` and `user_session_train` (22 lines; the same on 14 Nov before and after S3). Reproduced locally against
-this repo's `main`: `mate-motion` on the gear train answers 422 `unsupported_mate_geometry` for `bevel_a`. The demo's bevel mates (added to VR's `demo/assemblies/gear_train/Gear_train.didsa` on 25 Oct)
-refer to the bevel gears' faces 3 (bore) and 4 (back plane), which are `other` in the body the backend builds now; its bore cylinder is face 81 (or 105) and its back plane 104 (106 faces in all). With the bevel mates
-re-pointed to 81 and 104 in a scratch copy the same request answers 200 and no mate is broken. So the demo is stale against the current bevel face numbering (what changed in the backend is not known: the history is
-squashed). Not fixed here: the demo's mates need re-authoring (or the failing tests moved out of the CI list), and a mate on a bevel gear's face index is fragile whenever the generator changes. Face 81 vs 105 was
-not checked against the geometry.
+**Found while checking CI (not S3):** the VR e2e job is red on VR `main` too (`e2e_gear_train`, `e2e_limit`, `user_session_train`, 22 lines, the same before and after S3). The demo's bevel mates use face indices that the
+backend no longer builds as the bore and back plane. Written up, with the fix (DIDSA-VR PR #86) and a proposal for signed mate references, in "Part 2b: Stable mate references" below.
 
 **Verification and what is not:** headless with a fake store, and 31 assertions against the real store over the real HTTP transport. Not verified: anything on a headset (the permission prompt, whether
 Documents/DIDSA-Cloud works on Horizon OS, speed, how the screens read, the laser on the new buttons), the Quest storage check (S0) which the owner still has to read off, the owner's Pi, a Cloudflare tunnel,
