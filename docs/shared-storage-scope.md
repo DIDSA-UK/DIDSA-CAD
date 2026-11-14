@@ -2,7 +2,7 @@
 
 Phase S0 of `docs/mates-storage-sessions-plan-2026-11-12.md` (Part 2). Written 2026-11-13 from reading both repos on `main`
 (CAD `3469f1c`, VR `089a0c9`). **Built since:** the store (S1, `project-store/`) and the flat app's side (S2, `client/lib/storage/server/`; its results and
-where it differs from section 7 are in "S2 results" of the plan). The DIDSA-VR side (S3) is not built. The Quest spike is in DIDSA-VR (Launcher > Servers > **Check storage**).
+where it differs from section 7 are in "S2 results" of the plan). The DIDSA-VR side (S3) is built (DIDSA-VR PR #85; "S3 results" in the plan; **section 7's VR paragraph below is the design as scoped and differs from what was built**: the mirror is a visible folder in Documents, not `user://`). The Quest spike is in DIDSA-VR (Launcher > Servers > **Check storage**).
 The owner's decisions are in section 8: **all eight recommendations accepted on 2026-11-13**, so S1 builds them as written.
 
 ## 1. What this does, in one paragraph
@@ -157,7 +157,7 @@ shown as a chip. Offline: open from the cache, save to the queue. File menu: "Se
 project to the server". **Also worth doing in S2, for local folders:** the flat app's Save All has no check at all for a file changed
 on disk since it was read (VR has one). The same "changed meanwhile?" question as the store's, asked by modified time.
 
-**DIDSA-VR (S3): a mirror folder.** Each server project the headset opens is copied into `user://projects/<server>/<project>/`, with a
+**DIDSA-VR (S3): a mirror folder.** *(As built, 14 Nov: the mirror is `Documents/DIDSA-Cloud/<server host>/<project>/`, visible so files can be dragged in by hand, with the sync state private in `user://didsa-cloud-state/`; it needs All files access, falling back to `user://DIDSA-Cloud` without it. The text below is the original design.)* Each server project the headset opens is copied into `user://projects/<server>/<project>/`, with a
 small `sync.json` beside it (each file's version and hash as last synced, the queue, the cursor). Everything that reads files today
 (`native_compose.gd`, `file_lookup.gd`, `file_index.gd`) reads that folder with no change; `project_save.gd` writes there as it does to any
 folder, then the sync step sends what changed as one commit. So:

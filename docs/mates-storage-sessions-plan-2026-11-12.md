@@ -42,7 +42,7 @@ The implementation session updates this table in its PR.
 | S0 | Storage scope doc and spikes | CAD, VR | In review: `docs/shared-storage-scope.md`; the Quest spike is built and waits for the owner's run (results: "S0 results" below) |
 | S1 | Project store service | CAD | Done (PR #362: `project-store/`; results: "S1 results" below) |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Done (PR #363 and follow-ups: `client/lib/storage/server/`, `client/lib/home/`; results: "S2 results" below) |
-| S3 | VR: server projects, cache, offline | VR | Not started |
+| S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (open at the time of writing; headless and against the real store, not run on a headset; results: "S3 results" below) |
 | S4 | Sync hardening and set-up polish | all | Not started |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
 | P1 | Session hub service and read-only document sharing | CAD | Not started |
@@ -1072,6 +1072,53 @@ queue holds every unsent file in memory while it is sent) were not measured.
 - `project_folder.gd` gains a server source: Files lists server projects; the cache lives in `user://` (no All files access
   needed, which removes most of the Quest storage friction).
 - Same queue and conflict rules as S2. The landing shows what is waiting to sync.
+
+### S3 results (2026-11-14)
+
+**Built** in DIDSA-VR (PR #85, open when this was written; nothing in `project-store/`, `backend/` or `client/` changed). The VR notes are `docs/server-projects.md` there.
+
+- **A visible mirror folder per server project**, `Documents/DIDSA-Cloud/<server host>/<project>/`, a sibling of `Documents/DIDSA` (not nested in it: the moved-files index skips
+  dot-folders and the local Files list would show a nested one). VR's `native_compose.gd`, `file_lookup.gd`, `file_index.gd` and `project_save.gd` read and write it unchanged. The
+  root is one setting (`[cloud] folder=` in `settings.cfg`). It needs *All files access* like the local project folder; without it the mirror falls back to `user://DIDSA-Cloud` and the
+  Files page says so.
+- **The sync state is private** (`user://didsa-cloud-state/`): each file's version and hash as last synced, the queue, the feed cursor, the "mine" copies kept after Take theirs. Deleting the
+  mirror cannot delete the queue; a queued save whose file is gone is warned about, never sent as a delete.
+- **Local changes are found by scanning the mirror (SHA-256)**: a dropped file is a queued create (base null), an edited one a queued edit, a removed one only "not downloaded". Nothing in VR
+  sends a delete.
+- **S2's rules and words**: a base version is not moved by a re-read (a file the open session holds is never refreshed under it); a single save is `PUT` with `If-Match` (a create `If-None-Match: *`,
+  never a write without one), Save All is one commit; 412 / 409 are per-file clashes with who and when (`X-Device-Name`) and Keep mine / Take theirs (mine kept until the next sync after the resolving
+  one) / Save mine as a copy (`<name> (<device>, <date>).didsa`, a new document, Part and sketch id: VR had no remint, so `cloud_remint.gd` is a GDScript twin of `remint_identity.dart`); a deleted or
+  moved file is a clash; 401 names the key, 413 / 400 show the store's message, an unreachable store queues; a file over 100 MB that fails while the store answers is reported as the tunnel's limit.
+- **Sync**: the change feed from the saved cursor first, then the queue as one commit; a refused cursor falls back to the tree. On open, every 20 s while a project is open, after Save, and on Sync now.
+- **The moved-files rule against the store**: `GET .../parts/{part_id}` (the tree's part ids offline) instead of reading files.
+- **Screens**: wrist tablet > Files > Server projects (a state symbol per project and file), the landing's "waiting to sync" row, the Servers page's store address / key and device name. The QR code's
+  `p=<store address>` and `pk=<store key>` are read.
+
+**Differs from the scope, and why:**
+- The mirror is in Documents with the state private in `user://`, not `user://projects/<server>/<project>/` with a `sync.json` beside it (section 7 of the scope): the owner wanted to drag files in by
+  hand, which `user://` does not allow, and a visible folder must not hold the queue. It therefore needs All files access (the scope said it would not).
+- The queue is found by scanning, not recorded at save time, so `project_save.gd` is unchanged.
+- A file the store removed is removed from a clean mirror (the flat app evicts its cache copy); the store keeps the history.
+- Conflict choices are buttons on the tablet list, not a dialog; after Take theirs or a copy the status line says to open the file again (no automatic reload).
+- Not built: rename in a server project, "Copy this project to the server", a settings screen for the mirror root.
+
+**What the flat app must still do (small follow-up here):** `client/lib/vr_pairing/` must write `p=<the store's address>` and `pk=<the store's key>` (percent-encoded like the other values; both optional;
+left out when no store is set). The headset reads them already; a code without them still pairs.
+
+**Tests (VR):** `cloud_paths`, `cloud_remint`, `cloud_sync`, `cloud_moved_files`, `cloud_manager`, `cloud_ui` (a fake store, `tests/fake_project_store.gd`, after `client/test/support/fake_project_store.dart`): 197 SMOKE
+lines, the whole suite 4623 / 0 failures; and `e2e_cloud_store` (31 lines) against the real store from this repo's `main`, which `tests/ci_e2e.sh` starts and the e2e workflow installs the requirements for.
+Four mutations (no precondition, refreshing a held file, a remint that keeps ids, a send that does not clear the queue) each broke tests.
+
+**Found while checking CI (not S3):** the VR e2e job is red on VR `main` too, in `e2e_gear_train`, `e2e_limit` and `user_session_train` (22 lines; the same on 14 Nov before and after S3). Reproduced locally against
+this repo's `main`: `mate-motion` on the gear train answers 422 `unsupported_mate_geometry` for `bevel_a`. The demo's bevel mates (added to VR's `demo/assemblies/gear_train/Gear_train.didsa` on 25 Oct)
+refer to the bevel gears' faces 3 (bore) and 4 (back plane), which are `other` in the body the backend builds now; its bore cylinder is face 81 (or 105) and its back plane 104 (106 faces in all). With the bevel mates
+re-pointed to 81 and 104 in a scratch copy the same request answers 200 and no mate is broken. So the demo is stale against the current bevel face numbering (what changed in the backend is not known: the history is
+squashed). Not fixed here: the demo's mates need re-authoring (or the failing tests moved out of the CI list), and a mate on a bevel gear's face index is fragile whenever the generator changes. Face 81 vs 105 was
+not checked against the geometry.
+
+**Verification and what is not:** headless with a fake store, and 31 assertions against the real store over the real HTTP transport. Not verified: anything on a headset (the permission prompt, whether
+Documents/DIDSA-Cloud works on Horizon OS, speed, how the screens read, the laser on the new buttons), the Quest storage check (S0) which the owner still has to read off, the owner's Pi, a Cloudflare tunnel,
+a synced Drive / NAS root, killing the app mid-sync, a large project's first scan.
 
 ### S4. Hardening (small to medium)
 

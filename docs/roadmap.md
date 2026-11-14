@@ -684,7 +684,10 @@ Anything promoted out of this list should get its own scoping doc before it is b
   composition stays on the client (no server-side composition).
   **Update, 2026-11-13:** the store (S1) and the flat app's server projects
   (S2: Server projects, local copy and queue, conflicts, Save All as one
-  commit) are built; the DIDSA-VR side is S3. See "S2 results" in
+  commit) are built. **Update, 2026-11-14:** the DIDSA-VR side (S3: a visible mirror
+  folder per server project, the same sync rules, offline queue and conflict
+  choices) is built (DIDSA-VR PR #85). Still to do here: the pairing screen
+  writing `p` / `pk`. See "S2 results" and "S3 results" in
   `docs/mates-storage-sessions-plan-2026-11-12.md`.
 - **A sketch's origin point reportedly doesn't line up with the correct 3D
   viewport origin.** User report (2026-07-21), investigated the same day -
