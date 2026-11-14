@@ -24,6 +24,7 @@ class ApiConfig {
   static const String storeUrlPrefKey = 'project_store_url';
   static const String storeApiKeyPrefKey = 'project_store_api_key';
   static const String deviceNamePrefKey = 'project_store_device_name';
+  static const String cacheLimitMbPrefKey = 'project_store_cache_limit_mb';
 
   static String _baseUrl = '';
   static String _apiKey = '';
@@ -34,6 +35,7 @@ class ApiConfig {
   static String _storeUrl = '';
   static String _storeApiKey = '';
   static String _deviceName = '';
+  static int _cacheLimitMb = 1024;
   static String? _sessionId;
 
   /// The backend base URL, e.g. `https://cad-api.snail-shell.uk` - empty
@@ -78,6 +80,10 @@ class ApiConfig {
   /// The name this device gives the store (`X-Device-Name`): what other devices see as "who changed it". Settable; blank means the
   /// platform default ([defaultDeviceName]). Never used as identity.
   static String get deviceName => _deviceName;
+
+  /// How much disk this device's copies of server project files may take (0 = no limit). Clean-up removes the least recently used copies
+  /// first; a save waiting to be sent is kept elsewhere and is never touched by it.
+  static int get cacheLimitMb => _cacheLimitMb;
 
   /// [deviceName], or the platform's own when none was set.
   static String get effectiveDeviceName => _deviceName.isNotEmpty ? _deviceName : defaultDeviceName();
@@ -139,6 +145,7 @@ class ApiConfig {
     _storeUrl = prefs.getString(storeUrlPrefKey) ?? '';
     _storeApiKey = prefs.getString(storeApiKeyPrefKey) ?? '';
     _deviceName = prefs.getString(deviceNamePrefKey) ?? '';
+    _cacheLimitMb = prefs.getInt(cacheLimitMbPrefKey) ?? 1024;
   }
 
   /// Saves (or, with empty strings, clears) the project store's address and key.
@@ -156,6 +163,13 @@ class ApiConfig {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(deviceNamePrefKey, name.trim());
     _deviceName = name.trim();
+  }
+
+  /// Saves the size limit of the local copies of server projects, in MB (0 = no limit).
+  static Future<void> saveCacheLimitMb(int mb) async {
+    final prefs = await SharedPreferences.getInstance();
+    _cacheLimitMb = mb < 0 ? 0 : mb;
+    await prefs.setInt(cacheLimitMbPrefKey, _cacheLimitMb);
   }
 
   /// Saves (or, with empty strings, clears) the browser relay handed to a VR headset when pairing.

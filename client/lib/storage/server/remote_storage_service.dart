@@ -39,9 +39,17 @@ import 'store_client.dart';
 import 'sync_conflicts.dart';
 import 'sync_state.dart';
 
-/// Requests over this size can be refused by a Cloudflare tunnel (its free plan's documented limit; not measured here). Chunked
-/// upload is a later phase (S4): a file this big gets a clear message, never a silent loss.
+/// Requests over this size can be refused by a Cloudflare tunnel (its free plan's documented limit; not measured here). A file over
+/// [kChunkThresholdBytes] goes up in chunks instead (S4), so only a store that cannot take chunks is explained by this limit.
 const int kTunnelLimitBytes = 100 * 1024 * 1024;
+
+/// A file over this goes up in chunks (headroom under the tunnel's 100 MB request limit), [kChunkBytes] at a time (the store's own advice,
+/// `chunk_size`, wins when it is smaller).
+const int kChunkThresholdBytes = 90 * 1024 * 1024;
+const int kChunkBytes = 32 * 1024 * 1024;
+
+/// A chunk the store did not answer is tried this many times in a row before the sync gives up (the upload resumes at the next sync).
+const int kChunkRetries = 3;
 
 /// What a status chip shows for one server project.
 class SyncSummary {
@@ -117,6 +125,9 @@ class _Mutex {
   }
 }
 
+/// The store does not list `uploads.chunked` (it predates S4): a big file cannot be sent.
+class _NoChunking implements Exception {}
+
 class RemoteStorageService implements StorageService, PartIdIndex {
   RemoteStorageService({
     StoreSettings Function()? settings,
@@ -126,7 +137,11 @@ class RemoteStorageService implements StorageService, PartIdIndex {
     DateTime Function()? clock,
     this.treeTtl = const Duration(seconds: 5),
     this.tunnelLimitBytes = kTunnelLimitBytes,
-  })  : _settings = settings ?? _settingsFromConfig,
+    this.chunkThresholdBytes = kChunkThresholdBytes,
+    this.chunkBytes = kChunkBytes,
+    int Function()? cacheLimitBytes,
+  })  : _cacheLimitBytes = cacheLimitBytes ?? _cacheLimitFromConfig,
+         _settings = settings ?? _settingsFromConfig,
         _httpClient = httpClient,
         _store = syncStore ?? SyncStore(),
         _cache = fileCache ?? FileCache(),
@@ -143,6 +158,15 @@ class RemoteStorageService implements StorageService, PartIdIndex {
 
   /// Above this a failed upload is explained as the tunnel's limit (a test lowers it).
   final int tunnelLimitBytes;
+
+  /// How much disk the local copies may take (S4); 0 = no limit. Default: the setting ([ApiConfig.cacheLimitMb]).
+  final int Function() _cacheLimitBytes;
+
+  static int _cacheLimitFromConfig() => ApiConfig.cacheLimitMb * 1024 * 1024;
+
+  /// A file over [chunkThresholdBytes] goes up in pieces of [chunkBytes] (tests lower both).
+  final int chunkThresholdBytes;
+  final int chunkBytes;
 
   /// How long a fetched file list is trusted before `resolve` / `listFiles` fetch it again.
   final Duration treeTtl;
@@ -542,6 +566,7 @@ class RemoteStorageService implements StorageService, PartIdIndex {
         return _handle(server, state, relativePath);
       }
       final entry = await _stage(server, state, relativePath, bytes, baseVersion, haveBase: baseVersion != null);
+      if (bytes.length > chunkThresholdBytes) return _writeBig(server, state, relativePath, entry);
       try {
         final info = await _callFor(
           server,
@@ -559,14 +584,15 @@ class RemoteStorageService implements StorageService, PartIdIndex {
         await _publish(server);
         throw SyncConflictException([SyncConflict(path: relativePath, clash: clash, queuedAt: entry.queuedAt)]);
       } on StoreUnreachable {
-        if (bytes.length > tunnelLimitBytes && await _serverAnswers(server)) {
+        if (bytes.length > tunnelLimitBytes && await _answersWithoutChunking(server)) {
           throw await _tooLarge(server, state, relativePath, bytes.length);
         }
         _setOnline(server, false);
         await _publish(server);
         return _handle(server, state, relativePath);
       } on StoreTooLarge catch (error) {
-        throw await _tooLarge(server, state, relativePath, bytes.length, storeSaid: error.fromStore ? error.detail : null);
+        if (!error.fromStore) return _writeBig(server, state, relativePath, entry); // a tunnel refused the body: try it in pieces
+        throw await _tooLarge(server, state, relativePath, bytes.length, storeSaid: error.detail);
       } on StoreBadRequest catch (error) {
         // A name or body the store will never take: keep nothing queued that can never be sent.
         await _dropQueued(server, state, relativePath);
@@ -580,6 +606,17 @@ class RemoteStorageService implements StorageService, PartIdIndex {
         throw _asStorage(error, path: relativePath);
       }
     });
+  }
+
+  /// One file too big for a single request: a commit of just that file (so its base version is still checked), sent in chunks.
+  Future<FileHandle> _writeBig(ServerProjectRoot server, ProjectSyncState state, String path, QueuedSave entry) async {
+    try {
+      final outcome = await _sendQueue(server, state, retryClashes: false, only: path);
+      if (outcome.queued.contains(path)) await _publish(server);
+      return _handle(server, state, path);
+    } on SyncConflictException catch (error) {
+      throw SyncConflictException([for (final c in error.conflicts) if (c.path == path) c]);
+    }
   }
 
   FileHandle _handle(ServerProjectRoot root, ProjectSyncState state, String path) => ServerFileHandle(
@@ -607,10 +644,11 @@ class RemoteStorageService implements StorageService, PartIdIndex {
     await _store.save(root);
   }
 
-  Future<bool> _serverAnswers(ServerProjectRoot root) async {
+  /// The store answers but cannot take a big file in pieces: then a failed upload of a file over the tunnel's limit is most likely the
+  /// tunnel. (A store that CAN chunk gets the file in chunks instead, so that explanation would be wrong for it.)
+  Future<bool> _answersWithoutChunking(ServerProjectRoot root) async {
     try {
-      await _callFor(root, (client) => client.health());
-      return true;
+      return !await _callFor(root, (client) => _canChunk(client));
     } on StoreUnreachable {
       return false;
     } on StoreError {
@@ -623,12 +661,15 @@ class RemoteStorageService implements StorageService, PartIdIndex {
 
   /// [storeSaid]: the store itself answered 413 (its own limit, [detail]); otherwise the upload was cut off or refused by something in
   /// front of it, which for a file this big is the Cloudflare tunnel's request limit.
-  Future<StorageException> _tooLarge(ServerProjectRoot root, ProjectSyncState state, String path, int size, {String? storeSaid}) async {
+  Future<StorageException> _tooLarge(ServerProjectRoot root, ProjectSyncState state, String path, int size, {String? storeSaid, bool oldStore = false}) async {
     final message = storeSaid != null
-        ? '$path is ${_sizeText(size)}, which is too large for the project store ($storeSaid). Chunked upload is not built yet. '
+        ? '$path is ${_sizeText(size)}, which is too large for the project store ($storeSaid). '
             'The file was not saved to the server; this device keeps your save in its queue until you discard it.'
-        : '$path is ${_sizeText(size)}. A server behind a Cloudflare tunnel can refuse an upload over 100 MB, and chunked upload is not built yet. '
-            'The file was not saved to the server; this device keeps your save in its queue until you discard it.';
+        : oldStore
+            ? '$path is ${_sizeText(size)}. This project store is too old to take a file over 100 MB in pieces (it does not list uploads.chunked): update the store. '
+                'The file was not saved to the server; this device keeps your save in its queue until you discard it.'
+            : '$path is ${_sizeText(size)}. A server behind a Cloudflare tunnel can refuse an upload over 100 MB, and this project store cannot take it in pieces. '
+                'The file was not saved to the server; this device keeps your save in its queue until you discard it.';
     _problems(root.persistedKey)[path] = message;
     await _publish(root);
     return StorageException(message);
@@ -666,17 +707,18 @@ class RemoteStorageService implements StorageService, PartIdIndex {
 
   /// Sends every queued save as one commit. Returns what stayed queued (the store could not be reached); throws
   /// [SyncConflictException] (every clash, nothing written) or a [StorageException].
-  Future<CommitOutcome> _sendQueue(ServerProjectRoot root, ProjectSyncState state, {required bool retryClashes, String? message}) async {
+  Future<CommitOutcome> _sendQueue(ServerProjectRoot root, ProjectSyncState state, {required bool retryClashes, String? message, String? only}) async {
     if (state.queue.isEmpty) return const CommitOutcome();
+    final wanted = only == null ? state.queue.values.toList() : [if (state.queue[only] != null) state.queue[only]!];
     if (!retryClashes) {
-      final clashes = _clashes(state);
+      final clashes = _clashes(state).where((c) => only == null || c.path == only).toList();
       if (clashes.isNotEmpty) throw SyncConflictException(clashes);
     } else {
-      for (final entry in state.queue.values) {
+      for (final entry in wanted) {
         entry.clash = null;
       }
     }
-    final entries = state.queue.values.toList();
+    final entries = wanted;
     final key = root.persistedKey;
     final uploads = _uploads.putIfAbsent(key, () => {});
     try {
@@ -696,20 +738,24 @@ class RemoteStorageService implements StorageService, PartIdIndex {
             final sha = _sha(bytes);
             final known = uploads[entry.path];
             String uploadId;
-            if (known != null && known.sha == sha && _clock().difference(known.at) < const Duration(minutes: 50)) {
+            if (bytes.length <= chunkThresholdBytes && known != null && known.sha == sha && _clock().difference(known.at) < const Duration(minutes: 50)) {
               uploadId = known.id;
             } else {
               try {
-                uploadId = await client.upload(root.project, bytes);
+                uploadId = await _uploadBytes(client, root, state, entry.path, bytes, sha);
+                if (bytes.length <= chunkThresholdBytes && !state.uploadSessions.containsKey(entry.path)) {
+                  uploads[entry.path] = (id: uploadId, sha: sha, at: _clock());
+                }
               } on StoreTooLarge catch (error) {
                 throw await _tooLarge(root, state, entry.path, bytes.length, storeSaid: error.fromStore ? error.detail : null);
+              } on _NoChunking {
+                throw await _tooLarge(root, state, entry.path, bytes.length, oldStore: true);
               } on StoreUnreachable {
-                if (bytes.length > tunnelLimitBytes && await _serverAnswers(root)) {
+                if (bytes.length > tunnelLimitBytes && await _answersWithoutChunking(root)) {
                   throw await _tooLarge(root, state, entry.path, bytes.length);
                 }
                 rethrow;
               }
-              uploads[entry.path] = (id: uploadId, sha: sha, at: _clock());
             }
             changes.add(StoreCommitChange.put(path: entry.path, uploadId: uploadId, baseVersion: entry.baseVersion));
           }
@@ -724,6 +770,7 @@ class RemoteStorageService implements StorageService, PartIdIndex {
               final info = StoreFile.fromJson(file);
               await _recordWritten(root, state, info, bytesOf[info.path] ?? Uint8List(0));
               uploads.remove(info.path);
+              if (state.uploadSessions.remove(info.path) != null) await _store.save(root);
             }
             for (final entry in entries) {
               // A result that did not name a file (cannot happen with a store that answers every change): do not keep it queued.
@@ -751,6 +798,7 @@ class RemoteStorageService implements StorageService, PartIdIndex {
               // An upload expired (the store keeps them an hour): upload everything again, once.
               retried = true;
               uploads.clear();
+              state.uploadSessions.clear();
               continue;
             }
             rethrow;
@@ -767,6 +815,101 @@ class RemoteStorageService implements StorageService, PartIdIndex {
       }
       await _publish(root);
       throw _asStorage(error);
+    }
+  }
+
+  /// A queued save whose bytes ARE the store's current version is not a clash and is not sent: it is that version. It happens when a
+  /// commit landed but its reply was lost (the save stayed queued), and when another device made exactly the same edit (S4).
+  Future<void> _adoptEqual(ServerProjectRoot root, ProjectSyncState state) async {
+    for (final entry in state.queue.values.toList()) {
+      final listed = state.tree[entry.path];
+      if (listed == null) continue;
+      final bytes = await _store.getQueued(root, entry.path);
+      if (bytes == null || _sha(bytes) != listed.sha256) continue;
+      state.bases[entry.path] = listed;
+      state.queue.remove(entry.path);
+      state.uploadSessions.remove(entry.path);
+      _problems(root.persistedKey).remove(entry.path);
+      await _store.deleteQueued(root, entry.path);
+      await _cache.put(root, entry.path, bytes, serverVersion: listed.version);
+      _touched.putIfAbsent(root.persistedKey, () => {}).add(entry.path);
+    }
+  }
+
+  Future<bool> _canChunk(StoreClient client) async => (await client.health()).contains('uploads.chunked');
+
+  /// The bytes of one queued file are on the store, ready for a commit: the id. Up to [chunkThresholdBytes] in one request; a bigger file,
+  /// or one a tunnel refused, in chunks that resume where the store says it got to (S4).
+  Future<String> _uploadBytes(StoreClient client, ServerProjectRoot root, ProjectSyncState state, String path, Uint8List bytes, String sha) async {
+    if (bytes.length > chunkThresholdBytes) return _uploadChunked(client, root, state, path, bytes, sha);
+    try {
+      return await client.upload(root.project, bytes);
+    } on StoreTooLarge catch (error) {
+      if (error.fromStore) rethrow;
+      return _uploadChunked(client, root, state, path, bytes, sha); // a tunnel with a lower limit than we thought
+    }
+  }
+
+  Future<String> _uploadChunked(StoreClient client, ServerProjectRoot root, ProjectSyncState state, String path, Uint8List bytes, String sha) async {
+    if (!await _canChunk(client)) throw _NoChunking();
+    final known = state.uploadSessions[path];
+    String? id;
+    var received = 0;
+    var chunk = chunkBytes;
+    if (known != null && known.sha == sha && known.size == bytes.length && _clock().millisecondsSinceEpoch - known.atMs < const Duration(minutes: 50).inMilliseconds) {
+      try {
+        final status = await client.uploadStatus(root.project, known.id);
+        if (status.complete) return known.id;
+        id = known.id;
+        received = status.received;
+      } on StoreNotFound {
+        state.uploadSessions.remove(path); // it expired
+      }
+    }
+    if (id == null) {
+      final made = await client.startUploadSession(root.project, bytes.length, sha);
+      id = made.id;
+      if (made.chunkSize > 0 && made.chunkSize < chunk) chunk = made.chunkSize;
+      state.uploadSessions[path] = UploadSession(id: id, sha: sha, size: bytes.length, atMs: _clock().millisecondsSinceEpoch);
+      await _store.save(root); // before the first chunk: a closed app finds the session again
+    }
+    var failures = 0;
+    while (received < bytes.length) {
+      final end = received + chunk < bytes.length ? received + chunk : bytes.length;
+      try {
+        final status = await client.uploadChunk(root.project, id, received, Uint8List.sublistView(bytes, received, end));
+        received = status.received;
+        failures = 0;
+        state.uploadSessions[path]?.atMs = _clock().millisecondsSinceEpoch;
+      } on StoreUnreachable {
+        if (++failures >= kChunkRetries) rethrow; // the session stays saved: the next sync resumes
+      } on StoreNotFound {
+        state.uploadSessions.remove(path);
+        await _store.save(root);
+        rethrow;
+      } on StoreError catch (error) {
+        if (error.status == 409 && error.code == 'wrong_offset') {
+          // A reply was lost: the store says where it really is. A store that keeps naming the offset it was just sent will not agree: give up, never loop.
+          final there = (error.body['received'] as num?)?.toInt() ?? 0;
+          if (there == received || there > bytes.length) failures++;
+          if (failures >= kChunkRetries) {
+            throw StorageException('The project store and this device disagree about how much of $path was uploaded; it will be tried again at the next sync.');
+          }
+          received = there.clamp(0, bytes.length);
+          continue;
+        }
+        rethrow;
+      }
+    }
+    await _store.save(root);
+    try {
+      return await client.completeUpload(root.project, id);
+    } on StoreError catch (error) {
+      if (error is StoreBadRequest || error is StoreNotFound) {
+        state.uploadSessions.remove(path); // damaged on the way, or gone: it cannot be repaired, the next attempt starts again
+        await _store.save(root);
+      }
+      rethrow;
     }
   }
 
@@ -980,7 +1123,22 @@ class RemoteStorageService implements StorageService, PartIdIndex {
   /// unreachable store (the report says so); a clash is in the report and flagged on the queued save.
   Future<SyncReport> sync(ServerProjectRoot root) => _lock(root).run(() => _sync(root));
 
+  /// Removes the least recently used local copies when they take more than the limit; the files this session read or wrote stay. A save
+  /// waiting to be sent is in the sync store, not in this cache, and is never touched.
+  Future<void> _trimCache(ServerProjectRoot root) async {
+    final limit = _cacheLimitBytes();
+    if (limit <= 0) return;
+    final keep = {for (final path in _touched[root.persistedKey] ?? const <String>{}) _cache.keyFor(root, path)};
+    await _cache.trim(limit, keep: keep);
+  }
+
   Future<SyncReport> _sync(ServerProjectRoot root) async {
+    final report = await _syncInner(root);
+    if (report.reachable) await _trimCache(root);
+    return report;
+  }
+
+  Future<SyncReport> _syncInner(ServerProjectRoot root) async {
     final state = await _store.load(root);
     final key = root.persistedKey;
     final refreshed = <String>[];
@@ -1079,6 +1237,7 @@ class RemoteStorageService implements StorageService, PartIdIndex {
             await _cache.evict(root, change.path);
           }
         }
+        await _adoptEqual(root, state);
         state.cursor = since;
       });
       _setOnline(root, true);

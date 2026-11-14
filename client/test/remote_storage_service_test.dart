@@ -247,14 +247,15 @@ void main() {
       expect(remote.statusOf(root).value.problems, contains('big.didsa'));
     });
 
-    test('a file over the tunnel limit that fails with the store answering explains the limit, no chunking', () async {
+    test('a file over the tunnel limit that fails with the store answering explains the limit when the store cannot chunk', () async {
+      store.chunked = false;
       remote = makeService(tunnelLimit: 10);
       remote.beginSession(root);
       // The connection to the upload fails (a tunnel resetting it) while the store still answers /health.
       store.dropNextWrite = true;
       await expectLater(
         remote.writeFile(root, 'huge.step', Uint8List(50)),
-        throwsA(isA<StorageException>().having((e) => e.message, 'message', allOf(contains('Cloudflare'), contains('100 MB'), contains('chunked')))),
+        throwsA(isA<StorageException>().having((e) => e.message, 'message', allOf(contains('Cloudflare'), contains('100 MB'), contains('in pieces')))),
       );
     });
 

@@ -34,6 +34,11 @@ class HeadsetPairingScreen extends StatefulWidget {
   final String? relayApiKey;
   final Future<void> Function(String relayUrl, String relayApiKey)? saveRelay;
 
+  /// The cloud storage (project store) to put in the code, so the headset finds it without typing; default [ApiConfig.storeUrl] /
+  /// [ApiConfig.storeApiKey]. Both are written only when both are set.
+  final String? storeUrl;
+  final String? storeApiKey;
+
   const HeadsetPairingScreen({
     super.key,
     this.baseUrl,
@@ -45,6 +50,8 @@ class HeadsetPairingScreen extends StatefulWidget {
     this.relayUrl,
     this.relayApiKey,
     this.saveRelay,
+    this.storeUrl,
+    this.storeApiKey,
   });
 
   @override
@@ -65,6 +72,9 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
   String get _apiKey => widget.apiKey ?? ApiConfig.apiKey;
 
   bool get _compatible => _result?.compatible ?? false;
+
+  bool get _storeInCode =>
+      (widget.storeUrl ?? ApiConfig.storeUrl).trim().isNotEmpty && (widget.storeApiKey ?? ApiConfig.storeApiKey).trim().isNotEmpty;
 
   @override
   void initState() {
@@ -181,6 +191,8 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                           apiKey: _apiKey,
                           relayUrl: result.relayUrl,
                           relayApiKey: _relayApiKey,
+                          storeUrl: widget.storeUrl ?? ApiConfig.storeUrl,
+                          storeApiKey: widget.storeApiKey ?? ApiConfig.storeApiKey,
                         );
                         // MetaData: lets a widget test read what the code says (QrImageView does not expose it); invisible.
                         return MetaData(
@@ -198,6 +210,13 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(result.name, textAlign: TextAlign.center),
+                  if (_storeInCode)
+                    Text(
+                      'The code includes your cloud storage address and key, so the headset can open server projects. Anyone who photographs it can read them.',
+                      key: const ValueKey('headset-pairing-store-note'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(fontSize: 12),
+                    ),
                   Text('Hides in $_secondsLeft s', textAlign: TextAlign.center),
                   const SizedBox(height: 8),
                   OutlinedButton(onPressed: _hide, child: const Text('Hide now')),

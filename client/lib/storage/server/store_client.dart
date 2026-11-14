@@ -185,6 +185,27 @@ class StoreChanges {
   final bool more;
 }
 
+/// A chunked upload as the store describes it (S4): how much it has, in order.
+class StoreUploadSession {
+  const StoreUploadSession({required this.id, required this.size, required this.received, required this.complete, required this.chunkSize});
+
+  factory StoreUploadSession.fromJson(Map<String, dynamic> json) => StoreUploadSession(
+        id: json['upload_id'] as String,
+        size: (json['size'] as num?)?.toInt() ?? 0,
+        received: (json['received'] as num?)?.toInt() ?? 0,
+        complete: json['complete'] == true,
+        chunkSize: (json['chunk_size'] as num?)?.toInt() ?? 0,
+      );
+
+  final String id;
+  final int size;
+  final int received;
+  final bool complete;
+
+  /// What the store advises per chunk (0: not said).
+  final int chunkSize;
+}
+
 /// One change of a commit: a `put` (with the id of an upload) or a `delete` / `move`; [baseVersion] null means "create".
 class StoreCommitChange {
   const StoreCommitChange.put({required this.path, required this.uploadId, this.baseVersion})
@@ -386,6 +407,54 @@ class StoreClient {
       limit: uploadTimeout,
     );
     if (response.statusCode != 201 && response.statusCode != 200) _fail(response);
+    return _json(response)['upload_id'] as String;
+  }
+
+  // Chunked upload (S4; the store lists `uploads.chunked` in /health): a file too big for one request, which a Cloudflare tunnel refuses over 100 MB.
+
+  /// Opens a chunked upload; the store checks the whole file against [sha256] when it is completed.
+  Future<StoreUploadSession> startUploadSession(String project, int size, String sha256) async {
+    final response = await _send(
+      () => _http.post(
+        _uri('/projects/${_enc(project)}/uploads/sessions'),
+        headers: _headers({'Content-Type': 'application/json'}),
+        body: jsonEncode({'size': size, 'sha256': sha256}),
+      ),
+    );
+    if (response.statusCode != 201 && response.statusCode != 200) _fail(response);
+    return StoreUploadSession.fromJson(_json(response));
+  }
+
+  /// How far the store got (`received`, in order). [StoreNotFound] (code `unknown_upload`) once it has expired.
+  Future<StoreUploadSession> uploadStatus(String project, String uploadId) async {
+    final response = await _send(() => _http.get(_uri('/projects/${_enc(project)}/uploads/${_enc(uploadId)}'), headers: _headers()));
+    if (response.statusCode != 200) _fail(response);
+    return StoreUploadSession.fromJson(_json(response));
+  }
+
+  /// Appends [chunk] at [offset], which must be what the store has received so far; otherwise [StoreError] 409 `wrong_offset` whose
+  /// body says `received`.
+  Future<StoreUploadSession> uploadChunk(String project, String uploadId, int offset, Uint8List chunk) async {
+    final response = await _send(
+      () => _http.put(
+        _uri('/projects/${_enc(project)}/uploads/${_enc(uploadId)}', {'offset': '$offset'}),
+        headers: _headers({'Content-Type': 'application/octet-stream'}),
+        body: chunk,
+      ),
+      limit: uploadTimeout,
+    );
+    if (response.statusCode != 200) _fail(response);
+    return StoreUploadSession.fromJson(_json(response));
+  }
+
+  /// All bytes in: the store checks the size and the declared SHA-256 and the id can go into a commit. A mismatch is a 400
+  /// (`checksum_mismatch`) and the upload is gone.
+  Future<String> completeUpload(String project, String uploadId) async {
+    final response = await _send(
+      () => _http.post(_uri('/projects/${_enc(project)}/uploads/${_enc(uploadId)}/complete'), headers: _headers()),
+      limit: uploadTimeout,
+    );
+    if (response.statusCode != 200) _fail(response);
     return _json(response)['upload_id'] as String;
   }
 

@@ -99,6 +99,7 @@ never trusted for anything else.
 | `DELETE /projects/{p}/files/{path}` | `If-Match` required; 412 when stale. The file's history is kept. |
 | `POST /projects/{p}/commit` | **several changes, all or nothing** (section 6): `{message?, changes: [{op: put \| delete \| move, path, to?, base_version \| null, upload_id?}]}`. 200 with every new version, or **409** with the list of paths whose `base_version` is no longer current, and nothing written |
 | `POST /projects/{p}/uploads` | the bytes of one file for a commit (raw body); returns an `upload_id` valid for an hour |
+| `POST .../uploads/sessions`, `PUT .../uploads/{id}?offset=`, `GET .../uploads/{id}`, `POST .../uploads/{id}/complete`, `DELETE .../uploads/{id}` | **S4**: chunked upload for a file past a tunnel's request limit (in-order chunks, resume from `received`, the declared SHA-256 checked at the end); the id then goes into a commit like any upload's. `project-store/README.md` is the reference |
 | `GET /projects/{p}/files/{path}/versions` | the kept versions: version, size, sha256, when, which device |
 | `GET /projects/{p}/files/{path}/versions/{v}` | the bytes of a kept version |
 | `GET /projects/{p}/changes?since=<cursor>` | what changed since a cursor (path, op, version, device), and the next cursor: a device that was offline asks this first |
@@ -115,7 +116,7 @@ lists them. Both mean "nothing was written, here is what is current".
 from a project keeps its versions for 30 days.
 
 **Limits:** files up to 200 MB. A Cloudflare tunnel (the owner's set-up) refuses request bodies over 100 MB on its free plan (Cloudflare's
-documented limit; not measured here), so a larger STEP file needs chunked upload; that is S4, not S1. The store refuses `..`, absolute
+documented limit; not measured here), so a larger STEP file needs chunked upload; that was S4 (built: both clients send a file over about 90 MB in 32 MB chunks). The store refuses `..`, absolute
 paths, a path into `.didsa-store/`, and names Windows cannot store. S1 also refuses a path whose last part is `versions`, or
 `versions/<digits>`: `GET .../files/a/versions` and `.../versions/3` are the history routes, so such a file could never be read back
 (found while building S1). `GET .../parts/{part_id}` answers 200 with an empty list when no file has that id.
