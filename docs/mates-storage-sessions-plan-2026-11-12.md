@@ -42,7 +42,7 @@ The implementation session updates this table in its PR.
 | S0 | Storage scope doc and spikes | CAD, VR | In review: `docs/shared-storage-scope.md`; the Quest spike is built and waits for the owner's run (results: "S0 results" below) |
 | S1 | Project store service | CAD | Done (PR #362: `project-store/`; results: "S1 results" below) |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Done (PR #363 and follow-ups: `client/lib/storage/server/`, `client/lib/home/`; results: "S2 results" below) |
-| S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (open at the time of writing; headless and against the real store, not run on a headset; results: "S3 results" below) |
+| S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (merged 2026-11-14; headless and against the real store, not run on a headset; results: "S3 results" below) |
 | S4 | Sync hardening and set-up polish | all | Not started |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
 | N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend (clients later) | Later, by a stronger model after storage has rolled out (owner, 2026-11-14); the head start is "Part 2b" below |
@@ -1077,7 +1077,7 @@ queue holds every unsent file in memory while it is sent) were not measured.
 
 ### S3 results (2026-11-14)
 
-**Built** in DIDSA-VR (PR #85, open when this was written; nothing in `project-store/`, `backend/` or `client/` changed). The VR notes are `docs/server-projects.md` there.
+**Built** in DIDSA-VR (PR #85, merged 2026-11-14; nothing in `project-store/`, `backend/` or `client/` changed). The VR notes are `docs/server-projects.md` there.
 
 - **A visible mirror folder per server project**, `Documents/DIDSA-Cloud/<server host>/<project>/`, a sibling of `Documents/DIDSA` (not nested in it: the moved-files index skips
   dot-folders and the local Files list would show a nested one). VR's `native_compose.gd`, `file_lookup.gd`, `file_index.gd` and `project_save.gd` read and write it unchanged. The
@@ -1139,7 +1139,7 @@ bevel and bearing mates read `status: "broken"`.
 **The cause.** The demo (`DIDSA-VR/demo/assemblies/gear_train/Gear_train.didsa`; the bevel pair was added to it on 25 Oct) refers to the bevel gears' faces **3** (the bore) and **4** (the back plane). The
 body the backend builds from the same feature now has 106 faces, and faces 3 and 4 are `other` in the topology the mesh carries (a sphere-like and a cone-like surface). The bore is face **105** (cylinder, radius 4.0 mm,
 axis on the cone axis: the feature's `bore_diameter` is 8) and the back plane is face **104** (plane, normal +z). Seven `index` values in the file were wrong. With them changed, `mate-motion` answers 200, no mate is broken, and
-the three tests pass against a backend built from `main` (12, 12 and 22 lines, none false). The fix is DIDSA-VR PR #86 (data only). The file's generator (`DIDSA-VR/tests/data/make_gear_train_demo.py`) finds faces by
+the three tests pass against a backend built from `main` (12, 12 and 22 lines, none false). The fix is DIDSA-VR PR #86 (data only, merged 2026-11-14; the e2e job is green on the demo it fixes). The file's generator (`DIDSA-VR/tests/data/make_gear_train_demo.py`) finds faces by
 geometry, so the committed file was simply made against an older backend.
 
 **Not established:** what changed in the backend to renumber the bevel faces (this repo's history is squashed, so it could not be bisected). It looks like a change to how the bevel generator orders its faces, not a user edit.

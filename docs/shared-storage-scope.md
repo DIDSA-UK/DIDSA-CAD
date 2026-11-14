@@ -2,7 +2,7 @@
 
 Phase S0 of `docs/mates-storage-sessions-plan-2026-11-12.md` (Part 2). Written 2026-11-13 from reading both repos on `main`
 (CAD `3469f1c`, VR `089a0c9`). **Built since:** the store (S1, `project-store/`) and the flat app's side (S2, `client/lib/storage/server/`; its results and
-where it differs from section 7 are in "S2 results" of the plan). The DIDSA-VR side (S3) is built (DIDSA-VR PR #85; "S3 results" in the plan; **section 7's VR paragraph below is the design as scoped and differs from what was built**: the mirror is a visible folder in Documents, not `user://`). The Quest spike is in DIDSA-VR (Launcher > Servers > **Check storage**).
+where it differs from section 7 are in "S2 results" of the plan). The DIDSA-VR side (S3) is built (DIDSA-VR PR #85, merged; "S3 results" in the plan; **section 7's VR paragraph below is the design as scoped and differs from what was built**: the mirror is a visible folder in Documents, not `user://`). The Quest spike is in DIDSA-VR (Launcher > Servers > **Check storage**).
 The owner's decisions are in section 8: **all eight recommendations accepted on 2026-11-13**, so S1 builds them as written.
 
 ## 1. What this does, in one paragraph
