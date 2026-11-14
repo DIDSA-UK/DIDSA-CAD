@@ -21,6 +21,7 @@ class ControlsSettingsScreen extends StatefulWidget {
 class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
   NavigationPreset _preset = ControlsPreferences.preset;
   bool _invertWheel = ControlsPreferences.invertWheel;
+  bool _matePreviewGlide = ControlsPreferences.matePreviewGlide;
   double _orbitSpeed = ControlsPreferences.orbitSpeed;
   LayoutPreference _layout = ControlsPreferences.layoutPreference;
   bool _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
@@ -39,6 +40,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
     setState(() {
       _preset = ControlsPreferences.preset;
       _invertWheel = ControlsPreferences.invertWheel;
+      _matePreviewGlide = ControlsPreferences.matePreviewGlide;
       _orbitSpeed = ControlsPreferences.orbitSpeed;
       _layout = ControlsPreferences.layoutPreference;
       _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
@@ -53,6 +55,7 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
     setState(() {
       _preset = ControlsPreferences.preset;
       _invertWheel = ControlsPreferences.invertWheel;
+      _matePreviewGlide = ControlsPreferences.matePreviewGlide;
       _orbitSpeed = ControlsPreferences.orbitSpeed;
       _layout = ControlsPreferences.layoutPreference;
       _hideEdges = ControlsPreferences.hideEdgesWhileMoving;
@@ -110,6 +113,16 @@ class _ControlsSettingsScreenState extends State<ControlsSettingsScreen> {
                 onChanged: (value) {
                   setState(() => _invertWheel = value);
                   ControlsPreferences.setInvertWheel(value);
+                },
+              ),
+              SwitchListTile(
+                key: const Key('mate-preview-glide-switch'),
+                title: const Text('Mate preview: move the part'),
+                subtitle: const Text('On: the part glides to the mated position and back on Cancel. Off: a translucent copy shows it (better on a phone, where the moved part can hide the faces you picked).'),
+                value: _matePreviewGlide,
+                onChanged: (value) {
+                  setState(() => _matePreviewGlide = value);
+                  ControlsPreferences.setMatePreviewGlide(value);
                 },
               ),
               ListTile(
