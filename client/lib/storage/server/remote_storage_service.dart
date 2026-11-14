@@ -867,6 +867,7 @@ class RemoteStorageService implements StorageService, PartIdIndex {
       }
     }
     if (id == null) {
+      if (known != null) await client.cancelUpload(root.project, known.id); // the file changed (or the session is useless): do not leave its bytes on the store
       final made = await client.startUploadSession(root.project, bytes.length, sha);
       id = made.id;
       if (made.chunkSize > 0 && made.chunkSize < chunk) chunk = made.chunkSize;

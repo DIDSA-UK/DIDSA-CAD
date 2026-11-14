@@ -1156,10 +1156,10 @@ version (this was a **gap found by the new tests**: a commit that landed with it
 - **Resuming a cut download** is not built (the store has no `Range`); a download is still one request held in memory.
 - **The 90 MB threshold** is a constant in each client (`CHUNK_THRESHOLD`, `kChunkThresholdBytes`), as is the 32 MB chunk (the store's `chunk_size` wins when smaller).
 
-**Tests:** store: `tests/test_chunked_uploads.py` (17: the whole flow and a commit with it, resume after a lost reply, a repeated chunk, `complete` too early, a wrong hash discarding
+**Tests:** store: `tests/test_chunked_uploads.py` (19, including a cap of 4 x the file limit on unfinished sessions, 429, and clients cancelling the session of an edited file: the whole flow and a commit with it, resume after a lost reply, a repeated chunk, `complete` too early, a wrong hash discarding
 the upload, an unfinished upload refused in a commit, limits, expiry and a chunk renewing it, cancel, a store closed and reopened mid-upload, stray bytes after a crash, a refused commit keeping
-the upload, the key, an S1-S3 store file migrating). VR: `cloud_hardening` (52), `thumbnail_store` (12), `thumbnail_render` (6, Xvfb), `e2e_cloud_outage` (18, a real store process killed
-and restarted). Flat app: `server_hardening_test` (20), 2 new in `headset_pairing_test`, 1 in `test/live/server_store_live_test.dart` (the real store). Mutations tried, each broke a test: no
+the upload, the key, an S1-S3 store file migrating). VR: `cloud_hardening` (53), `thumbnail_store` (12), `thumbnail_render` (6, Xvfb), `e2e_cloud_outage` (18, a real store process killed
+and restarted), 5 new checks in `cloud_ui` (Servers-page controls, the Continue tile's picture). Flat app: `server_hardening_test` (20), 2 new in `headset_pairing_test`, 1 in `server_projects_widget_test` (the cache field), 1 in `test/live/server_store_live_test.dart` (the real store). Mutations tried, each broke a test: no
 `truncate` of stray bytes, no SHA-256 check, the racy-timestamp rule off, the wrong-offset reply ignored (the sync hung), the adopt-equal step off.
 
 **Verification and what is not:** see the PR bodies for the counts. Not verified: anything on a headset (the new Servers-page buttons with a laser, the folder keyboard, the Continue picture

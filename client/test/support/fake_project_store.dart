@@ -365,6 +365,10 @@ class FakeProjectStore {
           'complete': session.complete,
           'chunk_size': 32 * 1024 * 1024,
         };
+    if (rest.length == 2 && request.method == 'DELETE') {
+      _sessions.remove(rest[1]);
+      return _json(200, {'cancelled': true});
+    }
     if (rest.length == 2 && request.method == 'GET') return _json(200, info());
     if (rest.length == 2 && request.method == 'PUT') {
       final offset = int.tryParse(request.url.queryParameters['offset'] ?? '');

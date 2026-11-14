@@ -69,6 +69,27 @@ void main() {
       await _settle(tester);
     }
 
+    testWidgets('S4: the room for local copies is shown (1024 MB by default), saved, and 0 means no limit', (tester) async {
+      final store = FakeProjectStore();
+      await pumpScreen(tester, StorageScreen(httpClient: store.client));
+      expect(find.widgetWithText(TextField, '1024'), findsOneWidget);
+      await tester.enterText(find.byKey(const ValueKey('store-url-field')), 'https://store.test');
+      await tester.enterText(find.byKey(const ValueKey('store-key-field')), 'store-key');
+      await tester.enterText(find.byKey(const ValueKey('cache-limit-field')), '300');
+      await tester.tap(find.byKey(const ValueKey('store-save-button')));
+      await _settle(tester);
+      expect(ApiConfig.cacheLimitMb, 300);
+      await tester.enterText(find.byKey(const ValueKey('cache-limit-field')), '0');
+      await tester.tap(find.byKey(const ValueKey('store-save-button')));
+      await _settle(tester);
+      expect(ApiConfig.cacheLimitMb, 0);
+      await tester.enterText(find.byKey(const ValueKey('cache-limit-field')), 'lots');
+      await tester.tap(find.byKey(const ValueKey('store-save-button')));
+      await _settle(tester);
+      expect(ApiConfig.cacheLimitMb, 0, reason: 'text that is not a number leaves the setting as it was');
+      await ApiConfig.saveCacheLimitMb(1024);
+    });
+
     testWidgets('the address, key and device name are entered once and saved, and cloud storage is checked', (tester) async {
       final store = FakeProjectStore();
       await pumpScreen(tester, StorageScreen(httpClient: store.client));

@@ -447,6 +447,15 @@ class StoreClient {
     return StoreUploadSession.fromJson(_json(response));
   }
 
+  /// Throws away an unfinished chunked upload (best effort; the store also sweeps one nobody touches for an hour).
+  Future<void> cancelUpload(String project, String uploadId) async {
+    try {
+      await _send(() => _http.delete(_uri('/projects/${_enc(project)}/uploads/${_enc(uploadId)}'), headers: _headers()));
+    } on StoreUnreachable {
+      // Nothing to do: it expires.
+    }
+  }
+
   /// All bytes in: the store checks the size and the declared SHA-256 and the id can go into a commit. A mismatch is a 400
   /// (`checksum_mismatch`) and the upload is gone.
   Future<String> completeUpload(String project, String uploadId) async {

@@ -213,3 +213,20 @@ def test_a_store_from_before_s4_migrates(tmp_path, clock):
         assert upgraded.commit("P", [{"op": "put", "path": "x.didsa", "base_version": None, "upload_id": "old1"}], None, "t")["files"]
     finally:
         upgraded.close()
+
+
+def test_abandoned_sessions_cannot_fill_the_disk(client, project):
+    # the fixture's file limit is 1 MiB, so unfinished sessions may declare 4 MiB in all
+    ids = [session(client, project, b"x" * (1024 * 1024)).json()["upload_id"] for _ in range(4)]
+    refused = client.post(f"/projects/{project}/uploads/sessions", json={"size": 10, "sha256": "0" * 64})
+    assert refused.status_code == 429 and refused.json()["error"] == "too_many_uploads"
+    assert client.delete(f"/projects/{project}/uploads/{ids[0]}").status_code == 200  # cancelling makes room
+    assert client.post(f"/projects/{project}/uploads/sessions", json={"size": 10, "sha256": "0" * 64}).status_code == 201
+
+
+def test_finished_uploads_do_not_count_against_the_cap(client, project):
+    for i in range(6):
+        data = bytes([i]) * 100
+        upload_id = send_all(client, project, data)
+        assert client.post(f"/projects/{project}/uploads/{upload_id}/complete").status_code == 200
+    assert session(client, project, b"y" * 100).status_code == 201

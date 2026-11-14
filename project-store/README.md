@@ -61,7 +61,7 @@ documented, not measured; a file over about 90 MB goes up in chunks (S4, above),
 `/health` lists `uploads.chunked` when the store can take them; a client checks before relying on it. The chunk session is in the `uploads` table (new columns `received`
 and `complete`, added with `ALTER TABLE` at start-up, so a store made before S4 opens unchanged and its rows count as complete one-shot uploads) and the bytes are in
 `.didsa-store/uploads/<id>`; both **survive a restart** (only `tmp/` is cleared at start-up), so a store switched off and on loses no chunk. An upload nobody touched for an
-hour is swept like any other. The file's SHA-256 is computed once, at `complete` (a 200 MB file reads in about a second on a laptop; not measured on a Pi).
+hour is swept like any other, and unfinished sessions may declare at most 4 times the file limit in all (**429 `too_many_uploads`** past it), so abandoned ones cannot fill the disk; a client cancels the session of a file that changed (`DELETE`). The file's SHA-256 is computed once, at `complete` (a 200 MB file reads in about a second on a laptop; not measured on a Pi).
 
 ## Environment variables
 

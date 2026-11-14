@@ -169,6 +169,7 @@ void main() {
       await remote.writeFile(root, 'Big.didsa', bytesOf('g', 55));
       expect(store.bytesOf('Gearbox', 'Big.didsa'), bytesOf('g', 55));
       expect(store.versionOf('Gearbox', 'Big.didsa'), 1);
+      expect(store.count('DELETE /projects/Gearbox/uploads/'), 1); // the abandoned session was cancelled
     });
 
     test('a lost reply to a chunk: the same chunk is sent again and the store says where it really is', () async {

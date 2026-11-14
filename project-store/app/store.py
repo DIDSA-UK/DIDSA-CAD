@@ -33,6 +33,7 @@ KEEP_DAYS = 30
 UPLOAD_TTL_SECONDS = 3600
 CHUNK_SIZE = 32 * 1024 * 1024  # what a client is told to send per chunk (well under a Cloudflare tunnel's 100 MB request limit)
 MAX_CHUNK_BYTES = 64 * 1024 * 1024  # the most one chunk request may carry (413 past it)
+MAX_OPEN_UPLOAD_FACTOR = 4  # unfinished chunk sessions may declare at most this many times the file limit in all (429 past it): abandoned ones cannot fill the disk
 SWEEP_INTERVAL_SECONDS = 3600
 OUTSIDE = "outside"
 UNKNOWN_DEVICE = "unknown"
@@ -82,6 +83,11 @@ class Conflict(StoreError):
 
     status = 409
     code = "conflict"
+
+
+class TooManyUploads(StoreError):
+    status = 429
+    code = "too_many_uploads"
 
 
 class TooLarge(StoreError):
@@ -636,6 +642,9 @@ class Store:
         with self.lock:
             self._project_dir(project)
             self.sweep_uploads()
+            open_bytes = self.db.execute("SELECT COALESCE(SUM(size), 0) FROM uploads WHERE complete = 0").fetchone()[0]
+            if open_bytes + size > MAX_OPEN_UPLOAD_FACTOR * self.max_file_bytes:
+                raise TooManyUploads("too many unfinished uploads are waiting; cancel one (DELETE) or wait for them to expire (an hour without a chunk)")
             upload_id = uuid.uuid4().hex
             with open(os.path.join(self.upload_dir, upload_id), "wb"):
                 pass
