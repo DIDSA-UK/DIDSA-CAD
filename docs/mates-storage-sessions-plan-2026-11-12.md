@@ -45,7 +45,7 @@ The implementation session updates this table in its PR.
 | S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (open at the time of writing; headless and against the real store, not run on a headset; results: "S3 results" below) |
 | S4 | Sync hardening and set-up polish | all | Not started |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
-| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend (clients later) | Proposed, awaiting the owner ("Part 2b" below) |
+| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend (clients later) | Later, by a stronger model after storage has rolled out (owner, 2026-11-14); the head start is "Part 2b" below |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
 | P1 | Session hub service and read-only document sharing | CAD | Not started |
 | P2 | VR Host / Join Session, roles, avatars, live model state | VR | Not started |
@@ -1183,11 +1183,43 @@ change. Run the full backend suite including `-m gears` and `bevel_pair` (the S1
 signature alone still works); a face that is genuinely identical to another (a gear's teeth) is `ambiguous` by design, so a mate to one tooth face can end up lost where a raw index would have kept pointing at "a" tooth. That is the
 correct failure, but it would show up in the gear demos: check the gear and bevel mates in particular.
 
+### Start here (handover for whoever builds N1)
+
+**Owner, 2026-11-14:** a stronger model will flesh out and build N1 after storage has rolled out (S4 included, or when the owner calls it). N0 is the head start. Treat the proposal above as a first
+sketch to challenge, not a spec. Nothing for N1 exists in code.
+
+**Leads, in the order worth checking:**
+1. **Is the face order OCCT-version dependent?** Not tested. The bevel faces moved between the machine the demo was authored on (25 Oct) and the current backend (pythonocc-core 8.0.1.2, `backend/environment.yml`). This repo's docs show
+   other environments on pythonocc-core 7.9.3 (`docs/constrained-drag-investigation.md`) and OCCT 7.9 measurements (`docs/reference-identity-design.md`). If `TopExp.MapShapes` order differs between OCCT versions, then **every
+   raw index in every saved file is version-fragile, not just mates**, and a Pi image built on another OCCT than the owner's PC would read the same file differently. Check this first: build the bevel gear (and a plain extrude with a fillet)
+   under both versions and compare face lists. If it is true, it raises the priority of N1 and means the signature must not depend on order at all, and Feature references (already signed) are only safe because of their signatures.
+2. **Is it the bevel generator?** `app/document/bevel.py` (the tooth faces; 106 faces for 20 teeth, `points_per_flank` 12). This repo's history is squashed (one commit, `51275b4`), so `git log` cannot bisect. Compare the generator's output
+   to the 25 Oct demo if an old backend image exists (the owner's Pi may still run one).
+3. **Does a design-table edit renumber a part a mate refers to?** The silent-wrong case (an index shifting onto another valid face) is **not reproduced for a mate**; N1's first test should do it and must fail on today's code.
+
+**Reproduce the red tests (about 10 minutes, no headset):** `DIDSA-VR/tools/setup_test_env.sh godot` and `... backend` (a micromamba env with pythonocc-core 8.0.1.2), `tools/start_backend.sh` (writes a git-ignored `secrets.cfg`; delete it afterwards), then
+`DIDSA_NO_LANDING=1 godot --headless --path . --script res://tests/e2e_gear_train.gd` (also `e2e_limit`, `user_session_train`). On VR `main` before PR #86 they print false lines; the backend log shows `mate-motion ... 422`. A direct probe: import the demo
+(`POST /document/import/native`, header `X-Document-Session`), `GET /document/parts/{root}/mates` (status `broken` on the bevel and bearing mates), `POST .../occurrences/crank/mate-motion` (422 `unsupported_mate_geometry`).
+
+**See the face kinds (what showed faces 3 and 4 are not a plane or cylinder):** `GET /document/parts/{root}/assembly-mesh.glb`; in its JSON chunk each mesh primitive has `extras.topology.<body_id>.face_kinds` (a list per face index, with `other` for non-planar,
+non-cylindrical faces). Or in-process with the backend env: `import_native(json)` (`app/document/native_format.py`), `compute_part_bodies(part)` (`app/document/extrude.py`), `TopExp.MapShapes(body, TopAbs_FACE, map)` and `BRepAdaptor_Surface(face).GetType()`
+(0 plane, 1 cylinder, 2 cone, 3 sphere). Bevel A (`b804fc71...`), 106 faces: face 3 = type 3, face 4 = type 2, face 81 = cylinder R 28.0 (the rim), face 83 = plane z 22.8 (area 1229), face 104 = plane z 31.75 (area 2420, the back plane), face 105 = cylinder R 4.0 (the bore).
+
+**Code to read:** `app/document/subshape_identity.py` (`measure_signature`, `decide_subshape`), `app/sketch/reference_signature.py` (the pure rules, relative tolerances), `app/document/extrude.py` `resolve_subshape_from_bodies` (honours `ref.signature`; fails closed),
+`app/document/models.py` `SubShapeRef` (`signature`, `lineage`, `lost_reason`), `app/document/schemas.py` `SubShapeRefSchema` (no signature field) and the mate reference schema, `app/document/native_format.py` (how Feature references write signatures; whether a mate
+reference does is not checked), the mate routes in `app/document/router.py` (create / update / list) and wherever a mate's `status` ("ok" / "broken") is computed (not located yet). The three resolvers of a mate's face: `assembly_solver.py` ~l.326, `mate_suggest.py` ~l.99
+and ~l.108, `coupler.py` ~l.140.
+
+**Cross-repo:** DIDSA-VR PR #86 re-pointed the demo's bevel mates (data only). VR's `mates_tool.gd` sends `{body_id, shape_type, index}` for each pick and would not need to change if the server stamps signatures. The flat app's mate code (`client/lib/`) has not been read for N1.
+The VR e2e tests that guard the demo are in the three files above plus `tests/e2e_mates_motion.gd`.
+
+**What was and was not run:** the investigation ran on one machine against this repo's `main`; the full backend suite was not run for N0 (no backend code changed).
+
 ### Decisions for the owner
 
 | # | Question | Recommendation |
 |---|---|---|
-| N-1 | Do N1 at all, and where in the order? It has no dependency on S4 or the sessions. | Yes, after S4 and before P1, because sessions and shared storage put more devices editing the same parts, and a renumbered face is a quiet error; but nothing else waits on it |
+| N-1 | Do N1 at all, and where in the order? It has no dependency on S4 or the sessions. | **Owner, 2026-11-14: after storage has rolled out, built by a stronger model.** Reasoning kept: shared storage puts more devices editing the same parts and a renumbered face is a quiet error; lead 1 above (OCCT version) could raise its priority |
 | N-2 | A `potentially_moved` mate reference: bind it and flag it (as Features do), or leave it broken until confirmed? | Bind and flag, the Feature policy, so the two behave alike |
 | N-3 | An unsigned mate in an old file: adopt the signature of what the index names, or require a re-pick? | Adopt, unless the face is the wrong kind for the mate type (then stay broken) |
 
