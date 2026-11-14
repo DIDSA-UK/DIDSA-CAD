@@ -345,6 +345,7 @@ void main() {
       store.restart();
       store.write('Gearbox', 'B.didsa', bytesOf('z', 100)); // so the sync has something to do
       await small.sync(smallRoot);
+      await small.trimDone;
       final cache = FileCache(cacheDirectory: Directory('${temp.path}/small/cache'));
       expect(await cache.sizeBytes(), lessThanOrEqualTo(150 + 120)); // C (kept) plus whatever else fits
       expect(await cache.get(smallRoot, 'C.didsa'), isNotNull);

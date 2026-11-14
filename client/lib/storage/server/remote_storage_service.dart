@@ -1125,6 +1125,9 @@ class RemoteStorageService implements StorageService, PartIdIndex {
 
   /// Removes the least recently used local copies when they take more than the limit; the files this session read or wrote stay. A save
   /// waiting to be sent is in the sync store, not in this cache, and is never touched.
+  /// The last background trim (S4); completes when it has finished.
+  Future<void> trimDone = Future<void>.value();
+
   Future<void> _trimCache(ServerProjectRoot root) async {
     final limit = _cacheLimitBytes();
     if (limit <= 0) return;
@@ -1134,7 +1137,8 @@ class RemoteStorageService implements StorageService, PartIdIndex {
 
   Future<SyncReport> _sync(ServerProjectRoot root) async {
     final report = await _syncInner(root);
-    if (report.reachable) await _trimCache(root);
+    // Not awaited: trimming is housekeeping, a sync must not wait for it (or fail because of it). [trimDone] lets a test wait.
+    if (report.reachable) trimDone = _trimCache(root).catchError((Object _) {});
     return report;
   }
 
