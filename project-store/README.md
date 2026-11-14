@@ -2,7 +2,7 @@
 
 A small, separate service that keeps DIDSA projects as a plain folder tree on the server, gives every file a version, and refuses a
 save made from an out-of-date copy. The spec is `docs/shared-storage-scope.md` (sections 4 to 6); this is phase S1 of
-`docs/mates-storage-sessions-plan-2026-11-12.md`. The flat app's client (S2) is built (`client/lib/storage/server/`, `client/README.md`); DIDSA-VR's (S3) is not built yet.
+`docs/mates-storage-sessions-plan-2026-11-12.md`. The flat app's client (S2) is built (`client/lib/storage/server/`, `client/README.md`); DIDSA-VR's (S3, `docs/mates-storage-sessions-plan-2026-11-12.md`) is built (DIDSA-VR PR #85) and tested against this store: its e2e test starts a throwaway one (`PROJECT_STORE_API_KEY`, `PROJECT_STORE_ROOT`, one worker).
 
 ## Why a separate container
 

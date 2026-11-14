@@ -78,7 +78,7 @@ assembly composer do not branch on where a project lives.
 - Tests: `test/remote_storage_service_test.dart` and `test/server_projects_widget_test.dart` (an in-memory fake store,
   `test/support/fake_project_store.dart`), the PartScreen groups in `test/part_screen_test.dart`, and `test/live/server_store_live_test.dart`
   against the real store (skipped unless `DIDSA_LIVE_STORE` is set; `.github/workflows/client-store-e2e.yml` starts the store and runs it).
-- Not built: pairing-code keys (S3 and the VR pairing work), chunked upload (S4: a file over 100 MB may fail through a Cloudflare tunnel
+- Not built: the pairing-code keys `p` (the store's address) and `pk` (its key) in `lib/vr_pairing/` (the headset reads them since S3; see `docs/vr-headset-pairing.md`), chunked upload (S4: a file over 100 MB may fail through a Cloudflare tunnel
   and is reported as such), merging two people's changes to one file.
 
 ## What this is
