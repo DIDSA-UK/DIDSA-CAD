@@ -43,7 +43,7 @@ The implementation session updates this table in its PR.
 | S1 | Project store service | CAD | Done (PR #362: `project-store/`; results: "S1 results" below) |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Done (PR #363 and follow-ups: `client/lib/storage/server/`, `client/lib/home/`; results: "S2 results" below) |
 | S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (merged 2026-11-14; headless and against the real store, not run on a headset; results: "S3 results" below) |
-| S4 | Sync hardening and set-up polish | all | Not started |
+| S4 | Sync hardening and set-up polish | all | Built on branch `ccr-3610b1ec-q4cj6c` in both repos, PRs not opened yet (results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
 | N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend (clients later) | Later, by a stronger model after storage has rolled out (owner, 2026-11-14); the head start is "Part 2b" below |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
@@ -1122,6 +1122,51 @@ a synced Drive / NAS root, killing the app mid-sync, a large project's first sca
 
 Interrupted uploads, a server that comes back mid-save, two devices offline on the same file, large STEP imports, cache size
 limit and clean-up, thumbnails for the VR Rooms and landing tiles. Tests run against a store that is switched off and on.
+
+### S4 results (2026-11-14)
+
+**Decisions (owner, 2026-11-14), taken before building:** the store's API and SQLite schema may change for chunked upload (additive); the 90 MB threshold / 32 MB chunk are constants,
+not settings; the QR keys `p` / `pk`, the persisted hash cache and a settings screen for the VR mirror root are folded in; the local-copy limit is a **user setting** (default 2 GB in VR,
+1 GB in the flat app, "no limit" allowed).
+
+**Built, store (`project-store/`):** chunked upload. `POST .../uploads/sessions {size, sha256}`, `PUT .../uploads/{id}?offset=` (in order; 409 `wrong_offset` carries `received`),
+`GET .../uploads/{id}`, `POST .../uploads/{id}/complete` (size and SHA-256 checked; a mismatch discards the upload), `DELETE`. A finished upload is an ordinary upload id for a
+commit, so the stale-save check is unchanged. `/health` lists `uploads.chunked`. The `uploads` table gains `received` and `complete` (`ALTER TABLE` at start-up; a store from before S4 opens
+unchanged and its rows read as complete one-shot uploads). Sessions and their bytes survive a restart. The existing routes, status codes and on-disk files are untouched. Reference:
+`project-store/README.md`.
+
+**Built, VR (DIDSA-VR, details in its `docs/server-projects.md` "S4: hardening"):** chunked upload with resume (session kept in the private state; the file is read a chunk at a time),
+a one-file commit for a single big file, a tunnel-refused body retried in chunks; a commit that landed with its reply lost is recognised (no clash, no second version); the hash
+cache (`size`, `mtime`, hash) kept across restarts with git's racy-timestamp rule; the local-copy limit and clean-up (least recently used *clean* files only, across projects) with
+Servers-page controls (folder, room, free up space); the Continue tile's thumbnail (`thumbnail_store.gd`, `room_thumbnail.gd` `render_model`).
+
+**Built, flat app (`client/`):** the same chunked upload and resume (`StoreClient`, `RemoteStorageService`, sessions in the `SyncStore`), adoption of a queued save that equals the store's
+version (this was a **gap found by the new tests**: a commit that landed with its reply lost, or the same edit on two devices, was flagged as a clash; VR already handled it), the cache limit
+(`FileCache.trim`, Storage screen, default 1 GB), and the pairing keys `p` / `pk` in Connect a VR headset (with a note that the code carries the key).
+
+**Differs from the scope, and why:**
+- **Thumbnails.** The Rooms page already had a picture per open room (R-phase). What the scope list meant by "landing tiles" was the Continue tile (the landing's only tile that stands for a
+  file; `landing-scope.md` listed its thumbnail as not built). S4 builds that; the Rooms thumbnail is unchanged, and the demo catalogue, the Files list and server project tiles still have
+  no pictures. A picture is made when a file is opened, so it shows the model as it loaded, not as last edited.
+- **"Large STEP imports"** needed no backend or store change: an import ends as a native `.didsa` file, which goes through the same save path. What S4 did for it is the 90 MB / chunked path
+  (a big file is streamed from disk in VR instead of held whole) and the 200 MB store limit stays. The CAD backend's own time and memory for a big STEP were not looked at.
+- **The flat app has no "free up space now" button** and no mirror-root setting (it has no mirror). Its limit is applied after a sync.
+- **Not folded in (left, as listed):** auto-reload after Take theirs / Save as a copy, rename in a server project in VR, "Copy this project to the server" in VR. All three are feature
+  work with UI decisions, not hardening.
+- **Resuming a cut download** is not built (the store has no `Range`); a download is still one request held in memory.
+- **The 90 MB threshold** is a constant in each client (`CHUNK_THRESHOLD`, `kChunkThresholdBytes`), as is the 32 MB chunk (the store's `chunk_size` wins when smaller).
+
+**Tests:** store: `tests/test_chunked_uploads.py` (19, including a cap of 4 x the file limit on unfinished sessions, 429, and clients cancelling the session of an edited file: the whole flow and a commit with it, resume after a lost reply, a repeated chunk, `complete` too early, a wrong hash discarding
+the upload, an unfinished upload refused in a commit, limits, expiry and a chunk renewing it, cancel, a store closed and reopened mid-upload, stray bytes after a crash, a refused commit keeping
+the upload, the key, an S1-S3 store file migrating). VR: `cloud_hardening` (53), `thumbnail_store` (12), `thumbnail_render` (6, Xvfb), `e2e_cloud_outage` (18, a real store process killed
+and restarted), 5 new checks in `cloud_ui` (Servers-page controls, the Continue tile's picture). Flat app: `server_hardening_test` (20), 2 new in `headset_pairing_test`, 1 in `server_projects_widget_test` (the cache field), 1 in `test/live/server_store_live_test.dart` (the real store). Mutations tried, each broke a test: no
+`truncate` of stray bytes, no SHA-256 check, the racy-timestamp rule off, the wrong-offset reply ignored (the sync hung), the adopt-equal step off.
+
+**Verification and what is not:** see the PR bodies for the counts. Not verified: anything on a headset (the new Servers-page buttons with a laser, the folder keyboard, the Continue picture
+and its cost, the 32 MB request body from a Quest); a **Cloudflare tunnel** (the 100 MB limit is its documentation; the fakes imitate a 413 and a body cap, the real store was driven directly);
+any file near 100 MB (the real-store runs used 3 MB files and 1 MB chunks), and so the speed, memory and timeouts of a real big upload; the owner's Pi (the SHA-256 at `complete` reads the whole
+file once); a synced Drive / NAS store root; killing the app process mid-write (the store process was killed and restarted, and the app "closed and reopened" as a new object over the same
+state); a real disk filling up (the clean-up rules are tested, not the pressure); the Quest storage check (S0) which the owner still has to read off.
 
 ---
 

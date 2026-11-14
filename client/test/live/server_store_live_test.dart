@@ -11,6 +11,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -314,5 +315,51 @@ void main() {
     await desktop.renameFile(root, 'a.didsa', 'b.didsa');
     expect(await desktop.listFiles(root), ['b.didsa']);
     expect(_marker(await read(desktop, 'b.didsa')), 0);
+  }, skip: skip);
+
+  test('S4: a file over the threshold goes up in chunks to the real store, byte for byte, as one version, and an interrupted one resumes', () async {
+    final chunky = RemoteStorageService(
+      settings: () => StoreSettings(url: _url!, apiKey: _key, deviceName: 'Chunky'),
+      syncStore: SyncStore(directory: Directory('${temp.path}/chunky/sync')),
+      fileCache: FileCache(cacheDirectory: Directory('${temp.path}/chunky/cache')),
+      treeTtl: Duration.zero,
+      chunkThresholdBytes: 1000,
+      chunkBytes: 700,
+    );
+    chunky.beginSession(root);
+    final big = Uint8List.fromList(List<int>.generate(5000, (i) => (i * 31 + 7) & 255));
+    await chunky.writeFile(root, 'Big.didsa', big);
+    final tree = await StoreClient(StoreSettings(url: _url!, apiKey: _key, deviceName: 'x')).tree(project);
+    final stored = tree.files.firstWhere((f) => f.path == 'Big.didsa');
+    expect(stored.size, 5000);
+    expect(stored.version, 1);
+    expect(await read(desktop, 'Big.didsa'), big);
+    // an edit is a commit with the base version, still in chunks
+    final edited = Uint8List.fromList(big.reversed.toList());
+    await chunky.writeFile(root, 'Big.didsa', edited);
+    expect(await read(desktop, 'Big.didsa'), edited);
+    // an interrupted upload resumes on the same session: open one by hand, send two chunks, then let the service finish it
+    final client = StoreClient(StoreSettings(url: _url!, apiKey: _key, deviceName: 'Chunky'));
+    final other = Uint8List.fromList(List<int>.generate(3000, (i) => (i * 13 + 5) & 255));
+    final sha = sha256.convert(other).toString();
+    final session = await client.startUploadSession(project, other.length, sha);
+    await client.uploadChunk(project, session.id, 0, Uint8List.sublistView(other, 0, 700));
+    final status = await client.uploadStatus(project, session.id);
+    expect(status.received, 700);
+    // a chunk at the wrong place is refused with where to go on
+    await expectLater(
+      client.uploadChunk(project, session.id, 1400, Uint8List.sublistView(other, 1400, 2100)),
+      throwsA(isA<StoreError>().having((e) => e.code, 'code', 'wrong_offset').having((e) => e.body['received'], 'received', 700)),
+    );
+    await client.uploadChunk(project, session.id, 700, Uint8List.sublistView(other, 700, 3000));
+    final id = await client.completeUpload(project, session.id);
+    final done = await client.commit(project, [StoreCommitChange.put(path: 'Resumed.didsa', uploadId: id)]);
+    expect(done.files.single['version'], 1);
+    expect(await read(desktop, 'Resumed.didsa'), other);
+    // a wrong hash is refused and the upload is gone
+    final bad = await client.startUploadSession(project, 10, '0' * 64);
+    await client.uploadChunk(project, bad.id, 0, Uint8List(10));
+    await expectLater(client.completeUpload(project, bad.id), throwsA(isA<StoreBadRequest>().having((e) => e.code, 'code', 'checksum_mismatch')));
+    await expectLater(client.uploadStatus(project, bad.id), throwsA(isA<StoreNotFound>()));
   }, skip: skip);
 }

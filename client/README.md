@@ -78,8 +78,12 @@ assembly composer do not branch on where a project lives.
 - Tests: `test/remote_storage_service_test.dart` and `test/server_projects_widget_test.dart` (an in-memory fake store,
   `test/support/fake_project_store.dart`), the PartScreen groups in `test/part_screen_test.dart`, and `test/live/server_store_live_test.dart`
   against the real store (skipped unless `DIDSA_LIVE_STORE` is set; `.github/workflows/client-store-e2e.yml` starts the store and runs it).
-- Not built: the pairing-code keys `p` (the store's address) and `pk` (its key) in `lib/vr_pairing/` (the headset reads them since S3; see `docs/vr-headset-pairing.md`), chunked upload (S4: a file over 100 MB may fail through a Cloudflare tunnel
-  and is reported as such), merging two people's changes to one file.
+- S4 (hardening): a file over 90 MB (or one a tunnel refuses) goes up in 32 MB chunks that resume where the store says it got to (`StoreClient.startUploadSession` /
+  `uploadChunk` / `completeUpload`; the session is kept in the sync store so a closed app resumes it); a save whose bytes already ARE the store's version (a commit that
+  landed with its reply lost, or the same edit on two devices) is adopted, not flagged as a clash; the local copies of server files are trimmed to a limit (Storage screen,
+  default 1 GB, 0 = no limit; least recently used first; the files this session read and every save waiting stay); Connect a VR headset writes the pairing keys `p` / `pk`
+  when a store is set up. Tests: `test/server_hardening_test.dart`, `test/headset_pairing_test.dart`, the live chunk test in `test/live/server_store_live_test.dart`.
+- Not built: merging two people's changes to one file; resuming a cut download (a download is one request); a "free up space now" button (the limit is applied after a sync).
 
 ## What this is
 

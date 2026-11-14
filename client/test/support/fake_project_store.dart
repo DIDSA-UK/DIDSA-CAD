@@ -42,6 +42,16 @@ class _Change {
   final String? movedFrom;
 }
 
+class _Session {
+  _Session(this.project, this.size, this.sha);
+
+  final String project;
+  final int size;
+  final String sha;
+  final BytesBuilder bytes = BytesBuilder(copy: false);
+  bool complete = false;
+}
+
 class FakeProjectStore {
   FakeProjectStore({this.apiKey = 'store-key', DateTime Function()? clock}) : _clock = clock ?? DateTime.now {
     client = MockClient(_handle);
@@ -60,6 +70,36 @@ class FakeProjectStore {
   /// A status to answer with instead of handling the next request: `{status: 413, body: ..., contentType: ...}`.
   final List<({int status, String body})> forcedAnswers = [];
 
+  /// Chunked uploads (S4): advertised in `/health` and served as the real store does (in-order chunks, 409 `wrong_offset` with `received`, the
+  /// declared SHA-256 checked at `complete`).
+  bool chunked = true;
+
+  /// A request body over this many bytes is refused the way a Cloudflare tunnel does (413, an HTML page, not the store's JSON). 0: no tunnel.
+  int tunnelCapBytes = 0;
+
+  /// Requests that are APPLIED and then answered with a connection error (the reply is lost). Matched by `METHOD /path` containing the text.
+  final List<String> loseReplyFor = [];
+
+  /// After this many more requests the store goes offline (null: never). `restart()` brings it back with its data.
+  int? dieAfter;
+
+  /// Answer the next `complete` with this instead (a store-side failure after the last chunk).
+  ({int status, String body})? failNextComplete;
+
+  /// Chunk requests that were applied.
+  int chunksReceived = 0;
+
+  void restart() {
+    offline = false;
+    dieAfter = null;
+  }
+
+  /// The store forgets its uploads and upload sessions (they expire after an hour).
+  void expireUploads() {
+    _uploads.clear();
+    _sessions.clear();
+  }
+
   /// Largest body the fake accepts (the real store's limit is 200 MB); a bigger one gets a 413.
   int maxFileBytes = 200 * 1024 * 1024;
 
@@ -72,6 +112,7 @@ class FakeProjectStore {
   final Map<String, Map<String, _Entry>> _projects = {};
   final List<_Change> _changes = [];
   final Map<String, ({String project, Uint8List bytes})> _uploads = {};
+  final Map<String, _Session> _sessions = {};
   int _seq = 0;
   int _uploadCounter = 0;
 
@@ -181,7 +222,28 @@ class FakeProjectStore {
       _json(status, {'error': code, 'detail': detail, ...extra});
 
   Future<http.Response> _handle(http.Request request) async {
+    if (dieAfter != null) {
+      if (dieAfter == 0) {
+        offline = true;
+      } else {
+        dieAfter = dieAfter! - 1;
+      }
+    }
     if (offline) throw const SocketException('Connection refused (fake store is offline)');
+    if (tunnelCapBytes > 0 && request.bodyBytes.length > tunnelCapBytes) {
+      return http.Response('<html>413 Request Entity Too Large</html>', 413, headers: {'content-type': 'text/html'});
+    }
+    final label = '${request.method} ${request.url.path}?${request.url.query}';
+    final lose = loseReplyFor.indexWhere(label.contains);
+    if (lose >= 0) {
+      loseReplyFor.removeAt(lose);
+      await _handleInner(request);
+      throw const SocketException('Connection reset by peer (the reply was lost)');
+    }
+    return _handleInner(request);
+  }
+
+  Future<http.Response> _handleInner(http.Request request) async {
     final path = request.url.path;
     requests.add('${request.method} $path');
     devices.add(request.headers['X-Device-Name'] ?? request.headers['x-device-name'] ?? '');
@@ -198,7 +260,7 @@ class FakeProjectStore {
     }
     final segments = request.url.pathSegments;
     if (path == '/health') {
-      return _json(200, {'status': 'ok', 'api_features': ['files.if_match', 'commit.all_or_nothing', 'uploads', 'changes.cursor', 'parts.index'], 'version': 'fake'});
+      return _json(200, {'status': 'ok', 'api_features': ['files.if_match', 'commit.all_or_nothing', 'uploads', 'changes.cursor', 'parts.index', if (chunked) 'uploads.chunked'], 'version': 'fake'});
     }
     if (path == '/projects') {
       if (request.method == 'GET') {
@@ -265,6 +327,7 @@ class FakeProjectStore {
         'files': [for (final e in files.entries) if (e.value.live && _partId(e.value.current.bytes) == rest[1]) _info(e.key, e.value)],
       });
     }
+    if (rest.first == 'uploads' && rest.length > 1) return _chunked(project, rest, request);
     if (rest.first == 'uploads') {
       if (request.bodyBytes.length > maxFileBytes) return _error(413, 'too_large', 'a file may be at most $maxFileBytes bytes');
       final id = 'up${++_uploadCounter}';
@@ -275,6 +338,64 @@ class FakeProjectStore {
     if (rest.first == 'files') {
       final filePath = rest.sublist(1).join('/');
       return _file(project, files, filePath, request, device);
+    }
+    return _error(404, 'not_found', 'no such route');
+  }
+
+  http.Response _chunked(String project, List<String> rest, http.Request request) {
+    if (!chunked) return _error(404, 'not_found', 'no such route');
+    if (rest[1] == 'sessions' && request.method == 'POST') {
+      final body = jsonDecode(request.body) as Map<String, dynamic>;
+      final size = body['size'];
+      final sha = body['sha256'];
+      if (size is! int || size < 1 || sha is! String || sha.length != 64) return _error(400, 'bad_request', 'size and sha256 are needed');
+      if (size > maxFileBytes) return _error(413, 'too_large', 'a file may be at most $maxFileBytes bytes');
+      final id = 'up${++_uploadCounter}';
+      _sessions[id] = _Session(project, size, sha);
+      return _json(201, {'upload_id': id, 'size': size, 'received': 0, 'chunk_size': 32 * 1024 * 1024, 'complete': false});
+    }
+    final session = _sessions[rest[1]];
+    if (session == null || session.project != project) {
+      return _error(404, 'unknown_upload', 'upload ${rest[1]} is unknown, expired or belongs to another project');
+    }
+    Map<String, dynamic> info() => {
+          'upload_id': rest[1],
+          'size': session.size,
+          'received': session.bytes.length,
+          'complete': session.complete,
+          'chunk_size': 32 * 1024 * 1024,
+        };
+    if (rest.length == 2 && request.method == 'DELETE') {
+      _sessions.remove(rest[1]);
+      return _json(200, {'cancelled': true});
+    }
+    if (rest.length == 2 && request.method == 'GET') return _json(200, info());
+    if (rest.length == 2 && request.method == 'PUT') {
+      final offset = int.tryParse(request.url.queryParameters['offset'] ?? '');
+      if (session.complete) return _error(409, 'upload_complete', 'this upload is already complete', info());
+      if (offset != session.bytes.length) return _error(409, 'wrong_offset', 'expected offset ${session.bytes.length}, got $offset', info());
+      if (session.bytes.length + request.bodyBytes.length > session.size) return _error(400, 'chunk_past_end', 'this chunk goes past the size the upload declared');
+      session.bytes.add(request.bodyBytes);
+      chunksReceived++;
+      return _json(200, info());
+    }
+    if (rest.length == 3 && rest[2] == 'complete' && request.method == 'POST') {
+      if (failNextComplete != null) {
+        final forced = failNextComplete!;
+        failNextComplete = null;
+        return http.Response(forced.body, forced.status);
+      }
+      if (!session.complete) {
+        if (session.bytes.length != session.size) return _error(409, 'incomplete', '${session.bytes.length} of ${session.size} bytes received', info());
+        final all = session.bytes.toBytes();
+        if (_sha(all) != session.sha) {
+          _sessions.remove(rest[1]);
+          return _error(400, 'checksum_mismatch', 'the bytes received do not match the declared SHA-256');
+        }
+        session.complete = true;
+        _uploads[rest[1]] = (project: project, bytes: all);
+      }
+      return _json(200, {'upload_id': rest[1], 'size': session.size, 'sha256': session.sha});
     }
     return _error(404, 'not_found', 'no such route');
   }

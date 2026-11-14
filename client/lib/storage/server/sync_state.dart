@@ -128,6 +128,21 @@ class QueuedSave {
       };
 }
 
+/// A chunked upload that has begun (S4), kept so a closed app resumes it instead of sending a 150 MB file again.
+class UploadSession {
+  UploadSession({required this.id, required this.sha, required this.size, required this.atMs});
+
+  factory UploadSession.fromJson(Map<String, dynamic> json) =>
+      UploadSession(id: json['id'] as String, sha: json['sha'] as String, size: json['size'] as int, atMs: json['atMs'] as int);
+
+  final String id;
+  final String sha;
+  final int size;
+  int atMs;
+
+  Map<String, dynamic> toJson() => {'id': id, 'sha': sha, 'size': size, 'atMs': atMs};
+}
+
 enum SyncFileState { synced, toSend, clash }
 
 class ProjectSyncState {
@@ -150,6 +165,9 @@ class ProjectSyncState {
     for (final entry in (json['mine'] as Map? ?? const {}).entries) {
       state.mine[entry.key as String] = DateTime.fromMillisecondsSinceEpoch(entry.value as int);
     }
+    for (final entry in (json['uploadSessions'] as Map? ?? const {}).entries) {
+      state.uploadSessions[entry.key as String] = UploadSession.fromJson((entry.value as Map).cast<String, dynamic>());
+    }
     state.cursor = json['cursor'] as String?;
     state.lastSyncedAt = json['lastSyncedAtMs'] == null ? null : DateTime.fromMillisecondsSinceEpoch(json['lastSyncedAtMs'] as int);
     return state;
@@ -159,6 +177,9 @@ class ProjectSyncState {
   final Map<String, StoreFile> bases = {};
   final Map<String, QueuedSave> queue = {};
   final Map<String, DateTime> mine = {};
+
+  /// path -> the chunked upload begun for it (S4).
+  final Map<String, UploadSession> uploadSessions = {};
   String? cursor;
   DateTime? lastSyncedAt;
 
@@ -173,6 +194,7 @@ class ProjectSyncState {
         'bases': [for (final f in bases.values) f.toJson()],
         'queue': [for (final q in queue.values) q.toJson()],
         'mine': {for (final e in mine.entries) e.key: e.value.millisecondsSinceEpoch},
+        'uploadSessions': {for (final e in uploadSessions.entries) e.key: e.value.toJson()},
         'cursor': cursor,
         'lastSyncedAtMs': lastSyncedAt?.millisecondsSinceEpoch,
       };

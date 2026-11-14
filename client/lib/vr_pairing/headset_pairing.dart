@@ -387,13 +387,17 @@ class HeadsetPairing {
   }
 
   /// The QR code's text: `didsa-vr:1?n=<name>&u=<url>&k=<key>`, each value percent-encoded, plus `r=<relay>&rk=<relay key>` when a
-  /// browser relay is given (both, or neither: DIDSA-VR's `pairing_payload.gd` reads them).
+  /// browser relay is given (both, or neither: DIDSA-VR's `pairing_payload.gd` reads them), plus `p=<store address>&pk=<store key>` when
+  /// the cloud storage (project store) is set up (both, or neither; S4: DIDSA-VR reads them and saves them with the server. They are not
+  /// `s` / `sk`, which are the document session's).
   static String payload({
     required String name,
     required String baseUrl,
     required String apiKey,
     String? relayUrl,
     String relayApiKey = '',
+    String? storeUrl,
+    String storeApiKey = '',
   }) {
     final query = [
       'n=${Uri.encodeQueryComponent(name)}',
@@ -402,6 +406,10 @@ class HeadsetPairing {
       if (relayUrl != null && relayUrl.isNotEmpty && relayApiKey.trim().isNotEmpty) ...[
         'r=${Uri.encodeQueryComponent(_trimmed(relayUrl))}',
         'rk=${Uri.encodeQueryComponent(relayApiKey.trim())}',
+      ],
+      if (storeUrl != null && storeUrl.trim().isNotEmpty && storeApiKey.trim().isNotEmpty) ...[
+        'p=${Uri.encodeQueryComponent(_trimmed(storeUrl))}',
+        'pk=${Uri.encodeQueryComponent(storeApiKey.trim())}',
       ],
     ].join('&');
     return '$payloadScheme:$payloadVersion?$query';

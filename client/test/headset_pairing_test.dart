@@ -306,6 +306,37 @@ void main() {
       expect(query(noKey).containsKey('rk'), isFalse);
     });
 
+    test('carries the cloud storage address and key (p, pk) when both are set, and neither otherwise', () {
+      Map<String, String> query(String text) => Uri.splitQueryString(text.substring(text.indexOf('?') + 1));
+      final withStore = HeadsetPairing.payload(
+        name: 'Pi',
+        baseUrl: 'http://192.168.1.20:8000',
+        apiKey: 'k',
+        storeUrl: 'https://store.example.net:8200/',
+        storeApiKey: 's k&=',
+      );
+      expect(query(withStore)['p'], 'https://store.example.net:8200');
+      expect(query(withStore)['pk'], 's k&=');
+      expect(query(withStore).keys, containsAll(['n', 'u', 'k']));
+      expect(query(withStore).containsKey('s'), isFalse); // `s` / `sk` are the document session's
+      for (final partial in [
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', storeUrl: 'https://store.example.net'),
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', storeApiKey: 'only a key'),
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', storeUrl: '  ', storeApiKey: 'x'),
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k'),
+      ]) {
+        expect(query(partial).containsKey('p'), isFalse);
+        expect(query(partial).containsKey('pk'), isFalse);
+      }
+      // the relay and the store together
+      final both = HeadsetPairing.payload(
+        name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', relayUrl: 'ws://192.168.1.20:8100', relayApiKey: 'rk1',
+        storeUrl: 'https://store.example.net', storeApiKey: 'pk1',
+      );
+      expect(query(both)['r'], 'ws://192.168.1.20:8100');
+      expect(query(both)['p'], 'https://store.example.net');
+    });
+
     test('the default name is the host', () {
       expect(HeadsetPairing.defaultName('https://cad.example.net:8443/x'), 'cad.example.net');
     });
@@ -343,6 +374,37 @@ void main() {
       await tester.tap(find.text('Hide now'));
       await tester.pump();
       expect(find.byType(QrImageView), findsNothing);
+    });
+
+    testWidgets('the cloud storage set up on this device goes into the code, with a note; without it neither does', (tester) async {
+      tester.view.physicalSize = const Size(800, 1600);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      Future<String> qrFor({String? storeUrl, String? storeApiKey}) async {
+        await tester.pumpWidget(MaterialApp(
+          home: HeadsetPairingScreen(
+            baseUrl: 'https://cad.example.net',
+            apiKey: 'secret',
+            httpClient: _server(),
+            relayUrl: '',
+            relayApiKey: '',
+            storeUrl: storeUrl,
+            storeApiKey: storeApiKey,
+          ),
+        ));
+        await tester.pump();
+        await tester.pump();
+        return tester.widget<MetaData>(find.byKey(const ValueKey('headset-pairing-payload'))).metaData as String;
+      }
+
+      final withStore = await qrFor(storeUrl: 'https://store.example.net:8200', storeApiKey: 'storekey');
+      final query = Uri.splitQueryString(withStore.substring(withStore.indexOf('?') + 1));
+      expect(query['p'], 'https://store.example.net:8200');
+      expect(query['pk'], 'storekey');
+      expect(find.byKey(const ValueKey('headset-pairing-store-note')), findsOneWidget);
+      final without = await qrFor(storeUrl: '', storeApiKey: '');
+      expect(without, isNot(contains('pk=')));
+      expect(find.byKey(const ValueKey('headset-pairing-store-note')), findsNothing);
     });
 
     testWidgets('a relay typed and saved goes into the code', (tester) async {

@@ -41,6 +41,11 @@ trusted for nothing else.
 | `PUT /projects/{p}/files/{path}` | `If-Match: "<v>"` or `If-None-Match: *`. Neither: **428**. Stale: **412** with `current`. 200 / 201 |
 | `DELETE /projects/{p}/files/{path}` | `If-Match` required (428), 412 when stale, history kept |
 | `POST /projects/{p}/uploads` | raw body; `{upload_id}`, valid one hour |
+| `POST /projects/{p}/uploads/sessions {size, sha256}` | **chunked upload (S4)** for a file too big for one request: `{upload_id, size, received: 0, chunk_size, complete: false}`. 413 over the file limit, 400 for a bad size / hash |
+| `PUT /projects/{p}/uploads/{id}?offset=N` | one chunk (at most 64 MB; the advised `chunk_size` is 32 MB), appended **in order**: `N` must be the bytes received so far, else **409 `wrong_offset`** with `received` (a client that lost a reply asks where the store is and carries on). Each chunk renews the hour. 400 `chunk_past_end`; 404 `unknown_upload` once expired |
+| `GET /projects/{p}/uploads/{id}` | `{size, received, complete, chunk_size, expires_at}`: how far it got (how an interrupted upload resumes) |
+| `POST /projects/{p}/uploads/{id}/complete` | needs all bytes (else 409 `incomplete`); checks the size and the declared SHA-256 (a mismatch is 400 `checksum_mismatch` and **the upload is discarded**); then `{upload_id, size, sha256}` and the id goes into a `commit` exactly like a one-shot upload's. Calling it twice answers the same |
+| `DELETE /projects/{p}/uploads/{id}` | cancel: the bytes are removed |
 | `POST /projects/{p}/commit` | `{message?, changes: [{op: put\|delete\|move, path, to?, base_version\|null, upload_id?}]}`: all or nothing. **409** lists every clash (`conflicts`), nothing written |
 | `GET .../files/{path}/versions`, `.../versions/{v}` | kept versions (newest first), and their bytes |
 | `GET /projects/{p}/changes?since=<cursor>&limit=` | `{changes, cursor, more}`; start from the tree's `cursor` |
@@ -52,7 +57,11 @@ Versions are per-file counters (a delete is a version, so a stale copy never mat
 versions of each file and everything younger than 30 days, whichever is more; a deleted file's versions for 30 days.
 A native file's `part_id` is `document.root_part_id` of its JSON (names ending `.didsa`, `.didsaprt`, `.didsa.json`, up to 100 MB);
 anything else is null. Files up to 200 MB (`PROJECT_STORE_MAX_FILE_MB`). Cloudflare's tunnel limit of 100 MB per request is
-documented, not measured; chunked upload is S4.
+documented, not measured; a file over about 90 MB goes up in chunks (S4, above), which keeps every request under it.
+`/health` lists `uploads.chunked` when the store can take them; a client checks before relying on it. The chunk session is in the `uploads` table (new columns `received`
+and `complete`, added with `ALTER TABLE` at start-up, so a store made before S4 opens unchanged and its rows count as complete one-shot uploads) and the bytes are in
+`.didsa-store/uploads/<id>`; both **survive a restart** (only `tmp/` is cleared at start-up), so a store switched off and on loses no chunk. An upload nobody touched for an
+hour is swept like any other, and unfinished sessions may declare at most 4 times the file limit in all (**429 `too_many_uploads`** past it), so abandoned ones cannot fill the disk; a client cancels the session of a file that changed (`DELETE`). The file's SHA-256 is computed once, at `complete` (a 200 MB file reads in about a second on a laptop; not measured on a Pi).
 
 ## Environment variables
 

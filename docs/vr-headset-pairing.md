@@ -53,7 +53,7 @@ didsa-vr:1?n=<name>&u=<base url>&k=<api key>
   checked like the server's address (`HeadsetPairing.checkRelayAddress`: plain `ws://` only on a local network) and by its unauthenticated
   `/health`; a relay problem is only ever a warning, and a relay the headset would refuse is left out of the code so the rest still pairs. (The
   headset accepts `ws://` / `wss://` here from DIDSA-VR's 10 Nov 2026 build; an older build refuses a code that has `r`.)
-- Optional, for server projects (S3): `p` (the project store's address) and `pk` (its key, `PROJECT_STORE_API_KEY`, not the CAD key), percent-encoded like the other values. The headset reads them (DIDSA-VR, 14 Nov 2026) and saves them with the server; an older headset ignores both. **This screen does not write them yet** (`ApiConfig.storeUrl` / `storeApiKey` are the values to write, only when both are set); a code without them still pairs. They are not `s` / `sk`.
+- Optional, for server projects (S3): `p` (the project store's address) and `pk` (its key, `PROJECT_STORE_API_KEY`, not the CAD key), percent-encoded like the other values. The headset reads them (DIDSA-VR, 14 Nov 2026) and saves them with the server; an older headset ignores both. **The Connect a VR headset screen writes them since S4** (`ApiConfig.storeUrl` / `storeApiKey`, only when both are set, and it says on screen that the code then carries the store key); a code without them still pairs. They are not `s` / `sk`.
 - Reserved for later, optional: `s` (document session).
 
 ## Safety

@@ -59,6 +59,9 @@ class FileCache {
     return dir;
   }
 
+  /// The cache's name for a file (what [trim]'s `keep` is made of).
+  String keyFor(ProjectRoot root, String relativePath) => _keyFor(root, relativePath);
+
   String _keyFor(ProjectRoot root, String relativePath) {
     return sha256.convert(utf8.encode('${root.persistedKey}::$relativePath')).toString();
   }
@@ -81,6 +84,11 @@ class FileCache {
     final bytesFile = File(p.join(dir.path, '$key.bin'));
     final metaFile = File(p.join(dir.path, '$key.meta.json'));
     if (!await bytesFile.exists() || !await metaFile.exists()) return null;
+    try {
+      await bytesFile.setLastModified(DateTime.now()); // "last used", for [trim]
+    } on FileSystemException {
+      // Not fatal: the entry just looks older than it is.
+    }
 
     final Map<String, dynamic> meta;
     try {
@@ -100,6 +108,45 @@ class FileCache {
           : null,
       serverVersion: meta['serverVersion'] as int?,
     );
+  }
+
+  /// Total size of the cached copies, in bytes.
+  Future<int> sizeBytes() async {
+    final dir = await _cacheDir();
+    var total = 0;
+    await for (final entity in dir.list()) {
+      if (entity is File && entity.path.endsWith('.bin')) total += await entity.length();
+    }
+    return total;
+  }
+
+  /// Removes the least recently used copies until the cache fits [maxBytes] (S4); [keep] (made with [keyFor]) are never removed, e.g. the
+  /// files an open session read. Everything here can be fetched again from the server; nothing waiting to be sent lives in this cache.
+  /// Returns how many bytes were freed.
+  Future<int> trim(int maxBytes, {Set<String> keep = const {}}) async {
+    if (maxBytes <= 0) return 0;
+    final dir = await _cacheDir();
+    final entries = <({File bin, File meta, int size, DateTime used, String key})>[];
+    var total = 0;
+    await for (final entity in dir.list()) {
+      if (entity is! File || !entity.path.endsWith('.bin')) continue;
+      final size = await entity.length();
+      total += size;
+      final key = p.basename(entity.path).replaceAll(RegExp(r'\.bin$'), '');
+      entries.add((bin: entity, meta: File(p.join(dir.path, '$key.meta.json')), size: size, used: await entity.lastModified(), key: key));
+    }
+    if (total <= maxBytes) return 0;
+    entries.sort((a, b) => a.used.compareTo(b.used));
+    var freed = 0;
+    for (final entry in entries) {
+      if (total <= maxBytes) break;
+      if (keep.contains(entry.key)) continue;
+      await entry.bin.delete();
+      if (await entry.meta.exists()) await entry.meta.delete();
+      total -= entry.size;
+      freed += entry.size;
+    }
+    return freed;
   }
 
   Future<void> evict(ProjectRoot root, String relativePath) async {

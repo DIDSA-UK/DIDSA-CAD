@@ -26,6 +26,7 @@ class _StorageScreenState extends State<StorageScreen> {
   final _urlController = TextEditingController();
   final _keyController = TextEditingController();
   final _deviceController = TextEditingController();
+  final _cacheController = TextEditingController();
   bool _obscureKey = true;
   bool _busy = false;
   String? _message;
@@ -41,6 +42,7 @@ class _StorageScreenState extends State<StorageScreen> {
     _urlController.text = ApiConfig.storeUrl;
     _keyController.text = ApiConfig.storeApiKey;
     _deviceController.text = ApiConfig.deviceName;
+    _cacheController.text = '${ApiConfig.cacheLimitMb}';
     _loadFolder();
   }
 
@@ -49,6 +51,7 @@ class _StorageScreenState extends State<StorageScreen> {
     _urlController.dispose();
     _keyController.dispose();
     _deviceController.dispose();
+    _cacheController.dispose();
     super.dispose();
   }
 
@@ -81,6 +84,7 @@ class _StorageScreenState extends State<StorageScreen> {
     });
     await ApiConfig.saveStore(storeUrl: url, storeApiKey: key);
     await ApiConfig.saveDeviceName(_deviceController.text);
+    await ApiConfig.saveCacheLimitMb(int.tryParse(_cacheController.text.trim()) ?? ApiConfig.cacheLimitMb);
     String? problem;
     if (url.isNotEmpty && key.isNotEmpty) {
       final client = StoreClient(
@@ -173,6 +177,18 @@ class _StorageScreenState extends State<StorageScreen> {
                 ),
                 const SizedBox(height: 4),
                 Text('Other devices see this name next to a change. It is a label, not a login.', style: home.caption(size: 11)),
+                const SizedBox(height: 12),
+                TextField(
+                  key: const ValueKey('cache-limit-field'),
+                  controller: _cacheController,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(labelText: 'Room for local copies (MB, 0 = no limit)'),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'The least recently used copies of server files are removed when this is exceeded; they download again when opened. A save waiting to be sent is never removed.',
+                  style: home.caption(size: 11),
+                ),
                 const SizedBox(height: 12),
                 Align(
                   alignment: Alignment.centerRight,
