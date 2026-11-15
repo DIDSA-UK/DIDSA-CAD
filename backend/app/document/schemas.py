@@ -1793,6 +1793,8 @@ class PatternFeatureCreate(BaseModel):
     # Phase 8 (`docs/pattern-mirror-scope.md` §2.11/§4): mirrors
     # `MirrorFeatureCreate.tool_feature_id`'s own identical shape.
     tool_feature_id: str | None = None
+    # Several tool Features patterned together; the first is also reported as `tool_feature_id`. Give this or `tool_feature_id`, not both.
+    tool_feature_ids: list[str] | None = None
 
 
 class PatternFeatureUpdate(BaseModel):
@@ -1837,6 +1839,7 @@ class PatternFeatureUpdate(BaseModel):
     # Phase 8: mirrors `MirrorFeatureUpdate.tool_feature_id`'s own identical
     # omitted-vs-current convention (see that field's own doc comment).
     tool_feature_id: str | None = None
+    tool_feature_ids: list[str] | None = None
 
 
 class PatternFeatureResponse(FeatureResponseBase):
@@ -1861,6 +1864,7 @@ class PatternFeatureResponse(FeatureResponseBase):
     skip_indices: list[int]
     merge: MergeMode
     tool_feature_id: str | None = None
+    tool_feature_ids: list[str] = []
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # PatternFeature.
