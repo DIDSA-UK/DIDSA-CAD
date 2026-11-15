@@ -1495,6 +1495,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             "merge": feature.merge.value,
             # Phase 8: mirrors MirrorFeature's own identical field above.
             "tool_feature_id": feature.tool_feature_id,
+            "extra_tool_feature_ids": list(feature.extra_tool_feature_ids),
         }
     if isinstance(feature, GearFeature):
         return {
@@ -1916,6 +1917,7 @@ def _feature_from_dict(data: dict) -> Feature:
             # `tool_feature_id` (Phase 8) defaults to None for any Pattern
             # persisted before this field existed.
             tool_feature_id=data.get("tool_feature_id"),
+            extra_tool_feature_ids=list(data.get("extra_tool_feature_ids", [])),
         )
     if feature_type == "gear":
         return GearFeature(

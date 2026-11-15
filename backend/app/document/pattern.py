@@ -528,6 +528,7 @@ def _resolve_pattern_tool_shape_and_target(
     bodies: dict[str, TopoDS_Shape],
     feature: PatternFeature,
     excluded_feature_ids: frozenset[str],
+    tool_feature_id: str | None = None,
 ) -> tuple[str, TopoDS_Shape, bool]:
     """Shared prefix of `resolve_pattern_tool_feature_from_bodies` (real)
     and `resolve_pattern_coarse_from_bodies` (LOD, `docs/lod-strategy/
@@ -568,7 +569,8 @@ def _resolve_pattern_tool_shape_and_target(
     ran - rather than this Pattern's own further-advanced accumulator."""
     from app.document.extrude import resolve_feature_tool_shape
 
-    tool_feature_id = feature.tool_feature_id
+    # `tool_feature_id` picks which of the Pattern's tool Features to resolve (the first when omitted).
+    tool_feature_id = tool_feature_id if tool_feature_id is not None else feature.tool_feature_id
     assert tool_feature_id is not None
 
     tool_feature = part.get_feature(tool_feature_id)
@@ -622,42 +624,43 @@ def resolve_pattern_tool_feature_from_bodies(
     v1 scope: exactly one target - `target_body_ids[0]`. Returns
     `(target_body_id, new_shape)`, mirroring that function's own return
     shape exactly."""
-    tool_feature_id = feature.tool_feature_id
-    assert tool_feature_id is not None
+    tool_ids = feature.all_tool_feature_ids
+    assert tool_ids
 
-    target_id, tool_shape, is_cut = _resolve_pattern_tool_shape_and_target(
-        part, bodies, feature, excluded_feature_ids
-    )
-
-    if feature.pattern_type == PatternType.CIRCULAR:
-        instances = _circular_instances(
-            part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
+    # Every tool Feature is repeated on its own and applied to the one shared target, in feature order (a cut after a boss sees the boss's copies). They must
+    # all act on the same Body: a Pattern has exactly one target by construction (`merge` is never KEEP_SEPARATE here).
+    target_id: str | None = None
+    current: TopoDS_Shape | None = None
+    for tool_feature_id in tool_ids:
+        this_target, tool_shape, is_cut = _resolve_pattern_tool_shape_and_target(
+            part, bodies, feature, excluded_feature_ids, tool_feature_id
         )
-    else:
-        instances = _rectangular_instances(
-            part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
-        )
+        if target_id is None:
+            target_id, current = this_target, bodies[this_target]
+        elif this_target != target_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"type": "tool_features_different_targets", "feature_id": tool_feature_id, "body_id": this_target},
+            )
+        assert current is not None
+        if feature.pattern_type == PatternType.CIRCULAR:
+            instances = _circular_instances(part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids)
+        else:
+            instances = _rectangular_instances(part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids)
 
-    combined_tool: TopoDS_Shape | None = None
-    for shape in instances.values():
-        combined_tool = shape if combined_tool is None else BRepAlgoAPI_Fuse(combined_tool, shape).Shape()
-
-    if combined_tool is None:
-        # Every instance beyond index 0 was skipped (or count*count_2/
-        # count_angular collapsed to 1) - nothing new to apply; the target
-        # already reflects index 0's own effect, applied earlier in feature
-        # order, unchanged.
-        return target_id, bodies[target_id]
-
-    if is_cut:
-        tool_op = BRepAlgoAPI_Cut(bodies[target_id], combined_tool)
-        new_shape = tool_op.Shape()
+        combined_tool: TopoDS_Shape | None = None
+        for shape in instances.values():
+            combined_tool = shape if combined_tool is None else BRepAlgoAPI_Fuse(combined_tool, shape).Shape()
+        if combined_tool is None:
+            # Every instance beyond index 0 was skipped (or the counts collapsed to 1): nothing new from this tool Feature; index 0 is already baked into
+            # the target by the Feature itself.
+            continue
+        tool_op = BRepAlgoAPI_Cut(current, combined_tool) if is_cut else BRepAlgoAPI_Fuse(current, combined_tool)
+        current = tool_op.Shape()
         note_operation(tool_op)
-    else:
-        tool_op = BRepAlgoAPI_Fuse(bodies[target_id], combined_tool)
-        new_shape = tool_op.Shape()
-        note_operation(tool_op)
-    return target_id, new_shape
+
+    assert target_id is not None and current is not None
+    return target_id, current
 
 
 def resolve_pattern(
@@ -730,19 +733,16 @@ def resolve_pattern_coarse_from_bodies(
     pattern_coarse`/`app.document.extrude.compute_part_bodies_coarse`),
     never anything that persists or registers against the Feature graph."""
     if feature.tool_feature_id is not None:
-        tool_feature_id = feature.tool_feature_id
-        _target_id, tool_shape, _is_cut = _resolve_pattern_tool_shape_and_target(
-            part, bodies, feature, excluded_feature_ids
-        )
-        if feature.pattern_type == PatternType.CIRCULAR:
-            instances = _circular_instances(
-                part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
+        solids = []
+        for tool_feature_id in feature.all_tool_feature_ids:
+            _target_id, tool_shape, _is_cut = _resolve_pattern_tool_shape_and_target(
+                part, bodies, feature, excluded_feature_ids, tool_feature_id
             )
-        else:
-            instances = _rectangular_instances(
-                part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids
-            )
-        solids = list(instances.values())
+            if feature.pattern_type == PatternType.CIRCULAR:
+                instances = _circular_instances(part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids)
+            else:
+                instances = _rectangular_instances(part, bodies, feature, tool_shape, tool_feature_id, excluded_feature_ids)
+            solids.extend(instances.values())
     else:
         per_source_instances = resolve_pattern_from_bodies(part, bodies, feature, excluded_feature_ids)
         solids = [shape for instances in per_source_instances.values() for shape in instances.values()]

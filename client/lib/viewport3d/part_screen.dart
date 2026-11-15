@@ -130,6 +130,7 @@ import 'presentation_mode.dart';
 import 'share_screen.dart';
 import 'part_viewport.dart';
 import 'pattern_panel.dart';
+import 'pattern_seed.dart';
 import 'pending_job_store.dart';
 import 'picker_ribbon.dart';
 import 'planar_surface_panel.dart';
@@ -7386,9 +7387,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// §2.11/§4): mirrors [_mirrorToolFeatureId]'s own identical shape - non-
   /// null while this session's seed is the third, mutually-exclusive
   /// `tool_feature_id` mode instead of [_patternSourceBodyIds]/
-  /// [_patternSourceFeatureIds], set by [_openPatternPanelFromFeature]
-  /// (via [_resetPatternConfiguringState]'s own `toolFeatureId` param).
-  String? _patternToolFeatureId;
+  /// [_patternSourceFeatureIds], set from [resolvePatternSeed]'s result (every way of starting the tool - see `pattern_seed.dart`). Several cuts can be
+  /// patterned together.
+  List<String> _patternToolFeatureIds = [];
 
   /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
   /// §2.12/§4): mirrors [_mirrorLongPressSeedFeature]'s own identical shape -
@@ -7397,7 +7398,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// toggle eligibility. Null for every other seed path. Set by
   /// [_openPatternPanelFromFeature] via [_resetPatternConfiguringState]'s
   /// own `longPressSeedFeature` param.
-  FeatureDto? _patternLongPressSeedFeature;
+  List<FeatureDto> _patternLongPressSeedFeature = const [];
 
   /// Pattern/Mirror scoping Phase 4: Rectangular or Circular - always
   /// [PatternMode.rectangular] for a brand-new PatternFeature
@@ -7505,7 +7506,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     List<int> skipIndices,
     List<String> sourceFeatureIds,
     MergeMode merge,
-    String? toolFeatureId,
+    List<String> toolFeatureIds,
   })? _patternEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened -
@@ -13889,7 +13890,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     PatternOrientationMode orientationMode = PatternOrientationMode.rotateWithPattern,
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
-    String? toolFeatureId,
+    List<String> toolFeatureIds = const [],
   }) async {
     final part = _part;
     if (part == null) return;
@@ -13915,7 +13916,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         orientationMode: orientationMode,
         skipIndices: skipIndices,
         merge: merge,
-        toolFeatureId: toolFeatureId,
+        toolFeatureIds: toolFeatureIds,
       );
     } catch (_) {
       return;
@@ -20813,7 +20814,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (target == _SourceFeaturePickerTarget.mirror) {
         _mirrorSourceFeatureIds = _selectedSourceFeatureIds.toList();
       } else {
-        _patternSourceFeatureIds = _selectedSourceFeatureIds.toList();
+        _applyPatternPickedFeatures(_selectedSourceFeatureIds.toList());
       }
       _sourceFeaturePickerTarget = null;
       _selectedSourceFeatureIds = {};
@@ -20822,6 +20823,32 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _scheduleMirrorPreview();
     } else {
       _schedulePatternPreview();
+    }
+  }
+
+  /// Features picked with "Select Feature" / "Add from Tree" while a Pattern is open: the same rule as every other way in (`pattern_seed.dart`), so a
+  /// picked cut switches the pattern to repeating it as a tool and a body-making feature is copied. Mixed picks are refused with a message and the
+  /// previous seed kept. Called inside a `setState`.
+  void _applyPatternPickedFeatures(List<String> featureIds) {
+    final picked = [for (final f in _features) if (featureIds.contains(f.id)) f];
+    // Still choosing what to pattern: keep the picks as they are, they are sorted out when the step is confirmed.
+    if (_patternStep == _PatternStep.pickingBodies) {
+      _patternSourceFeatureIds = featureIds;
+      return;
+    }
+    final seed = resolvePatternSeed(bodyIds: _patternSourceBodyIds ?? const [], features: picked, isToolFeature: _isEligibleToolFeature);
+    if (seed.error != null) {
+      _showSnack(seed.error!);
+      return;
+    }
+    final wasTool = _patternToolFeatureIds.isNotEmpty;
+    _patternSourceFeatureIds = seed.sourceFeatureIds;
+    _patternToolFeatureIds = seed.toolFeatureIds;
+    _patternLongPressSeedFeature = picked;
+    if (seed.isToolFeatureSeed) {
+      _patternMerge = MergeMode.fuseIntoOne; // one target by construction
+    } else if (wasTool) {
+      _patternMerge = MergeMode.keepSeparate;
     }
   }
 
@@ -21070,6 +21097,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// falls back to the bare id itself if [_features] hasn't loaded it yet
   /// (defensive only; by the time a tool-feature id is set, its own
   /// Feature was already fetched to gate the long-press menu that set it).
+  /// [_toolFeatureSummary] for several tool features: their names joined, or a count when there are many. Null for none.
+  String? _toolFeaturesSummary(List<String> featureIds) {
+    if (featureIds.isEmpty) return null;
+    if (featureIds.length > 2) return '${featureIds.length} features';
+    return featureIds.map(_toolFeatureSummary).join(' and ');
+  }
+
   String? _toolFeatureSummary(String? featureId) {
     if (featureId == null) return null;
     final index = _features.indexWhere((f) => f.id == featureId);
@@ -23705,8 +23739,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _patternStep = _PatternStep.pickingBodies;
       _patternSourceBodyIds = null;
       _patternSourceFeatureIds = [];
-      _patternToolFeatureId = null;
-      _patternLongPressSeedFeature = null;
+      _patternToolFeatureIds = [];
+      _patternLongPressSeedFeature = const [];
       _previewPatternFeatureId = null;
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -23767,12 +23801,23 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _confirmPatternBodySelection() {
     final bodyIds =
         _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
-    final featureIds = _patternSourceFeatureIds;
-    if (bodyIds.isEmpty && featureIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
+    final picked = [for (final f in _features) if (_patternSourceFeatureIds.contains(f.id)) f];
+    if (bodyIds.isEmpty && picked.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
+    // The same rule as a long press on a feature: a picked cut is repeated as a tool, a body-making feature is copied (see `pattern_seed.dart`).
+    final seed = resolvePatternSeed(bodyIds: bodyIds, features: picked, isToolFeature: _isEligibleToolFeature);
+    if (seed.error != null) {
+      _showSnack(seed.error!);
+      return;
+    }
     setState(() {
       _selectionFilterOverrides.pop();
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState(bodyIds, sourceFeatureIds: featureIds);
+      _resetPatternConfiguringState(
+        seed.bodyIds,
+        sourceFeatureIds: seed.sourceFeatureIds,
+        toolFeatureIds: seed.toolFeatureIds,
+        seedFeatures: picked,
+      );
     });
   }
 
@@ -23830,7 +23875,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [_patternSeedKind]) lets the user switch between the two afterwards,
   /// when [feature] qualifies for both.
   void _openPatternPanelFromFeature(FeatureDto feature) {
-    final seedAsToolFeature = _isEligibleToolFeature(feature);
+    final seed = resolvePatternSeed(bodyIds: const [], features: [feature], isToolFeature: _isEligibleToolFeature);
     setState(() {
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -23839,10 +23884,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
       _resetPatternConfiguringState(
-        [],
-        sourceFeatureIds: seedAsToolFeature ? [] : [feature.id],
-        toolFeatureId: seedAsToolFeature ? feature.id : null,
-        longPressSeedFeature: feature,
+        seed.bodyIds,
+        sourceFeatureIds: seed.sourceFeatureIds,
+        toolFeatureIds: seed.toolFeatureIds,
+        seedFeatures: [feature],
       );
     });
   }
@@ -23863,15 +23908,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _resetPatternConfiguringState(
     List<String> sourceBodyIds, {
     List<String> sourceFeatureIds = const [],
-    String? toolFeatureId,
-    FeatureDto? longPressSeedFeature,
+    List<String> toolFeatureIds = const [],
+    List<FeatureDto> seedFeatures = const [],
   }) {
     _patternStep = _PatternStep.configuring;
     _patternMode = PatternMode.rectangular;
     _patternSourceBodyIds = sourceBodyIds;
     _patternSourceFeatureIds = sourceFeatureIds;
-    _patternToolFeatureId = toolFeatureId;
-    _patternLongPressSeedFeature = longPressSeedFeature;
+    _patternToolFeatureIds = toolFeatureIds;
+    _patternLongPressSeedFeature = seedFeatures;
     _patternDirection1 = null;
     _patternDirection1EdgeEntity = null;
     _patternCount1 = 2;
@@ -23891,7 +23936,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _patternReverseAngular = false;
     _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
     _patternSkipIndices = {};
-    _patternMerge = toolFeatureId != null ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
+    _patternMerge = toolFeatureIds.isNotEmpty ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
     _previewPatternFeatureId = null;
     _editingPatternFeatureId = null;
     _patternEditSnapshot = null;
@@ -23920,12 +23965,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// `PatternFeature`'s own backend docstring.
   bool _openPatternPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
-    final toolFeatureId = feature.toolFeatureId;
+    final toolFeatureIds = feature.toolFeatureIds.isNotEmpty ? feature.toolFeatureIds : [if (feature.toolFeatureId != null) feature.toolFeatureId!];
     // Bug fix: mirrors [_openMirrorPanelForEdit]'s own identical fix - a
     // PatternFeature seeded purely via `source_feature_ids` has an empty
     // (not missing) `sourceBodyIds`. Phase 8: a `tool_feature_id`-seeded
     // Pattern has both `sourceBodyIds`/`sourceFeatureIds` empty too.
-    if (sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty && toolFeatureId == null) return false;
+    if (sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty && toolFeatureIds.isEmpty) return false;
     final mode = PatternMode.fromApiValue(feature.patternType ?? 'rectangular');
 
     if (mode == PatternMode.circular) {
@@ -23941,7 +23986,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _previewPatternFeatureId = feature.id;
         _patternSourceBodyIds = sourceBodyIds;
         _patternSourceFeatureIds = sourceFeatureIds;
-        _patternToolFeatureId = toolFeatureId;
+        _patternToolFeatureIds = toolFeatureIds;
         _patternDirection1 = null;
         _patternDirection1EdgeEntity = null;
         _patternCount1 = 2;
@@ -23962,7 +24007,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _patternOrientationMode = PatternOrientationMode.fromApiValue(feature.orientationMode);
         _patternSkipIndices = feature.skipIndices.toSet();
         _patternMerge = merge;
-        _patternLongPressSeedFeature = null;
+        _patternLongPressSeedFeature = const [];
         _patternEditSnapshot = (
           sourceBodyIds: sourceBodyIds,
           direction1: null,
@@ -23981,7 +24026,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           skipIndices: feature.skipIndices,
           sourceFeatureIds: sourceFeatureIds,
           merge: merge,
-          toolFeatureId: toolFeatureId,
+          toolFeatureIds: toolFeatureIds,
         );
         _meshBeforePattern = _bodies;
         _entitiesBeforePattern = _selectedEntities;
@@ -24017,7 +24062,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _previewPatternFeatureId = feature.id;
       _patternSourceBodyIds = sourceBodyIds;
       _patternSourceFeatureIds = sourceFeatureIds;
-      _patternToolFeatureId = toolFeatureId;
+      _patternToolFeatureIds = toolFeatureIds;
       _patternDirection1 = direction1;
       _patternDirection1EdgeEntity = direction1Entity;
       _patternCount1 = count1;
@@ -24038,7 +24083,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = feature.skipIndices.toSet();
       _patternMerge = merge;
-      _patternLongPressSeedFeature = null;
+      _patternLongPressSeedFeature = const [];
       _patternEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         direction1: direction1,
@@ -24057,7 +24102,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         skipIndices: feature.skipIndices,
         sourceFeatureIds: sourceFeatureIds,
         merge: merge,
-        toolFeatureId: toolFeatureId,
+        toolFeatureIds: toolFeatureIds,
       );
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -24267,27 +24312,27 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// own identical shape: non-null (and the toggle shown) only when
   /// [_patternLongPressSeedFeature] qualifies for both seed kinds.
   PatternMirrorSeedKind? get _patternSeedKind {
-    final feature = _patternLongPressSeedFeature;
-    if (feature == null) return null;
-    final qualifiesAsBody = _patternMirrorSourceFeatureTypes.contains(feature.type);
-    final qualifiesAsToolFeature = _isEligibleToolFeature(feature);
-    if (!(qualifiesAsBody && qualifiesAsToolFeature)) return null;
-    return _patternToolFeatureId != null ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
+    final features = _patternLongPressSeedFeature;
+    if (features.isEmpty || (_patternSourceBodyIds ?? const []).isNotEmpty) return null;
+    final both = features.every((f) => _patternMirrorSourceFeatureTypes.contains(f.type) && _isEligibleToolFeature(f));
+    if (!both) return null;
+    return _patternToolFeatureIds.isNotEmpty ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
   }
 
   /// [PatternPanel.onSeedKindChanged] - mirrors [_setMirrorSeedKind]'s own
   /// identical shape, only reachable while [_patternSeedKind] is non-null.
   void _setPatternSeedKind(PatternMirrorSeedKind kind) {
-    final feature = _patternLongPressSeedFeature;
-    if (feature == null) return;
+    final features = _patternLongPressSeedFeature;
+    if (features.isEmpty) return;
+    final ids = [for (final f in features) f.id];
     setState(() {
       if (kind == PatternMirrorSeedKind.feature) {
         _patternSourceFeatureIds = [];
-        _patternToolFeatureId = feature.id;
+        _patternToolFeatureIds = ids;
         _patternMerge = MergeMode.fuseIntoOne;
       } else {
-        _patternSourceFeatureIds = [feature.id];
-        _patternToolFeatureId = null;
+        _patternSourceFeatureIds = ids;
+        _patternToolFeatureIds = [];
         _patternMerge = MergeMode.keepSeparate;
       }
     });
@@ -24597,7 +24642,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // empty selection is.
     if (part == null ||
         sourceBodyIds == null ||
-        (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty && _patternToolFeatureId == null)) {
+        (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty && _patternToolFeatureIds.isEmpty)) {
       return;
     }
 
@@ -24625,7 +24670,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
-            toolFeatureId: _patternToolFeatureId,
+            toolFeatureIds: _patternToolFeatureIds,
           );
         } else {
           final generation = ++_createCoarsePreviewGeneration;
@@ -24641,7 +24686,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
-            toolFeatureId: _patternToolFeatureId,
+            toolFeatureIds: _patternToolFeatureIds,
           ));
           final createFuture = _api.createPatternFeature(
             _focusPartId,
@@ -24655,7 +24700,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             orientationMode: _patternOrientationMode,
             skipIndices: skipIndices,
             merge: _patternMerge,
-            toolFeatureId: _patternToolFeatureId,
+            toolFeatureIds: _patternToolFeatureIds,
           );
           _patternFeatureCreateInFlight = createFuture;
           try {
@@ -24679,7 +24724,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           orientationMode: _patternOrientationMode,
           skipIndices: skipIndices,
           merge: _patternMerge,
-          toolFeatureId: _patternToolFeatureId,
+          toolFeatureIds: _patternToolFeatureIds,
         );
       }
       await _refreshMesh();
@@ -24711,7 +24756,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           reverse2: hasSecondDirection ? _patternReverse2 : false,
           skipIndices: skipIndices,
           merge: _patternMerge,
-          toolFeatureId: _patternToolFeatureId,
+          toolFeatureIds: _patternToolFeatureIds,
         );
       } else {
         final generation = ++_createCoarsePreviewGeneration;
@@ -24729,7 +24774,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           reverse2: hasSecondDirection ? _patternReverse2 : false,
           skipIndices: skipIndices,
           merge: _patternMerge,
-          toolFeatureId: _patternToolFeatureId,
+          toolFeatureIds: _patternToolFeatureIds,
         ));
         final createFuture = _api.createPatternFeature(
           _focusPartId,
@@ -24745,7 +24790,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           reverse2: hasSecondDirection ? _patternReverse2 : false,
           skipIndices: skipIndices,
           merge: _patternMerge,
-          toolFeatureId: _patternToolFeatureId,
+          toolFeatureIds: _patternToolFeatureIds,
         );
         _patternFeatureCreateInFlight = createFuture;
         try {
@@ -24772,7 +24817,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         reverse2: hasSecondDirection ? _patternReverse2 : false,
         skipIndices: skipIndices,
         merge: _patternMerge,
-        toolFeatureId: _patternToolFeatureId,
+        toolFeatureIds: _patternToolFeatureIds,
       );
     }
     await _refreshMesh();
@@ -24796,7 +24841,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // `_patternSourceBodyIds`, which must not by itself block scheduling.
       final sourceBodyIds = _patternSourceBodyIds;
       if (sourceBodyIds == null ||
-          (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty && _patternToolFeatureId == null)) {
+          (sourceBodyIds.isEmpty && _patternSourceFeatureIds.isEmpty && _patternToolFeatureIds.isEmpty)) {
         return;
       }
       if (_patternMode == PatternMode.circular) {
@@ -24847,7 +24892,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _patternMode = PatternMode.rectangular;
       _patternSourceBodyIds = null;
       _patternSourceFeatureIds = [];
-      _patternToolFeatureId = null;
+      _patternToolFeatureIds = [];
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
       _patternHasSecondDirection = false;
@@ -24894,7 +24939,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _patternMode = PatternMode.rectangular;
       _patternSourceBodyIds = null;
       _patternSourceFeatureIds = [];
-      _patternToolFeatureId = null;
+      _patternToolFeatureIds = [];
       _patternDirection1 = null;
       _patternDirection1EdgeEntity = null;
       _patternHasSecondDirection = false;
@@ -24945,7 +24990,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             orientationMode: editSnapshot.orientationMode,
             skipIndices: editSnapshot.skipIndices,
             merge: editSnapshot.merge,
-            toolFeatureId: editSnapshot.toolFeatureId,
+            toolFeatureIds: editSnapshot.toolFeatureIds,
           );
           await _refreshFeatures();
         });
@@ -28976,7 +29021,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       sourceFeatureIds: _patternSourceFeatureIds,
                       onPickSourceFeatures: () =>
                           _startSourceFeaturePicker(_SourceFeaturePickerTarget.pattern),
-                      toolFeatureSummary: _toolFeatureSummary(_patternToolFeatureId),
+                      toolFeatureSummary: _toolFeaturesSummary(_patternToolFeatureIds),
                       seedKind: _patternSeedKind,
                       onSeedKindChanged: _setPatternSeedKind,
                       onConfirm: _confirmPattern,

@@ -1686,6 +1686,17 @@ class PatternFeature(Feature):
     # Phase 8 (§2.11): a third, mutually-exclusive seed-picking mode - see
     # this class's own docstring.
     tool_feature_id: str | None = None
+    # More than one upstream Cut / Boss-into-target Feature patterned together (SOLIDWORKS "Features to Pattern" takes a list): `tool_feature_id` stays the
+    # first and `extra_tool_feature_ids` holds the rest (an older file has none), so everything that only knows the single id keeps working. All of them must
+    # act on the same target Body. Read the whole list through `all_tool_feature_ids`.
+    extra_tool_feature_ids: list[str] = field(default_factory=list)
+
+    @property
+    def all_tool_feature_ids(self) -> list[str]:
+        """Every tool Feature this Pattern repeats, in order (empty outside `tool_feature_id` mode)."""
+        if self.tool_feature_id is None:
+            return []
+        return [self.tool_feature_id, *[f for f in self.extra_tool_feature_ids if f != self.tool_feature_id]]
 
     @property
     def type(self) -> str:

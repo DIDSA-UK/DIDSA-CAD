@@ -1168,6 +1168,10 @@ class FeatureDto {
   /// Feature persisted before this field existed.
   final String? toolFeatureId;
 
+  /// A Pattern's tool Features, all of them (the first is also [toolFeatureId]): several Cut / Boss-into-target Features patterned together. Empty for
+  /// everything else and for an older backend, which only knows [toolFeatureId].
+  final List<String> toolFeatureIds;
+
   /// Non-blocking, from `LoftFeatureResponse.warnings`/`GearChainFeature
   /// Response.warnings`/`GearFeatureResponse.warnings` - a requested option
   /// (root fillet, a self-intersecting section, ...) that was silently
@@ -1452,6 +1456,7 @@ class FeatureDto {
     this.skipIndices = const [],
     this.merge = 'keep_separate',
     this.toolFeatureId,
+    this.toolFeatureIds = const [],
     this.warnings = const [],
     this.directionRef,
     this.bodyIds = const [],
@@ -1612,6 +1617,8 @@ class FeatureDto {
         skipIndices: (json['skip_indices'] as List?)?.cast<int>() ?? const [],
         merge: json['merge'] as String? ?? 'keep_separate',
         toolFeatureId: json['tool_feature_id'] as String?,
+        toolFeatureIds: (json['tool_feature_ids'] as List?)?.cast<String>() ??
+            ((json['tool_feature_id'] as String?) != null ? [json['tool_feature_id'] as String] : const []),
         warnings: (json['warnings'] as List?)?.cast<String>() ?? const [],
         directionRef: json['direction_ref'] == null
             ? null
@@ -4593,6 +4600,8 @@ class DocumentApiClient {
     // Pattern/Mirror scoping's Phase 8: mirrors [createMirrorFeature]'s own
     // identical addition.
     String? toolFeatureId,
+    // Several tool Features patterned together (sent as `tool_feature_ids`; the backend reports the first as `tool_feature_id`). Wins over [toolFeatureId].
+    List<String>? toolFeatureIds,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4617,7 +4626,10 @@ class DocumentApiClient {
                 'orientation_mode': orientationMode.apiValue,
                 'skip_indices': skipIndices,
                 'merge': merge.apiValue,
-                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+                if (toolFeatureIds != null && toolFeatureIds.isNotEmpty)
+                  'tool_feature_ids': toolFeatureIds
+                else if (toolFeatureId != null)
+                  'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4653,6 +4665,8 @@ class DocumentApiClient {
     List<int> skipIndices = const [],
     MergeMode merge = MergeMode.keepSeparate,
     String? toolFeatureId,
+    // Several tool Features patterned together (sent as `tool_feature_ids`; the backend reports the first as `tool_feature_id`). Wins over [toolFeatureId].
+    List<String>? toolFeatureIds,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4677,7 +4691,10 @@ class DocumentApiClient {
                 'orientation_mode': orientationMode.apiValue,
                 'skip_indices': skipIndices,
                 'merge': merge.apiValue,
-                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+                if (toolFeatureIds != null && toolFeatureIds.isNotEmpty)
+                  'tool_feature_ids': toolFeatureIds
+                else if (toolFeatureId != null)
+                  'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) =>
@@ -4711,6 +4728,8 @@ class DocumentApiClient {
     List<int>? skipIndices,
     MergeMode? merge,
     String? toolFeatureId,
+    // Several tool Features patterned together (sent as `tool_feature_ids`; the backend reports the first as `tool_feature_id`). Wins over [toolFeatureId].
+    List<String>? toolFeatureIds,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4738,7 +4757,10 @@ class DocumentApiClient {
                 // `PatternFeatureUpdate.skip_indices` own docstring.
                 if (skipIndices != null) 'skip_indices': skipIndices,
                 if (merge != null) 'merge': merge.apiValue,
-                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+                if (toolFeatureIds != null && toolFeatureIds.isNotEmpty)
+                  'tool_feature_ids': toolFeatureIds
+                else if (toolFeatureId != null)
+                  'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
