@@ -103,6 +103,8 @@ Set<String> _hiddenPointIdsFrom(SketchController controller) {
       (controller.circleInProgress && id == controller.circleCenterPointId) ||
       (controller.polygonInProgress && id == controller.polygonCenterPointId);
   return {
+    for (final id in controller.points.keys)
+      if (controller.isReferenceHelper(id)) id, // pinned reference corners / centres: not drawn as markers in 3D (see [_lineDtosFrom])
     for (final id in shapeCenterIds)
       if (id != revealedId && !isSelected(id) && controller.draggingPointId != id && !isInProgressAnchor(id)) id,
   };
@@ -114,9 +116,14 @@ double _sketchPointDistance(SketchPointView a, SketchPointView b) {
   return math.sqrt(dx * dx + dy * dy);
 }
 
+// Bug fix (3D sketcher: "using existing bodies should feel like SOLIDWORKS"): the pinned points / construction line / circle the sketch makes to point at the
+// part's own edge (reference helpers, [SketchController.isReferenceHelper]) are plumbing, not geometry the user drew. The 3D view used to draw them as an
+// ordinary construction line sitting on the part's edge, which read as a second, movable edge; now they are left out of what the 3D view draws (the 2D canvas
+// still shows them quietly) and the dimension leader runs to the part's own edge.
 List<LineDto> _lineDtosFrom(SketchController controller) => [
       for (final line in controller.lines.values)
-        if (controller.points[line.startPointId] != null && controller.points[line.endPointId] != null)
+        if (!controller.isReferenceHelper(line.id) &&
+            controller.points[line.startPointId] != null && controller.points[line.endPointId] != null)
           LineDto(
             id: line.id,
             startPointId: line.startPointId,
@@ -136,7 +143,8 @@ List<LineDto> _lineDtosFrom(SketchController controller) => [
 /// [sketchGeometry3DFrom]'s own doc comment.
 List<ArcDto> _arcDtosFrom(SketchController controller) => [
       for (final arc in controller.arcs.values)
-        if (controller.points[arc.centerPointId] != null && controller.points[arc.startPointId] != null)
+        if (!controller.isReferenceHelper(arc.id) &&
+            controller.points[arc.centerPointId] != null && controller.points[arc.startPointId] != null)
           ArcDto(
             id: arc.id,
             centerPointId: arc.centerPointId,
@@ -253,7 +261,9 @@ List<SplineDto> _splineDtosFrom(SketchController controller) => [
 
 List<CircleDto> _circleDtosFrom(SketchController controller) => [
       for (final circle in controller.circles.values)
-        if (controller.points[circle.centerPointId] != null && controller.points[circle.radiusPointId] != null)
+        if (!controller.isReferenceHelper(circle.id) &&
+            controller.points[circle.centerPointId] != null &&
+            controller.points[circle.radiusPointId] != null)
           CircleDto(
             id: circle.id,
             centerPointId: circle.centerPointId,
