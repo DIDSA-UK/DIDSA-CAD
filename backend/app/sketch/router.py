@@ -836,6 +836,8 @@ def update_point(sketch_id: str, point_id: str, payload: PointUpdate) -> PointRe
     point = _get_point_or_404(sketch, point_id)
     if point_id == sketch.origin_point_id:
         raise HTTPException(status_code=400, detail="Cannot move the sketch's origin point")
+    if sketch.is_point_locked(point_id):
+        raise HTTPException(status_code=400, detail="Cannot move a point pinned to the part or fixed in place")
     point.x = payload.x
     point.y = payload.y
     return _point_response(sketch, point)
@@ -1882,25 +1884,49 @@ def _reseed_distance_constraint_free_point(
     point_b = sketch.points.get(constraint.point_b_id)
     if point_a is None or point_b is None:
         return
+
+    def is_fixed(point_id: str) -> bool:
+        return point_id == sketch.origin_point_id or sketch.is_point_locked(point_id)
+
+    # Only a free end may be moved: a Point pinned to the part (an external reference, a Fix, the origin) stays exactly where it is, and when the pinned end is
+    # `point_b` the free `point_a` is the one re-seeded (towards / away from it). Both pinned: nothing to move, the solve reports whether it holds.
+    if is_fixed(constraint.point_b_id):
+        if is_fixed(constraint.point_a_id):
+            return
+        anchor, mover, mover_id = point_b, point_a, constraint.point_a_id
+    else:
+        anchor, mover, mover_id = point_a, point_b, constraint.point_b_id
+    before = (mover.x, mover.y)
     if constraint.orientation == "horizontal":
-        dx = point_b.x - point_a.x
+        dx = mover.x - anchor.x
         if dx == 0:
             return
-        point_b.x = point_a.x + math.copysign(new_distance, dx)
+        mover.x = anchor.x + math.copysign(new_distance, dx)
     elif constraint.orientation == "vertical":
-        dy = point_b.y - point_a.y
+        dy = mover.y - anchor.y
         if dy == 0:
             return
-        point_b.y = point_a.y + math.copysign(new_distance, dy)
+        mover.y = anchor.y + math.copysign(new_distance, dy)
     else:
-        dx = point_b.x - point_a.x
-        dy = point_b.y - point_a.y
+        dx = mover.x - anchor.x
+        dy = mover.y - anchor.y
         current_distance = math.hypot(dx, dy)
         if current_distance == 0:
             return
         scale = new_distance / current_distance
-        point_b.x = point_a.x + dx * scale
-        point_b.y = point_a.y + dy * scale
+        mover.x = anchor.x + dx * scale
+        mover.y = anchor.y + dy * scale
+    # A Circle whose centre was just moved takes its rim points with it, so the solve starts from the whole circle in its new place rather than dragging
+    # the centre away from a radius point left behind (which let the centre drift sideways).
+    shift_x, shift_y = mover.x - before[0], mover.y - before[1]
+    for circle in sketch.circles():
+        if circle.center_point_id != mover_id:
+            continue
+        for follower_id in [circle.radius_point_id, *circle.cardinal_point_ids]:
+            follower = sketch.points.get(follower_id)
+            if follower is not None and not is_fixed(follower_id):
+                follower.x += shift_x
+                follower.y += shift_y
 
 
 def _signed_line_distance_value(sketch: Sketch, line1_start_id: str, line1_end_id: str, other_point_id: str) -> float:
@@ -2004,6 +2030,8 @@ def _apply_point_updates(sketch: Sketch, payload: SolveRequest | None) -> None:
         _get_point_or_404(sketch, update.id)
         if update.id == sketch.origin_point_id:
             raise HTTPException(status_code=400, detail="Cannot move the sketch's origin point")
+        if sketch.is_point_locked(update.id):
+            raise HTTPException(status_code=400, detail="Cannot move a point pinned to the part or fixed in place")
     for update in payload.point_updates:
         point = sketch.points[update.id]
         point.x = update.x
