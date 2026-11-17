@@ -45,7 +45,7 @@ The implementation session updates this table in its PR.
 | S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (merged 2026-11-14; headless and against the real store, not run on a headset; results: "S3 results" below) |
 | S4 | Sync hardening and set-up polish | all | Done (CAD #366 / VR #87, merged 2026-11-14; headless, Xvfb and a real store killed and restarted, not run on a headset; results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
-| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17). **N1a built** (2026-11-17, coaxial tie-break by radius / cone half-angle; CAD #372, merged). **N1b built** (2026-11-17, mate reference identity: stamp, refresh, held mates, `confirm_references`, held and lost mates left out of the group solve; PR open, not merged; "N1b results" below). N1c to N1e not started |
+| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17). **N1a built** (2026-11-17, coaxial tie-break by radius / cone half-angle; CAD #372, merged). **N1b built** (2026-11-17, mate reference identity: stamp, refresh, held mates, `confirm_references`, held and lost mates left out of the group solve; PR open, not merged; "N1b results" below). **N1c built** (2026-11-17, VR shows followed / held / lost with Confirm, `mate_health` defers to the server; DIDSA-VR PR #88, not merged; "N1c results" below). N1d and N1e not started |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
 | P1 | Session hub service and read-only document sharing | CAD | Not started |
 | P2 | VR Host / Join Session, roles, avatars, live model state | VR | Not started |
@@ -1612,6 +1612,20 @@ file is rewritten and queued the next time the project is saved for any reason, 
 **For the owner:** (1) N1a's open item (a radius edit that takes a face most of the way to its coaxial twin's radius, plus a renumbering onto that twin) is untouched, as asked. (2) `MATE_EXACT_PLACE_REL` (0.001) is
 a new first-cut constant; the plan only said "distance about 0". (3) The N-3 consequence in the last bullet above. (4) `held` leaves a lost mate out; if the clients should treat lost as held, it is one line
 (`MateReferenceState.held`).
+
+#### N1c results (2026-11-17)
+
+DIDSA-VR PR #88 (not merged). VR only; no backend change. Built on `main` with N1b (#373).
+
+**What was built** (DIDSA-VR): the tablet's mate row shows an info line for `followed_references` (kept until "Got it", since the backend says it once), amber "Check this mate" with **Confirm** (`PATCH confirm_references`, solved with the mate like any edit) for a held mate, and the reason for a lost one; the mate highlight puts the same text on the status line and lights the bound face. `mate_health.gd` skips its local drift check for any reference the server reports and prunes the baseline an earlier edit recorded, so Enforce suppresses nothing the server already fixed; an older backend (no fields) keeps the local check. `held_mate_ids` / `X-Held-Mates` are read: a drag, Enforce, create and edit say which mates they left out. N-7 unchanged: a mates listing does not mark the document dirty.
+
+**What was run** (one Linux machine, Godot 4.7.2, backend from `main` with N1b): headless `tests/ci.sh` 4729 SMOKE lines, 0 failures (`main`: 4693; +36 new `mate_health_server`; no existing line changed); render 92 lines, 0 failures; live `tests/ci_e2e.sh` 762 lines, 1 false (`e2e_cloud_outage` chunk-resume, flaky on untouched `main` too: 2 of 3 runs failed there). New `e2e_mate_reference_follow` (20 lines: a fillet renumbers a box's mated face 4 to 1 and the backend follows it; a deleted hole holds a pin's mate, Enforce names it and moves nothing, Confirm takes the twin). `e2e_gear_train`, `e2e_limit`, `user_session_train`, `e2e_mates_motion` (its one known false line) unchanged. **One existing test changed outcome and was rewritten with the owner's approval:** `e2e_design_table_mates` scenario A asserted the pre-N1b drift, suppress and Remake path (3 lines already false on `main` against an N1b backend); the backend now follows both faces, so it asserts followed, no drift, nothing suppressed, the plate back on the stack.
+
+**Not verified:** anything on a headset (feel, a real grip press, how the amber row and Confirm read); the highlight colour for a held mate (text only); the old-backend path against a live backend (headless only); the design-table status line (the feature's own "done" text overwrites the follow note there).
+
+**For N1d:** `followed_references` is told once, so the flat app must show it from the response it reads after the edit and keep it until dismissed (VR keeps `MatesTool.reference_notes`). `held` mates are out of every solve; Confirm is `{"confirm_references": true}`, and VR sends it with `?solve=` so the driven part moves with it. A lost mate has `held` false: nothing to confirm. Reason codes seen: `unique_fingerprint` (followed), `unique_fingerprint_far` (held), `no_match`, `ambiguous`, `body_missing`, `unconfirmed`, `exact_place_among_twins`. A new backend always sends `held` and the lists, so their absence means an older backend.
+
+---
 
 ---
 
