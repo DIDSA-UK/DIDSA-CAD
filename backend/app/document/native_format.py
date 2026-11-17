@@ -2529,6 +2529,17 @@ def export_native(document: Document, sketches: dict[str, Sketch], part_id: str 
         parts = document.parts
         root_part_id = document.root_part_id
 
+    # N1b: the mates' references are re-validated first, so the saved index and signature are the current ones (a Part edited since the mate was made may have
+    # renumbered its faces). Persists into the live Document, as a listing does; never fails the export.
+    for part in parts.values():
+        if part.mates:
+            try:
+                from app.document.subshape_identity import refresh_mate_references
+
+                refresh_mate_references(document, part)
+            except Exception:  # pragma: no cover - a refresh problem must not stop a save
+                logging.getLogger(__name__).warning("Part %s: could not refresh its mate references before export", part.id, exc_info=True)
+
     referenced_sketch_ids: set[str] = {
         feature.sketch_id
         for part in parts.values()

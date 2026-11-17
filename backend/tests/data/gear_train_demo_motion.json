@@ -1,0 +1,612 @@
+{
+ "constraint_status": {
+  "bearing": {
+   "dof": 0,
+   "status": "fixed"
+  },
+  "bevel_a": {
+   "dof": 1,
+   "status": "under_constrained"
+  },
+  "bevel_b": {
+   "dof": 1,
+   "status": "under_constrained"
+  },
+  "crank": {
+   "dof": 1,
+   "status": "under_constrained"
+  },
+  "gear": {
+   "dof": 1,
+   "status": "under_constrained"
+  },
+  "guide": {
+   "dof": 0,
+   "status": "fixed"
+  },
+  "pinion": {
+   "dof": 1,
+   "status": "under_constrained"
+  },
+  "plate": {
+   "dof": 0,
+   "status": "fixed"
+  },
+  "rack": {
+   "dof": 1,
+   "status": "under_constrained"
+  }
+ },
+ "crank_back": {
+  "basis": [
+   [
+    -0.118810867,
+    -0.566870581,
+    0.0,
+    0.0,
+    0.0,
+    0.023804464,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.023804464,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.011902232,
+    0.476089276,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.011902232,
+    0.0,
+    0.0,
+    0.0,
+    -0.011902232,
+    0.0,
+    0.0
+   ]
+  ],
+  "converged": true,
+  "dof": 1,
+  "grounded": true,
+  "members": [
+   {
+    "occurrence_id": "bevel_a",
+    "transform": {
+     "rotation_angle_degrees": 180.0,
+     "rotation_axis": [
+      -0.995684443,
+      -0.092803504,
+      0.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "bevel_b",
+    "transform": {
+     "rotation_angle_degrees": 90.493465445,
+     "rotation_axis": [
+      0.092406432,
+      0.99142428,
+      0.092406432
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "crank",
+    "transform": {
+     "rotation_angle_degrees": 21.299645093,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      -1.0
+     ],
+     "translation": [
+      26.186374699,
+      59.991117112,
+      20.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "gear",
+    "transform": {
+     "rotation_angle_degrees": 10.649822546,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "pinion",
+    "transform": {
+     "rotation_angle_degrees": 21.299645093,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      -1.0
+     ],
+     "translation": [
+      50.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "rack",
+    "transform": {
+     "rotation_angle_degrees": 0.0,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      34.565021273,
+      35.0,
+      10.0
+     ]
+    }
+   }
+  ]
+ },
+ "crank_turn": {
+  "basis": [
+   [
+    0.220811519,
+    -0.535444256,
+    0.0,
+    0.0,
+    0.0,
+    0.023804464,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.023804464,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.011902232,
+    0.476089276,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.011902232,
+    0.0,
+    0.0,
+    0.0,
+    -0.011902232,
+    0.0,
+    0.0
+   ]
+  ],
+  "converged": true,
+  "dof": 1,
+  "grounded": true,
+  "members": [
+   {
+    "occurrence_id": "bevel_a",
+    "transform": {
+     "rotation_angle_degrees": 180.0,
+     "rotation_axis": [
+      -0.998404407,
+      0.056468036,
+      0.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "bevel_b",
+    "transform": {
+     "rotation_angle_degrees": 90.182695872,
+     "rotation_axis": [
+      -0.056378223,
+      0.996816428,
+      -0.056378223
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "crank",
+    "transform": {
+     "rotation_angle_degrees": 12.948408109,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      27.506560936,
+      45.723944854,
+      20.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "gear",
+    "transform": {
+     "rotation_angle_degrees": 6.474204054,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      -1.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "pinion",
+    "transform": {
+     "rotation_angle_degrees": 12.948408109,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      50.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "rack",
+    "transform": {
+     "rotation_angle_degrees": 0.0,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      46.519847088,
+      35.0,
+      10.0
+     ]
+    }
+   }
+  ]
+ },
+ "pinion_turn": {
+  "basis": [
+   [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.016395436,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.008197718,
+    -0.327908723,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.178936023,
+    0.35653557,
+    0.0,
+    0.0,
+    0.0,
+    -0.016395436,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.008197718,
+    0.0,
+    0.0,
+    0.0,
+    0.008197718,
+    0.0,
+    0.0
+   ]
+  ],
+  "converged": true,
+  "dof": 1,
+  "grounded": true,
+  "members": [
+   {
+    "occurrence_id": "bevel_a",
+    "transform": {
+     "rotation_angle_degrees": 180.0,
+     "rotation_axis": [
+      0.99718887,
+      -0.074929012,
+      0.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "bevel_b",
+    "transform": {
+     "rotation_angle_degrees": 90.32168064,
+     "rotation_axis": [
+      -0.074719554,
+      0.994401316,
+      -0.074719554
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "crank",
+    "transform": {
+     "rotation_angle_degrees": 17.188574014,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      28.253974641,
+      44.086229749,
+      20.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "gear",
+    "transform": {
+     "rotation_angle_degrees": 8.594287007,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      -1.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "pinion",
+    "transform": {
+     "rotation_angle_degrees": 17.188574014,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      50.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "rack",
+    "transform": {
+     "rotation_angle_degrees": 0.0,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      47.999944205,
+      35.0,
+      10.0
+     ]
+    }
+   }
+  ]
+ },
+ "rack_slide": {
+  "basis": [
+   [
+    -0.328284924,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    -0.016414246,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.008207123,
+    -0.161078649,
+    0.365451415,
+    0.0,
+    0.0,
+    0.0,
+    -0.016414246,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.008207123,
+    0.0,
+    0.0,
+    0.0,
+    0.008207123,
+    0.0,
+    0.0
+   ]
+  ],
+  "converged": true,
+  "dof": 1,
+  "grounded": true,
+  "members": [
+   {
+    "occurrence_id": "bevel_a",
+    "transform": {
+     "rotation_angle_degrees": 180.0,
+     "rotation_axis": [
+      0.998047511,
+      -0.062459313,
+      0.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "bevel_b",
+    "transform": {
+     "rotation_angle_degrees": 90.223520899,
+     "rotation_axis": [
+      -0.062337836,
+      0.996106414,
+      -0.062337836
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      51.751533934
+     ]
+    }
+   },
+   {
+    "occurrence_id": "crank",
+    "transform": {
+     "rotation_angle_degrees": 14.323943688,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      27.735717512,
+      45.186655754,
+      20.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "gear",
+    "transform": {
+     "rotation_angle_degrees": 7.161971844,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      -1.0
+     ],
+     "translation": [
+      110.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "pinion",
+    "transform": {
+     "rotation_angle_degrees": 14.323943688,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      50.0,
+      55.0,
+      10.0
+     ]
+    }
+   },
+   {
+    "occurrence_id": "rack",
+    "transform": {
+     "rotation_angle_degrees": 0.0,
+     "rotation_axis": [
+      0.0,
+      0.0,
+      1.0
+     ],
+     "translation": [
+      46.999999585,
+      35.0,
+      10.0
+     ]
+    }
+   }
+  ]
+ }
+}

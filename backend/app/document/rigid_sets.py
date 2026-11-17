@@ -592,7 +592,7 @@ def mate_rigid_sets(document: Document, part: Part) -> dict[str, str]:
         if len(component.member_ids) < 2:
             continue
         try:
-            model = build_group_model(document, part, occurrence.id)
+            model = build_group_model(document, part, occurrence.id, leave_out_held=True)
         except (GroupError, HTTPException):
             continue
         ids = reported_ids(part, component_sets(document, part, model))
