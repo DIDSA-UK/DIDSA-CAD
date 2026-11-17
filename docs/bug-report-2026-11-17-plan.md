@@ -36,8 +36,8 @@ The implementation session updates this table as each part lands (one commit per
 
 | Part | Summary | Status | Commit |
 |---|---|---|---|
-| 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | Done | this commit |
-| 13 | Desktop never opens the hamburger panel; scene settings dialog | To do | |
+| 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | Done | fb4755c |
+| 13 | Desktop never opens the hamburger panel; scene settings dialog | Done | this commit |
 | 12 | Desktop Visibility button and panel; ribbon duplicates removed | To do | |
 | 8 | Copy to cloud storage: new or existing project; Open only opens | To do | |
 | 2A | Backend: face → feature endpoint | To do | |
@@ -343,4 +343,12 @@ Decisions the plan left open, recorded as they were made.
 - **4, label:** `DimensionLabelPlacement.along` for an angle is now measured along the arc from its middle (it was along the chord),
   and `radius` is the pointer's distance from the vertex. A saved angle label keeps its arc radius; its `along` reads slightly
   differently (arc length instead of chord distance). The default label is the arc's middle in the 3D view and the flat canvas.
+- **13:** the View section's appearance entries are one widget, `ViewAppearanceControls` (`view_appearance_controls.dart`), used by
+  `PartToolbar` and by the new `showSceneSettingsDialog` (put in that file rather than `view_prefs_sheets.dart`, which it imports,
+  to keep the sheets file free of the toolbar). The dialog also carries Perspective and the far clip. `PartToolbar` is not built in
+  the desktop layout; the only opener left (`_openHamburgerPanel`, the phone quick column) asserts it is not desktop. Hamburger
+  audit, desktop homes: File menu has every File entry (New, Open, Save, Save As, Save All, Copy to cloud, Import, Export, Part
+  properties, Connect a headset, Exit). View: Perspective (ribbon and dialog), reference planes and render mode (ribbon, moved to
+  the Visibility panel by item 12), appearance and Scene (dialog), Controls (Options). **Gaps found and closed:** the far clip
+  slider had no desktop home (now in the dialog); the Sketch Points / Sketch Lines selection filters had none (now in Options).
 

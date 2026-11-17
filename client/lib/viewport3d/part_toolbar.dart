@@ -1,18 +1,16 @@
 import 'dart:math';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:flutter_svg/flutter_svg.dart';
 
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../didsa_logo_button.dart';
 import 'orbit_camera.dart' show kDefaultFarClip;
 import 'render_mode.dart';
-import 'scene_controls_panel.dart';
 import 'scene_preferences.dart';
 import 'selection_filter.dart';
 import 'svg_icon.dart';
-import 'view_prefs_sheets.dart';
+import 'view_appearance_controls.dart';
 import 'view_preferences.dart';
 
 // A3: logarithmic mapping for the far-clip slider so the range 500–50000 mm
@@ -532,79 +530,24 @@ class PartToolbar extends StatelessWidget {
             onTap: onRenderModeChanged == null ? null : () => onRenderModeChanged!(mode),
           ),
         const Divider(height: 1),
-        ListTile(
-          leading: Icon(Icons.palette_outlined, color: colorFromHex(bgColourHex)),
-          title: const Text('Background Colour'),
-          onTap: onBgColourChanged == null ? null : () => _pickBgColour(context),
-        ),
-        // C3 (`docs/assembly-perf-mates-and-ui-plan.md`): the header line IS the switch (it used to be a bold header plus a
-        // second "Override appearance" in a SwitchListTile that wrapped mid-word on a phone).
-        InkWell(
-          onTap: onAppearanceOverrideChanged == null ? null : () => onAppearanceOverrideChanged!(!appearanceOverrideOn),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 12, 0),
-            child: Row(
-              children: [
-                const Expanded(
-                  child: Text(
-                    'Override appearance',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                ),
-                Switch(
-                  key: const ValueKey('view-override-switch'),
-                  value: appearanceOverrideOn,
-                  onChanged: onAppearanceOverrideChanged == null ? null : (on) => onAppearanceOverrideChanged!(on),
-                ),
-              ],
-            ),
-          ),
-        ),
-        ListTile(
-          key: const ValueKey('view-override-colour'),
-          // A fixed multi-colour glyph, not tinted like every other icon
-          // here - see sketch_screen.dart's own identical Body Colour entry
-          // for why (deliberately reads as "colour picker" at a glance
-          // rather than reflecting the current selection, unlike the old
-          // Icon(Icons.circle, color: ...) it replaces).
-          leading: SvgPicture.asset(
-            'assets/icons/sketchbar/sketchbar_body_colour_cube.svg',
-            width: 30,
-            height: 30,
-          ),
-          title: const Text('Body Colour'),
-          onTap: onBodyColourChanged == null ? null : () => _pickBodyColour(context),
-        ),
-        ListTile(
-          key: const ValueKey('view-override-opacity'),
-          leading: const SvgIcon('assets/icons/sketchbar/sketchbar_body_transparency.svg'),
-          title: const Text('Body Transparency'),
-          onTap: onBodyOpacityChanged == null ? null : () => _pickBodyOpacity(context),
-        ),
-        ListTile(
-          leading: const Icon(Icons.change_history),
-          title: const Text('Polygon Resolution'),
-          onTap: onMeshQualityChanged == null ? null : () => _pickMeshQuality(context),
-        ),
-        const Divider(height: 1),
-        ExpansionTile(
-          leading: const SvgIcon('assets/icons/feature/parttoolbar_scene.svg'),
-          title: const Text('Scene'),
-          children: [
-            SceneControlsPanel(
-              // Body Colour above already covers base colour - no need to
-              // show the swatch row a second time here (see
-              // SceneControlsPanel's own doc comment).
-              roughness: sceneRoughness,
-              onRoughnessChanged: onSceneRoughnessChanged,
-              lightIntensity: sceneLightIntensity,
-              onLightIntensityChanged: onSceneLightIntensityChanged,
-              emissiveIntensity: sceneEmissiveIntensity,
-              onEmissiveIntensityChanged: onSceneEmissiveIntensityChanged,
-            ),
-          ],
+        // The appearance entries are the same widget the desktop layout's scene dialog shows (bug report 2026-11-17 item 13).
+        ViewAppearanceControls(
+          bgColourHex: bgColourHex,
+          bodyColourHex: bodyColourHex,
+          bodyOpacity: bodyOpacity,
+          onBgColourChanged: onBgColourChanged,
+          onBodyColourChanged: onBodyColourChanged,
+          onBodyOpacityChanged: onBodyOpacityChanged,
+          appearanceOverrideOn: appearanceOverrideOn,
+          onAppearanceOverrideChanged: onAppearanceOverrideChanged,
+          meshQuality: meshQuality,
+          onMeshQualityChanged: onMeshQualityChanged,
+          sceneRoughness: sceneRoughness,
+          sceneLightIntensity: sceneLightIntensity,
+          sceneEmissiveIntensity: sceneEmissiveIntensity,
+          onSceneRoughnessChanged: onSceneRoughnessChanged,
+          onSceneLightIntensityChanged: onSceneLightIntensityChanged,
+          onSceneEmissiveIntensityChanged: onSceneEmissiveIntensityChanged,
         ),
         if (onOpenControls != null)
           ListTile(
@@ -684,36 +627,6 @@ class PartToolbar extends StatelessWidget {
       title: Text(label),
       onTap: onChanged == null ? null : () => onChanged(!value),
     );
-  }
-
-  Future<void> _pickBgColour(BuildContext context) async {
-    final hex = await showColourSwatchSheet(
-      context,
-      title: 'Background Colour',
-      swatches: backgroundColourSwatches,
-      selectedHex: bgColourHex,
-    );
-    if (hex != null) onBgColourChanged!(hex);
-  }
-
-  Future<void> _pickBodyColour(BuildContext context) async {
-    final hex = await showColourSwatchSheet(
-      context,
-      title: 'Body Colour',
-      swatches: bodyColourSwatches,
-      selectedHex: bodyColourHex,
-    );
-    if (hex != null) onBodyColourChanged!(hex);
-  }
-
-  Future<void> _pickBodyOpacity(BuildContext context) async {
-    final opacity = await showBodyOpacitySheet(context, initialOpacity: bodyOpacity);
-    if (opacity != null) onBodyOpacityChanged!(opacity);
-  }
-
-  Future<void> _pickMeshQuality(BuildContext context) async {
-    final quality = await showPolygonResolutionSheet(context, initialQuality: meshQuality);
-    if (quality != null) onMeshQualityChanged!(quality);
   }
 }
 

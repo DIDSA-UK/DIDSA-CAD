@@ -9450,6 +9450,45 @@ void main() {
       expect(find.byTooltip('Close'), findsNothing);
     });
 
+    testWidgets('Options > Background, colour and scene opens a dialog, never the phone hamburger panel (bug report 2026-11-17 item 13)', (
+      tester,
+    ) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byType(PartToolbar), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('menu-options')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      // Every hamburger selection filter has a desktop home too.
+      expect(find.text('Select sketch points'), findsOneWidget);
+      expect(find.text('Select sketch lines'), findsOneWidget);
+      await tester.tap(find.text('Background, colour and scene…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('scene-settings-dialog')), findsOneWidget);
+      expect(find.byType(PartToolbar), findsNothing);
+      for (final label in ['Perspective', 'Background Colour', 'Body Colour', 'Body Transparency', 'Polygon Resolution', 'Scene']) {
+        expect(find.descendant(of: find.byKey(const ValueKey('scene-settings-dialog')), matching: find.text(label)), findsOneWidget,
+            reason: label);
+      }
+      // A change shows in the dialog straight away and reaches the screen.
+      final before = tester.widget<SwitchListTile>(find.byKey(const ValueKey('scene-settings-perspective'))).value;
+      await tester.tap(find.byKey(const ValueKey('scene-settings-perspective')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.widget<SwitchListTile>(find.byKey(const ValueKey('scene-settings-perspective'))).value, !before);
+      await tester.tap(find.byKey(const ValueKey('view-override-switch')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.widget<Switch>(find.byKey(const ValueKey('view-override-switch'))).value, isTrue);
+      expect(find.byKey(const ValueKey('view-override-chip')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('scene-settings-close')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('scene-settings-dialog')), findsNothing);
+      expect(find.byType(PartToolbar), findsNothing);
+    });
+
     testWidgets('Presentation mode hides the ribbon, tree pane and status bar, and leaves the desktop layout alone on exit', (
       tester,
     ) async {

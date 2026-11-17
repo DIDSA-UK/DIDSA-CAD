@@ -130,6 +130,7 @@ import 'presentation_mode.dart';
 import 'share_screen.dart';
 import 'part_viewport.dart';
 import 'pattern_panel.dart';
+import 'view_appearance_controls.dart';
 import 'pattern_seed.dart';
 import 'pending_job_store.dart';
 import 'picker_ribbon.dart';
@@ -11733,6 +11734,50 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     setState(() => _appearanceOverrideOn = on);
   }
 
+  /// Opens the phone layout's hamburger panel ([PartToolbar]). The desktop layout never builds that panel (bug report 2026-11-17 item
+  /// 13: its Options menu used to open it), so nothing reachable there may call this.
+  void _openHamburgerPanel() {
+    assert(!_desktopLayout, 'the hamburger panel is phone-only; the desktop layout has the File menu, ribbon and Options');
+    setState(() => _toolbarOpen = true);
+  }
+
+  /// Desktop Options > "Background, colour and scene…": the same appearance controls as the phone menu's View section
+  /// ([ViewAppearanceControls]), plus Perspective and the far clip, in a dialog.
+  Future<void> _openSceneSettingsDialog() => showSceneSettingsDialog(
+        context,
+        isPerspective: () => _isPerspective,
+        onPerspectiveChanged: (on) => unawaited(_onPerspectiveChanged(on)),
+        farClip: () => _farClip,
+        onFarClipChanged: (value) => unawaited(_onFarClipChanged(value)),
+        controls: (refresh) {
+          // Each handler sets the screen's state before its first await, so the dialog can redraw straight after calling it.
+          void Function(T) then<T>(Object? Function(T) handler) => (value) {
+                final result = handler(value);
+                if (result is Future) unawaited(result);
+                refresh();
+              };
+          return ViewAppearanceControls(
+            sceneInFoldOut: false,
+            bgColourHex: _bgColourHex,
+            bodyColourHex: _bodyColourHex,
+            bodyOpacity: _bodyOpacity,
+            onBgColourChanged: then(_onBgColourChanged),
+            onBodyColourChanged: then(_onBodyColourChanged),
+            onBodyOpacityChanged: then(_onBodyOpacityChanged),
+            appearanceOverrideOn: _appearanceOverrideOn,
+            onAppearanceOverrideChanged: then(_onAppearanceOverrideChanged),
+            meshQuality: _meshQuality,
+            onMeshQualityChanged: then(_onMeshQualityChanged),
+            sceneRoughness: _sceneRoughness,
+            sceneLightIntensity: _sceneLightIntensity,
+            sceneEmissiveIntensity: _sceneEmissiveIntensity,
+            onSceneRoughnessChanged: then(_onSceneRoughnessChanged),
+            onSceneLightIntensityChanged: then(_onSceneLightIntensityChanged),
+            onSceneEmissiveIntensityChanged: then(_onSceneEmissiveIntensityChanged),
+          );
+        },
+      );
+
   Future<void> _pickOverrideColour() async {
     final hex = await showColourSwatchSheet(
       context,
@@ -15206,7 +15251,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             key: const ValueKey('quick-menu-fab'),
             tooltip: 'Menu',
             child: const Icon(Icons.menu),
-            onPressed: () => setState(() => _toolbarOpen = true),
+            onPressed: _openHamburgerPanel,
           ),
         QuickColumnButton(
           key: const ValueKey('quick-fit-fab'),
@@ -27055,9 +27100,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             item('Select edges', () => _setEdgeFilter(!filter.edge), checked: filter.edge),
             item('Select faces', () => _setFaceFilter(!filter.face), checked: filter.face),
             item('Select bodies', () => _setBodyFilter(!filter.body), checked: filter.body),
+            item('Select sketch points', () => _setSketchPointFilter(!filter.sketchPoint), checked: filter.sketchPoint),
+            item('Select sketch lines', () => _setSketchLineFilter(!filter.sketchLine), checked: filter.sketchLine),
             const Divider(height: 1),
             item('Tree pane', () => setState(() => _desktopPaneVisible = !_desktopPaneVisible), checked: _desktopPaneVisible),
-            item('Background, colour and scene…', () => setState(() => _toolbarOpen = true)),
+            item('Background, colour and scene…', () => unawaited(_openSceneSettingsDialog())),
             item(
               'Controls…',
               () => unawaited(Navigator.of(context).push(
@@ -28323,65 +28370,69 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                 // panel's header (`multiSelectHeader`); the bottom sheet that
                 // used to cover the tree's lowest rows is gone.
                 Positioned.fill(
-                  child: PartToolbar(
-                    visible: _toolbarOpen && !_chromeHidden,
-                    // No hamburger button on the phone layout any more (the quick column opens this), so the panel
-                    // brings its own close icon and starts at the top.
-                    onClose: _desktopLayout ? null : () => setState(() => _toolbarOpen = false),
-                    // The phone layout opens it from the Start button's quick column (bottom right), so the panel
-                    // takes the Start button's place; the desktop layout keeps the top-left panel under the ribbon.
-                    anchor: _desktopLayout ? PartToolbarAnchor.topLeft : PartToolbarAnchor.bottomRight,
-                    topInset: 104,
-                    bottomInset: _startButtonBottomInset,
-                    lens: _lens,
-                    referencePlanesHidden: _referencePlanesHidden,
-                    onToggleReferencePlanes: _onToggleReferencePlanes,
-                    renderMode: _renderMode,
-                    onRenderModeChanged: _onRenderModeChanged,
-                    onExit: _exitToConnectionScreen,
-                    onSaveNative: _saveNativeFile,
-                    onSaveAsNative: _saveAsNativeFile,
-                    hasUnsavedChanges: _isDirty,
-                    onOpen: _onOpenPressed,
-                    onSaveAll: _onSaveAllPressed,
-                    onCopyToServer: _remote == null ? null : _onCopyToServerPressed,
-                    onStartNew: _startNewPart,
-                    onExportPart: _exportPart,
-                    onImportGeometry: _importGeometry,
-                    onPartProperties: _openPartProperties,
-                    onConnectHeadset: _openHeadsetPairing,
-                    bgColourHex: _bgColourHex,
-                    bodyColourHex: _bodyColourHex,
-                    bodyOpacity: _bodyOpacity,
-                    appearanceOverrideOn: _appearanceOverrideOn,
-                    onAppearanceOverrideChanged: _onAppearanceOverrideChanged,
-                    onBgColourChanged: _onBgColourChanged,
-                    onBodyColourChanged: _onBodyColourChanged,
-                    onBodyOpacityChanged: _onBodyOpacityChanged,
-                    meshQuality: _meshQuality,
-                    onMeshQualityChanged: _onMeshQualityChanged,
-                    sceneRoughness: _sceneRoughness,
-                    sceneLightIntensity: _sceneLightIntensity,
-                    sceneEmissiveIntensity: _sceneEmissiveIntensity,
-                    onSceneRoughnessChanged: _onSceneRoughnessChanged,
-                    onSceneLightIntensityChanged: _onSceneLightIntensityChanged,
-                    onSceneEmissiveIntensityChanged: _onSceneEmissiveIntensityChanged,
-                    // Desktop input D5: the Controls settings.
-                    onOpenControls: () => unawaited(Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
-                    )),
-                    isPerspective: _isPerspective,
-                    onPerspectiveChanged: _onPerspectiveChanged,
-                    farClip: _farClip,
-                    onFarClipChanged: _onFarClipChanged,
-                    selectionFilter: _selectionFilter,
-                    onVertexFilterChanged: _setVertexFilter,
-                    onEdgeFilterChanged: _setEdgeFilter,
-                    onFaceFilterChanged: _setFaceFilter,
-                    onBodyFilterChanged: _setBodyFilter,
-                    onSketchPointFilterChanged: _setSketchPointFilter,
-                    onSketchLineFilterChanged: _setSketchLineFilter,
-                  ),
+                  // The phone layout's hamburger panel only: the desktop layout has the File menu, the ribbon and Options for
+                  // everything in it (bug report 2026-11-17 item 13), so it is never built there.
+                  child: _desktopLayout
+                      ? const SizedBox.shrink()
+                      : PartToolbar(
+                        visible: _toolbarOpen && !_chromeHidden,
+                        // No hamburger button on the phone layout any more (the quick column opens this), so the panel
+                        // brings its own close icon and starts at the top.
+                        onClose: _desktopLayout ? null : () => setState(() => _toolbarOpen = false),
+                        // The phone layout opens it from the Start button's quick column (bottom right), so the panel
+                        // takes the Start button's place; the desktop layout keeps the top-left panel under the ribbon.
+                        anchor: _desktopLayout ? PartToolbarAnchor.topLeft : PartToolbarAnchor.bottomRight,
+                        topInset: 104,
+                        bottomInset: _startButtonBottomInset,
+                        lens: _lens,
+                        referencePlanesHidden: _referencePlanesHidden,
+                        onToggleReferencePlanes: _onToggleReferencePlanes,
+                        renderMode: _renderMode,
+                        onRenderModeChanged: _onRenderModeChanged,
+                        onExit: _exitToConnectionScreen,
+                        onSaveNative: _saveNativeFile,
+                        onSaveAsNative: _saveAsNativeFile,
+                        hasUnsavedChanges: _isDirty,
+                        onOpen: _onOpenPressed,
+                        onSaveAll: _onSaveAllPressed,
+                        onCopyToServer: _remote == null ? null : _onCopyToServerPressed,
+                        onStartNew: _startNewPart,
+                        onExportPart: _exportPart,
+                        onImportGeometry: _importGeometry,
+                        onPartProperties: _openPartProperties,
+                        onConnectHeadset: _openHeadsetPairing,
+                        bgColourHex: _bgColourHex,
+                        bodyColourHex: _bodyColourHex,
+                        bodyOpacity: _bodyOpacity,
+                        appearanceOverrideOn: _appearanceOverrideOn,
+                        onAppearanceOverrideChanged: _onAppearanceOverrideChanged,
+                        onBgColourChanged: _onBgColourChanged,
+                        onBodyColourChanged: _onBodyColourChanged,
+                        onBodyOpacityChanged: _onBodyOpacityChanged,
+                        meshQuality: _meshQuality,
+                        onMeshQualityChanged: _onMeshQualityChanged,
+                        sceneRoughness: _sceneRoughness,
+                        sceneLightIntensity: _sceneLightIntensity,
+                        sceneEmissiveIntensity: _sceneEmissiveIntensity,
+                        onSceneRoughnessChanged: _onSceneRoughnessChanged,
+                        onSceneLightIntensityChanged: _onSceneLightIntensityChanged,
+                        onSceneEmissiveIntensityChanged: _onSceneEmissiveIntensityChanged,
+                        // Desktop input D5: the Controls settings.
+                        onOpenControls: () => unawaited(Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const ControlsSettingsScreen()),
+                        )),
+                        isPerspective: _isPerspective,
+                        onPerspectiveChanged: _onPerspectiveChanged,
+                        farClip: _farClip,
+                        onFarClipChanged: _onFarClipChanged,
+                        selectionFilter: _selectionFilter,
+                        onVertexFilterChanged: _setVertexFilter,
+                        onEdgeFilterChanged: _setEdgeFilter,
+                        onFaceFilterChanged: _setFaceFilter,
+                        onBodyFilterChanged: _setBodyFilter,
+                        onSketchPointFilterChanged: _setSketchPointFilter,
+                        onSketchLineFilterChanged: _setSketchLineFilter,
+                      ),
                 ),
                 if (_extrudeSketchFeature != null)
                   Positioned.fill(
