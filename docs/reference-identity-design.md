@@ -150,7 +150,7 @@ mechanism (`app/document/subshape_identity.py`), not one per consumer:
   `reference_reasons`. A Feature whose reference is lost keeps being skipped during replay as before (Fillet / Chamfer log and skip), but is now **flagged** instead of silent. The way out is to re-select in its own edit panel (the tree says so);
   there is no separate re-attach route for these.
 * Covered by walking every dataclass field of every Feature, so Fillet / Chamfer `edge_refs` and `ChamferEdgeOptions.face_ref`, Create Plane (`face_refs`, `edge_ref`, `vertex_ref`, `point_refs`), Pattern direction / axis refs, Mirror
-  `mirror_plane`, Shell / Delete Face / Move Face selections, Offset Surface, ... are all in. BODY references (nothing to sign) and assembly mate references (another Part's Bodies) are not.
+  `mirror_plane`, Shell / Delete Face / Move Face selections, Offset Surface, ... are all in. BODY references (nothing to sign) are not. Assembly mate references (another Part's Bodies) have the same treatment through the same module, with two different rules (N1b, below).
 * Native format: signatures are saved with each `SubShapeRef` (tagged by kind), a file without them loads unsigned.
 
 * **OCCT history, per edge and face** (the same machinery as for sketch vertices, generalised by sub-shape kind - see "OCCT history" above). A reference stamped while the Part has at most `HISTORY_MAX_FEATURES` (80) Features also stores a
@@ -160,6 +160,16 @@ mechanism (`app/document/subshape_identity.py`), not one per consumer:
   survivor is followed, none is `consumed_by_<feature>`, several are narrowed by signature. **A consumed sub-shape is also recorded on the reference (`SubShapeRef.lost_reason`, in `repr` so the body cache is invalidated)** and replay then fails closed on it - the
   case that matters: an edge or face consumed upstream while an identical-looking twin remains, which the signature search alone would have bound (flagged "potentially moved") or called ambiguous. The marker is cleared by the next refresh that finds the
   sub-shape again (an undone edit heals). Replay itself stays signature-only. Circle centres use the edge lineage too.
+
+* **Mate references (N1b, 2026-11-17; `docs/mates-storage-sessions-plan-2026-11-12.md`, "N1 plan" and "N1b results").** Every `SubShapeRef` in a Mate's `MateEntityRef` (`subshape_ref`, `plane_ref.face_ref`, `point_ref.vertex_ref`, both faces of a Width `midplane`) is signed when the mate
+  is made (`stamp_mate_references`) and re-validated by `refresh_mate_references` against the Bodies of the Part its occurrence places (the final Bodies, Part-local frame; `b` of a midplane on `b_occurrence_id`'s Part), in `GET .../mates`, in the create / PATCH responses and in
+  `export_native`. It reuses `decide_subshape`; no signature rule changed. A re-found index and refreshed signature are persisted for `ok` / `followed`. The rules differ from a Feature's, because a mate's binding MOVES PARTS:
+  * a `potentially_moved` reference is bound for display and the mate is HELD (`MateResponse.held`, reason in `reference_reasons`) out of every solve until the user confirms it (`PATCH .../mates/{id}` `{"confirm_references": true}`); the stored reference is not changed until then. Mates only:
+    of several identical twins, the one at distance about 0 (`MATE_EXACT_PLACE_REL`, 0.001 of the Body diagonal) with the runner-up beyond `SEARCH_TOLERANCE_REL` is `followed` (`exact_place_among_twins`);
+  * an unsigned reference (an old file) adopts its index only when the mate reads `ok` / `near` at the stored poses (a coupler: an axis on each side; a limit: the value it measures exists), else it is held (`unconfirmed`);
+  * a lost reference makes the mate `broken` (a coupler's and a limit's always-`ok` too) and leaves it out of solves; held and lost mates are left out of a group solve (`build_group_model(leave_out_held=True)`) and named in its answer (`held_mate_ids`, `X-Held-Mates`) instead of failing it with a 422.
+  No signature or lineage reaches the wire (`SubShapeRefSchema` is unchanged), the native format already wrote both for a mate's references. Lineage (OCCT history) is not used for mates (N1e, optional). Tests: `tests/test_mate_reference_identity.py`, `test_mate_reference_kinds.py`,
+  `test_mate_reference_couplers_limits.py`, `test_mate_reference_gear_train_demo.py`.
 
 Limits of this half: the history verdict is only recorded by a refresh, so after an upstream edit that consumes a sub-shape the Feature keeps replaying signature-only until the next `GET .../features` (the client refreshes features after every edit); a Part above the feature cap is not traced (signature search only);
 every reference creation / first view makes one recorded replay (uncached, memoised per Part state); the PATCH routes validate an edit's edge indices against the Part as it

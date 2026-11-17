@@ -18,7 +18,12 @@ Feature whose output created the sub-shape - for edges and faces exactly as for 
 what became of it (`Modified()` / `Generated()` through Fillet, Chamfer, Cut, Fuse and unify): one survivor is followed, none is "consumed by <feature>" (and the
 reference is marked so replay fails closed on it instead of binding a look-alike), several are narrowed by signature. Replay itself stays signature-only.
 
-Not covered, by design: BODY references (no sub-shape), assembly mate references (a different resolution context: another Part's Bodies).
+Assembly mate references (N1b, docs/mates-storage-sessions-plan-2026-11-12.md "N1 plan") have the same treatment in a different resolution context: the Bodies
+of the Part the mate's occurrence places, not of the Part holding the mate. `stamp_mate_references` signs every `SubShapeRef` of a new mate;
+`refresh_mate_references` re-validates them (the plan's rules N-2 and N-3, below), persists the re-found index and signature for `ok` / `followed`, and reports
+per mate what it found; `confirm` is the user's answer to a held mate.
+
+Not covered, by design: BODY references (no sub-shape).
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 
 from app.document import body_cache
 from app.document.graph import build_feature_graph, topological_order
-from app.document.models import Feature, Part, SubShapeRef, SubShapeType
+from app.document.models import Document, Feature, Mate, MateEntityRef, Part, SubShapeRef, SubShapeType
 from app.document.reference_history import ReferenceHistory
 from app.document.reference_signature import measurer_for
 from app.sketch.reference_signature import (
@@ -41,6 +46,7 @@ from app.sketch.reference_signature import (
     ReferenceDecision,
     ReferenceStatus,
     ShapeSignature,
+    UNAMBIGUOUS_RATIO,
     decide_reference,
     shape_distance,
     fingerprint_matches,
@@ -252,3 +258,251 @@ def refresh_feature_subshape_refs(part: Part, feature: Feature) -> FeatureRefSta
 
     map_subshape_refs(feature, refresh)
     return state
+
+
+# --- mate references (N1b) -----------------------------------------------------------------------------------------------------------
+#
+# A Mate's `MateEntityRef`s name sub-shapes of the Parts its occurrences place. They are stamped when the mate is made (`stamp_mate_references`: the index is
+# right at that moment) and re-validated by `refresh_mate_references` against the target Part's FINAL Bodies in the Part-local frame, so a placement never
+# disturbs a signature. Two rules differ from a Feature's (plan decisions N-2 and N-3), because a mate's binding MOVES PARTS where a Feature's only changes
+# geometry:
+#   * a `potentially_moved` reference is bound for display (the listing shows the face it would take) but the mate is HELD out of solves until the user
+#     confirms it (`confirm=True`); the stored reference is left as it was, so it stays moved on every refresh until then. Exception, for mates only: of
+#     several identical twins, the one sitting exactly where the stored one was (distance about 0, every other twin beyond the search tolerance) is `followed`:
+#     the plate's hole pattern after a fillet renumbered it, which would otherwise hold every mate on a part with a hole pattern;
+#   * an UNSIGNED reference (a file saved before signatures, or a mate made by a bare test) adopts the face its index names only when the stored placement
+#     confirms it (the mate reads ok / near at the stored poses; a coupler / limit: the face is the kind it needs). Otherwise it is held, reason `unconfirmed`.
+
+# "About 0" of the exact-place rule, of the Body's diagonal. A hole pattern renumbered by an edit keeps every hole where it was (a few 1e-9 mm of OCCT noise);
+# 0.1 % of the diagonal still reads a hole nudged by a rounding as in place, and a hole moved by a dimension edit as moved.
+MATE_EXACT_PLACE_REL = 1e-3
+
+
+@dataclass
+class MateReferenceState:
+    """What a refresh found about one Mate's references, keyed by path (`references[0].subshape_ref`, `references[1].midplane.b.face_ref`, ...).
+    `lost`: not found (or ambiguous). `moved`: bound on weak evidence, or unsigned and not confirmed by the stored placement: the mate is HELD.
+    `followed`: re-found at a new index (persisted). `reasons`: a machine-readable reason per flagged path. `bound`: for each `moved` path, the index the
+    reference would take if confirmed (what a listing shows)."""
+
+    lost: list[str] = field(default_factory=list)
+    moved: list[str] = field(default_factory=list)
+    followed: list[str] = field(default_factory=list)
+    reasons: dict[str, str] = field(default_factory=dict)
+    bound: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def has_lost(self) -> bool:
+        return bool(self.lost)
+
+    @property
+    def held(self) -> bool:
+        """The mate waits for the user's confirmation: some reference is bound weakly or unconfirmed (a lost one is `broken`, not held)."""
+        return bool(self.moved)
+
+    @property
+    def left_out_of_solves(self) -> bool:
+        return bool(self.moved) or bool(self.lost)
+
+
+def _mate_occurrence_for_path(ref: MateEntityRef, path: str) -> str:
+    """The occurrence whose Part holds the sub-shape at `path` (a Width mid-plane's `b` face may sit on `b_occurrence_id`)."""
+    if ".midplane.b." in path and ref.midplane is not None and ref.midplane.b_occurrence_id is not None:
+        return ref.midplane.b_occurrence_id
+    return ref.occurrence_id
+
+
+def _mate_bodies(document: Document, part: Part, occurrence_id: str, cache: dict[str, dict]) -> dict[str, TopoDS_Shape] | None:
+    """The Bodies (Part-local) of the Part `occurrence_id` places; None when the occurrence does not resolve or the Part does not compute (nothing to say)."""
+    from app.document.assembly import resolve_occurrence_target
+    from app.document.extrude import compute_part_bodies
+
+    try:
+        target, _ = resolve_occurrence_target(document, part, occurrence_id)
+    except KeyError:
+        return None
+    if target.id not in cache:
+        try:
+            cache[target.id] = compute_part_bodies(target)
+        except HTTPException:
+            return None
+    return cache[target.id]
+
+
+def iter_mate_subshape_refs(mate: Mate) -> list[tuple[str, SubShapeRef]]:
+    """`(path, ref)` for every `SubShapeRef` in the mate's references, with the paths `refresh_mate_references` reports."""
+    found: list[tuple[str, SubShapeRef]] = []
+
+    def collect(path: str, ref: SubShapeRef) -> SubShapeRef:
+        found.append((path, ref))
+        return ref
+
+    for i, entity in enumerate(mate.references):
+        _rebuild(entity, f"references[{i}]", collect)
+    return found
+
+
+def stamp_mate_references(document: Document, part: Part, mate: Mate, cache: dict[str, dict] | None = None) -> bool:
+    """Signs every `SubShapeRef` of `mate` that has no signature, against the target Part's final Bodies (Part-local frame). For a NEW mate: the index is right at
+    this moment, so no placement check is wanted. A reference whose occurrence or Body does not resolve (or whose index is out of range) is left unsigned: the
+    caller's own validation reports it. Returns whether anything changed; sets `mate.references`."""
+    cache = {} if cache is None else cache
+    rebuilt: list[MateEntityRef] = []
+    changed = False
+    for i, entity in enumerate(mate.references):
+
+        def stamp(path: str, ref: SubShapeRef, entity=entity) -> SubShapeRef:
+            kind = signature_kind(ref)
+            if kind is None or ref.signature is not None:
+                return ref
+            bodies = _mate_bodies(document, part, _mate_occurrence_for_path(entity, path), cache)
+            body = None if bodies is None else bodies.get(ref.body_id)
+            if body is None or not 0 <= ref.index < measurer_for(body, kind).count:
+                return ref
+            return dataclasses.replace(ref, signature=measure_signature(body, ref, ref.index))
+
+        out = _rebuild(entity, f"references[{i}]", stamp)
+        changed = changed or out is not entity
+        rebuilt.append(out)
+    if changed:
+        mate.references = rebuilt
+    return changed
+
+
+def _decide_mate_subshape(ref: SubShapeRef, body: TopoDS_Shape) -> ReferenceDecision:
+    """`decide_subshape` with the mate-only exact-place rule (N-2 (c)): of several identical twins, the one at distance about 0 whose runner-up is beyond the
+    search tolerance is `followed` (reason `exact_place_among_twins`), not merely `potentially_moved`."""
+    decision = decide_subshape(ref, body)
+    if (
+        decision.status == ReferenceStatus.POTENTIALLY_MOVED
+        and decision.reason == "nearest_of_identical_vertices"
+        and len(decision.candidates) >= 2
+        and decision.index is not None
+        and ref.signature is not None
+    ):
+        measurer = measurer_for(body, signature_kind(ref))
+        diagonal = ref.signature.body_diagonal or measurer.diagonal
+        nearest = shape_distance(ref.signature, measurer.signature(decision.candidates[0]))
+        runner_up = shape_distance(ref.signature, measurer.signature(decision.candidates[1]))
+        if nearest <= MATE_EXACT_PLACE_REL * diagonal and runner_up > SEARCH_TOLERANCE_REL * diagonal and runner_up >= UNAMBIGUOUS_RATIO * max(nearest, 1e-12):
+            return ReferenceDecision(ReferenceStatus.FOLLOWED, decision.index, reason="exact_place_among_twins", method="signature", candidates=decision.candidates)
+    return decision
+
+
+def refresh_mate_references(
+    document: Document,
+    part: Part,
+    mates: list[Mate] | None = None,
+    *,
+    persist: bool = True,
+    confirm: bool = False,
+    cache: dict[str, dict] | None = None,
+) -> dict[str, MateReferenceState]:
+    """Stamps / re-validates every sub-shape reference of `mates` (default: every mate of `part`) against the Bodies of the Parts their occurrences place; see the
+    section comment above for the rules. Returns `{mate id: MateReferenceState}` (an entry for every mate, empty when nothing is flagged). Never raises: a
+    reference whose occurrence or Part cannot be resolved is left alone (the mate's status reports it).
+
+    `persist` writes the re-found index and refreshed signature of `ok` / `followed` references (and the adopted signature of a confirmed unsigned one) into
+    the mates, so the next save carries them; False (a solve deciding what to hold) changes nothing. `confirm` is the user's answer to a held mate: the bound
+    faces are taken as right (`potentially_moved` is bound and re-stamped, an unsigned reference adopted without the placement check)."""
+    cache = {} if cache is None else cache
+    results: dict[str, MateReferenceState] = {}
+    for mate in part.mates if mates is None else mates:
+        try:
+            results[mate.id] = _refresh_one_mate(document, part, mate, persist, confirm, cache)
+        except HTTPException:  # a reference that cannot be resolved at all: the status says so
+            logger.warning("Mate %s: could not check its references", mate.id)
+            results[mate.id] = MateReferenceState()
+    return results
+
+
+def _refresh_one_mate(document: Document, part: Part, mate: Mate, persist: bool, confirm: bool, cache: dict[str, dict]) -> MateReferenceState:
+    state = MateReferenceState()
+    unsigned: set[str] = set()
+    pass_one: list[MateEntityRef] = []
+    for i, entity in enumerate(mate.references):
+
+        def refresh(path: str, ref: SubShapeRef, entity=entity) -> SubShapeRef:
+            kind = signature_kind(ref)
+            if kind is None:
+                return ref
+            bodies = _mate_bodies(document, part, _mate_occurrence_for_path(entity, path), cache)
+            if bodies is None:
+                return ref
+            body = bodies.get(ref.body_id)
+            if body is None:
+                state.lost.append(path)
+                state.reasons[path] = "body_missing"
+                return ref
+            if ref.signature is None:
+                unsigned.add(path)
+                return ref
+            decision = _decide_mate_subshape(ref, body)
+            if decision.status == ReferenceStatus.LOST or decision.index is None:
+                state.lost.append(path)
+                state.reasons[path] = decision.reason or "no_match"
+                return ref
+            if decision.status == ReferenceStatus.POTENTIALLY_MOVED and not confirm:
+                state.moved.append(path)
+                state.reasons[path] = decision.reason
+                state.bound[path] = decision.index
+                return ref
+            if decision.status == ReferenceStatus.FOLLOWED:
+                state.followed.append(path)
+                state.reasons[path] = decision.reason
+            signature = measure_signature(body, ref, decision.index)
+            if decision.index == ref.index and signature == ref.signature:
+                return ref
+            return dataclasses.replace(ref, index=decision.index, signature=signature)
+
+        pass_one.append(_rebuild(entity, f"references[{i}]", refresh))
+
+    refs = pass_one
+    if unsigned:
+        refs = _adopt_unsigned(document, part, mate, pass_one, unsigned, state, confirm, cache)
+    if persist and any(a is not b for a, b in zip(refs, mate.references)):
+        mate.references = refs
+    return state
+
+
+def _adopt_unsigned(
+    document: Document, part: Part, mate: Mate, refs: list[MateEntityRef], unsigned: set[str], state: MateReferenceState, confirm: bool, cache: dict[str, dict]
+) -> list[MateEntityRef]:
+    """The N-3 rule: the unsigned references adopt the face their index names when the stored placement confirms it (or the user confirmed); else they are held."""
+    from app.document.mate_status import placement_confirms
+
+    # Out of range for its Body: nothing for the index to name, so nothing to confirm.
+    confirmed = confirm or placement_confirms(document, part, dataclasses.replace(mate, references=refs), cache)
+    out: list[MateEntityRef] = []
+    for i, entity in enumerate(refs):
+
+        def adopt(path: str, ref: SubShapeRef, entity=entity) -> SubShapeRef:
+            if path not in unsigned or ref.signature is not None:
+                return ref
+            kind = signature_kind(ref)
+            bodies = _mate_bodies(document, part, _mate_occurrence_for_path(entity, path), cache)
+            body = None if bodies is None else bodies.get(ref.body_id)
+            if body is None or not 0 <= ref.index < measurer_for(body, kind).count:
+                state.lost.append(path)
+                state.reasons[path] = "no_match"
+                return ref
+            if not confirmed:
+                state.moved.append(path)
+                state.reasons[path] = "unconfirmed"
+                state.bound[path] = ref.index
+                return ref
+            return dataclasses.replace(ref, signature=measure_signature(body, ref, ref.index))
+
+        out.append(_rebuild(entity, f"references[{i}]", adopt))
+    return out
+
+
+def apply_bound_indices(references: list[MateEntityRef], state: MateReferenceState | None) -> list[MateEntityRef]:
+    """`references` with each `moved` reference showing the index it would take if confirmed (what a listing reports: a client highlights by the listed index).
+    The stored references are not changed."""
+    if state is None or not state.bound:
+        return references
+    out = []
+    for i, entity in enumerate(references):
+        out.append(_rebuild(entity, f"references[{i}]", lambda path, ref: dataclasses.replace(ref, index=state.bound[path]) if path in state.bound else ref))
+    return out

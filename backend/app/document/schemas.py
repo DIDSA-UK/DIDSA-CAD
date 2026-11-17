@@ -3778,6 +3778,20 @@ class MateResponse(BaseModel):
     # M1 (`app.document.rigid_sets`), COMPUTED by the listing only (null in every other answer): the rigid set this mate lies inside
     # (both of its sides on members of one set that moves; the id is the set's first occurrence in the Part's order), null otherwise.
     rigid_set: str | None = None
+    # N1b (`app.document.subshape_identity.refresh_mate_references`, docs/mates-storage-sessions-plan-2026-11-12.md "N1 plan"): reference identity, the Feature
+    # response's own names. Paths run `references[0].subshape_ref`, `references[0].plane_ref.face_ref`, `references[1].point_ref.vertex_ref`,
+    # `references[1].midplane.b.face_ref`, ... `lost_references`: the face is gone or cannot be told from its twins (the mate is `broken`). `moved_references`:
+    # bound on weak evidence, or (an old file's) unsigned and not confirmed by the stored placement; the listed `index` is the face it would take. `followed_references`:
+    # re-found at a new index (already persisted; informational). `reference_reasons`: path to reason (`no_match`, `ambiguous`, `body_missing`,
+    # `unique_fingerprint_far`, `nearest_of_identical_vertices`, `unconfirmed`, `exact_place_among_twins`, ...).
+    lost_references: list[str] = []
+    moved_references: list[str] = []
+    followed_references: list[str] = []
+    reference_reasons: dict[str, str] = {}
+    # True while some reference is in `moved_references`: the mate is HELD out of every solve (a drag, mate-motion, the solve button) until the user confirms it
+    # (`MateUpdate.confirm_references`). `status` keeps its three values (a held mate reads whatever its bound faces give). A LOST mate is `broken`, left
+    # out of solves too, but not `held`: there is nothing to confirm; re-pick the face.
+    held: bool = False
 
 
 class MateCreate(BaseModel):
@@ -3871,6 +3885,9 @@ class MateUpdate(BaseModel):
     # Limit mates only: sent as a number they set the bound, sent as null they remove it (the endpoint reads `model_fields_set`).
     limit_min: float | None = None
     limit_max: float | None = None
+    # N1b: true = take the faces the mate is bound to as right (a held mate's `moved_references`): they are re-stamped (index and signature) and the hold is
+    # cleared. Does nothing for a reference that is lost; allowed on every mate type, with or without `solve=`.
+    confirm_references: bool = False
 
 
 class MateMotionReferencePose(BaseModel):
@@ -3964,11 +3981,21 @@ class MateMotionResponse(BaseModel):
     quality: MateMotionQuality | None = None
     diagnostics: MateMotionDiagnostics | None = None
     committed: bool = False
+    # N1b (plan N-6): the mates of this group left out of the solve because a reference of theirs is held or lost (ids; see `MateResponse.held`). Left out of the
+    # answer when none, so every older answer stays as it was.
+    held_mate_ids: list[str] = []
     # Resolved mate geometry for the client's local nearest-point retraction (docs/motion/projector-spec.md section 4b): `version`,
     # `members` (occurrence ids, the basis order) and `mates` (type, value, allow_rotation, sides a/b with `member` index or -1 +
     # optional `frozen` {r, t} + local point / axis_origin / direction / perp / plane {origin, normal}). Null = not available
     # (not converged, or a mate the client cannot evaluate): the client keeps projecting.
     constraint_model: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def _held_only_when_present(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and not self.held_mate_ids:
+            data.pop("held_mate_ids", None)
+        return data
 
 
 class MateSolvePreviewMember(BaseModel):
@@ -4036,6 +4063,8 @@ class MateSolvePreviewResponse(BaseModel):
     # M1.1: the preview ran out of its time budget (`assembly_group.PREVIEW_SECONDS`) before it tried everything: `alternatives`,
     # `branch_changes`, `blocked_by` or `conflicting` may be shorter than with no clock. Each step still had its minimum solves.
     budget_exhausted: bool = False
+    # N1b (plan N-6): mates of the group left out of this preview because a reference of theirs is held or lost (ids). Left out of the answer when none.
+    held_mate_ids: list[str] = []
     # M4: the type the two picks suggest (`app.document.mate_suggest`): "coincident", "concentric", "peg_in_hole", or null for no
     # suggestion. ONLY in the answer to a `type: "auto"` request (left out of every other answer, so an older client's answers stay
     # byte-identical); with a suggestion the rest of the answer is the solve of that type, with none it is `converged: false`.
@@ -4054,6 +4083,8 @@ class MateSolvePreviewResponse(BaseModel):
                 data.pop("suggested_type", None)
             if not self.measure_asked:
                 data.pop("measured_value", None)
+            if not self.held_mate_ids:
+                data.pop("held_mate_ids", None)  # N1b: only present when a mate was left out, so every older answer stays as it was
         return data
 
 

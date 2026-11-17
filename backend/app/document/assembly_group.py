@@ -35,6 +35,7 @@ from dataclasses import dataclass, field, replace
 from typing import Callable, Iterable
 
 import numpy as np
+from fastapi import HTTPException
 from OCC.Core.Bnd import Bnd_Box
 from OCC.Core.BRepBndLib import brepbndlib
 
@@ -77,6 +78,7 @@ from app.document.assembly_solver import (
     solve_occurrence_from_guess,
 )
 from app.document.coupler import coupler_rows, is_coupler, travel_along, turn_about
+from app.document.subshape_identity import iter_mate_subshape_refs
 from app.document.limit import is_limit, limit_value, row_unit, violated_bound
 from app.document.mate_tolerance import is_within_tolerance, physical_residual
 from app.document.constraint_model import (
@@ -248,6 +250,10 @@ class GroupModel:
     # M1.1: the Part state this model was built from (`_model_cache_key` without the call's own arguments), when it came through the
     # cache; `rigid_sets.detect` keys on it instead of re-reading every side. None for a model built any other way.
     state_key: tuple | None = field(default=None, repr=False)
+    # N1b (plan decision N-6): the mates of this component left out of the model because a reference of theirs is held (bound on weak evidence, or an old
+    # file's unsigned one the stored placement does not confirm) or lost (`subshape_identity.refresh_mate_references`), as if suppressed. Named in the
+    # solve's answer instead of failing the whole group with a 422.
+    held_mate_ids: tuple[str, ...] = ()
 
     @property
     def member_ids(self) -> tuple[str, ...]:
@@ -412,15 +418,20 @@ def _placed_parts(document: Document, part: Part) -> list[Part]:
     return list(seen.values())
 
 
-def _model_cache_key(document: Document, part: Part, grabbed_id: str, also_frozen: frozenset[str], extra_mates: tuple[Mate, ...]) -> tuple:
+def _model_cache_key(
+    document: Document, part: Part, grabbed_id: str, also_frozen: frozenset[str], extra_mates: tuple[Mate, ...], leave_out_held: bool = False
+) -> tuple:
     from app.document.body_cache import feature_fingerprint
 
     geometry = tuple(
         (p.id, tuple(feature_fingerprint(f) for f in p.features), repr(p.occurrences) if p is not part else "", repr(p.component_patterns) if p is not part else "")
         for p in _placed_parts(document, part)
     )
-    state = (part.id, repr(part.mates), repr(part.occurrences), repr(part.component_patterns), geometry)
-    return (grabbed_id, tuple(sorted(also_frozen)), repr(extra_mates), state)
+    # `SubShapeRef.signature` is not in `repr` (it must not change a Feature's body-cache fingerprint), but a mate reference's decides what a model holds out:
+    # an adopted or confirmed signature must not read a model built before it.
+    signatures = tuple(tuple(r.signature for _p, r in iter_mate_subshape_refs(m)) for m in part.mates)
+    state = (part.id, repr(part.mates), repr(part.occurrences), repr(part.component_patterns), signatures, geometry)
+    return (grabbed_id, tuple(sorted(also_frozen)), repr(extra_mates), leave_out_held, state)
 
 
 def build_group_model(
@@ -429,16 +440,18 @@ def build_group_model(
     grabbed_id: str,
     also_frozen: frozenset[str] = frozenset(),
     extra_mates: tuple[Mate, ...] = (),
+    leave_out_held: bool = False,
 ) -> GroupModel:
-    """`_build_group_model`, cached (see above). Each call gets its own `GroupModel` (its `branches` / `active_limits` copied), so a
+    """`_build_group_model`, cached (see above). `leave_out_held` (N1b, plan N-6): the solve entry points ask for the mates with a held or lost reference to be
+    left out (`GroupModel.held_mate_ids`); a direct call keeps the strict model, which raises for a reference that does not resolve, as before. Each call gets its own `GroupModel` (its `branches` / `active_limits` copied), so a
     caller may `replace` its poses or limits freely; the resolved sides are shared and never changed after the build."""
     if not model_cache_enabled:
-        return _build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
-    key = _model_cache_key(document, part, grabbed_id, also_frozen, extra_mates)
+        return _build_group_model(document, part, grabbed_id, also_frozen, extra_mates, leave_out_held)
+    key = _model_cache_key(document, part, grabbed_id, also_frozen, extra_mates, leave_out_held)
     cached = _model_cache.get(key)
     if cached is None:
         model_cache_stats["misses"] += 1
-        cached = _build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
+        cached = _build_group_model(document, part, grabbed_id, also_frozen, extra_mates, leave_out_held)
         _model_cache[key] = cached
         while len(_model_cache) > _MODEL_CACHE_SIZE:
             _model_cache.pop(next(iter(_model_cache)))
@@ -450,7 +463,7 @@ def build_group_model(
         base_transforms=dict(cached.base_transforms),
         branches=dict(cached.branches),
         active_limits=dict(cached.active_limits),
-        state_key=key[3],
+        state_key=key[4],
     )
     out._index = dict(cached._index)
     return out
@@ -462,11 +475,18 @@ def _build_group_model(
     grabbed_id: str,
     also_frozen: frozenset[str] = frozenset(),
     extra_mates: tuple[Mate, ...] = (),
+    leave_out_held: bool = False,
 ) -> GroupModel:
     """Discover the component and resolve every mate's geometry once (local
     frames; poses are applied per evaluation). May raise the HTTPException
     `assembly_solver` raises for an unresolvable occurrence / unsupported
-    geometry - callers at the HTTP layer already handle that shape."""
+    geometry - callers at the HTTP layer already handle that shape.
+
+    N1b: a stored mate with a held or lost reference is left out (`held_mate_ids`), as if suppressed."""
+    all_mates = part.mates
+    held = held_mate_ids_of(document, part) if leave_out_held else frozenset()
+    if held:
+        part = replace(part, mates=[m for m in part.mates if m.id not in held])
     component = discover_component(part, grabbed_id, also_frozen, extra_mates)
     occurrences = {o.id: o for o in part.occurrences}
     members = set(component.member_ids)
@@ -572,7 +592,22 @@ def _build_group_model(
         if not _mate_residual_vector(mate, model._world(a, placed), model._world(b, placed)):
             ref = mate.references[0]
             raise _unsupported_mate_geometry(ref, "a compatible point, plane or axis on each side")
+    members_set = set(component.member_ids)
+    model.held_mate_ids = tuple(m.id for m in all_mates if m.id in held and members_set & set(mate_tops(m)))
     return model
+
+
+def held_mate_ids_of(document: Document, part: Part) -> frozenset[str]:
+    """The ids of `part`'s live (not suppressed) mates a solve leaves out: a reference is held (bound on weak evidence, or unsigned and unconfirmed) or lost
+    (N1b, plan decisions N-2, N-3 and N-6). Decided without changing the document (`refresh_mate_references(persist=False)`); a model built from the cache
+    key reads it once per state."""
+    from app.document.subshape_identity import refresh_mate_references
+
+    live = [m for m in part.mates if not m.suppressed and len(m.references) == 2]
+    if not live:
+        return frozenset()
+    states = refresh_mate_references(document, part, live, persist=False)
+    return frozenset(mate_id for mate_id, state in states.items() if state.left_out_of_solves)
 
 
 def _with_hinge(mate: Mate, mates: Iterable[Mate], side, a_side: "_Side", b_side: "_Side") -> tuple["_Side", "_Side"]:
@@ -633,12 +668,15 @@ def _with_world_hinge(document: Document, part: Part, mate: Mate, worlds: list, 
         if {top_level_occurrence_id(r.occurrence_id) for r in other.references} != set(ids):
             continue
         pair = []
-        for ref in other.references:
-            target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
-            if target.id not in cache:
-                cache[target.id] = compute_part_bodies(target)
-            geometry = _resolve_local_geometry(target, cache[target.id], ref, document, part)
-            pair.append(geometry if transform is None else _place_in_world(geometry, transform))
+        try:
+            for ref in other.references:
+                target, transform = _target_part_and_transform(document, part, ref.occurrence_id)
+                if target.id not in cache:
+                    cache[target.id] = compute_part_bodies(target)
+                geometry = _resolve_local_geometry(target, cache[target.id], ref, document, part)
+                pair.append(geometry if transform is None else _place_in_world(geometry, transform))
+        except HTTPException:
+            continue  # N1b: another mate whose reference is lost is no hinge, and does not fail this mate
         if _effective_mate(other, pair[0], pair[1]).type != MateType.CONCENTRIC:
             continue
         for ref, geometry in zip(other.references, pair):
@@ -777,7 +815,7 @@ def analyze_group(
 ) -> GroupAnalysis:
     """Group DOF / grounded / basis / mobility / quality for the component of
     `grabbed_id`. `lever_arm` defaults to the grabbed occurrence's bounding radius."""
-    model = build_group_model(document, part, grabbed_id, also_frozen)
+    model = build_group_model(document, part, grabbed_id, also_frozen, leave_out_held=True)
     if lever_arm is None:
         lever_arm = bounding_radius(document, part, grabbed_id)
     return analyze_model(model, lever_arm, rank_rtol)
@@ -882,6 +920,8 @@ class GroupSolveResult:
     # ground); empty when the group has none. The solve ran on one body per set; `poses` / `analysis` still list every member.
     rigid_sets: dict[str, str] = field(default_factory=dict)
     solved_bodies: int | None = None  # bodies the solve had (one per set + every other member); None = one per member (no set)
+    # N1b (plan N-6): the mates of the component left out of this solve because a reference is held or lost (`GroupModel.held_mate_ids`).
+    held_mate_ids: tuple[str, ...] = ()
 
     @property
     def dof(self) -> int | None:
@@ -1191,7 +1231,26 @@ def solve_group(
     Limit mates (`app.document.limit`) are inequalities and add no rows: the group is solved without them, any limit the answer
     violates is held at its nearest bound (an equality row) and the group is solved again from the same start and wish - at
     most `_LIMIT_ROUNDS` times, each round only ever adding limits. A range that cannot be met is not converged."""
-    model = build_group_model(document, part, grabbed_id, also_frozen, extra_mates)
+    model = build_group_model(document, part, grabbed_id, also_frozen, extra_mates, leave_out_held=True)
+    held = set(model.held_mate_ids)
+    if held:
+        # N1b: every later step (rigid sets, the single-occurrence fallback seed, the near-redundant check) sees the part without them too
+        part = replace(part, mates=[m for m in part.mates if m.id not in held])
+    result = _solve_group_model(document, part, model, grabbed_id, wanted_pose, lever_arm, extra_mates, with_jump, reference)
+    return replace(result, held_mate_ids=model.held_mate_ids) if model.held_mate_ids else result
+
+
+def _solve_group_model(
+    document: Document,
+    part: Part,
+    model: GroupModel,
+    grabbed_id: str,
+    wanted_pose: RigidTransform | None,
+    lever_arm: float | None,
+    extra_mates: tuple[Mate, ...],
+    with_jump: bool,
+    reference: dict[str, RigidTransform] | None,
+) -> GroupSolveResult:
     if reference:
         # Warm start: the members' current poses are the client's last accepted ones, not the stored ones.
         model = replace(model, base_transforms={**model.base_transforms, **{k: v for k, v in reference.items() if k in model.member_ids}})
@@ -1646,7 +1705,7 @@ def branch_options(
     """Every single change a branch search may try on the mates of `grabbed_id`'s component, ordered: graph distance from the
     new mates' occurrences first (mates on the same occurrence before mates further away), then the residual each mate has at
     `failed`'s end point (the most violated first). `skip_mate_ids` (the new / edited mate) are never candidates."""
-    model = build_group_model(document, part, grabbed_id, extra_mates=extra_mates)
+    model = build_group_model(document, part, grabbed_id, extra_mates=extra_mates, leave_out_held=True)
     stored = {m.id: m for m in part.mates}
     placed = dict(model.base_transforms)
     end = dict(placed)
@@ -1939,7 +1998,7 @@ def constraint_report(
         component = discover_component(part, occurrence.id)
         visited.update(component.member_ids)
         try:
-            model = build_group_model(document, part, occurrence.id)
+            model = build_group_model(document, part, occurrence.id, leave_out_held=True)
             lever = bounding_radius(document, part, occurrence.id)
             reduced = None
             if rigid_sets_enabled and len(model.member_ids) > 1:

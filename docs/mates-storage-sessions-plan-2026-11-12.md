@@ -45,7 +45,7 @@ The implementation session updates this table in its PR.
 | S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (merged 2026-11-14; headless and against the real store, not run on a headset; results: "S3 results" below) |
 | S4 | Sync hardening and set-up polish | all | Done (CAD #366 / VR #87, merged 2026-11-14; headless, Xvfb and a real store killed and restarted, not run on a headset; results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
-| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17). **N1a built** (2026-11-17, coaxial tie-break by radius / cone half-angle; PR open, not merged; "N1a results" below). N1b to N1e not started |
+| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17). **N1a built** (2026-11-17, coaxial tie-break by radius / cone half-angle; CAD #372, merged). **N1b built** (2026-11-17, mate reference identity: stamp, refresh, held mates, `confirm_references`, held and lost mates left out of the group solve; PR open, not merged; "N1b results" below). N1c to N1e not started |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
 | P1 | Session hub service and read-only document sharing | CAD | Not started |
 | P2 | VR Host / Join Session, roles, avatars, live model state | VR | Not started |
@@ -1270,7 +1270,7 @@ The VR e2e tests that guard the demo are in the three files above plus `tests/e2
 
 ### N1 plan (planning session, 2026-11-17)
 
-A plan, not code: nothing in `backend/app/`, `client/` or DIDSA-VR was changed. One test file was written to reproduce the failure and is kept OUT of the suite
+A plan, not code: nothing in `backend/app/`, `client/` or DIDSA-VR was changed. One test file was written to reproduce the failure and was kept OUT of the suite (N1b promoted it into the suite as `test_mate_reference_identity.py`)
 (`backend/tests/n1_repro_mate_reference_renumbered.py`: the name does not match `test_*.py`, so CI does not collect it; run it with
 `pytest tests/n1_repro_mate_reference_renumbered.py`). Everything below was run on one Linux machine against CAD `main` at `c73baec` and VR `main`, headless.
 **Nothing was run on a headset.**
@@ -1498,6 +1498,120 @@ do not exist there).
 - Edge signatures (`EdgeSignature.radius` already existed) still do not use radius to decide; sketch external references are unaffected. OCCT 7.9 was not run
   (the backend no longer starts on it, "What was found").
 - Nothing was run on a headset or in either client.
+
+#### N1b results (2026-11-17)
+
+Built as the plan's "Design" and the owner's decisions N-2 (c), N-3 (c), N-5 (b), N-6 (b), N-7; no client was changed; everything on the wire is additive and nothing was removed or renamed.
+N1a (#372) was already on the branch this started from. Backend only: nothing was run on a headset or in either client.
+
+**What was built** (`backend/app/document/`):
+- `subshape_identity.py`: `stamp_mate_references(document, part, mate)` (every `SubShapeRef` in a mate's `MateEntityRef`: `subshape_ref` face / edge / vertex, `plane_ref.face_ref`,
+  `point_ref.vertex_ref`, both faces of a Width `midplane`, `b` measured on `b_occurrence_id`'s Part; measured on the target Part's final Bodies in the Part-local frame, the Bodies cached per listing)
+  and `refresh_mate_references(document, part, mates=None, persist=True, confirm=False)` (reuses `decide_subshape` and `_rebuild`; returns `{mate id: MateReferenceState}` with `lost`, `moved`, `followed`,
+  `reasons` and `bound`, the paths being `references[1].midplane.b.face_ref` and so on). `persist=False` changes nothing (what a solve uses to decide what to hold).
+- N-2 (c): a signed reference the rules call `potentially_moved` is **bound for display and held**: the stored reference is left as it was, so it stays held on every refresh until confirmed (the listing shows
+  the index it would take), and the mate is out of every solve. Mates only: of several identical twins, the one at distance about 0 (`MATE_EXACT_PLACE_REL` = 0.001 of the Body's diagonal, new, in
+  `subshape_identity.py`, not in the shared rules) whose runner-up is beyond `SEARCH_TOLERANCE_REL` and at least `UNAMBIGUOUS_RATIO` times farther is `followed` (reason `exact_place_among_twins`).
+- N-3 (c): an unsigned reference adopts the face its index names only when the mate reads `ok` / `near` at the stored poses (`mate_status.placement_confirms`; a coupler: an axis on each side, and a
+  straight edge for a rack; a limit: the value it measures exists). Otherwise it is held, reason `unconfirmed`. A created mate is stamped on create with no such check (the index is right then).
+- `mate_status.py`: a mate with a lost reference is `broken` whatever its type (a coupler's and a limit's always-`ok` no longer hides one); a held coupler whose bound faces are not axes is `broken` too.
+  A suppressed mate keeps `ok`.
+- `assembly_group.py` (N-6 (b)): `build_group_model(..., leave_out_held=True)` leaves held and lost mates out (as if suppressed) and records them in `GroupModel.held_mate_ids`; `solve_group` asks for it, filters its
+  `part` for every later step and puts the ids in `GroupSolveResult.held_mate_ids`. The constraint report, the branch search and the rigid-set reporting ask for it too. The model-cache key now includes the mates'
+  signatures (they are not in `repr`) and the flag.
+- `router.py` / `schemas.py` (N-5 (b)): `MateResponse` gains `lost_references`, `moved_references`, `followed_references`, `reference_reasons` (the Feature names) and `held: bool`; `status` keeps its three values.
+  `MateUpdate.confirm_references: true` re-stamps the bound faces and clears the hold (every mate type, with or without `solve=`; a refused edit puts the references back). `SubShapeRefSchema` is unchanged: no
+  signature on the wire, and the listed index is the current one. The refresh runs in `GET .../mates`, in the create / PATCH responses and in `export_native`. `held_mate_ids` is in the mate-motion and preview
+  answers **only when non-empty** (`test_legacy_previews_are_unchanged` compares key lists), and `X-Held-Mates` is a header on the solve, create and PATCH answers.
+- Reasons beyond the Feature ones: `unconfirmed`, `exact_place_among_twins` (a followed one), `body_missing`.
+
+**Where the plan's design was changed, and why:**
+- *A held reference is not persisted as held.* "Persist a re-found index" would, for `potentially_moved`, make the next refresh read the new index as `ok` (what a Feature does), un-holding the mate. So a held
+  reference keeps its old index and signature until `confirm_references`.
+- *Leaving mates out is opt-in on `build_group_model`.* A direct call keeps the strict model, which raises for a reference that does not resolve: the existing
+  `test_width_mate.py::test_drift_a_lost_face_...` asserts exactly that, and N-6 asks it of the group SOLVE only. Every solve entry point opts in (that test failed on the first, always-on version).
+- *The refresh is in `export_native`, not in each export route*: the export route, `add-component` and the assembly import all call it, and so does every test that exports.
+- *`held` is not set for a lost mate.* A lost mate is `broken` with `lost_references`, is left out of solves and named in `held_mate_ids`, but there is nothing to confirm (re-pick the face). An unsigned mate the
+  placement does not confirm is reported under `moved_references` with the reason `unconfirmed`.
+- *AI-plan mates need nothing.* The backend only DRY-RUNS a plan (`ai_plan._PlanValidator`, on a scratch copy); the flat app's `PlanTranslator` creates the mates with `POST .../mates`, which stamps. Component-pattern
+  copies are ordinary mates with a `#pattern:` path in the occurrence id (stamped on create; `pattern_dissolve` rewrites only the path, so the signatures come along: tested); `add-component` takes the references from
+  the file (signed if the file is, else adopted by N-3 on the first refresh).
+- *The Peg-in-hole companion is stamped where it is made* (`_peg_in_hole_mates`): the preview puts it into the solve like a stored mate, and unsigned it was held out by N-3 (the parts are not seated yet). Found by
+  `test_mate_first_guess_m4.py` failing on the first run.
+- `_with_world_hinge` skips another mate whose reference no longer resolves (it was a 422 for an ANGLE mate).
+
+**Tests** (`backend/tests`; this repo has no test index, the rows are here):
+- `test_mate_reference_identity.py` (11): the two reproductions promoted from `n1_repro_mate_reference_renumbered.py` (`git mv`; both failed on `main`): the box on the base and the pin in the plate's
+  hole, each after a fillet, are followed, the part stays on the right face, the first listing reports `followed`, and the index it lists is the current one. A new mate is signed and no signature reaches the wire.
+  **A deleted hole with a twin**: held (`unique_fingerprint_far`; `status: broken`, the pin still sits in the old hole), left out of mate-motion and of the solve (`held_mate_ids`, `X-Held-Mates`), the pin does not
+  move onto the twin; `confirm_references` takes the twin and the next solve puts the pin there. The native file keeps the signatures and a round trip loses nothing; an export after a renumbering (no listing
+  in between) saves the current index; an unsigned file adopts by N-3 when the stored placement confirms it; one the placement does not confirm is held `unconfirmed`, not adopted, left out of the solve, and
+  confirming adopts it.
+- `test_mate_reference_kinds.py` (10): every reference kind (face, edge, vertex, `plane_ref.face_ref`, `point_ref.vertex_ref`, a Width midplane with `b` on another occurrence, a nested `outer/inner`
+  path, a component-pattern copy, a Peg-in-hole pair) is signed on create and, with each reference's stored index changed to a wrong one of its kind, re-found on the next listing; a dissolved pattern keeps its signatures.
+- `test_mate_reference_couplers_limits.py` (4): a gear coupler and a distance limit are signed and followed; a lost reference reads `broken` on both, is left out of the solve and named; rack and pinion and screw are signed.
+- `test_mate_reference_gear_train_demo.py` (6; `gears` by name): the current demo (copied from DIDSA-VR into `tests/data/gear_train_demo_current.didsa`) opens with no flags and 18 clean mates; `mate-motion` of four
+  grabs and the constraint status equal `tests/data/gear_train_demo_motion.json`, **recorded on `main` at ccc11be before any N1b code** (`tests/gear_train_demo_motion_source.py`), with and without a listing first.
+  The OLD demo (`gear_train_demo_old_bevel_indices.didsa`, VR `0c5a08c`, bevel indices 3 and 4): 6 mates are held `unconfirmed` and read `broken`, not adopted, 12 are clean, and `mate-motion` answers 200 with
+  `held_mate_ids` where it was the 422 `unsupported_mate_geometry` of N0. A mate on the bevel bore renumbered onto its rim (R 28.04 beside R 4) is followed by radius, end to end.
+- Coaxial end to end (test plan item 3), in `test_mate_reference_identity.py`: a mate on a tube's bore (R 4 inside R 10), and on its outer surface, and on the middle step of a stepped shaft (R 10 / 6 / 3, one fused
+  Body), each with the stored index handed to another face on the same axis: the next listing says `followed` by `nearest_radius`, the listed and stored index are the true face, never `ok` on the wrong one, never
+  ambiguous. The bevel bore against its rim is the demo test above (on the real mate). N1a's pure-rule vectors and its tube / bevel reference tests are unchanged.
+- `tests/bench_mate_reference_refresh.py` (not collected by pytest): the cost, below.
+
+**What was run** (one Linux machine, 4 cores, pythonocc-core 8.0.1.2, as CI splits it): `-m "not gears"` **3208 passed, 1 skipped** (N1a's run: 3183 and 1; the 25 more are the three new non-gears files); `-m "gears and not bevel_pair"` **418 passed** (N1a: 412; the 6 more are the demo file);
+`test_planetary_gear_jobs.py` **8 passed**; `-m bevel_pair` **51 passed**. `tools/motion_vectors/generate.py --check` passes (and `test_backend_retraction_reproduces_the_golden_vectors`). **No existing test changed
+outcome in these runs**, and none was edited. The FIRST full run of the first version of this code had 6 existing tests fail; each was a defect of that version and was fixed in the code, not the test:
+five in `test_mate_first_guess_m4.py` (the Peg-in-hole companion was unsigned in the preview and held out of its own solve; then every preview answer gained a `held_mate_ids` key, which
+`test_legacy_previews_are_unchanged` compares) and `test_width_mate.py::test_drift_a_lost_face_...` (a direct `build_group_model` no longer raised for a lost reference: now opt-in, see above). The
+new tests fail on `main` (their fields and functions do not exist there; the two reproductions fail on its behaviour).
+
+**Cost** (`bench_mate_reference_refresh.py`, M0 scaling scenes, medians in ms, `main` -> this branch, two runs each; run-to-run noise on this VM is 10 to 30 %): 
+| | `main` -> this branch |
+|---|---|
+| `refresh(persist=False)`, what a solve pays once per model-cache miss to decide what to hold (all mates signed) | chain-5 (12 mates) 0.6 to 0.7; chain-20 (57) 2.7 to 3.0; frame-4 (11) 0.4 to 0.5; frame-20 (91) 2.6 to 2.8; linkage-20 (68) 2.7 to 3.2; chain-5-bolts (28) 1.3: about 0.03 to 0.05 ms per mate |
+| `GET .../mates` (the refresh, the statuses, the rigid sets) | chain-5 13.9 / 11.9 -> 13.7 / 13.2; chain-20 30.6 / 31.5 -> 35.8 / 35.8; frame-20 43.7 / 40.4 -> 45.0 / 61.7; linkage-20 43.7 / 33.5 -> 47.6 / 53.7 |
+| `solve_group` at rest | chain-5 2.2 / 2.2 -> 2.4 / 2.3; chain-20 4.0 / 6.0 -> 5.5 / 6.7; frame-20 3.4 / 3.8 -> 4.1 / 4.9; linkage-20 9.0 / 12.7 -> 9.3 / 11.9 |
+| drag anchor, wall (10 warm-started `mate-motion` steps) | chain-5 13.1 / 12.5 -> 11.2 / 11.3; chain-20 15.2 / 17.9 -> 17.2 / 15.5; frame-20 13.8 / 16.4 -> 18.0 / 17.0; linkage-20 54.0 / 52.7 -> 51.5 / 59.1; chain-5-bolts 78.4 / 70.9 -> 58.2 / 56.1 |
+
+A drag step does not refresh: the model cache hits, and its key now also reads each mate's signatures (a few `_rebuild`s). The first listing of an UNSIGNED file (the adoption pass, once per opened old file, includes the import's first
+Body builds): 150 to 240 ms for the 57 to 91 mates of chain-20 / frame-20 / linkage-20, then the usual 40 to 50. The M0 scaling run itself (`python -m tests.bench_mates_m0 scaling --quick`, 12 scene variants, `main` then this
+branch, one run each): the members, mates, rows and dof of every variant are identical, solve_rest / solve_wish / drag within the noise (for example chain-10 floating at rest 3.2 -> 5.0 ms, linkage-20 12.7 -> 10.6 ms), and of
+the 504 preview fields compared (solve counts, `converged`, alternatives, branch changes, `conflicting`, `blocked_by`) 9 differ, all in the `conflict` previews, whose branch search counts solves in an order that depends on the
+random mate ids: **two runs of unchanged `main` differ in the same cells** (checked with the 2.5 s preview clock removed: base against base differs in 7 to 8 of the 16 conflict cases, as base against this branch does in 8).
+
+
+**Not verified:**
+- Anything on a headset, and either client (N1c and N1d are the first to read the new fields); whether VR's `mate_health.gd` drift check agrees with the server.
+- OCCT 7.9 (the backend no longer starts on it). A real renumbering edit was used for the two reproductions only; elsewhere the renumbering is a wrong stored index (as in N1a).
+- The unsigned-file path on any file other than the gear-train demo and the small scenes above (no old user file was available).
+- A held mate inside a rigid set was not tested separately (sets are detected on the model without the held mate).
+
+**N-7 (read from the code; the clients were not changed).** A persisted re-find changes the assembly's export text. *VR*: a mates listing (`mates_tool.refresh_mates`, `GET .../mates`) does not call
+`mark_dirty`; only the command stack, `document_changed` (a mate made or deleted) and the design table do, so the Files page does not say "unsaved" after a part edit re-found a face. The next Save writes the
+backend's export verbatim, `project_save.gd` rewrites any file whose text differs from what was last written, and the cloud mirror's `scan()` queues a file whose SHA-256 differs from its last sync: so the assembly
+file is rewritten and queued the next time the project is saved for any reason, and not before. *Flat app*: a part's dirty state is set by the guarded actions in `part_screen.dart` (`_markPartDirty`), not by
+`listMates`: the same. Consequence: an assembly whose Part was edited is not offered for saving by that edit alone; its file keeps the OLD index and the signature, which re-finds the face again on the next open
+(the refresh is idempotent), so nothing is lost by not saving. If the owner wants "assembly modified" after a re-find, a client has to read `followed_references` and mark the assembly dirty itself.
+
+**For N1c / N1d (the new fields):**
+- Every `MateResponse` (list, create, PATCH) has `lost_references`, `moved_references`, `followed_references` (paths such as `references[0].subshape_ref`, `references[1].midplane.b.face_ref`),
+  `reference_reasons` (path to reason) and `held`. The list refreshes every mate; a create / PATCH response refreshes that mate only.
+- **`followed_references` is reported once**: the refresh persists the new index, so the NEXT listing is clean. A client that wants an info line must show it from the response it reads after the edit (VR: re-read
+  the mate list right after a design-table edit, and skip the local drift check for the references in `followed_references`). Do not poll for it.
+- `held: true`: amber "check this mate", with a Confirm that sends `PATCH .../mates/{id}` `{"confirm_references": true}` (add `?solve=...` to re-solve too). The listed `index` of a `moved` reference is the
+  face it is bound to (highlight that one); the stored reference is not changed until confirmed. A held mate is out of every solve. Its `status` is whatever its bound faces give (`broken` when the part sits on the old face).
+- `lost_references` non-empty: `status` is `broken` (a coupler and a limit too), `held` is false, the mate is left out of every solve; `reference_reasons` says why (`no_match`, `ambiguous`, `body_missing`);
+  the way out is to delete the mate or make a new one. An unsigned mate the stored placement does not confirm: under `moved_references`, reason `unconfirmed`, `held: true`.
+- Solves name what they left out: `held_mate_ids` in the mate-motion and preview answers (**absent when none**) and `X-Held-Mates: id,id` on the solve, create and PATCH answers. A group with one lost or held
+  mate used to answer 422 (`unsupported_mate_geometry`, `missing_reference`) to every drag; it now answers normally.
+- An older backend sends none of these: keep the client's local check for it. `SubShapeRefSchema` is unchanged: never send or expect a signature; `subshape_ref` dictionaries still compare equal for equal faces.
+- An opened old file adopts its references on the first listing (or export). A file whose stored placement does not satisfy its mates (an assembly saved before it was solved) now opens with those mates held
+  `unconfirmed` until the user confirms: that is decision N-3; the client should expect it for such files.
+
+**For the owner:** (1) N1a's open item (a radius edit that takes a face most of the way to its coaxial twin's radius, plus a renumbering onto that twin) is untouched, as asked. (2) `MATE_EXACT_PLACE_REL` (0.001) is
+a new first-cut constant; the plan only said "distance about 0". (3) The N-3 consequence in the last bullet above. (4) `held` leaves a lost mate out; if the clients should treat lost as held, it is one line
+(`MateReferenceState.held`).
 
 ---
 

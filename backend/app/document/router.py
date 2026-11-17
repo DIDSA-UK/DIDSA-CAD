@@ -71,7 +71,13 @@ from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job
 from app.document.reference_history import history_for_part
-from app.document.subshape_identity import refresh_feature_subshape_refs
+from app.document.subshape_identity import (
+    MateReferenceState,
+    apply_bound_indices,
+    refresh_feature_subshape_refs,
+    refresh_mate_references,
+    stamp_mate_references,
+)
 from app.document.create_plane import (
     _circle_centre_of_edge,
     basis_for_sketch,
@@ -3857,18 +3863,28 @@ def _midplane_ref_to_domain(schema: MidplaneRefSchema) -> MidplaneRef:
     return MidplaneRef(a=_plane_ref_to_domain(schema.a), b=_plane_ref_to_domain(schema.b), b_occurrence_id=schema.b_occurrence_id)
 
 
-def _mate_response(mate: Mate, part: Part | None = None, status: MateStatusDetail | None = None) -> MateResponse:
-    """`status` (`mate_status_details`): given by a listing that computed every mate's at once (one tessellation per target
-    Part); else computed here for `part`'s mate; `ok` when there is no Part to measure against."""
+def _mate_response(
+    mate: Mate, part: Part | None = None, status: MateStatusDetail | None = None, state: MateReferenceState | None = None
+) -> MateResponse:
+    """`status` (`mate_status_details`) and `state` (`refresh_mate_references`): given by a listing that computed every mate's at once (one tessellation per
+    target Part); else computed here for `part`'s mate (the refresh persists a re-found index, as the listing does); `ok` when there is no Part to measure against."""
+    if part is not None and state is None:
+        state = refresh_mate_references(get_document(), part, [mate]).get(mate.id)
     if status is None:
-        status = mate_status_detail(get_document(), part, mate) if part is not None else MateStatusDetail("ok")
+        status = mate_status_detail(get_document(), part, mate, None, state) if part is not None else MateStatusDetail("ok")
+    state = state or MateReferenceState()
     return MateResponse(
+        lost_references=list(state.lost),
+        moved_references=list(state.moved),
+        followed_references=list(state.followed),
+        reference_reasons=dict(state.reasons),
+        held=state.held,
         status=status.status,
         status_residual_mm=status.residual_mm,
         status_residual_deg=status.residual_deg,
         id=mate.id,
         type=mate.type.value,
-        references=[_mate_entity_ref_response(ref) for ref in mate.references],
+        references=[_mate_entity_ref_response(ref) for ref in apply_bound_indices(mate.references, state)],
         value=mate.value,
         flipped=mate.flipped,
         suppressed=mate.suppressed,
@@ -3922,9 +3938,13 @@ def list_mates(part_id: str) -> list[MateResponse]:
     `PartResponse.mate_ids`, ids only). M1: `rigid_set` is the rigid set a mate lies
     inside (`app.document.rigid_sets.mate_rigid_sets`), null otherwise."""
     part = get_part_or_404(part_id)
-    statuses = mate_status_details(get_document(), part)
+    # N1b: the references are re-validated first (and a re-found index persisted), so the listed index is the current one and the status reads the right faces
+    states = refresh_mate_references(get_document(), part)
+    statuses = mate_status_details(get_document(), part, states)
     sets = mate_rigid_sets(get_document(), part)
-    return [_mate_response(mate, part, statuses.get(mate.id)).model_copy(update={"rigid_set": sets.get(mate.id)}) for mate in part.mates]
+    return [
+        _mate_response(mate, part, statuses.get(mate.id), states.get(mate.id)).model_copy(update={"rigid_set": sets.get(mate.id)}) for mate in part.mates
+    ]
 
 
 def _get_occurrence_or_404(part: Part, occurrence_id: str) -> Occurrence:
@@ -4385,6 +4405,11 @@ def create_mate(
         limit_min=payload.limit_min,
         limit_max=payload.limit_max,
     )
+    # N1b: the index is right at this moment; sign every reference (the Peg-in-hole companion's too) against the target Parts' final Bodies
+    stamp_cache: dict[str, dict] = {}
+    stamp_mate_references(get_document(), part, mate, stamp_cache)
+    if companion is not None:
+        stamp_mate_references(get_document(), part, companion, stamp_cache)
     if mate.type in LIMIT_TYPES:
         # validated by its own rules; a limit moves nothing when it is made (a part outside the range is brought in by the next solve or drag)
         mate = prepare_limit(get_document(), part, mate)
@@ -4415,10 +4440,18 @@ def create_mate(
                 _fill_new_mate_branch(companion, outcome.result)
             response.headers["X-Movement-Used"] = outcome.used
             _note_near(response, outcome.result)
+            _note_held(response, outcome.result)
     if companion is not None:
         part.mates.append(companion)
     part.mates.append(mate)
     return _mate_response(mate, part)
+
+
+def _note_held(response: Response, result) -> None:
+    """N1b (plan N-6): `X-Held-Mates: id,id` when the solve left mates out because a reference of theirs is held or lost (the answer names them; see `MateResponse.held`)."""
+    held = getattr(result, "held_mate_ids", ())
+    if held:
+        response.headers["X-Held-Mates"] = ",".join(held)
 
 
 def _note_near(response: Response, result) -> None:
@@ -4482,6 +4515,20 @@ def update_mate(
     values, nothing moves, and the 422 is returned."""
     part = get_part_or_404(part_id)
     mate = _get_mate_or_404(part, mate_id)
+    previous_references = mate.references
+    if payload.confirm_references:
+        # N1b (plan N-2 / N-3): the user takes the faces the mate is bound to as right; re-stamped, the hold is cleared (a solve below then includes the mate)
+        refresh_mate_references(get_document(), part, [mate], confirm=True)
+    try:
+        return _update_mate_fields(part, mate, payload, response, solve, occurrence_id)
+    except HTTPException:
+        mate.references = previous_references  # a refused edit leaves the mate as it was, confirmation included
+        raise
+
+
+def _update_mate_fields(
+    part: Part, mate: Mate, payload: MateUpdate, response: Response, solve: MovementMode | None, occurrence_id: str | None
+) -> MateResponse:
     if mate.type in COUPLER_TYPES:
         return _update_coupler(part, mate, payload)
     if mate.type in LIMIT_TYPES:
@@ -4536,6 +4583,7 @@ def update_mate(
         _commit_group(part, outcome.result)
         response.headers["X-Movement-Used"] = outcome.used
         _note_near(response, outcome.result)
+        _note_held(response, outcome.result)
     return _mate_response(mate, part)
 
 
@@ -5169,6 +5217,7 @@ def solve_for_occurrence(
     _commit_group(part, result)
     response.headers["X-Movement-Used"] = used
     _note_near(response, result)
+    _note_held(response, result)
     return _occurrence_response(occurrence)
 
 
@@ -5221,6 +5270,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
     solve_ms = (time.perf_counter() - started) * 1000.0
     if not result.converged or result.analysis is None:
         return MateMotionResponse(
+            held_mate_ids=list(result.held_mate_ids),
             converged=False,
             quality=MateMotionQuality(residual_inf=result.quality.residual_inf),
             diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),
@@ -5250,6 +5300,7 @@ def mate_motion(part_id: str, occurrence_id: str, payload: MateMotionRequest) ->
         ),
         diagnostics=MateMotionDiagnostics(solve_ms=solve_ms),
         committed=payload.commit,
+        held_mate_ids=list(result.held_mate_ids),
         constraint_model=result.constraint_model if payload.include_constraint_model else None,
     )
 
@@ -5455,6 +5506,7 @@ def _preview_mate_solve(
         controls=list(controls),
         alternatives=alternatives,
         budget_exhausted=budget.exhausted,
+        held_mate_ids=list(outcome.result.held_mate_ids),
     )
 
 
@@ -5481,6 +5533,9 @@ def _peg_in_hole_mates(document: Document, part: Part, payload: MateCreate, mate
         fields["alignment"] = alignment
     concentric = MateCreate(**fields)
     companion = _mate_with_branch_fields(document, part, Mate(id=mate_id, type=MateType.COINCIDENT, references=list(faces)), set())
+    # N1b: signed here, where the faces are read off the Bodies (the preview puts the companion into the solve like a stored mate; an unsigned one would be
+    # held out of it by the N-3 rule, since the parts are not seated yet)
+    stamp_mate_references(document, part, companion)
     return concentric, companion
 
 

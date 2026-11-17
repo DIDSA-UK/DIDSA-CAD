@@ -1,0 +1,2073 @@
+{
+ "schema_version": 1,
+ "document": {
+  "id": "614c6953-cb5d-45c9-9e78-565483087b07",
+  "root_part_id": "edd6e560-e502-44a0-928d-e06cee0d5d19",
+  "parts": [
+   {
+    "id": "edd6e560-e502-44a0-928d-e06cee0d5d19",
+    "name": "Gear train",
+    "features": [],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [
+     {
+      "id": "plate",
+      "external_ref": "parts/8db29847-a383-4649-bc13-fc1f3a0dc9d4.didsa",
+      "resolved_part_id": "8db29847-a383-4649-bc13-fc1f3a0dc9d4",
+      "name_override": "Plate",
+      "transform": {
+       "translation": [
+        0.0,
+        0.0,
+        0.0
+       ],
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "rotation_angle_degrees": 0.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": true,
+      "color": null,
+      "ref_part_id": "8db29847-a383-4649-bc13-fc1f3a0dc9d4"
+     },
+     {
+      "id": "pinion",
+      "external_ref": "parts/1c8b3142-23fd-4ffd-956d-96616324d56b.didsa",
+      "resolved_part_id": "1c8b3142-23fd-4ffd-956d-96616324d56b",
+      "name_override": "Pinion (20 teeth)",
+      "transform": {
+       "translation": [
+        50.0,
+        55.0,
+        10.0
+       ],
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "rotation_angle_degrees": 0.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": false,
+      "color": null,
+      "ref_part_id": "1c8b3142-23fd-4ffd-956d-96616324d56b"
+     },
+     {
+      "id": "gear",
+      "external_ref": "parts/3574b692-2a5a-4ac6-813a-f4a1ffc0462c.didsa",
+      "resolved_part_id": "3574b692-2a5a-4ac6-813a-f4a1ffc0462c",
+      "name_override": "Gear (40 teeth)",
+      "transform": {
+       "translation": [
+        110.0,
+        55.0,
+        10.0
+       ],
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "rotation_angle_degrees": 0.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": false,
+      "color": null,
+      "ref_part_id": "3574b692-2a5a-4ac6-813a-f4a1ffc0462c"
+     },
+     {
+      "id": "guide",
+      "external_ref": "parts/933d6df2-e9e3-4e76-b093-2897fd15f8a4.didsa",
+      "resolved_part_id": "933d6df2-e9e3-4e76-b093-2897fd15f8a4",
+      "name_override": "Rack guide",
+      "transform": {
+       "translation": [
+        10.0,
+        18.5,
+        10.0
+       ],
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "rotation_angle_degrees": 0.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": true,
+      "color": null,
+      "ref_part_id": "933d6df2-e9e3-4e76-b093-2897fd15f8a4"
+     },
+     {
+      "id": "rack",
+      "external_ref": "parts/7529931b-5f24-42e3-9390-dbb85a021610.didsa",
+      "resolved_part_id": "7529931b-5f24-42e3-9390-dbb85a021610",
+      "name_override": "Rack",
+      "transform": {
+       "translation": [
+        42.0,
+        35.0,
+        10.0
+       ],
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "rotation_angle_degrees": 0.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": false,
+      "color": null,
+      "ref_part_id": "7529931b-5f24-42e3-9390-dbb85a021610"
+     },
+     {
+      "id": "crank",
+      "external_ref": "parts/328e3042-f353-4dee-9ae6-9555a104f3f5.didsa",
+      "resolved_part_id": "328e3042-f353-4dee-9ae6-9555a104f3f5",
+      "name_override": "Crank handle",
+      "transform": {
+       "translation": [
+        26.0,
+        51.0,
+        20.0
+       ],
+       "rotation_axis": [
+        0.0,
+        0.0,
+        1.0
+       ],
+       "rotation_angle_degrees": 0.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": false,
+      "color": null,
+      "ref_part_id": "328e3042-f353-4dee-9ae6-9555a104f3f5"
+     },
+     {
+      "id": "bevel_a",
+      "external_ref": "parts/d45ac52f-a067-4cf2-81cd-2a046d93b1ee.didsa",
+      "resolved_part_id": "d45ac52f-a067-4cf2-81cd-2a046d93b1ee",
+      "name_override": "Bevel gear A",
+      "transform": {
+       "translation": [
+        110.0,
+        55.0,
+        51.7515339340878
+       ],
+       "rotation_axis": [
+        1.0,
+        0.0,
+        0.0
+       ],
+       "rotation_angle_degrees": 180.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": false,
+      "color": null,
+      "ref_part_id": "d45ac52f-a067-4cf2-81cd-2a046d93b1ee"
+     },
+     {
+      "id": "bevel_b",
+      "external_ref": "parts/18c20d58-85e0-44eb-8c94-2878e5c7658e.didsa",
+      "resolved_part_id": "18c20d58-85e0-44eb-8c94-2878e5c7658e",
+      "name_override": "Bevel gear B",
+      "transform": {
+       "translation": [
+        110.0,
+        55.0,
+        51.7515339340878
+       ],
+       "rotation_axis": [
+        0.0,
+        1.0,
+        0.0
+       ],
+       "rotation_angle_degrees": 90.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": false,
+      "color": null,
+      "ref_part_id": "18c20d58-85e0-44eb-8c94-2878e5c7658e"
+     },
+     {
+      "id": "bearing",
+      "external_ref": "parts/fdc6d225-78cc-46a8-8f10-29f9b14eba3a.didsa",
+      "resolved_part_id": "fdc6d225-78cc-46a8-8f10-29f9b14eba3a",
+      "name_override": "Bearing block",
+      "transform": {
+       "translation": [
+        141.7515339340878,
+        37.0,
+        69.7515339340878
+       ],
+       "rotation_axis": [
+        0.0,
+        1.0,
+        0.0
+       ],
+       "rotation_angle_degrees": 90.0
+      },
+      "suppressed": false,
+      "hidden": false,
+      "fixed": true,
+      "color": null,
+      "ref_part_id": "fdc6d225-78cc-46a8-8f10-29f9b14eba3a"
+     }
+    ],
+    "mates": [
+     {
+      "id": "ca5d4292-a8d3-4c6c-a18c-00b39ca75d5a",
+      "type": "concentric",
+      "references": [
+       {
+        "occurrence_id": "pinion",
+        "subshape_ref": {
+         "body_id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+         "shape_type": "face",
+         "index": 82
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "plate",
+        "subshape_ref": {
+         "body_id": "d1092ef1-4397-42cb-912d-8c94fd69f822",
+         "shape_type": "face",
+         "index": 6
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "f1d17d4d-d08e-4ec2-b142-d88d70b0d7d9",
+      "type": "coincident",
+      "references": [
+       {
+        "occurrence_id": "pinion",
+        "subshape_ref": {
+         "body_id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+         "shape_type": "face",
+         "index": 3
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "plate",
+        "subshape_ref": {
+         "body_id": "d1092ef1-4397-42cb-912d-8c94fd69f822",
+         "shape_type": "face",
+         "index": 4
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": "anti_aligned",
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "a9a57aea-f9ab-4e71-973a-9f76b960cb25",
+      "type": "concentric",
+      "references": [
+       {
+        "occurrence_id": "gear",
+        "subshape_ref": {
+         "body_id": "02bc6265-7326-4bca-93e8-ed159cd9a12a",
+         "shape_type": "face",
+         "index": 162
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "plate",
+        "subshape_ref": {
+         "body_id": "d1092ef1-4397-42cb-912d-8c94fd69f822",
+         "shape_type": "face",
+         "index": 7
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "d08b52a7-f9a0-4e87-833a-c225df111f8d",
+      "type": "coincident",
+      "references": [
+       {
+        "occurrence_id": "gear",
+        "subshape_ref": {
+         "body_id": "02bc6265-7326-4bca-93e8-ed159cd9a12a",
+         "shape_type": "face",
+         "index": 3
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "plate",
+        "subshape_ref": {
+         "body_id": "d1092ef1-4397-42cb-912d-8c94fd69f822",
+         "shape_type": "face",
+         "index": 4
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": "anti_aligned",
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "5fbf15bf-ec66-4fdc-9f1d-ee1fb579ffd7",
+      "type": "coincident",
+      "references": [
+       {
+        "occurrence_id": "rack",
+        "subshape_ref": {
+         "body_id": "8362b976-14d9-4310-b62b-b13b7c886d36",
+         "shape_type": "face",
+         "index": 42
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "plate",
+        "subshape_ref": {
+         "body_id": "d1092ef1-4397-42cb-912d-8c94fd69f822",
+         "shape_type": "face",
+         "index": 4
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": "anti_aligned",
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "5145acc3-f171-468f-9927-2d571fbabb1c",
+      "type": "coincident",
+      "references": [
+       {
+        "occurrence_id": "rack",
+        "subshape_ref": {
+         "body_id": "8362b976-14d9-4310-b62b-b13b7c886d36",
+         "shape_type": "face",
+         "index": 40
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "guide",
+        "subshape_ref": {
+         "body_id": "75b7f4aa-88ca-43c1-970c-b14f31758348",
+         "shape_type": "face",
+         "index": 2
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": "anti_aligned",
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "c3d1177a-7b85-4c35-a25d-c0a9e00d0bac",
+      "type": "concentric",
+      "references": [
+       {
+        "occurrence_id": "crank",
+        "subshape_ref": {
+         "body_id": "83d93c3e-796f-48bf-aea1-e5c17871f6f3#0",
+         "shape_type": "face",
+         "index": 2
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "pinion",
+        "subshape_ref": {
+         "body_id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+         "shape_type": "face",
+         "index": 82
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "3669840e-f1b6-4b14-8883-caf0474bddf5",
+      "type": "coincident",
+      "references": [
+       {
+        "occurrence_id": "crank",
+        "subshape_ref": {
+         "body_id": "83d93c3e-796f-48bf-aea1-e5c17871f6f3#0",
+         "shape_type": "face",
+         "index": 1
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "pinion",
+        "subshape_ref": {
+         "body_id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+         "shape_type": "face",
+         "index": 4
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": "anti_aligned",
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "3ce63552-c39f-490b-aeac-367df09d64c2",
+      "type": "gear",
+      "references": [
+       {
+        "occurrence_id": "pinion",
+        "subshape_ref": {
+         "body_id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+         "shape_type": "face",
+         "index": 82
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "gear",
+        "subshape_ref": {
+         "body_id": "02bc6265-7326-4bca-93e8-ed159cd9a12a",
+         "shape_type": "face",
+         "index": 162
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": 0.5,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": false,
+      "branch_source": "auto"
+     },
+     {
+      "id": "4b975374-ed99-4098-a12b-956cb8815fd3",
+      "type": "rack_pinion",
+      "references": [
+       {
+        "occurrence_id": "pinion",
+        "subshape_ref": {
+         "body_id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+         "shape_type": "face",
+         "index": 82
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "rack",
+        "subshape_ref": {
+         "body_id": "8362b976-14d9-4310-b62b-b13b7c886d36",
+         "shape_type": "edge",
+         "index": 122
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": 125.66370614359172,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": false,
+      "branch_source": "auto"
+     },
+     {
+      "id": "28e6203b-0083-47b1-9006-218954979152",
+      "type": "gear",
+      "references": [
+       {
+        "occurrence_id": "crank",
+        "subshape_ref": {
+         "body_id": "83d93c3e-796f-48bf-aea1-e5c17871f6f3#0",
+         "shape_type": "face",
+         "index": 2
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "pinion",
+        "subshape_ref": {
+         "body_id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+         "shape_type": "face",
+         "index": 82
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": 1.0,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": false,
+      "branch_source": "user"
+     },
+     {
+      "id": "3e25467b-c843-46f4-a826-af8cc33b72ed",
+      "type": "concentric",
+      "references": [
+       {
+        "occurrence_id": "bevel_a",
+        "subshape_ref": {
+         "body_id": "b804fc71-ad15-4fb4-9439-20a812f9f67f",
+         "shape_type": "face",
+         "index": 105
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "gear",
+        "subshape_ref": {
+         "body_id": "02bc6265-7326-4bca-93e8-ed159cd9a12a",
+         "shape_type": "face",
+         "index": 162
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "9d9ad89d-5a07-41e6-be81-47261c79887e",
+      "type": "coincident",
+      "references": [
+       {
+        "occurrence_id": "bevel_a",
+        "subshape_ref": {
+         "body_id": "b804fc71-ad15-4fb4-9439-20a812f9f67f",
+         "shape_type": "face",
+         "index": 104
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "gear",
+        "subshape_ref": {
+         "body_id": "02bc6265-7326-4bca-93e8-ed159cd9a12a",
+         "shape_type": "face",
+         "index": 4
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": "anti_aligned",
+      "secondary_flip": null,
+      "branch_source": "user"
+     },
+     {
+      "id": "d4fe1623-42e2-43fd-aeae-36421adf5a2b",
+      "type": "concentric",
+      "references": [
+       {
+        "occurrence_id": "bevel_b",
+        "subshape_ref": {
+         "body_id": "fff785e3-a852-4fb5-8756-63f930a389e3",
+         "shape_type": "face",
+         "index": 105
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "bearing",
+        "subshape_ref": {
+         "body_id": "94eb27c6-b6ad-4901-9fd5-965f23168453",
+         "shape_type": "face",
+         "index": 6
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": null,
+      "branch_source": "auto"
+     },
+     {
+      "id": "182a394f-e7ba-4ae4-87a1-bf2f5403a62b",
+      "type": "coincident",
+      "references": [
+       {
+        "occurrence_id": "bevel_b",
+        "subshape_ref": {
+         "body_id": "fff785e3-a852-4fb5-8756-63f930a389e3",
+         "shape_type": "face",
+         "index": 104
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "bearing",
+        "subshape_ref": {
+         "body_id": "94eb27c6-b6ad-4901-9fd5-965f23168453",
+         "shape_type": "face",
+         "index": 3
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": "anti_aligned",
+      "secondary_flip": null,
+      "branch_source": "user"
+     },
+     {
+      "id": "d5977614-24ea-4a62-b7a0-07e090ee82ee",
+      "type": "gear",
+      "references": [
+       {
+        "occurrence_id": "gear",
+        "subshape_ref": {
+         "body_id": "02bc6265-7326-4bca-93e8-ed159cd9a12a",
+         "shape_type": "face",
+         "index": 162
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "bevel_a",
+        "subshape_ref": {
+         "body_id": "b804fc71-ad15-4fb4-9439-20a812f9f67f",
+         "shape_type": "face",
+         "index": 105
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": 1.0,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": false,
+      "branch_source": "user"
+     },
+     {
+      "id": "53c49161-fb96-434c-8fab-a579f3fbd2a5",
+      "type": "gear",
+      "references": [
+       {
+        "occurrence_id": "bevel_a",
+        "subshape_ref": {
+         "body_id": "b804fc71-ad15-4fb4-9439-20a812f9f67f",
+         "shape_type": "face",
+         "index": 105
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "bevel_b",
+        "subshape_ref": {
+         "body_id": "fff785e3-a852-4fb5-8756-63f930a389e3",
+         "shape_type": "face",
+         "index": 105
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": 1.0,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": false,
+      "branch_source": "auto"
+     },
+     {
+      "id": "52b013f8-88ac-4f0c-b69b-f1b575fdcbfb",
+      "type": "limit_distance",
+      "references": [
+       {
+        "occurrence_id": "rack",
+        "subshape_ref": {
+         "body_id": "8362b976-14d9-4310-b62b-b13b7c886d36",
+         "shape_type": "face",
+         "index": 39
+        },
+        "plane_ref": null,
+        "point_ref": null
+       },
+       {
+        "occurrence_id": "plate",
+        "subshape_ref": {
+         "body_id": "d1092ef1-4397-42cb-912d-8c94fd69f822",
+         "shape_type": "face",
+         "index": 2
+        },
+        "plane_ref": null,
+        "point_ref": null
+       }
+      ],
+      "value": null,
+      "flipped": false,
+      "suppressed": false,
+      "allow_rotation": true,
+      "alignment": null,
+      "secondary_flip": null,
+      "branch_source": "auto",
+      "limit_min": -137.245,
+      "limit_max": -91.245
+     }
+    ],
+    "component_patterns": []
+   },
+   {
+    "id": "8db29847-a383-4649-bc13-fc1f3a0dc9d4",
+    "name": "Plate",
+    "features": [
+     {
+      "type": "sketch",
+      "id": "d89bcef0-3294-4058-a86f-41c653a78b06",
+      "sketch_id": "3e16b943-90ad-40e0-9f33-9ed313c45f85",
+      "plane_feature_id": null
+     },
+     {
+      "type": "extrude",
+      "id": "d1092ef1-4397-42cb-912d-8c94fd69f822",
+      "sketch_feature_id": "d89bcef0-3294-4058-a86f-41c653a78b06",
+      "extrude_type": "boss",
+      "start_distance": 0.0,
+      "end_distance": 10.0,
+      "target_body_ids": [],
+      "profile_refs": [],
+      "thickness": null,
+      "thickness_direction": "outward",
+      "draft_angle": null,
+      "draft_outward": true
+     },
+     {
+      "type": "sketch",
+      "id": "79a0a571-56fc-46a5-9506-ead28ff0dd01",
+      "sketch_id": "179ed308-5e99-4471-8a02-4027e3d38b71",
+      "plane_feature_id": null
+     },
+     {
+      "type": "extrude",
+      "id": "ad5d5e19-a398-4ab1-ac1a-fd25e5a743fb",
+      "sketch_feature_id": "79a0a571-56fc-46a5-9506-ead28ff0dd01",
+      "extrude_type": "cut",
+      "start_distance": 0.0,
+      "end_distance": 10.0,
+      "target_body_ids": [
+       "d1092ef1-4397-42cb-912d-8c94fd69f822"
+      ],
+      "profile_refs": [],
+      "thickness": null,
+      "thickness_direction": "outward",
+      "draft_angle": null,
+      "draft_outward": true
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "1c8b3142-23fd-4ffd-956d-96616324d56b",
+    "name": "Pinion (20 teeth)",
+    "features": [
+     {
+      "type": "gear",
+      "id": "07e09869-7164-4b8e-b0d7-7c0b759b6048",
+      "plane_ref": {
+       "face_ref": null,
+       "fixed_plane": "XY",
+       "plane_feature_id": null
+      },
+      "gear_type": "boss",
+      "is_internal": false,
+      "module": 2.0,
+      "tooth_count": 20,
+      "face_width": 10.0,
+      "pressure_angle_degrees": 20.0,
+      "profile_shift": null,
+      "backlash": 0.0,
+      "root_fillet_radius": 0.0,
+      "outer_diameter": null,
+      "target_body_ids": [],
+      "helix_angle_degrees": 0.0,
+      "herringbone": false,
+      "points_per_flank": 12,
+      "bore_diameter": 8.0
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "3574b692-2a5a-4ac6-813a-f4a1ffc0462c",
+    "name": "Gear (40 teeth)",
+    "features": [
+     {
+      "type": "gear",
+      "id": "02bc6265-7326-4bca-93e8-ed159cd9a12a",
+      "plane_ref": {
+       "face_ref": null,
+       "fixed_plane": "XY",
+       "plane_feature_id": null
+      },
+      "gear_type": "boss",
+      "is_internal": false,
+      "module": 2.0,
+      "tooth_count": 40,
+      "face_width": 10.0,
+      "pressure_angle_degrees": 20.0,
+      "profile_shift": null,
+      "backlash": 0.0,
+      "root_fillet_radius": 0.0,
+      "outer_diameter": null,
+      "target_body_ids": [],
+      "helix_angle_degrees": 0.0,
+      "herringbone": false,
+      "points_per_flank": 12,
+      "bore_diameter": 8.0
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "7529931b-5f24-42e3-9390-dbb85a021610",
+    "name": "Rack (10 teeth)",
+    "features": [
+     {
+      "type": "rack",
+      "id": "8362b976-14d9-4310-b62b-b13b7c886d36",
+      "plane_ref": {
+       "face_ref": null,
+       "fixed_plane": "XY",
+       "plane_feature_id": null
+      },
+      "rack_type": "boss",
+      "module": 2.0,
+      "tooth_count": 10,
+      "face_width": 10.0,
+      "pressure_angle_degrees": 20.0,
+      "backlash": 0.0,
+      "backing_height": null,
+      "target_body_ids": []
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "933d6df2-e9e3-4e76-b093-2897fd15f8a4",
+    "name": "Rack guide",
+    "features": [
+     {
+      "type": "sketch",
+      "id": "ce86e27a-2581-4d88-b6ca-6c528191cc5c",
+      "sketch_id": "54f5a93a-bb9c-4de0-bbbb-c7888cf87102",
+      "plane_feature_id": null
+     },
+     {
+      "type": "extrude",
+      "id": "75b7f4aa-88ca-43c1-970c-b14f31758348",
+      "sketch_feature_id": "ce86e27a-2581-4d88-b6ca-6c528191cc5c",
+      "extrude_type": "boss",
+      "start_distance": 0.0,
+      "end_distance": 10.0,
+      "target_body_ids": [],
+      "profile_refs": [],
+      "thickness": null,
+      "thickness_direction": "outward",
+      "draft_angle": null,
+      "draft_outward": true
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "328e3042-f353-4dee-9ae6-9555a104f3f5",
+    "name": "Crank handle",
+    "features": [
+     {
+      "type": "sketch",
+      "id": "cab3ecb7-6bb8-4543-8319-fe74de460a34",
+      "sketch_id": "96b02b6a-cfc4-44c0-a835-a0360d477140",
+      "plane_feature_id": null
+     },
+     {
+      "type": "extrude",
+      "id": "83d93c3e-796f-48bf-aea1-e5c17871f6f3",
+      "sketch_feature_id": "cab3ecb7-6bb8-4543-8319-fe74de460a34",
+      "extrude_type": "boss",
+      "start_distance": 0.0,
+      "end_distance": 6.0,
+      "target_body_ids": [],
+      "profile_refs": [],
+      "thickness": null,
+      "thickness_direction": "outward",
+      "draft_angle": null,
+      "draft_outward": true
+     },
+     {
+      "type": "sketch",
+      "id": "1c443051-3724-4825-93f7-ad803fa7ae81",
+      "sketch_id": "8ec41006-400b-4db3-b838-7c401cfa8ec4",
+      "plane_feature_id": null
+     },
+     {
+      "type": "extrude",
+      "id": "6d7f9351-3e37-45ea-ad13-3a1cda1e93f9",
+      "sketch_feature_id": "1c443051-3724-4825-93f7-ad803fa7ae81",
+      "extrude_type": "cut",
+      "start_distance": 0.0,
+      "end_distance": 6.0,
+      "target_body_ids": [
+       "83d93c3e-796f-48bf-aea1-e5c17871f6f3"
+      ],
+      "profile_refs": [],
+      "thickness": null,
+      "thickness_direction": "outward",
+      "draft_angle": null,
+      "draft_outward": true
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "d45ac52f-a067-4cf2-81cd-2a046d93b1ee",
+    "name": "Bevel gear A (20 teeth)",
+    "features": [
+     {
+      "type": "bevel_gear",
+      "id": "b804fc71-ad15-4fb4-9439-20a812f9f67f",
+      "plane_ref": {
+       "face_ref": null,
+       "fixed_plane": "XY",
+       "plane_feature_id": null
+      },
+      "bevel_type": "boss",
+      "module": 3.0,
+      "tooth_count": 20,
+      "face_width": 12.0,
+      "pitch_cone_angle_degrees": 45.0,
+      "pressure_angle_degrees": 20.0,
+      "backlash": 0.0,
+      "profile_shift": 0.0,
+      "target_body_ids": [],
+      "points_per_flank": 12,
+      "spiral_angle_degrees": 0.0,
+      "spiral_hand": "right",
+      "bore_diameter": 8.0
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "18c20d58-85e0-44eb-8c94-2878e5c7658e",
+    "name": "Bevel gear B (20 teeth)",
+    "features": [
+     {
+      "type": "bevel_gear",
+      "id": "fff785e3-a852-4fb5-8756-63f930a389e3",
+      "plane_ref": {
+       "face_ref": null,
+       "fixed_plane": "XY",
+       "plane_feature_id": null
+      },
+      "bevel_type": "boss",
+      "module": 3.0,
+      "tooth_count": 20,
+      "face_width": 12.0,
+      "pitch_cone_angle_degrees": 45.0,
+      "pressure_angle_degrees": 20.0,
+      "backlash": 0.0,
+      "profile_shift": 0.0,
+      "target_body_ids": [],
+      "points_per_flank": 12,
+      "spiral_angle_degrees": 0.0,
+      "spiral_hand": "right",
+      "bore_diameter": 8.0
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   },
+   {
+    "id": "fdc6d225-78cc-46a8-8f10-29f9b14eba3a",
+    "name": "Bearing block",
+    "features": [
+     {
+      "type": "sketch",
+      "id": "5212a3f9-8d56-4725-870e-2287a1519c70",
+      "sketch_id": "6875c028-2772-4f9b-8c77-c5c482850036",
+      "plane_feature_id": null
+     },
+     {
+      "type": "extrude",
+      "id": "94eb27c6-b6ad-4901-9fd5-965f23168453",
+      "sketch_feature_id": "5212a3f9-8d56-4725-870e-2287a1519c70",
+      "extrude_type": "boss",
+      "start_distance": 0.0,
+      "end_distance": 14.0,
+      "target_body_ids": [],
+      "profile_refs": [],
+      "thickness": null,
+      "thickness_direction": "outward",
+      "draft_angle": null,
+      "draft_outward": true
+     },
+     {
+      "type": "sketch",
+      "id": "d7ba6f1f-2773-490d-9680-0fd490fc1701",
+      "sketch_id": "b7676d57-9c08-4cba-b11a-c863b26f70ac",
+      "plane_feature_id": null
+     },
+     {
+      "type": "extrude",
+      "id": "ba1ca20f-67ae-4209-a867-2fabd40c815f",
+      "sketch_feature_id": "d7ba6f1f-2773-490d-9680-0fd490fc1701",
+      "extrude_type": "cut",
+      "start_distance": 0.0,
+      "end_distance": 14.0,
+      "target_body_ids": [
+       "94eb27c6-b6ad-4901-9fd5-965f23168453"
+      ],
+      "profile_refs": [],
+      "thickness": null,
+      "thickness_direction": "outward",
+      "draft_angle": null,
+      "draft_outward": true
+     }
+    ],
+    "part_number": null,
+    "description": null,
+    "revision": null,
+    "remarks": null,
+    "supplier": null,
+    "supplier_part_number": null,
+    "default_material": null,
+    "body_material_assignments": {},
+    "occurrences": [],
+    "mates": [],
+    "component_patterns": []
+   }
+  ]
+ },
+ "sketches": [
+  {
+   "id": "179ed308-5e99-4471-8a02-4027e3d38b71",
+   "plane": "XY",
+   "origin_point_id": null,
+   "flip": false,
+   "rotation_quarter_turns": 0,
+   "points": [
+    {
+     "id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "x": 50.0,
+     "y": 55.0
+    },
+    {
+     "id": "c1869aed-a6db-4017-8c9a-e6f5d82a74b6",
+     "x": 56.0,
+     "y": 55.0
+    },
+    {
+     "id": "ec1814be-320c-4f3c-9877-994e4b74c03c",
+     "x": 50.0,
+     "y": 61.0
+    },
+    {
+     "id": "cf9457fd-b931-4330-9a92-3bc0ffd56270",
+     "x": 56.0,
+     "y": 55.0
+    },
+    {
+     "id": "62234e2b-ca2b-4c2e-8202-ae3593bebc19",
+     "x": 50.0,
+     "y": 49.0
+    },
+    {
+     "id": "0719590e-11f8-4bbe-b705-2ffbacdfe041",
+     "x": 44.0,
+     "y": 55.0
+    },
+    {
+     "id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "x": 110.0,
+     "y": 55.0
+    },
+    {
+     "id": "16066fd9-7cc3-4e2f-b747-53f1ab7308c7",
+     "x": 116.0,
+     "y": 55.0
+    },
+    {
+     "id": "a2a4958a-fa4a-43f7-a4f8-a0871af3c14d",
+     "x": 110.0,
+     "y": 61.0
+    },
+    {
+     "id": "8b1da008-33d3-4959-a0f8-414e244c7585",
+     "x": 116.0,
+     "y": 55.0
+    },
+    {
+     "id": "697a0bea-7f49-4aa8-8d0f-1e154b631ad9",
+     "x": 110.0,
+     "y": 49.0
+    },
+    {
+     "id": "f6e60a28-4db8-448f-87c8-a3b128b5afe7",
+     "x": 104.0,
+     "y": 55.0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "6359b655-8a05-4091-88b6-5d1acdcd4a28",
+     "construction": false,
+     "center_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius_point_id": "c1869aed-a6db-4017-8c9a-e6f5d82a74b6",
+     "radius_constraint_id": "26b53799-2a08-424f-92bb-19aa69b8c01d",
+     "cardinal_point_ids": [
+      "ec1814be-320c-4f3c-9877-994e4b74c03c",
+      "cf9457fd-b931-4330-9a92-3bc0ffd56270",
+      "62234e2b-ca2b-4c2e-8202-ae3593bebc19",
+      "0719590e-11f8-4bbe-b705-2ffbacdfe041"
+     ],
+     "cardinal_constraint_ids": [
+      "7e5cf084-1999-4c14-add7-6ee303ce5935",
+      "80897ea0-18ad-448e-ad16-30c7214a06f9",
+      "d664fa81-24ea-45bd-ad3f-c7b2cd015dfd",
+      "26d04205-2db1-41a5-92b3-7d7f72eb8ad5",
+      "2e55b620-da71-48c5-9434-d8b0a4e6122d",
+      "725477a1-c766-4c9c-ab24-cbe907b0871c",
+      "bb3a8be4-6efd-4b64-9fd0-091d2878a34c",
+      "5357062f-9162-4a34-92d8-a84db6abca71"
+     ]
+    },
+    {
+     "type": "circle",
+     "id": "c259cd39-1094-497d-8e18-e1200a654168",
+     "construction": false,
+     "center_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius_point_id": "16066fd9-7cc3-4e2f-b747-53f1ab7308c7",
+     "radius_constraint_id": "92172661-e22d-4674-8a09-47545d5cf40c",
+     "cardinal_point_ids": [
+      "a2a4958a-fa4a-43f7-a4f8-a0871af3c14d",
+      "8b1da008-33d3-4959-a0f8-414e244c7585",
+      "697a0bea-7f49-4aa8-8d0f-1e154b631ad9",
+      "f6e60a28-4db8-448f-87c8-a3b128b5afe7"
+     ],
+     "cardinal_constraint_ids": [
+      "40bbb119-92cf-43cd-ae41-935f58d5e78b",
+      "334a3ee0-4dbe-4caf-ab74-cd5a49a52476",
+      "87ef6cf7-56f1-43eb-bc11-e777fe3abf06",
+      "3683c58c-a174-40a0-bbc6-c9ee883cd153",
+      "6d8aa4b8-51d5-4d2b-8ba6-902f0e2ecb45",
+      "2d722c6f-102b-43c4-a7d7-a5c827d49cc2",
+      "1c674bae-37b8-4c0b-9dc9-a22f20c41e4a",
+      "2c967a3c-3f5b-4aa3-be4c-9b857bab817a"
+     ]
+    }
+   ],
+   "constraints": [
+    {
+     "id": "26b53799-2a08-424f-92bb-19aa69b8c01d",
+     "point_a_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "point_b_id": "c1869aed-a6db-4017-8c9a-e6f5d82a74b6",
+     "distance": 6.0,
+     "orientation": "linear",
+     "provisional": true,
+     "type": "distance"
+    },
+    {
+     "id": "7e5cf084-1999-4c14-add7-6ee303ce5935",
+     "center1_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius1_point_id": "c1869aed-a6db-4017-8c9a-e6f5d82a74b6",
+     "center2_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius2_point_id": "ec1814be-320c-4f3c-9877-994e4b74c03c",
+     "type": "equal_radius"
+    },
+    {
+     "id": "80897ea0-18ad-448e-ad16-30c7214a06f9",
+     "point_a_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "point_b_id": "ec1814be-320c-4f3c-9877-994e4b74c03c",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "d664fa81-24ea-45bd-ad3f-c7b2cd015dfd",
+     "center1_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius1_point_id": "c1869aed-a6db-4017-8c9a-e6f5d82a74b6",
+     "center2_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius2_point_id": "cf9457fd-b931-4330-9a92-3bc0ffd56270",
+     "type": "equal_radius"
+    },
+    {
+     "id": "26d04205-2db1-41a5-92b3-7d7f72eb8ad5",
+     "point_a_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "point_b_id": "cf9457fd-b931-4330-9a92-3bc0ffd56270",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "2e55b620-da71-48c5-9434-d8b0a4e6122d",
+     "center1_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius1_point_id": "c1869aed-a6db-4017-8c9a-e6f5d82a74b6",
+     "center2_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius2_point_id": "62234e2b-ca2b-4c2e-8202-ae3593bebc19",
+     "type": "equal_radius"
+    },
+    {
+     "id": "725477a1-c766-4c9c-ab24-cbe907b0871c",
+     "point_a_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "point_b_id": "62234e2b-ca2b-4c2e-8202-ae3593bebc19",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "bb3a8be4-6efd-4b64-9fd0-091d2878a34c",
+     "center1_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius1_point_id": "c1869aed-a6db-4017-8c9a-e6f5d82a74b6",
+     "center2_point_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "radius2_point_id": "0719590e-11f8-4bbe-b705-2ffbacdfe041",
+     "type": "equal_radius"
+    },
+    {
+     "id": "5357062f-9162-4a34-92d8-a84db6abca71",
+     "point_a_id": "0bd22498-82ca-4782-99f4-d458ecd426b3",
+     "point_b_id": "0719590e-11f8-4bbe-b705-2ffbacdfe041",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "92172661-e22d-4674-8a09-47545d5cf40c",
+     "point_a_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "point_b_id": "16066fd9-7cc3-4e2f-b747-53f1ab7308c7",
+     "distance": 6.0,
+     "orientation": "linear",
+     "provisional": true,
+     "type": "distance"
+    },
+    {
+     "id": "40bbb119-92cf-43cd-ae41-935f58d5e78b",
+     "center1_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius1_point_id": "16066fd9-7cc3-4e2f-b747-53f1ab7308c7",
+     "center2_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius2_point_id": "a2a4958a-fa4a-43f7-a4f8-a0871af3c14d",
+     "type": "equal_radius"
+    },
+    {
+     "id": "334a3ee0-4dbe-4caf-ab74-cd5a49a52476",
+     "point_a_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "point_b_id": "a2a4958a-fa4a-43f7-a4f8-a0871af3c14d",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "87ef6cf7-56f1-43eb-bc11-e777fe3abf06",
+     "center1_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius1_point_id": "16066fd9-7cc3-4e2f-b747-53f1ab7308c7",
+     "center2_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius2_point_id": "8b1da008-33d3-4959-a0f8-414e244c7585",
+     "type": "equal_radius"
+    },
+    {
+     "id": "3683c58c-a174-40a0-bbc6-c9ee883cd153",
+     "point_a_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "point_b_id": "8b1da008-33d3-4959-a0f8-414e244c7585",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "6d8aa4b8-51d5-4d2b-8ba6-902f0e2ecb45",
+     "center1_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius1_point_id": "16066fd9-7cc3-4e2f-b747-53f1ab7308c7",
+     "center2_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius2_point_id": "697a0bea-7f49-4aa8-8d0f-1e154b631ad9",
+     "type": "equal_radius"
+    },
+    {
+     "id": "2d722c6f-102b-43c4-a7d7-a5c827d49cc2",
+     "point_a_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "point_b_id": "697a0bea-7f49-4aa8-8d0f-1e154b631ad9",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "1c674bae-37b8-4c0b-9dc9-a22f20c41e4a",
+     "center1_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius1_point_id": "16066fd9-7cc3-4e2f-b747-53f1ab7308c7",
+     "center2_point_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "radius2_point_id": "f6e60a28-4db8-448f-87c8-a3b128b5afe7",
+     "type": "equal_radius"
+    },
+    {
+     "id": "2c967a3c-3f5b-4aa3-be4c-9b857bab817a",
+     "point_a_id": "4f7ac6a8-9ec5-46e8-84c9-5a68c230f78d",
+     "point_b_id": "f6e60a28-4db8-448f-87c8-a3b128b5afe7",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    }
+   ],
+   "external_references": [],
+   "pattern_instances": [],
+   "mirror_instances": []
+  },
+  {
+   "id": "3e16b943-90ad-40e0-9f33-9ed313c45f85",
+   "plane": "XY",
+   "origin_point_id": null,
+   "flip": false,
+   "rotation_quarter_turns": 0,
+   "points": [
+    {
+     "id": "6e3b55f1-6600-4edd-9465-4ab821e4b509",
+     "x": 0.0,
+     "y": 0.0
+    },
+    {
+     "id": "e89bb40d-d3f9-4771-ac0a-88606495d6c7",
+     "x": 170.0,
+     "y": 0.0
+    },
+    {
+     "id": "fd9b309c-6067-4df6-8692-df618dd957e7",
+     "x": 170.0,
+     "y": 100.0
+    },
+    {
+     "id": "139cdc12-7488-4156-8a9d-8360cd75b4d2",
+     "x": 0.0,
+     "y": 100.0
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "de80e12d-3c3b-4f4f-9f29-c70bca9656ea",
+     "construction": false,
+     "start_point_id": "6e3b55f1-6600-4edd-9465-4ab821e4b509",
+     "end_point_id": "e89bb40d-d3f9-4771-ac0a-88606495d6c7"
+    },
+    {
+     "type": "line",
+     "id": "859191de-6a76-4e71-b603-e9cdf07296a7",
+     "construction": false,
+     "start_point_id": "e89bb40d-d3f9-4771-ac0a-88606495d6c7",
+     "end_point_id": "fd9b309c-6067-4df6-8692-df618dd957e7"
+    },
+    {
+     "type": "line",
+     "id": "6b0b0fb2-b2f1-4053-b9b8-ce113ca0d0a4",
+     "construction": false,
+     "start_point_id": "fd9b309c-6067-4df6-8692-df618dd957e7",
+     "end_point_id": "139cdc12-7488-4156-8a9d-8360cd75b4d2"
+    },
+    {
+     "type": "line",
+     "id": "acc903a7-2834-451d-8ceb-fb2644cc71a3",
+     "construction": false,
+     "start_point_id": "139cdc12-7488-4156-8a9d-8360cd75b4d2",
+     "end_point_id": "6e3b55f1-6600-4edd-9465-4ab821e4b509"
+    }
+   ],
+   "constraints": [],
+   "external_references": [],
+   "pattern_instances": [],
+   "mirror_instances": []
+  },
+  {
+   "id": "54f5a93a-bb9c-4de0-bbbb-c7888cf87102",
+   "plane": "XY",
+   "origin_point_id": null,
+   "flip": false,
+   "rotation_quarter_turns": 0,
+   "points": [
+    {
+     "id": "5b99e70b-7676-4713-a463-1006f4469b3d",
+     "x": 0.0,
+     "y": 0.0
+    },
+    {
+     "id": "3ab7d2a6-e2b3-4bd6-8b4b-b34b06147641",
+     "x": 65.0,
+     "y": 0.0
+    },
+    {
+     "id": "9d33727d-b879-444f-8393-978f12dc5dbc",
+     "x": 65.0,
+     "y": 10.0
+    },
+    {
+     "id": "619ce09d-478c-43b5-8dc7-b5f0de9af383",
+     "x": 0.0,
+     "y": 10.0
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "9618492a-33c4-45d4-99dc-cb5678c6336c",
+     "construction": false,
+     "start_point_id": "5b99e70b-7676-4713-a463-1006f4469b3d",
+     "end_point_id": "3ab7d2a6-e2b3-4bd6-8b4b-b34b06147641"
+    },
+    {
+     "type": "line",
+     "id": "31720196-7b6d-47ff-8c43-f75349b8d3ef",
+     "construction": false,
+     "start_point_id": "3ab7d2a6-e2b3-4bd6-8b4b-b34b06147641",
+     "end_point_id": "9d33727d-b879-444f-8393-978f12dc5dbc"
+    },
+    {
+     "type": "line",
+     "id": "12f4ea31-8b9c-4e51-b959-723cc09bd894",
+     "construction": false,
+     "start_point_id": "9d33727d-b879-444f-8393-978f12dc5dbc",
+     "end_point_id": "619ce09d-478c-43b5-8dc7-b5f0de9af383"
+    },
+    {
+     "type": "line",
+     "id": "577ac53d-a7a6-4a0e-9add-c7d565df65e1",
+     "construction": false,
+     "start_point_id": "619ce09d-478c-43b5-8dc7-b5f0de9af383",
+     "end_point_id": "5b99e70b-7676-4713-a463-1006f4469b3d"
+    }
+   ],
+   "constraints": [],
+   "external_references": [],
+   "pattern_instances": [],
+   "mirror_instances": []
+  },
+  {
+   "id": "6875c028-2772-4f9b-8c77-c5c482850036",
+   "plane": "XY",
+   "origin_point_id": null,
+   "flip": false,
+   "rotation_quarter_turns": 0,
+   "points": [
+    {
+     "id": "5371eff1-ea31-4342-b958-515eea9f39f1",
+     "x": 0.0,
+     "y": 0.0
+    },
+    {
+     "id": "77d95078-e216-4bcf-80f7-ea844994a596",
+     "x": 36.0,
+     "y": 0.0
+    },
+    {
+     "id": "c06fb099-e3e7-4a1a-9916-0aa35dfd42a6",
+     "x": 36.0,
+     "y": 36.0
+    },
+    {
+     "id": "b8a66f90-9573-4bb9-bce3-0ad79c6a95fd",
+     "x": 0.0,
+     "y": 36.0
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "66f24299-5301-4eac-9292-89dd4070980f",
+     "construction": false,
+     "start_point_id": "5371eff1-ea31-4342-b958-515eea9f39f1",
+     "end_point_id": "77d95078-e216-4bcf-80f7-ea844994a596"
+    },
+    {
+     "type": "line",
+     "id": "397b4ede-ad4f-4c59-801b-14e8d1d332e3",
+     "construction": false,
+     "start_point_id": "77d95078-e216-4bcf-80f7-ea844994a596",
+     "end_point_id": "c06fb099-e3e7-4a1a-9916-0aa35dfd42a6"
+    },
+    {
+     "type": "line",
+     "id": "def11f6d-8562-4ebe-adf0-682fbf5f8837",
+     "construction": false,
+     "start_point_id": "c06fb099-e3e7-4a1a-9916-0aa35dfd42a6",
+     "end_point_id": "b8a66f90-9573-4bb9-bce3-0ad79c6a95fd"
+    },
+    {
+     "type": "line",
+     "id": "3c0888cf-2b30-4c54-b337-914658bef415",
+     "construction": false,
+     "start_point_id": "b8a66f90-9573-4bb9-bce3-0ad79c6a95fd",
+     "end_point_id": "5371eff1-ea31-4342-b958-515eea9f39f1"
+    }
+   ],
+   "constraints": [],
+   "external_references": [],
+   "pattern_instances": [],
+   "mirror_instances": []
+  },
+  {
+   "id": "8ec41006-400b-4db3-b838-7c401cfa8ec4",
+   "plane": "XY",
+   "origin_point_id": null,
+   "flip": false,
+   "rotation_quarter_turns": 0,
+   "points": [
+    {
+     "id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "x": 24.0,
+     "y": 4.0
+    },
+    {
+     "id": "c2bc704e-f3d0-4910-9753-279cf10da7c9",
+     "x": 28.0,
+     "y": 4.0
+    },
+    {
+     "id": "dc5a0c84-797a-41f2-ab9b-4b7539d90561",
+     "x": 24.0,
+     "y": 8.0
+    },
+    {
+     "id": "afc6e005-928a-4194-80fe-2f522c76bc6b",
+     "x": 28.0,
+     "y": 4.0
+    },
+    {
+     "id": "8a763c3e-6e9b-4f33-a2c5-d5c76b896ad7",
+     "x": 24.0,
+     "y": 0.0
+    },
+    {
+     "id": "1f505cf8-aafb-480b-8128-257c607b7379",
+     "x": 20.0,
+     "y": 4.000000000000001
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "75776421-f984-4796-bb0a-ec24b00cc3f7",
+     "construction": false,
+     "center_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius_point_id": "c2bc704e-f3d0-4910-9753-279cf10da7c9",
+     "radius_constraint_id": "1cab2f07-e779-429b-b50a-d66796624222",
+     "cardinal_point_ids": [
+      "dc5a0c84-797a-41f2-ab9b-4b7539d90561",
+      "afc6e005-928a-4194-80fe-2f522c76bc6b",
+      "8a763c3e-6e9b-4f33-a2c5-d5c76b896ad7",
+      "1f505cf8-aafb-480b-8128-257c607b7379"
+     ],
+     "cardinal_constraint_ids": [
+      "9208a74e-212e-463a-8e6e-b8fb538b2ee0",
+      "227640a3-b26e-416f-ae2c-06c2b368b6f6",
+      "d3416b49-bca4-47de-9fe6-ed585e28eaff",
+      "c437ef63-9823-4400-b0a5-821632dd086c",
+      "cfb40c8a-55a2-47b8-bc82-f6900f478121",
+      "040dda70-dd5d-425b-85f4-d003facd1051",
+      "fd47ee4d-0386-4c82-8c2e-3a8258671b89",
+      "1ff6e0bb-86d0-4669-9428-2f710b8af9d0"
+     ]
+    }
+   ],
+   "constraints": [
+    {
+     "id": "1cab2f07-e779-429b-b50a-d66796624222",
+     "point_a_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "point_b_id": "c2bc704e-f3d0-4910-9753-279cf10da7c9",
+     "distance": 4.0,
+     "orientation": "linear",
+     "provisional": true,
+     "type": "distance"
+    },
+    {
+     "id": "9208a74e-212e-463a-8e6e-b8fb538b2ee0",
+     "center1_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius1_point_id": "c2bc704e-f3d0-4910-9753-279cf10da7c9",
+     "center2_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius2_point_id": "dc5a0c84-797a-41f2-ab9b-4b7539d90561",
+     "type": "equal_radius"
+    },
+    {
+     "id": "227640a3-b26e-416f-ae2c-06c2b368b6f6",
+     "point_a_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "point_b_id": "dc5a0c84-797a-41f2-ab9b-4b7539d90561",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "d3416b49-bca4-47de-9fe6-ed585e28eaff",
+     "center1_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius1_point_id": "c2bc704e-f3d0-4910-9753-279cf10da7c9",
+     "center2_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius2_point_id": "afc6e005-928a-4194-80fe-2f522c76bc6b",
+     "type": "equal_radius"
+    },
+    {
+     "id": "c437ef63-9823-4400-b0a5-821632dd086c",
+     "point_a_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "point_b_id": "afc6e005-928a-4194-80fe-2f522c76bc6b",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "cfb40c8a-55a2-47b8-bc82-f6900f478121",
+     "center1_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius1_point_id": "c2bc704e-f3d0-4910-9753-279cf10da7c9",
+     "center2_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius2_point_id": "8a763c3e-6e9b-4f33-a2c5-d5c76b896ad7",
+     "type": "equal_radius"
+    },
+    {
+     "id": "040dda70-dd5d-425b-85f4-d003facd1051",
+     "point_a_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "point_b_id": "8a763c3e-6e9b-4f33-a2c5-d5c76b896ad7",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "fd47ee4d-0386-4c82-8c2e-3a8258671b89",
+     "center1_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius1_point_id": "c2bc704e-f3d0-4910-9753-279cf10da7c9",
+     "center2_point_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "radius2_point_id": "1f505cf8-aafb-480b-8128-257c607b7379",
+     "type": "equal_radius"
+    },
+    {
+     "id": "1ff6e0bb-86d0-4669-9428-2f710b8af9d0",
+     "point_a_id": "c5b3ccd4-f6ec-4103-82b8-b4865ee0c9ea",
+     "point_b_id": "1f505cf8-aafb-480b-8128-257c607b7379",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    }
+   ],
+   "external_references": [],
+   "pattern_instances": [],
+   "mirror_instances": []
+  },
+  {
+   "id": "96b02b6a-cfc4-44c0-a835-a0360d477140",
+   "plane": "XY",
+   "origin_point_id": null,
+   "flip": false,
+   "rotation_quarter_turns": 0,
+   "points": [
+    {
+     "id": "5470bcbc-0139-440c-a979-20d3b592c122",
+     "x": 0.0,
+     "y": 0.0
+    },
+    {
+     "id": "903e0e93-2b13-4d08-992a-5231be9b168b",
+     "x": 32.0,
+     "y": 0.0
+    },
+    {
+     "id": "8408f85e-3412-4055-b539-8bbe326c6220",
+     "x": 32.0,
+     "y": 8.0
+    },
+    {
+     "id": "a26a5d12-2b3f-4311-ac97-a85f620786b7",
+     "x": 0.0,
+     "y": 8.0
+    }
+   ],
+   "entities": [
+    {
+     "type": "line",
+     "id": "a6924d93-8154-4390-9bfa-0b73569620d0",
+     "construction": false,
+     "start_point_id": "5470bcbc-0139-440c-a979-20d3b592c122",
+     "end_point_id": "903e0e93-2b13-4d08-992a-5231be9b168b"
+    },
+    {
+     "type": "line",
+     "id": "dfe277f8-aa36-472a-8fda-3395ddf123ba",
+     "construction": false,
+     "start_point_id": "903e0e93-2b13-4d08-992a-5231be9b168b",
+     "end_point_id": "8408f85e-3412-4055-b539-8bbe326c6220"
+    },
+    {
+     "type": "line",
+     "id": "26f1f8e8-09f5-4585-8d8c-0757e554f5a6",
+     "construction": false,
+     "start_point_id": "8408f85e-3412-4055-b539-8bbe326c6220",
+     "end_point_id": "a26a5d12-2b3f-4311-ac97-a85f620786b7"
+    },
+    {
+     "type": "line",
+     "id": "55e6c1ff-cf56-4c6a-97b7-906c9d0bbe61",
+     "construction": false,
+     "start_point_id": "a26a5d12-2b3f-4311-ac97-a85f620786b7",
+     "end_point_id": "5470bcbc-0139-440c-a979-20d3b592c122"
+    }
+   ],
+   "constraints": [],
+   "external_references": [],
+   "pattern_instances": [],
+   "mirror_instances": []
+  },
+  {
+   "id": "b7676d57-9c08-4cba-b11a-c863b26f70ac",
+   "plane": "XY",
+   "origin_point_id": null,
+   "flip": false,
+   "rotation_quarter_turns": 0,
+   "points": [
+    {
+     "id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "x": 18.0,
+     "y": 18.0
+    },
+    {
+     "id": "7e817598-0a7f-4c24-b978-1e98b1d8bd0f",
+     "x": 22.0,
+     "y": 18.0
+    },
+    {
+     "id": "7be3d690-8bb0-4d71-9561-fcd371a95972",
+     "x": 18.0,
+     "y": 22.0
+    },
+    {
+     "id": "cc1696a4-41c0-4c2e-b85f-66403ce41e19",
+     "x": 22.0,
+     "y": 18.0
+    },
+    {
+     "id": "7f39fd5b-fe9f-4165-aa81-cd72f69bd9e8",
+     "x": 18.0,
+     "y": 14.0
+    },
+    {
+     "id": "32c062f0-c7fc-49f1-939f-5f64e506396a",
+     "x": 14.0,
+     "y": 18.0
+    }
+   ],
+   "entities": [
+    {
+     "type": "circle",
+     "id": "7d4a529d-ccb2-4b09-8037-895b082730ce",
+     "construction": false,
+     "center_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius_point_id": "7e817598-0a7f-4c24-b978-1e98b1d8bd0f",
+     "radius_constraint_id": "f1a30568-4b16-4855-9c92-103cb41f22d6",
+     "cardinal_point_ids": [
+      "7be3d690-8bb0-4d71-9561-fcd371a95972",
+      "cc1696a4-41c0-4c2e-b85f-66403ce41e19",
+      "7f39fd5b-fe9f-4165-aa81-cd72f69bd9e8",
+      "32c062f0-c7fc-49f1-939f-5f64e506396a"
+     ],
+     "cardinal_constraint_ids": [
+      "40888fd3-6b68-4b77-be1c-2b419c91d6ea",
+      "e6cbfb60-f59a-4cf0-b627-abe86e875692",
+      "42eb9cda-42ad-44c0-9d44-b9d0665b7ec7",
+      "b17c3da5-e246-4a88-8e46-a8cede6445ef",
+      "fcc4ee92-5c32-43dc-8b23-e3ac6306dd55",
+      "e88df311-14a2-4029-89ac-c0e0e2b7c16c",
+      "d4ac86c1-14fe-4470-8e21-6db15ef39f49",
+      "6f5d098f-f221-413e-b763-4936e71a2c19"
+     ]
+    }
+   ],
+   "constraints": [
+    {
+     "id": "f1a30568-4b16-4855-9c92-103cb41f22d6",
+     "point_a_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "point_b_id": "7e817598-0a7f-4c24-b978-1e98b1d8bd0f",
+     "distance": 4.0,
+     "orientation": "linear",
+     "provisional": true,
+     "type": "distance"
+    },
+    {
+     "id": "40888fd3-6b68-4b77-be1c-2b419c91d6ea",
+     "center1_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius1_point_id": "7e817598-0a7f-4c24-b978-1e98b1d8bd0f",
+     "center2_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius2_point_id": "7be3d690-8bb0-4d71-9561-fcd371a95972",
+     "type": "equal_radius"
+    },
+    {
+     "id": "e6cbfb60-f59a-4cf0-b627-abe86e875692",
+     "point_a_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "point_b_id": "7be3d690-8bb0-4d71-9561-fcd371a95972",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "42eb9cda-42ad-44c0-9d44-b9d0665b7ec7",
+     "center1_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius1_point_id": "7e817598-0a7f-4c24-b978-1e98b1d8bd0f",
+     "center2_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius2_point_id": "cc1696a4-41c0-4c2e-b85f-66403ce41e19",
+     "type": "equal_radius"
+    },
+    {
+     "id": "b17c3da5-e246-4a88-8e46-a8cede6445ef",
+     "point_a_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "point_b_id": "cc1696a4-41c0-4c2e-b85f-66403ce41e19",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "fcc4ee92-5c32-43dc-8b23-e3ac6306dd55",
+     "center1_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius1_point_id": "7e817598-0a7f-4c24-b978-1e98b1d8bd0f",
+     "center2_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius2_point_id": "7f39fd5b-fe9f-4165-aa81-cd72f69bd9e8",
+     "type": "equal_radius"
+    },
+    {
+     "id": "e88df311-14a2-4029-89ac-c0e0e2b7c16c",
+     "point_a_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "point_b_id": "7f39fd5b-fe9f-4165-aa81-cd72f69bd9e8",
+     "distance": 0.0,
+     "orientation": "horizontal",
+     "provisional": false,
+     "type": "distance"
+    },
+    {
+     "id": "d4ac86c1-14fe-4470-8e21-6db15ef39f49",
+     "center1_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius1_point_id": "7e817598-0a7f-4c24-b978-1e98b1d8bd0f",
+     "center2_point_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "radius2_point_id": "32c062f0-c7fc-49f1-939f-5f64e506396a",
+     "type": "equal_radius"
+    },
+    {
+     "id": "6f5d098f-f221-413e-b763-4936e71a2c19",
+     "point_a_id": "c7833a62-b748-4a6e-a002-5c8d1618cead",
+     "point_b_id": "32c062f0-c7fc-49f1-939f-5f64e506396a",
+     "distance": 0.0,
+     "orientation": "vertical",
+     "provisional": false,
+     "type": "distance"
+    }
+   ],
+   "external_references": [],
+   "pattern_instances": [],
+   "mirror_instances": []
+  }
+ ]
+}
