@@ -45,6 +45,27 @@ def _stored_mates(root):
     return get_part_or_404(root).mates
 
 
+def _differs(got, want, path="", flip=False):
+    """None when `got` is `want` to 1e-6. The recording is one machine's (x86-64); on another CPU (CI's arm64 runner) the free-motion `basis` comes out with the
+    opposite overall sign (a null-space vector has no sign), so each basis row may be negated as a whole."""
+    if isinstance(want, dict):
+        if not isinstance(got, dict) or set(got) != set(want):
+            return f"{path}: keys differ"
+        return next((d for k in want if (d := _differs(got[k], want[k], f"{path}.{k}")) is not None), None)
+    if isinstance(want, list) and path.endswith("basis"):
+        for g, w in zip(got, want):
+            if _differs(g, w, path) is not None and _differs(g, [-x for x in w], path) is not None:
+                return f"{path}: a basis row differs beyond its sign"
+        return None if len(got) == len(want) else f"{path}: row count"
+    if isinstance(want, list):
+        if not isinstance(got, list) or len(got) != len(want):
+            return f"{path}: length"
+        return next((d for i, (g, w) in enumerate(zip(got, want)) if (d := _differs(g, w, f"{path}[{i}]")) is not None), None)
+    if isinstance(want, float) and not isinstance(want, bool):
+        return None if abs(got - want) <= 1e-6 else f"{path}: {got} != {want}"
+    return None if got == want else f"{path}: {got!r} != {want!r}"
+
+
 @pytest.mark.parametrize("list_first", [False, True], ids=["solve_before_any_listing", "listing_first"])
 def test_mate_motion_on_the_current_demo_is_what_it_was_before_n1b(list_first):
     root = import_demo(client)
@@ -54,7 +75,8 @@ def test_mate_motion_on_the_current_demo_is_what_it_was_before_n1b(list_first):
     want = json.loads((DATA / "gear_train_demo_motion.json").read_text())
     assert set(got) == set(want)
     for key in want:
-        assert got[key] == want[key], key
+        problem = _differs(got[key], want[key])
+        assert problem is None, f"{key}: {problem}"
     assert all(got[k]["converged"] for k in want if k != "constraint_status")
 
 
