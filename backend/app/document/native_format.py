@@ -1392,6 +1392,7 @@ def _feature_to_dict(feature: Feature) -> dict:
             # Mirror persisted before this field existed, or one using the
             # ordinary source_body_ids/source_feature_ids path.
             "tool_feature_id": feature.tool_feature_id,
+            "extra_tool_feature_ids": list(feature.extra_tool_feature_ids),
         }
     if isinstance(feature, MergeFeature):
         return {
@@ -1808,6 +1809,7 @@ def _feature_from_dict(data: dict) -> Feature:
             # `tool_feature_id` (Phase 8) defaults to None for any Mirror
             # persisted before this field existed.
             tool_feature_id=data.get("tool_feature_id"),
+            extra_tool_feature_ids=list(data.get("extra_tool_feature_ids", [])),
         )
     if feature_type == "merge":
         return MergeFeature(

@@ -1329,6 +1329,7 @@ def _feature_response_unflagged(part: Part, feature: Feature) -> FeatureResponse
             mirror_plane=_plane_ref_to_schema(feature.mirror_plane),
             merge=feature.merge,
             tool_feature_id=feature.tool_feature_id,
+            tool_feature_ids=feature.all_tool_feature_ids,
             locked=part.is_locked(feature.id),
             # Bug fix: MirrorFeature.produces is a hardcoded BODY - resolve
             # through its actual sources so a Mirror of a Surface reports
@@ -2439,21 +2440,26 @@ def _validate_mirror_source_body_ids(
         _validate_uniform_source_produces(part, source_body_ids, source_feature_ids, "MirrorFeature")
 
 
-def _pattern_tool_ids(single: str | None, many: list[str] | None) -> list[str]:
-    """The tool Feature ids a Pattern payload names, in order and without repeats: `tool_feature_ids` (the list) or the older single `tool_feature_id`. Giving both
-    with different contents is ambiguous, so it is refused."""
+def _payload_tool_ids(single: str | None, many: list[str] | None, kind: str = "PatternFeature") -> list[str]:
+    """The tool Feature ids a Pattern / Mirror payload names, in order and without repeats: `tool_feature_ids` (the list) or the older single `tool_feature_id`.
+    Giving both with different contents is ambiguous, so it is refused."""
     if many is not None and single is not None and (not many or many[0] != single):
-        raise HTTPException(status_code=422, detail="PatternFeature: give tool_feature_ids or tool_feature_id, not both (or have them agree)")
+        raise HTTPException(status_code=422, detail=f"{kind}: give tool_feature_ids or tool_feature_id, not both (or have them agree)")
     ids = list(many) if many is not None else ([single] if single is not None else [])
     return list(dict.fromkeys(ids))
 
 
-def _validate_pattern_tool_feature_ids(
-    part: Part, tool_ids: list[str], source_body_ids: list[str], source_feature_ids: list[str], merge: MergeMode
+def _validate_tool_feature_ids(
+    part: Part,
+    tool_ids: list[str],
+    source_body_ids: list[str],
+    source_feature_ids: list[str],
+    merge: MergeMode,
+    kind: str = "PatternFeature",
 ) -> None:
-    """`_validate_tool_feature_id` for every tool Feature of a Pattern (each must qualify; the mutual-exclusion and merge rules are the same)."""
+    """`_validate_tool_feature_id` for every tool Feature of a Pattern / Mirror (each must qualify; the mutual-exclusion and merge rules are the same)."""
     for tool_id in tool_ids:
-        _validate_tool_feature_id(part, tool_id, source_body_ids, source_feature_ids, merge, "PatternFeature")
+        _validate_tool_feature_id(part, tool_id, source_body_ids, source_feature_ids, merge, kind)
 
 
 def _validate_pattern_source_body_ids(
@@ -8166,18 +8172,18 @@ def create_mirror_feature(part_id: str, payload: MirrorFeatureCreate) -> MirrorF
     source_body_ids = list(payload.source_body_ids)
     source_feature_ids = list(payload.source_feature_ids)
     mirror_plane = _plane_ref_to_domain(payload.mirror_plane)
-    _validate_mirror_source_body_ids(part, source_body_ids, source_feature_ids, payload.tool_feature_id)
+    tool_ids = _payload_tool_ids(payload.tool_feature_id, payload.tool_feature_ids, "MirrorFeature")
+    _validate_mirror_source_body_ids(part, source_body_ids, source_feature_ids, tool_ids[0] if tool_ids else None)
     _validate_plane_ref(part, mirror_plane)
-    _validate_tool_feature_id(
-        part, payload.tool_feature_id, source_body_ids, source_feature_ids, payload.merge, "MirrorFeature"
-    )
+    _validate_tool_feature_ids(part, tool_ids, source_body_ids, source_feature_ids, payload.merge, "MirrorFeature")
     feature = MirrorFeature(
         id=str(uuid.uuid4()),
         source_body_ids=source_body_ids,
         mirror_plane=mirror_plane,
         source_feature_ids=source_feature_ids,
         merge=payload.merge,
-        tool_feature_id=payload.tool_feature_id,
+        tool_feature_id=tool_ids[0] if tool_ids else None,
+        extra_tool_feature_ids=tool_ids[1:],
     )
     resolve_mirror(part, feature)  # raises on an unresolvable reference; result unused here
     part.add_feature(feature)
@@ -8223,14 +8229,14 @@ def update_mirror_feature(
     # tool_feature_id mode via this endpoint (mirrors `PatternFeatureUpdate.
     # pattern_type`'s own immutability - switching modes is delete+recreate,
     # not an edit).
-    new_tool_feature_id = (
-        payload.tool_feature_id if payload.tool_feature_id is not None else feature.tool_feature_id
-    )
+    if payload.tool_feature_id is not None or payload.tool_feature_ids is not None:
+        new_tool_ids = _payload_tool_ids(payload.tool_feature_id, payload.tool_feature_ids, "MirrorFeature")
+    else:
+        new_tool_ids = feature.all_tool_feature_ids
+    new_tool_feature_id = new_tool_ids[0] if new_tool_ids else None
     _validate_mirror_source_body_ids(part, new_source_body_ids, new_source_feature_ids, new_tool_feature_id)
     _validate_plane_ref(part, new_mirror_plane)
-    _validate_tool_feature_id(
-        part, new_tool_feature_id, new_source_body_ids, new_source_feature_ids, new_merge, "MirrorFeature"
-    )
+    _validate_tool_feature_ids(part, new_tool_ids, new_source_body_ids, new_source_feature_ids, new_merge, "MirrorFeature")
 
     candidate = MirrorFeature(
         id=feature.id,
@@ -8239,6 +8245,7 @@ def update_mirror_feature(
         source_feature_ids=new_source_feature_ids,
         merge=new_merge,
         tool_feature_id=new_tool_feature_id,
+        extra_tool_feature_ids=new_tool_ids[1:],
     )
     resolve_mirror(part, candidate)  # raises on an unresolvable reference
 
@@ -8247,6 +8254,7 @@ def update_mirror_feature(
     feature.source_feature_ids = candidate.source_feature_ids
     feature.merge = candidate.merge
     feature.tool_feature_id = candidate.tool_feature_id
+    feature.extra_tool_feature_ids = candidate.extra_tool_feature_ids
     return _feature_response(part, feature)
 
 
@@ -8807,7 +8815,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         _pattern_direction_ref_to_domain(payload.direction_2) if payload.direction_2 is not None else None
     )
     axis = _pattern_axis_ref_to_domain(payload.axis) if payload.axis is not None else None
-    tool_ids = _pattern_tool_ids(payload.tool_feature_id, payload.tool_feature_ids)
+    tool_ids = _payload_tool_ids(payload.tool_feature_id, payload.tool_feature_ids)
     _validate_pattern_source_body_ids(part, source_body_ids, source_feature_ids, tool_ids[0] if tool_ids else None)
     _validate_pattern_payload(
         payload.pattern_type,
@@ -8820,7 +8828,7 @@ def create_pattern_feature(part_id: str, payload: PatternFeatureCreate) -> Patte
         payload.angle_total,
         payload.skip_indices,
     )
-    _validate_pattern_tool_feature_ids(part, tool_ids, source_body_ids, source_feature_ids, payload.merge)
+    _validate_tool_feature_ids(part, tool_ids, source_body_ids, source_feature_ids, payload.merge)
 
     feature = PatternFeature(
         id=str(uuid.uuid4()),
@@ -8875,7 +8883,7 @@ def preview_pattern_feature_coarse(
         _pattern_direction_ref_to_domain(payload.direction_2) if payload.direction_2 is not None else None
     )
     axis = _pattern_axis_ref_to_domain(payload.axis) if payload.axis is not None else None
-    tool_ids = _pattern_tool_ids(payload.tool_feature_id, payload.tool_feature_ids)
+    tool_ids = _payload_tool_ids(payload.tool_feature_id, payload.tool_feature_ids)
     _validate_pattern_source_body_ids(part, source_body_ids, source_feature_ids, tool_ids[0] if tool_ids else None)
     _validate_pattern_payload(
         payload.pattern_type,
@@ -8888,7 +8896,7 @@ def preview_pattern_feature_coarse(
         payload.angle_total,
         payload.skip_indices,
     )
-    _validate_pattern_tool_feature_ids(part, tool_ids, source_body_ids, source_feature_ids, payload.merge)
+    _validate_tool_feature_ids(part, tool_ids, source_body_ids, source_feature_ids, payload.merge)
 
     feature = PatternFeature(
         id=str(uuid.uuid4()),
@@ -8979,7 +8987,7 @@ def update_pattern_feature(
     # Phase 8 (§2.11): mirrors `update_mirror_feature`'s own identical
     # omitted-vs-current convention - see that function's own doc comment.
     if payload.tool_feature_id is not None or payload.tool_feature_ids is not None:
-        new_tool_ids = _pattern_tool_ids(payload.tool_feature_id, payload.tool_feature_ids)
+        new_tool_ids = _payload_tool_ids(payload.tool_feature_id, payload.tool_feature_ids)
     else:
         new_tool_ids = feature.all_tool_feature_ids
     new_tool_feature_id = new_tool_ids[0] if new_tool_ids else None
@@ -8998,7 +9006,7 @@ def update_pattern_feature(
         new_angle_total,
         new_skip_indices,
     )
-    _validate_pattern_tool_feature_ids(part, new_tool_ids, new_source_body_ids, new_source_feature_ids, new_merge)
+    _validate_tool_feature_ids(part, new_tool_ids, new_source_body_ids, new_source_feature_ids, new_merge)
 
     candidate = PatternFeature(
         id=feature.id,

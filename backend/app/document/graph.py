@@ -239,8 +239,7 @@ def resolve_feature_produces(feature: Feature, part: Part, *, _visited: frozense
     source_ids.update(feature.source_feature_ids)
     if feature.tool_feature_id is not None:
         source_ids.add(feature.tool_feature_id)
-    if isinstance(feature, PatternFeature):
-        source_ids.update(feature.extra_tool_feature_ids)
+    source_ids.update(feature.extra_tool_feature_ids)
 
     resolved: set[Produces] = set()
     for source_id in source_ids:
@@ -937,6 +936,7 @@ def _mirror_dependencies(feature: MirrorFeature) -> tuple[str, ...]:
         deps.add(plane_dep)
     if feature.tool_feature_id is not None:
         deps.add(feature.tool_feature_id)
+    deps.update(feature.extra_tool_feature_ids)
     return tuple(deps)
 
 

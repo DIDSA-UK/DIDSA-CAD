@@ -40,8 +40,8 @@ The implementation session updates this table as each part lands (one commit per
 | 13 | Desktop never opens the hamburger panel; scene settings dialog | Done | 7f17e9e |
 | 12 | Desktop Visibility button and panel; ribbon duplicates removed | Done | 11e74ec |
 | 8 | Copy to cloud storage: new or existing project; Open only opens | Done | 8fbbab8 |
-| 2A | Backend: face → feature endpoint | Done | this commit |
-| M.1 | Backend: Mirror takes several tool features | To do | |
+| 2A | Backend: face → feature endpoint | Done | 87b0335 |
+| M.1 | Backend: Mirror takes several tool features | Done | this commit |
 | M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | To do | |
 | 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | To do | |
 
@@ -370,4 +370,9 @@ Decisions the plan left open, recorded as they were made.
   so a patterned or mirrored hole's wall gives the Pattern / Mirror. Mirror's tool half is split out
   (`mirror.mirrored_tool_feature_shapes`) for this. Samples: up to 5 points from a 9x9 UV grid kept inside the face. Full backend
   suite: 3596 passed; 4 `test_planetary_gear_jobs.py` tests failed under `-n 8` and pass alone (job-pool timing, not this change).
+- **M.1:** as Pattern in `0b8541d`: `MirrorFeature.extra_tool_feature_ids` / `all_tool_feature_ids`, `tool_feature_ids` on create /
+  update / response, saved in the file (an older file loads with the first only), in the dependency graph and in
+  `resolve_feature_produces`. The router's `_pattern_tool_ids` / `_validate_pattern_tool_feature_ids` became `_payload_tool_ids` /
+  `_validate_tool_feature_ids` with a `kind` argument, shared by both. **Not done, by finding:** "add them to the coarse preview" -
+  Mirror has no coarse path (`compute_part_bodies_coarse` has no Mirror branch and there is no Mirror coarse-preview endpoint).
 

@@ -1220,6 +1220,8 @@ class MirrorFeatureCreate(BaseModel):
     # Cut/Boss-into-target Feature instead of `source_body_ids`/`source_
     # feature_ids` (see `app.document.router._validate_tool_feature_id`).
     tool_feature_id: str | None = None
+    # Several tool Features mirrored together; the first is also reported as `tool_feature_id`. Give this or `tool_feature_id`, not both.
+    tool_feature_ids: list[str] | None = None
 
 
 class MirrorFeatureUpdate(BaseModel):
@@ -1236,6 +1238,7 @@ class MirrorFeatureUpdate(BaseModel):
     source_feature_ids: list[str] | None = None
     merge: MergeMode | None = None
     tool_feature_id: str | None = None
+    tool_feature_ids: list[str] | None = None
 
 
 class MirrorFeatureResponse(FeatureResponseBase):
@@ -1246,6 +1249,7 @@ class MirrorFeatureResponse(FeatureResponseBase):
     source_feature_ids: list[str] = []
     merge: MergeMode
     tool_feature_id: str | None = None
+    tool_feature_ids: list[str] = []
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # MirrorFeature.
