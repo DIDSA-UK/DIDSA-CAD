@@ -39,11 +39,11 @@ The implementation session updates this table in its PR.
 | M4 | Better first guess: type from the picks, pick-point defaults | CAD backend + both clients | Done (merged, CAD #360 / VR #82): the type rule shipped (with Peg in hole); no pick-point rule met the standard, so none shipped (results: "M4 results" below) |
 | M4.1 | A Distance previewed where the parts are (SOLIDWORKS' order: parallel, the measured distance, then type the one you want) | CAD backend + both clients | Done (merged with M4; results: "M4.1 results" below) |
 | M5 | Rigid sets shown in the tree; "moves as one" cues | CAD client, VR | Done (merged; results: "M5 results" below) |
-| S0 | Storage scope doc and spikes | CAD, VR | In review: `docs/shared-storage-scope.md`; the Quest spike is built and waits for the owner's run (results: "S0 results" below) |
+| S0 | Storage scope doc and spikes | CAD, VR | Done except one owner step: `docs/shared-storage-scope.md` (all eight decisions accepted); the Quest storage spike is built and still needs the owner's run on the headset (results: "S0 results" below) |
 | S1 | Project store service | CAD | Done (PR #362: `project-store/`; results: "S1 results" below) |
 | S2 | Flutter: server projects, local cache, offline queue, conflicts | CAD client | Done (PR #363 and follow-ups: `client/lib/storage/server/`, `client/lib/home/`; results: "S2 results" below) |
 | S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (merged 2026-11-14; headless and against the real store, not run on a headset; results: "S3 results" below) |
-| S4 | Sync hardening and set-up polish | all | Built on branch `ccr-3610b1ec-q4cj6c` in both repos, PRs not opened yet (results: "S4 results" below) |
+| S4 | Sync hardening and set-up polish | all | Done (CAD #366 / VR #87, merged 2026-11-14; headless, Xvfb and a real store killed and restarted, not run on a headset; results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
 | N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend (clients later) | Later, by a stronger model after storage has rolled out (owner, 2026-11-14); the head start is "Part 2b" below |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
