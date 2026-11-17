@@ -319,6 +319,9 @@ from app.document.schemas import (
     AxisSchema,
     MeasureEntityRefSchema,
     MeasureRequest,
+    FaceOwnerEntry,
+    FaceOwnerFeaturesRequest,
+    FaceOwnerFeaturesResponse,
     MeasurementResultSchema,
     ScaleBodyFeatureCreate,
     ScaleBodyFeatureResponse,
@@ -7547,6 +7550,34 @@ def measure_entities(part_id: str, payload: MeasureRequest) -> MeasurementResult
     refs = [_measure_entity_ref_to_domain(ref) for ref in payload.refs]
     result = compute_measurement(document, part, refs)
     return _measurement_result_to_schema(result)
+
+
+@router.post("/parts/{part_id}/face-owner-features", response_model=FaceOwnerFeaturesResponse)
+def face_owner_features(part_id: str, payload: FaceOwnerFeaturesRequest) -> FaceOwnerFeaturesResponse:
+    """Which Feature made each picked face (bug report 2026-11-17 item 2A; the rule is `app.document.face_owner`'s docstring): what a
+    face pick adds to a Pattern / Mirror scope on the Feature tab. Read-only. A face on a placed Occurrence (`occurrence_id`, as in
+    Measure) is answered from that Occurrence's Part. 422 `missing_reference` for a face that does not resolve."""
+    from app.document.face_owner import face_owner_feature_ids
+
+    part = get_part_or_404(part_id)
+    document = get_document()
+    rollback = frozenset(payload.rollback_excluded_feature_ids)
+    by_part: dict[str, tuple[Part, list[int]]] = {}
+    for i, ref in enumerate(payload.faces):
+        try:
+            target_part, _transform = resolve_occurrence_target(document, part, ref.occurrence_id)
+        except KeyError:
+            raise HTTPException(status_code=422, detail={"type": "missing_reference", "occurrence_id": ref.occurrence_id}) from None
+        by_part.setdefault(target_part.id, (target_part, []))[1].append(i)
+    owners: list[str] = [""] * len(payload.faces)
+    for target_part, indices in by_part.values():
+        refs = [_subshape_ref_to_domain(payload.faces[i].subshape_ref) for i in indices]
+        found = face_owner_feature_ids(target_part, refs, rollback if target_part is part else frozenset())
+        for i, feature_id in zip(indices, found):
+            owners[i] = feature_id
+    return FaceOwnerFeaturesResponse(
+        features=[FaceOwnerEntry(face=face, feature_id=owner) for face, owner in zip(payload.faces, owners)]
+    )
 
 
 @router.post(

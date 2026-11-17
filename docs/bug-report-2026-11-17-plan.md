@@ -39,8 +39,8 @@ The implementation session updates this table as each part lands (one commit per
 | 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | Done | fb4755c |
 | 13 | Desktop never opens the hamburger panel; scene settings dialog | Done | 7f17e9e |
 | 12 | Desktop Visibility button and panel; ribbon duplicates removed | Done | 11e74ec |
-| 8 | Copy to cloud storage: new or existing project; Open only opens | Done | this commit |
-| 2A | Backend: face → feature endpoint | To do | |
+| 8 | Copy to cloud storage: new or existing project; Open only opens | Done | 8fbbab8 |
+| 2A | Backend: face → feature endpoint | Done | this commit |
 | M.1 | Backend: Mirror takes several tool features | To do | |
 | M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | To do | |
 | 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | To do | |
@@ -363,4 +363,11 @@ Decisions the plan left open, recorded as they were made.
   13 Nov sequence (a brand-new part into an empty cloud project) is now File > Copy this project to cloud storage… > Existing
   project folder (the old Open-based test is rewritten that way); for a session with no local folder yet this first asks for one
   (`_ensureProjectRoot`), as the New project folder path always did.
+- **2A:** the request takes Measure's ref shape (`{occurrence_id, subshape_ref}` or a bare `SubShapeRef`) plus optional
+  `rollback_excluded_feature_ids`; the response echoes each face with its `feature_id`. The "as it ran" snapshot is now one function,
+  `extrude.resolve_feature_tool_shape_as_it_ran`, used by Pattern, Mirror and `face_owner.py` (Pattern's and Mirror's copies
+  removed). Candidates also include Patterns and Mirrors that repeat tool features into the body (their instances / mirrored tools),
+  so a patterned or mirrored hole's wall gives the Pattern / Mirror. Mirror's tool half is split out
+  (`mirror.mirrored_tool_feature_shapes`) for this. Samples: up to 5 points from a 9x9 UV grid kept inside the face. Full backend
+  suite: 3596 passed; 4 `test_planetary_gear_jobs.py` tests failed under `-n 8` and pass alone (job-pool timing, not this change).
 
