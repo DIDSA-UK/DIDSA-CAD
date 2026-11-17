@@ -10,6 +10,7 @@ import '../api/sketch_api_client.dart';
 import '../viewport3d/mouse_navigation.dart' show SelectClick;
 import 'dimension_text.dart';
 import 'dof_analysis.dart';
+import 'angle_rays.dart';
 import 'label_drag_resolver.dart';
 import 'marquee_selection.dart';
 import 'projector/sketch_drag_stats.dart';
@@ -742,6 +743,11 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
   /// dragged the label off the chord's midpoint at least once.
   final double? sketchLocalAlongOffset;
 
+  /// The constraint's value and saved quadrant, which pick the sector the arc is drawn in (`angle_rays.dart` [angleRays]). Both null
+  /// for a ghost whose side the cursor has not chosen yet: the outward rays.
+  final double? valueDegrees;
+  final int? quadrant;
+
   const ConstraintAngleDimensionItem({
     required super.constraintId,
     required super.selected,
@@ -753,6 +759,8 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
     required this.labelOffset,
     this.sketchLocalArcRadius,
     this.sketchLocalAlongOffset,
+    this.valueDegrees,
+    this.quadrant,
   });
 
   @override
@@ -767,7 +775,9 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
       other.text == text &&
       other.labelOffset == labelOffset &&
       other.sketchLocalArcRadius == sketchLocalArcRadius &&
-      other.sketchLocalAlongOffset == sketchLocalAlongOffset;
+      other.sketchLocalAlongOffset == sketchLocalAlongOffset &&
+      other.valueDegrees == valueDegrees &&
+      other.quadrant == quadrant;
 
   @override
   int get hashCode => Object.hash(
@@ -781,6 +791,8 @@ class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
         labelOffset,
         sketchLocalArcRadius,
         sketchLocalAlongOffset,
+        valueDegrees,
+        quadrant,
       );
 }
 
@@ -8938,6 +8950,8 @@ class SketchController extends ChangeNotifier {
               line2Start: (line2Start.x, line2Start.y),
               line2End: (line2End.x, line2End.y),
               p: p,
+              valueDegrees: c.angleDegrees,
+              quadrant: c.quadrant,
             );
       default:
         return null;
@@ -15060,6 +15074,46 @@ class SketchController extends ChangeNotifier {
     return math.acos(cosAngle) * 180 / math.pi;
   }
 
+  /// The angle ghost's sector (bug report 2026-11-17 item 4): which of the four angles around the vertex the cursor is in - the angle
+  /// itself, its supplement on either side, or the opposite one - as an [angleRays] quadrant, the way SolidWorks / Onshape offer an angle
+  /// by where the pointer is. The ghost arc is drawn in that sector and the quadrant is saved with the constraint. Null while the cursor is
+  /// on (within a tap of) either line, as it is right after the second line was picked: no side chosen yet, so the ghost shows the
+  /// outward rays and the constraint keeps the backend's nearest rule. Once the ghost's value editor is open the sector is the one it had
+  /// when it was tapped, so moving the pointer to the text field does not change it.
+  int? angleGhostQuadrant(DimensionGhost ghost) {
+    if (ghost.kind != GhostKind.angle) return null;
+    final frozen = _tappedAngleGhost;
+    if (frozen != null && frozen.key == ghost.key && _activeGhostKey == ghost.key) return frozen.quadrant;
+    return _angleQuadrantUnderCursor(ghost);
+  }
+
+  /// [angleGhostQuadrant] as it was when its ghost was tapped (key, quadrant).
+  ({String key, int? quadrant})? _tappedAngleGhost;
+
+  int? _angleQuadrantUnderCursor(DimensionGhost ghost) {
+    final lineA = lines[ghost.lineAId];
+    final lineB = lines[ghost.lineBId];
+    if (lineA == null || lineB == null) return null;
+    final a1 = points[lineA.startPointId];
+    final a2 = points[lineA.endPointId];
+    final b1 = points[lineB.startPointId];
+    final b2 = points[lineB.endPointId];
+    if (a1 == null || a2 == null || b1 == null || b2 == null) return null;
+    final outward = angleOutwardRays(line1Start: (a1.x, a1.y), line1End: (a2.x, a2.y), line2Start: (b1.x, b1.y), line2End: (b2.x, b2.y));
+    if (outward == null) return null;
+    final pixelsPerUnit = _reportedPixelsPerUnit;
+    final band = pixelsPerUnit != null && pixelsPerUnit > 0 ? hitRadiusForPixelsPerUnit(pixelsPerUnit) : snapRadius;
+    double offLine((double, double) ray) =>
+        ((cursorX - outward.vertex.$1) * ray.$2 - (cursorY - outward.vertex.$2) * ray.$1).abs();
+    if (offLine(outward.ray1) < band || offLine(outward.ray2) < band) return null;
+    return angleQuadrantAt(
+      vertex: outward.vertex,
+      outwardRay1: outward.ray1,
+      outwardRay2: outward.ray2,
+      p: (cursorX, cursorY),
+    );
+  }
+
   AngleConstraintDto? _findAngleConstraint(String line1Id, String line2Id) {
     for (final constraint in constraints.values) {
       if (constraint is AngleConstraintDto &&
@@ -15113,6 +15167,22 @@ class SketchController extends ChangeNotifier {
       final lineA = lines[ghost.lineAId];
       final lineB = lines[ghost.lineBId];
       if (lineA == null || lineB == null) return null;
+      final quadrant = angleGhostQuadrant(ghost);
+      if (quadrant != null) {
+        // The angle of the sector the cursor picked, as it is now.
+        final a1 = points[lineA.startPointId], a2 = points[lineA.endPointId];
+        final b1 = points[lineB.startPointId], b2 = points[lineB.endPointId];
+        if (a1 != null && a2 != null && b1 != null && b2 != null) {
+          final rays = angleRays(
+            line1Start: (a1.x, a1.y),
+            line1End: (a2.x, a2.y),
+            line2Start: (b1.x, b1.y),
+            line2End: (b2.x, b2.y),
+            quadrant: quadrant,
+          );
+          if (rays != null) return angleBetweenRaysDegrees(rays.ray1, rays.ray2);
+        }
+      }
       return _angleBetweenLinesDegrees(lineA, lineB);
     }
 
@@ -15141,6 +15211,8 @@ class SketchController extends ChangeNotifier {
   /// any (item 6's visual spec).
   void tapGhost(String key) {
     if (!_ghosts.any((g) => g.key == key)) return;
+    final ghost = _ghosts.firstWhere((g) => g.key == key);
+    _tappedAngleGhost = ghost.kind == GhostKind.angle ? (key: key, quadrant: _angleQuadrantUnderCursor(ghost)) : null;
     _activeGhostKey = key;
     notifyListeners();
   }
@@ -15222,15 +15294,27 @@ class SketchController extends ChangeNotifier {
     final target = ghost;
 
     if (target.kind == GhostKind.angle) {
+      final pickedQuadrant = angleGhostQuadrant(target);
       await _runGuarded(() async {
         final existing = _findAngleConstraint(target.lineAId!, target.lineBId!);
         if (existing != null) {
           final oldValue = existing.angleDegrees;
-          await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue));
-          _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
+          final oldQuadrant = existing.quadrant;
+          // The quadrant is relative to the constraint's own line order, which may be the other way round from the ghost's: swapping
+          // the two lines swaps the two flip bits.
+          final quadrant = pickedQuadrant == null || existing.line1Id == target.lineAId
+              ? pickedQuadrant
+              : ((pickedQuadrant & 1) << 1) | ((pickedQuadrant & 2) >> 1);
+          await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue), quadrant: quadrant);
+          _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue, quadrant: oldQuadrant));
         } else {
-          final constraint =
-              await _api.createAngleConstraint(_sketchId!, target.lineAId!, target.lineBId!, value);
+          final constraint = await _api.createAngleConstraint(
+            _sketchId!,
+            target.lineAId!,
+            target.lineBId!,
+            value,
+            quadrant: pickedQuadrant,
+          );
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
         await _solveAndTrackDof();
@@ -18287,6 +18371,8 @@ class SketchController extends ChangeNotifier {
             labelOffset: labelOffset,
             sketchLocalArcRadius: labelPlacementFor(entry.key)?.radius,
             sketchLocalAlongOffset: labelPlacementFor(entry.key)?.along,
+            valueDegrees: c.angleDegrees,
+            quadrant: c.quadrant,
           ));
         case LineDistanceConstraintDto c:
           final line1 = lines[c.line1Id];
@@ -18557,6 +18643,7 @@ class SketchController extends ChangeNotifier {
             labelOffset: labelOffset,
             sketchLocalArcRadius: labelPlacementFor(ghost.key)?.radius,
             sketchLocalAlongOffset: labelPlacementFor(ghost.key)?.along,
+            quadrant: angleGhostQuadrant(ghost),
           ));
       }
     }

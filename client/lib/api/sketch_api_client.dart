@@ -1033,12 +1033,17 @@ class AngleConstraintDto extends ConstraintDto {
   final String line2Id;
   final double angleDegrees;
 
+  /// Which of the four angles at the vertex [angleDegrees] is (0-3, see `angle_rays.dart` [angleRays]); null for a constraint saved
+  /// before the backend had the field, drawn with the "nearest" rule.
+  final int? quadrant;
+
   const AngleConstraintDto({
     required super.id,
     super.label,
     required this.line1Id,
     required this.line2Id,
     required this.angleDegrees,
+    this.quadrant,
   });
 
   factory AngleConstraintDto.fromJson(Map<String, dynamic> json) => AngleConstraintDto(
@@ -1047,6 +1052,7 @@ class AngleConstraintDto extends ConstraintDto {
         line1Id: json['line1_id'] as String,
         line2Id: json['line2_id'] as String,
         angleDegrees: (json['angle_degrees'] as num).toDouble(),
+        quadrant: (json['quadrant'] as num?)?.toInt(),
       );
 }
 
@@ -2968,13 +2974,15 @@ class SketchApiClient {
       );
 
   /// The angle-dimension ghost's confirm path - between two non-parallel
-  /// Lines, mirrors [createVerticalConstraint]'s shape.
+  /// Lines, mirrors [createVerticalConstraint]'s shape. [quadrant] (0-3) says which of the four angles at the vertex the value is; null
+  /// leaves the backend's "nearest the current shape" rule.
   Future<ConstraintDto> createAngleConstraint(
     String sketchId,
     String line1Id,
     String line2Id,
-    double angleDegrees,
-  ) =>
+    double angleDegrees, {
+    int? quadrant,
+  }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
@@ -2984,6 +2992,7 @@ class SketchApiClient {
                 'line1_id': line1Id,
                 'line2_id': line2Id,
                 'angle_degrees': angleDegrees,
+                if (quadrant != null) 'quadrant': quadrant,
               }),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
@@ -3413,12 +3422,13 @@ class SketchApiClient {
   /// or `AngleConstraint`'s numeric value and re-solves server-side - see
   /// app/sketch/router.py's `update_constraint_value`. The backend rejects
   /// Vertical/Horizontal targets with a 422, surfaced as an [ApiException].
-  Future<SolveResultDto> updateConstraintValue(String sketchId, String constraintId, double value) =>
+  /// [quadrant] (an angle only) also sets which of the four angles at the vertex the value is; null keeps the saved one.
+  Future<SolveResultDto> updateConstraintValue(String sketchId, String constraintId, double value, {int? quadrant}) =>
       _send(
         () => _httpClient.patch(
               _uri('/sketch/sketches/$sketchId/constraints/$constraintId'),
               headers: _headers,
-              body: jsonEncode({'value': value}),
+              body: jsonEncode({'value': value, if (quadrant != null) 'quadrant': quadrant}),
             ),
         (body) => SolveResultDto.fromJson(body as Map<String, dynamic>),
       );

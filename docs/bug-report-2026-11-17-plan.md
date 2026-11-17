@@ -36,7 +36,7 @@ The implementation session updates this table as each part lands (one commit per
 
 | Part | Summary | Status | Commit |
 |---|---|---|---|
-| 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | To do | |
+| 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | Done | this commit |
 | 13 | Desktop never opens the hamburger panel; scene settings dialog | To do | |
 | 12 | Desktop Visibility button and panel; ribbon duplicates removed | To do | |
 | 8 | Copy to cloud storage: new or existing project; Open only opens | To do | |
@@ -324,3 +324,23 @@ Plan:
   menu? check New, Open, Save, Save As, Save All, Copy to cloud, Import, Export, Part Properties, Connect a VR headset,
   Exit), View, Selection Filters, Controls. List any gap in the PR.
 - Test: desktop layout, Options > Background, colour and scene opens the dialog and `PartToolbar` is not in the tree.
+
+## Notes from the implementation
+
+Decisions the plan left open, recorded as they were made.
+
+- **4, quadrant:** `AngleConstraint.quadrant: int | None` (absent and `null` both mean the old nearest rule; there is no default 0,
+  so an old file's constraint behaves exactly as before). Bit 0 flips the first line's outward ray, bit 1 the second's; the value
+  is the angle between the two resulting rays, so 0/3 and 1/2 are the same magnitude in opposite sectors (the solver only needs
+  the parity; the client draws the named sector). Outward ray = from the lines' intersection towards the segment's midpoint, the
+  rule the overlay already drew with (`angle_outward_ray_signs` in `solver.py`, `angle_rays.dart` on the client). `PATCH
+  .../constraints/{id}` takes an optional `quadrant` (omitted keeps the saved one). The solver's residual check now accepts the
+  supplement as well (a supplement solve lands the lines' directions on 180 - value, the same dimension seen from the other side).
+- **4, offering the angle:** the ghost's sector follows the sketch cursor (`SketchController.angleGhostQuadrant`). While the
+  cursor is within a tap of either line (as it is just after the second line was picked) no side is chosen: the ghost shows the
+  outward rays and no quadrant is sent (old behaviour). The sector is frozen when the ghost is tapped, so moving the pointer to the
+  value editor does not change it. Re-dimensioning an existing angle sends the picked quadrant with the new value.
+- **4, label:** `DimensionLabelPlacement.along` for an angle is now measured along the arc from its middle (it was along the chord),
+  and `radius` is the pointer's distance from the vertex. A saved angle label keeps its arc radius; its `along` reads slightly
+  differently (arc length instead of chord distance). The default label is the arc's middle in the 3D view and the flat canvas.
+

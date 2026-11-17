@@ -957,6 +957,8 @@ class AngleConstraintCreate(BaseModel):
     line1_id: str
     line2_id: str
     angle_degrees: float
+    # Which of the four angles at the vertex (`AngleConstraint.quadrant`); omitted keeps the nearest-to-the-current-shape rule.
+    quadrant: int | None = Field(default=None, ge=0, le=3)
 
 
 class CoincidentConstraintCreate(BaseModel):
@@ -1175,6 +1177,7 @@ class AngleConstraintResponse(_ConstraintResponseBase):
     line1_id: str
     line2_id: str
     angle_degrees: float
+    quadrant: int | None = None
 
 
 class CoincidentConstraintResponse(_ConstraintResponseBase):
@@ -1362,6 +1365,8 @@ class ConstraintValueUpdate(BaseModel):
     and reject this with a 422 (see router.update_constraint_value)."""
 
     value: float
+    # Angle only: which of the four angles at the vertex the value now is (`AngleConstraint.quadrant`). Omitted keeps the saved one.
+    quadrant: int | None = Field(default=None, ge=0, le=3)
 
 
 class SolveResultResponse(BaseModel):

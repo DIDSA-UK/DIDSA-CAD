@@ -4489,7 +4489,13 @@ class Sketch:
         self.constraints[constraint.id] = constraint
         return constraint
 
-    def add_angle_constraint(self, line1_id: str, line2_id: str, angle_degrees: float) -> AngleConstraint:
+    def add_angle_constraint(
+        self, line1_id: str, line2_id: str, angle_degrees: float, quadrant: int | None = None
+    ) -> AngleConstraint:
+        """`quadrant` (0-3, see `AngleConstraint.quadrant`) says which of the four angles at the vertex the value is; None keeps the
+        nearest-to-the-current-shape rule."""
+        if quadrant is not None and quadrant not in (0, 1, 2, 3):
+            raise ValueError(f"quadrant must be 0-3, got {quadrant!r}")
         line1 = self.entities.get(line1_id)
         if not isinstance(line1, Line):
             raise KeyError(line1_id)
@@ -4508,6 +4514,7 @@ class Sketch:
             line1_end_id=line1.end_point_id,
             line2_start_id=line2.start_point_id,
             line2_end_id=line2.end_point_id,
+            quadrant=quadrant,
         )
         self.constraints[constraint.id] = constraint
         return constraint

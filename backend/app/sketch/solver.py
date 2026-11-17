@@ -279,6 +279,27 @@ def _lines_perpendicular(line1_start: Point, line1_end: Point, line2_start: Poin
     return cos_angle <= 1e-4
 
 
+def angle_outward_ray_signs(
+    line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point
+) -> tuple[int, int] | None:
+    """For each Line, +1 when its outward ray from the vertex (where the two infinite extensions meet) runs the same way as start to
+    end, -1 when it runs the other way. The outward ray points from the vertex towards the Line's own segment (its midpoint) - the
+    same rule the clients draw the angle dimension with (`angleRays` in the Flutter client). None for (near-)parallel Lines."""
+    d1x, d1y = line1_end.x - line1_start.x, line1_end.y - line1_start.y
+    d2x, d2y = line2_end.x - line2_start.x, line2_end.y - line2_start.y
+    denom = d1x * d2y - d1y * d2x
+    if abs(denom) < 1e-9 * max(1e-12, math.hypot(d1x, d1y) * math.hypot(d2x, d2y)):
+        return None
+    t = ((line2_start.x - line1_start.x) * d2y - (line2_start.y - line1_start.y) * d2x) / denom
+    vx, vy = line1_start.x + t * d1x, line1_start.y + t * d1y
+
+    def sign(start: Point, end: Point, dx: float, dy: float) -> int:
+        mid_x, mid_y = (start.x + end.x) / 2 - vx, (start.y + end.y) / 2 - vy
+        return 1 if dx * mid_x + dy * mid_y >= 0 else -1
+
+    return sign(line1_start, line1_end, d1x, d1y), sign(line2_start, line2_end, d2x, d2y)
+
+
 def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
     """Unsigned angle (0-180) between two Lines' direction vectors -
     deliberately unsigned since verifying an already-supposedly-satisfied
@@ -391,7 +412,9 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             )
             target_degrees = abs(constraint.angle_degrees) % 360
             target_degrees = min(target_degrees, 360 - target_degrees)
-            if abs(actual_degrees - target_degrees) > 1e-2:
+            # Magnitude only: a solve that took the supplement (`_angle_needs_supplement`, chosen by the quadrant or the nearest
+            # rule) lands the Lines' directions on 180 - target, which is the same dimension measured on the other side.
+            if min(abs(actual_degrees - target_degrees), abs(actual_degrees - (180.0 - target_degrees))) > 1e-2:
                 return False
         elif isinstance(constraint, TangentConstraint):
             radius = _distance(points[constraint.center_point_id], points[constraint.radius_point_id])
@@ -780,16 +803,23 @@ class _PySlvsBuilder:
         line_a_end_id: str,
         line_b_start_id: str,
         line_b_end_id: str,
+        quadrant: int | None = None,
     ) -> int:
         supplement = self._angle_needs_supplement(
-            degrees, line_a_start_id, line_a_end_id, line_b_start_id, line_b_end_id
+            degrees, line_a_start_id, line_a_end_id, line_b_start_id, line_b_end_id, quadrant
         )
         return self._system.addAngle(
             degrees, supplement, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
     def _angle_needs_supplement(
-        self, degrees: float, line_a_start_id: str, line_a_end_id: str, line_b_start_id: str, line_b_end_id: str
+        self,
+        degrees: float,
+        line_a_start_id: str,
+        line_a_end_id: str,
+        line_b_start_id: str,
+        line_b_end_id: str,
+        quadrant: int | None = None,
     ) -> bool:
         """py-slvs's addAngle takes a `supplement` flag choosing between
         constraining the angle to `degrees` or to its supplement
@@ -810,7 +840,12 @@ class _PySlvsBuilder:
         already true" principle `_project_distance` below already uses for
         horizontal_distance/vertical_distance's sign) - a no-op returning
         False when either Line has zero current length, since there is no
-        current angle to preserve in that case."""
+        current angle to preserve in that case.
+
+        With an explicit `quadrant` (`AngleConstraint.quadrant`) the choice is not a guess: the value is the angle between the two
+        outward rays from the vertex, each flipped as the quadrant says, so the supplement is needed exactly when those rays and the
+        Lines' own start-to-end directions disagree in sign an odd number of times. Parallel Lines (no vertex) fall back to the
+        nearest rule."""
         a_start, a_end = self._points[line_a_start_id], self._points[line_a_end_id]
         b_start, b_end = self._points[line_b_start_id], self._points[line_b_end_id]
         a_dx, a_dy = a_end.x - a_start.x, a_end.y - a_start.y
@@ -819,6 +854,13 @@ class _PySlvsBuilder:
         b_len = math.hypot(b_dx, b_dy)
         if a_len == 0 or b_len == 0:
             return False
+        if quadrant is not None:
+            signs = angle_outward_ray_signs(a_start, a_end, b_start, b_end)
+            if signs is not None:
+                sign_a, sign_b = signs
+                flip_a = -1 if quadrant & 1 else 1
+                flip_b = -1 if quadrant & 2 else 1
+                return sign_a * sign_b * flip_a * flip_b < 0
         cos_theta = max(-1.0, min(1.0, (a_dx * b_dx + a_dy * b_dy) / (a_len * b_len)))
         current_angle = math.degrees(math.acos(cos_theta))
         return abs((180.0 - degrees) - current_angle) < abs(degrees - current_angle)

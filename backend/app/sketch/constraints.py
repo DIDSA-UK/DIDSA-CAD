@@ -83,6 +83,7 @@ class SolverBuilder(Protocol):
         line_a_end_id: str,
         line_b_start_id: str,
         line_b_end_id: str,
+        quadrant: int | None = None,
     ) -> int:
         """Add a py-slvs angle constraint between two line-segment entity
         handles (target angle in degrees), returning the resulting py-slvs
@@ -385,6 +386,12 @@ class AngleConstraint(Constraint):
     line1_end_id: str
     line2_start_id: str
     line2_end_id: str
+    # Which of the four angles at the vertex `angle_degrees` is (bug report 2026-11-17 item 4). Take each Line's outward ray from the
+    # vertex (where their infinite extensions meet, towards the Line's own segment - the ray a dimension is drawn on); bit 0 flips the
+    # first ray, bit 1 the second, and the angle is the one between the two resulting rays. 0 and 3 are the same angle (the sector and
+    # its opposite), as are 1 and 2; the client draws the arc in the sector named. None (every file saved before this field) keeps
+    # the older rule: whichever of the value and its supplement is nearer the current shape (`_angle_needs_supplement`).
+    quadrant: int | None = None
 
     @property
     def type(self) -> str:
@@ -408,6 +415,7 @@ class AngleConstraint(Constraint):
             self.line1_end_id,
             self.line2_start_id,
             self.line2_end_id,
+            self.quadrant,
         )
 
 
