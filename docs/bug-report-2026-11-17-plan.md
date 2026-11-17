@@ -30,6 +30,21 @@ Measure in Edit Alone against a live backend, the dialog's feel while typing.
 
 ## To do (plan)
 
+### Progress
+
+The implementation session updates this table as each part lands (one commit per row, on `ccr-452ef966-vye7bw`).
+
+| Part | Summary | Status | Commit |
+|---|---|---|---|
+| 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | To do | |
+| 13 | Desktop never opens the hamburger panel; scene settings dialog | To do | |
+| 12 | Desktop Visibility button and panel; ribbon duplicates removed | To do | |
+| 8 | Copy to cloud storage: new or existing project; Open only opens | To do | |
+| 2A | Backend: face → feature endpoint | To do | |
+| M.1 | Backend: Mirror takes several tool features | To do | |
+| M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | To do | |
+| 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | To do | |
+
 Suggested order: **4 → 13 → 12 → 8 → 2**. Item 4 is backend + client with a saved-file field. 13 and 12 are desktop
 layout. 8 is a flow change. 2 is the largest: a backend endpoint (2A), the Pattern tool reworked (2B) and Mirror the same way (M);
 its own order is at the end of the Mirror part.
@@ -268,7 +283,8 @@ Plan:
   (or a flag) that writes into an existing one in one commit, and asks on name clashes (reuse the conflict dialog's Overwrite
   / Skip / Cancel). Then `_adoptServerProject` as today.
 - Remove "Save current work here" from the Open flow: Open opens. For an empty project the Open flow can still just adopt
-  it, as today, or say "This project has no files" (tester to choose; recommend saying so).
+  it, as today, or say "This project has no files". Decided: say so (snack bar "This project has no files yet. Use File >
+  Copy this project to cloud storage… to put your work in it.") and do not adopt it.
 - The same entry also sits in `_showLocalSessionSheet` (the local-folder quick button) and in the hamburger File menu: both
   call `_onCopyToServerPressed`, so they get it for free.
 - Tests in `test/server_projects_widget_test.dart`: both branches; existing-project copy with a name clash.
