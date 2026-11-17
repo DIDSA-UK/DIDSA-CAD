@@ -43,15 +43,16 @@ class MirrorPanel extends StatelessWidget {
   final MergeMode merge;
   final void Function(MergeMode merge) onMergeChanged;
 
-  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
-  /// §2.8/§4): Feature-tree entries (by Feature id) named as additional
-  /// mirror sources, on top of whatever Bodies were picked in the viewport
-  /// - see [PartScreen._mirrorSourceFeatureIds]. Only their count is shown
-  /// here (a full name-per-entry list would need a Feature lookup this
-  /// panel doesn't otherwise need) - [onPickSourceFeatures] opens the
-  /// Build Tree in its own multi-select picker mode to add/remove entries.
-  final List<String> sourceFeatureIds;
-  final VoidCallback onPickSourceFeatures;
+  /// The Feature / Body tabs and the Scope field (`seed_scope.dart` [SeedScopeSection], the same widget Pattern shows - bug report
+  /// 2026-11-17 items M.3 / M.4), above the Mirror plane field.
+  final Widget? scopeSection;
+
+  /// False while the scope cannot make a mirror (empty, or cuts and bodies mixed): Confirm is disabled.
+  final bool scopeValid;
+
+  /// Whether viewport picks go to the mirror plane (true) or to the scope; tapping the Mirror plane field calls [onActivatePlane].
+  final bool planeActive;
+  final VoidCallback? onActivatePlane;
 
   /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
   /// §2.11/§4): non-null while this session's seed is the third,
@@ -65,21 +66,6 @@ class MirrorPanel extends StatelessWidget {
   /// backend's own `_validate_tool_feature_id`).
   final String? toolFeatureSummary;
 
-  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
-  /// §2.12/§4): non-null only while this session was opened via a
-  /// Feature's own long-press "Mirror" entry *and* that Feature qualifies
-  /// for both seed kinds (`source_feature_ids`/`tool_feature_id`) - shows
-  /// the "Mirror Body"/"Mirror Feature" toggle, letting the user switch
-  /// which of the two mutually-exclusive fields carries the seed Feature's
-  /// id (see `PartScreen._mirrorSeedKind`). Null (hidden) for every other
-  /// seed path - an ambient Body selection, an Add-from-Tree pick, editing
-  /// an existing Feature, or a long-press seed that only qualifies for one
-  /// kind - in which case [toolFeatureSummary]/[sourceFeatureIds] already
-  /// unambiguously show which single mode is active, with nothing to
-  /// toggle. Mirrors [PatternPanel.seedKind]'s own identical shape.
-  final PatternMirrorSeedKind? seedKind;
-  final void Function(PatternMirrorSeedKind kind)? onSeedKindChanged;
-
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
 
@@ -90,11 +76,11 @@ class MirrorPanel extends StatelessWidget {
     required this.hasPlanePicked,
     required this.merge,
     required this.onMergeChanged,
-    this.sourceFeatureIds = const [],
-    required this.onPickSourceFeatures,
+    this.scopeSection,
+    this.scopeValid = true,
+    this.planeActive = true,
+    this.onActivatePlane,
     this.toolFeatureSummary,
-    this.seedKind,
-    this.onSeedKindChanged,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -108,27 +94,26 @@ class MirrorPanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (seedKind != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: SegmentedButton<PatternMirrorSeedKind>(
-                segments: const [
-                  ButtonSegment(value: PatternMirrorSeedKind.body, label: Text('Mirror Body')),
-                  ButtonSegment(value: PatternMirrorSeedKind.feature, label: Text('Mirror Feature')),
-                ],
-                selected: {seedKind!},
-                onSelectionChanged: (selection) => onSeedKindChanged?.call(selection.first),
+          if (scopeSection != null) Padding(padding: const EdgeInsets.only(bottom: 12), child: scopeSection),
+          InkWell(
+            key: const ValueKey('mirror-plane-field'),
+            onTap: onActivatePlane,
+            borderRadius: BorderRadius.circular(8),
+            child: InputDecorator(
+              isFocused: planeActive,
+              decoration: InputDecoration(
+                labelText: 'Mirror plane',
+                border: const OutlineInputBorder(),
+                isDense: true,
+                helperText: planeActive ? 'Tap a face, a reference plane or a plane' : null,
               ),
-            ),
-          Text(
-            hasPlanePicked
-                ? 'Mirror plane selected'
-                : 'Select a face, reference plane, or plane to mirror about',
-            style: TextStyle(
-              color: hasPlanePicked
-                  ? Theme.of(context).colorScheme.onSurfaceVariant
-                  : Theme.of(context).colorScheme.error,
-              fontSize: 12,
+              child: Text(
+                hasPlanePicked ? 'Mirror plane selected' : 'Select a face, reference plane, or plane to mirror about',
+                style: TextStyle(
+                  color: hasPlanePicked ? Theme.of(context).colorScheme.onSurfaceVariant : Theme.of(context).colorScheme.error,
+                  fontSize: 12,
+                ),
+              ),
             ),
           ),
           const SizedBox(height: 12),
@@ -163,40 +148,16 @@ class MirrorPanel extends StatelessWidget {
               selected: {merge},
               onSelectionChanged: (selection) => onMergeChanged(selection.first),
             ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    sourceFeatureIds.isEmpty
-                        ? 'No Features added from the Build Tree'
-                        : '${sourceFeatureIds.length} Feature'
-                            '${sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: onPickSourceFeatures,
-                  icon: const Icon(Icons.account_tree_outlined, size: 16),
-                  label: const Text('Add from Tree'),
-                ),
-              ],
-            ),
           ],
           const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              ToolPanelKeys(onConfirm: hasPlanePicked ? onConfirm : null, onCancel: onCancel),
+              ToolPanelKeys(onConfirm: hasPlanePicked && scopeValid ? onConfirm : null, onCancel: onCancel),
               TextButton(onPressed: onCancel, child: const Text('Cancel')),
               const SizedBox(width: 8),
               FilledButton(
-                onPressed: hasPlanePicked ? onConfirm : null,
+                onPressed: hasPlanePicked && scopeValid ? onConfirm : null,
                 child: const Text('Confirm'),
               ),
             ],

@@ -132,6 +132,7 @@ import 'part_viewport.dart';
 import 'pattern_panel.dart';
 import 'view_appearance_controls.dart';
 import 'pattern_mirror_seed.dart';
+import 'seed_scope.dart';
 import 'pending_job_store.dart';
 import 'picker_ribbon.dart';
 import 'planar_surface_panel.dart';
@@ -307,7 +308,7 @@ bool _isEligibleToolFeature(FeatureDto feature) {
 /// currently live - see `_PartScreenState`'s own Mirror state-field
 /// section header comment for why body-picking and plane-picking can never
 /// be simultaneous.
-enum _MirrorStep { pickingBodies, pickingPlane }
+enum _MirrorStep { pickingPlane }
 
 /// Boolean family, first entry: which half of the two-step guided Merge flow
 /// is currently live - mirrors [_MirrorStep]'s own shape, minus the second
@@ -359,7 +360,7 @@ enum _SplitStep { pickingTarget, pickingTool, confirming }
 /// pickingBodies`'s own multi-select-then-confirm shape exactly - see
 /// `_confirmPatternBodySelection`), then a checkmark FAB confirms and
 /// advances to `configuring`.
-enum _PatternStep { pickingBodies, configuring }
+enum _PatternStep { configuring }
 
 /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
 /// §2.8/§4): which panel's `source_feature_ids` a live
@@ -3387,6 +3388,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // anyway ([_mirrorBodyPickerSelectionFilter] guarantees no face/plane
     // hit can even occur then) and must fall through to the generic
     // accumulate-toggle below instead.
+    // Bug report 2026-11-17 items 2B / M.3: while a Pattern's or Mirror's Scope field is active, a face tap goes to the scope (its
+    // feature on the Feature tab, its body on the Body tab), never to the mirror plane or a direction.
+    if (_mirrorStep == _MirrorStep.pickingPlane && _mirrorScope.scopeActive && entity.kind == SelectionEntityKind.face) {
+      _pickScopeFace(_mirrorScope, entity);
+      return;
+    }
+    if (_patternStep == _PatternStep.configuring && _patternScope.scopeActive && entity.kind == SelectionEntityKind.face) {
+      _pickScopeFace(_patternScope, entity);
+      return;
+    }
     if (_mirrorStep == _MirrorStep.pickingPlane &&
         (entity.kind == SelectionEntityKind.face ||
             entity.kind == SelectionEntityKind.referencePlane ||
@@ -3649,46 +3660,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// "update state, reschedule the debounced preview" shape.
   void _setMirrorMerge(MergeMode merge) {
     setState(() => _mirrorMerge = merge);
-    _scheduleMirrorPreview();
-  }
-
-  /// [MirrorPanel.seedKind]'s current value - non-null (and the toggle
-  /// shown) only when [_mirrorLongPressSeedFeature] qualifies for *both*
-  /// `source_feature_ids` and `tool_feature_id` seeding; null otherwise (not
-  /// a long-press session, or the seeded Feature only qualifies for one
-  /// kind, in which case the panel already operates in that one mode with
-  /// nothing to toggle). Mirrors [_patternSeedKind]'s own identical shape.
-  PatternMirrorSeedKind? get _mirrorSeedKind {
-    final features = _mirrorLongPressSeedFeature;
-    if (features.isEmpty || (_mirrorSourceBodyIds ?? const []).isNotEmpty) return null;
-    final both = features.every((f) => _patternMirrorSourceFeatureTypes.contains(f.type) && _isEligibleToolFeature(f));
-    if (!both) return null;
-    return _mirrorToolFeatureIds.isNotEmpty ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
-  }
-
-  /// [MirrorPanel.onSeedKindChanged] - only reachable while [_mirrorSeedKind]
-  /// is non-null (i.e. [_mirrorLongPressSeedFeature] qualifies for both
-  /// kinds), so this never needs to re-check eligibility itself. Flips which
-  /// of [_mirrorSourceFeatureIds]/[_mirrorToolFeatureIds] carries the seed
-  /// Feature's id, resetting `merge` the same way
-  /// [_resetMirrorConfiguringState]'s own `toolFeatureId` branch does
-  /// (`fuseIntoOne` has no referent otherwise - see that method's own doc
-  /// comment). Mirrors [_setPatternSeedKind]'s own identical shape.
-  void _setMirrorSeedKind(PatternMirrorSeedKind kind) {
-    final features = _mirrorLongPressSeedFeature;
-    if (features.isEmpty) return;
-    final ids = [for (final f in features) f.id];
-    setState(() {
-      if (kind == PatternMirrorSeedKind.feature) {
-        _mirrorSourceFeatureIds = [];
-        _mirrorToolFeatureIds = ids;
-        _mirrorMerge = MergeMode.fuseIntoOne;
-      } else {
-        _mirrorSourceFeatureIds = ids;
-        _mirrorToolFeatureIds = [];
-        _mirrorMerge = MergeMode.keepSeparate;
-      }
-    });
     _scheduleMirrorPreview();
   }
 
@@ -6424,6 +6395,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// set from [resolveSeed]'s result (`pattern_mirror_seed.dart`), the rule Pattern uses.
   List<String> _mirrorToolFeatureIds = [];
 
+  /// Mirror's scope (bug report 2026-11-17 item M.3): the Feature / Body tabs and their lists, the same controller class Pattern uses
+  /// ([_patternScope], `seed_scope.dart`). [_mirrorSourceBodyIds] / [_mirrorSourceFeatureIds] / [_mirrorToolFeatureIds] are derived
+  /// from it by the shared seed rule ([_onMirrorScopeChanged]).
+  final SeedScopeController _mirrorScope = SeedScopeController();
+
   /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
   /// §2.12/§4): the Feature a "Mirror" long-press entry started this
   /// session from, if any - used only to compute [MirrorPanel.seedKind]'s
@@ -6436,7 +6412,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// own `longPressSeedFeature` param; explicitly cleared everywhere else
   /// `configuring`/`pickingPlane` is (re-)entered. Mirrors
   /// [_patternLongPressSeedFeature]'s own identical shape.
-  List<FeatureDto> _mirrorLongPressSeedFeature = const [];
+
 
   /// The MirrorFeature created (or, in edit mode, already existing) for the
   /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
@@ -6483,27 +6459,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   List<BodyMeshDto>? _meshBeforeMirror;
 
   Timer? _mirrorDebounce;
-
-  /// Locks [_selectionFilterOverrides] to Bodies only for the
-  /// `pickingBodies` half of the guided "Add" FAB's Mirror flow
-  /// ([_startMirrorPicker]) - `body: true`, everything else off, so
-  /// [_toggleSelectedEntity]'s generic accumulate-toggle can safely
-  /// collect 1+ Bodies into [_selectedEntities] with no Mirror-specific
-  /// special-casing needed (nothing else can even be hit-tested while this
-  /// filter is live).
-  static const _mirrorBodyPickerSelectionFilter = SelectionFilterState(
-    vertex: false,
-    edge: false,
-    face: false,
-    body: true,
-    sketchPoint: false,
-    sketchLine: false,
-    sketchCircle: false,
-    sketchArc: false,
-    sketchEllipse: false,
-    sketchSpline: false,
-    plane: false,
-  );
 
   /// Locks [_selectionFilterOverrides] to face/plane-like kinds only for the
   /// mirror-plane-picking half of the Mirror flow (after the source
@@ -7400,6 +7355,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// patterned together.
   List<String> _patternToolFeatureIds = [];
 
+  /// Pattern's scope (bug report 2026-11-17 item 2B): see [_mirrorScope]; [_onPatternScopeChanged] derives the request fields.
+  final SeedScopeController _patternScope = SeedScopeController();
+
   /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
   /// §2.12/§4): mirrors [_mirrorLongPressSeedFeature]'s own identical shape -
   /// the Feature a "Pattern" long-press entry started this session from, if
@@ -7407,7 +7365,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// toggle eligibility. Null for every other seed path. Set by
   /// [_openPatternPanelFromFeature] via [_resetPatternConfiguringState]'s
   /// own `longPressSeedFeature` param.
-  List<FeatureDto> _patternLongPressSeedFeature = const [];
+
 
   /// Pattern/Mirror scoping Phase 4: Rectangular or Circular - always
   /// [PatternMode.rectangular] for a brand-new PatternFeature
@@ -7528,27 +7486,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   List<BodyMeshDto>? _meshBeforePattern;
 
   Timer? _patternDebounce;
-
-  /// Locks [_selectionFilterOverrides] to Bodies only for the `pickingBodies`
-  /// half of the guided "Add" FAB's Pattern flow ([_startPatternPicker]) -
-  /// mirrors [_mirrorBodyPickerSelectionFilter] exactly (a separate named
-  /// constant rather than a shared one, matching this file's own "each
-  /// flow keeps its own filter, even when the value happens to be
-  /// identical" convention - see the Chamfer state section's own header
-  /// comment).
-  static const _patternBodyPickerSelectionFilter = SelectionFilterState(
-    vertex: false,
-    edge: false,
-    face: false,
-    body: true,
-    sketchPoint: false,
-    sketchLine: false,
-    sketchCircle: false,
-    sketchArc: false,
-    sketchEllipse: false,
-    sketchSpline: false,
-    plane: false,
-  );
 
   /// Locks [_selectionFilterOverrides] to Body edges and Sketch Lines for
   /// the `configuring` half of the Pattern flow - `edge: true` lets the
@@ -11596,6 +11533,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   @override
   void initState() {
     super.initState();
+    _patternScope.addListener(_onPatternScopeChanged);
+    _mirrorScope.addListener(_onMirrorScopeChanged);
     _api = widget.documentApi ?? DocumentApiClient();
     _sketchApi = widget.sketchApiFactory?.call() ?? SketchApiClient();
     _storageService = widget.storageService ?? createStorageService();
@@ -13079,6 +13018,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   @override
   void dispose() {
+    _patternScope.dispose();
+    _mirrorScope.dispose();
     _glideTicker?.dispose();
     _referenceReports.dispose();
     _referencesNotice.dispose();
@@ -20852,11 +20793,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     setState(() {
       _sourceFeaturePickerTarget = target;
       // Every feature already in the scope, tool features (cuts) included: confirming re-applies the seed rule to the whole pick.
-      _selectedSourceFeatureIds = {
-        ...(target == _SourceFeaturePickerTarget.mirror
-            ? [..._mirrorSourceFeatureIds, ..._mirrorToolFeatureIds]
-            : [..._patternSourceFeatureIds, ..._patternToolFeatureIds]),
-      };
+      _selectedSourceFeatureIds = {...(target == _SourceFeaturePickerTarget.mirror ? _mirrorScope : _patternScope).featureIds};
       _featureTreeVisible = true;
     });
   }
@@ -20899,11 +20836,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final target = _sourceFeaturePickerTarget;
     if (target == null) return;
     setState(() {
-      if (target == _SourceFeaturePickerTarget.mirror) {
-        _applyMirrorPickedFeatures(_selectedSourceFeatureIds.toList());
-      } else {
-        _applyPatternPickedFeatures(_selectedSourceFeatureIds.toList());
-      }
+      // The Feature tab's list, re-read by the shared seed rule ([_onPatternScopeChanged] / [_onMirrorScopeChanged]).
+      (target == _SourceFeaturePickerTarget.mirror ? _mirrorScope : _patternScope).setFeatures(_selectedSourceFeatureIds.toList());
       _sourceFeaturePickerTarget = null;
       _selectedSourceFeatureIds = {};
     });
@@ -20911,53 +20845,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _scheduleMirrorPreview();
     } else {
       _schedulePatternPreview();
-    }
-  }
-
-  /// Features picked with "Select Feature" / "Add from Tree" while a Pattern is open: the same rule as every other way in (`pattern_mirror_seed.dart`), so a
-  /// picked cut switches the pattern to repeating it as a tool and a body-making feature is copied. Mixed picks are refused with a message and the
-  /// previous seed kept. Called inside a `setState`.
-  void _applyPatternPickedFeatures(List<String> featureIds) {
-    final picked = [for (final f in _features) if (featureIds.contains(f.id)) f];
-    // Still choosing what to pattern: keep the picks as they are, they are sorted out when the step is confirmed.
-    if (_patternStep == _PatternStep.pickingBodies) {
-      _patternSourceFeatureIds = featureIds;
-      return;
-    }
-    final seed = resolveSeed(bodyIds: _patternSourceBodyIds ?? const [], features: picked, isToolFeature: _isEligibleToolFeature);
-    if (seed.error != null) {
-      _showSnack(seed.error!);
-      return;
-    }
-    final wasTool = _patternToolFeatureIds.isNotEmpty;
-    _patternSourceFeatureIds = seed.sourceFeatureIds;
-    _patternToolFeatureIds = seed.toolFeatureIds;
-    _patternLongPressSeedFeature = picked;
-    if (seed.isToolFeatureSeed) {
-      _patternMerge = MergeMode.fuseIntoOne; // one target by construction
-    } else if (wasTool) {
-      _patternMerge = MergeMode.keepSeparate;
-    }
-  }
-
-  /// [_applyPatternPickedFeatures] for Mirror (bug report 2026-11-17 item M.2): "Select Feature" / "Add from Tree" inside the Mirror
-  /// panel goes through the same rule (`pattern_mirror_seed.dart`), so a picked cut is mirrored as a tool into its body - before, it was
-  /// sent as `source_feature_ids` (copy the bodies it made, of which a cut has none) and mirrored nothing. Called inside a `setState`.
-  void _applyMirrorPickedFeatures(List<String> featureIds) {
-    final picked = [for (final f in _features) if (featureIds.contains(f.id)) f];
-    final seed = resolveSeed(bodyIds: _mirrorSourceBodyIds ?? const [], features: picked, isToolFeature: _isEligibleToolFeature);
-    if (seed.error != null) {
-      _showSnack(seed.error!);
-      return;
-    }
-    final wasTool = _mirrorToolFeatureIds.isNotEmpty;
-    _mirrorSourceFeatureIds = seed.sourceFeatureIds;
-    _mirrorToolFeatureIds = seed.toolFeatureIds;
-    _mirrorLongPressSeedFeature = picked;
-    if (seed.isToolFeatureSeed) {
-      _mirrorMerge = MergeMode.fuseIntoOne; // one target by construction
-    } else if (wasTool) {
-      _mirrorMerge = MergeMode.keepSeparate;
     }
   }
 
@@ -20984,53 +20871,28 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Starts the `pickingBodies` step with an empty selection and a
   /// Body-only filter; [_confirmMirrorBodySelection] advances to
   /// `pickingPlane` once 1+ Bodies are picked.
-  void _startMirrorPicker() {
+  void _startMirrorPicker() => _openMirrorTool();
+
+  /// The one way into Mirror (bug report 2026-11-17 item M.3): Start > Mirror (empty scope), the long press on a feature
+  /// ([seedFeatures]), the selection drawer ([bodyIds], Body tab). Opens the panel straight away on the Feature tab (the Body tab for
+  /// bodies) with the Scope field active: face taps fill the scope until the Mirror plane field is tapped.
+  void _openMirrorTool({List<FeatureDto> seedFeatures = const [], List<String> bodyIds = const []}) {
     setState(() {
-      _mirrorStep = _MirrorStep.pickingBodies;
-      _mirrorSourceBodyIds = null;
-      _mirrorSourceFeatureIds = [];
-      _mirrorMerge = MergeMode.keepSeparate;
-      _mirrorToolFeatureIds = [];
-      _mirrorLongPressSeedFeature = const [];
-      _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
-      _selectedEntities = {};
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
-      _selectionFilterOverrides.push(_mirrorBodyPickerSelectionFilter);
+      _selectionFilterOverrides.push(_scopeFaceSelectionFilter);
+      _resetMirrorConfiguringState(const []);
     });
+    _mirrorScope.reset(
+      tab: bodyIds.isNotEmpty ? SeedScopeTab.body : SeedScopeTab.feature,
+      features: [for (final f in seedFeatures) f.id],
+      bodies: bodyIds,
+    );
   }
 
-  /// The number of Bodies picked so far during the `pickingBodies` step -
-  /// drives the step-1 banner text and gates its confirm FAB. Zero whenever
-  /// [_mirrorStep] isn't `pickingBodies` (nothing else can be in
-  /// [_selectedEntities] then anyway, per [_mirrorBodyPickerSelectionFilter]).
-  int _mirrorPickedBodyCount() =>
-      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
-
-  /// Confirms the `pickingBodies` step (the banner's checkmark FAB - see
-  /// [_mirrorPickedBodyCount]) - captures every currently-selected Body into
-  /// [_mirrorSourceBodyIds], swaps [_selectionFilterOverrides] from
-  /// [_mirrorBodyPickerSelectionFilter] to [_mirrorSelectionFilter], and
-  /// advances to `pickingPlane`. Also temporarily forces the reference
-  /// planes visible for the plane pick (see the [PartViewport] call site's
-  /// own `referencePlanesHidden` override) - they're usually auto-hidden as
-  /// soon as the first Body exists (see [_hasAutoHiddenReferencePlanes]),
-  /// but a fixed-plane mirror pick needs them shown to be pickable at all.
-  void _confirmMirrorBodySelection() {
-    final bodyIds = _selectedEntities
-        .where((e) => e.kind == SelectionEntityKind.body)
-        .map((e) => e.bodyId)
-        .toList();
-    if (bodyIds.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
-    setState(() {
-      _selectionFilterOverrides.pop();
-      _selectionFilterOverrides.push(_mirrorSelectionFilter);
-      _resetMirrorConfiguringState(bodyIds);
-    });
-  }
 
   /// [SelectionContextPanel.onMirror]'s callback - `contextActionsFor`
   /// enables this button for 1+ Bodies, nothing else, selected (see that
@@ -21043,29 +20905,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         .map((e) => e.bodyId)
         .toList();
     if (bodyIds.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
-    _openMirrorPanel(bodyIds);
-  }
-
-  /// Opens [MirrorPanel] directly in the `pickingPlane` step for a brand-new
-  /// MirrorFeature mirroring [sourceBodyIds] - used by [_onMirrorTapped],
-  /// whose Bodies are already selected going in, so there is nothing for a
-  /// `pickingBodies` step to do. Switches [_selectedEntities] over to the
-  /// mirror-plane pick (clearing whatever was selected, mirroring
-  /// [_openRevolvePanel]'s own "start the picker selection empty" shape) for
-  /// the rest of this panel's session. No MirrorFeature exists yet until a
-  /// plane is actually picked - mirrors [_openFilletPanel]'s "nothing valid
-  /// to create yet" reasoning, just gated on a plane pick instead of a
-  /// non-empty edge list.
-  void _openMirrorPanel(List<String> sourceBodyIds) {
-    setState(() {
-      _meshBeforeMirror = _bodies;
-      _entitiesBeforeMirror = _selectedEntities;
-      _selectionMode = true;
-      _toolbarOpen = false;
-      _featureTreeVisible = false;
-      _selectionFilterOverrides.push(_mirrorSelectionFilter);
-      _resetMirrorConfiguringState(sourceBodyIds);
-    });
+    _openMirrorTool(bodyIds: bodyIds);
   }
 
   /// On-device feedback: mirrors [_openPatternPanelFromFeature]'s own
@@ -21085,24 +20925,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// `source_feature_ids` otherwise - [MirrorPanel.seedKind]'s own toggle
   /// (see [_mirrorSeedKind]) lets the user switch between the two
   /// afterwards, when [feature] qualifies for both.
-  void _openMirrorPanelFromFeature(FeatureDto feature) {
-    // The same rule as Pattern and as "Select Feature" (`pattern_mirror_seed.dart`).
-    final seed = resolveSeed(bodyIds: const [], features: [feature], isToolFeature: _isEligibleToolFeature);
-    setState(() {
-      _meshBeforeMirror = _bodies;
-      _entitiesBeforeMirror = _selectedEntities;
-      _selectionMode = true;
-      _toolbarOpen = false;
-      _featureTreeVisible = false;
-      _selectionFilterOverrides.push(_mirrorSelectionFilter);
-      _resetMirrorConfiguringState(
-        seed.bodyIds,
-        sourceFeatureIds: seed.sourceFeatureIds,
-        toolFeatureIds: seed.toolFeatureIds,
-        seedFeatures: [feature],
-      );
-    });
-  }
+  void _openMirrorPanelFromFeature(FeatureDto feature) => _openMirrorTool(seedFeatures: [feature]);
+
 
   /// Shared by [_confirmMirrorBodySelection]/[_openMirrorPanel]/
   /// [_openMirrorPanelFromFeature] - resets the mirror-plane pick and enters
@@ -21123,14 +20947,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     List<String> sourceBodyIds, {
     List<String> sourceFeatureIds = const [],
     List<String> toolFeatureIds = const [],
-    List<FeatureDto> seedFeatures = const [],
   }) {
     _mirrorStep = _MirrorStep.pickingPlane;
     _mirrorSourceBodyIds = sourceBodyIds;
     _mirrorSourceFeatureIds = sourceFeatureIds;
     _mirrorToolFeatureIds = toolFeatureIds;
     _mirrorMerge = toolFeatureIds.isNotEmpty ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
-    _mirrorLongPressSeedFeature = seedFeatures;
     _previewMirrorFeatureId = null;
     _editingMirrorFeatureId = null;
     _mirrorEditSnapshot = null;
@@ -21183,7 +21005,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _mirrorSourceFeatureIds = sourceFeatureIds;
       _mirrorMerge = merge;
       _mirrorToolFeatureIds = toolFeatureIds;
-      _mirrorLongPressSeedFeature = const [];
       _mirrorEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
@@ -21197,6 +21018,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _selectionMode = true;
       _selectionFilterOverrides.push(_mirrorSelectionFilter);
     });
+    // The tab follows what was saved: bodies → Body, features (copied or as tools) → Feature. The plane field stays active.
+    _mirrorScope.reset(
+      tab: sourceBodyIds.isNotEmpty ? SeedScopeTab.body : SeedScopeTab.feature,
+      features: [...sourceFeatureIds, ...toolFeatureIds],
+      bodies: sourceBodyIds,
+    );
+    _mirrorScope.setScopeActive(false);
     return true;
   }
 
@@ -21206,6 +21034,125 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// falls back to the bare id itself if [_features] hasn't loaded it yet
   /// (defensive only; by the time a tool-feature id is set, its own
   /// Feature was already fetched to gate the long-press menu that set it).
+  // --- Pattern / Mirror scope (bug report 2026-11-17 items 2B / M.3 / M.4) ------------------------------------------------------
+  // Written once for both tools: the per-tab state lives in [SeedScopeController] (`seed_scope.dart`), the panels' tabs + Scope field
+  // are one [SeedScopeSection], and these helpers take the tool's controller.
+
+  /// Faces only: what a tap can pick while a Pattern / Mirror Scope field is active.
+  static const _scopeFaceSelectionFilter = SelectionFilterState(
+    vertex: false,
+    edge: false,
+    face: true,
+    body: false,
+    sketchPoint: false,
+    sketchLine: false,
+    sketchCircle: false,
+    sketchArc: false,
+    sketchEllipse: false,
+    sketchSpline: false,
+    plane: false,
+  );
+
+  /// What [scope]'s active tab means for the request, by the shared seed rule (`pattern_mirror_seed.dart`).
+  PatternMirrorSeed _scopeSeed(SeedScopeController scope) => scope.seed(features: _features, isToolFeature: _isEligibleToolFeature);
+
+  /// A face picked for [scope]: its body on the Body tab, or (Feature tab) the feature the backend says made it.
+  void _pickScopeFace(SeedScopeController scope, SelectionEntityRef entity) {
+    final partId = _focusPartId;
+    final rollback = _rollbackExcludedFeatureIds.toList();
+    unawaited(scope.pickFace(
+      bodyId: entity.bodyId,
+      featureOwner: () async {
+        final owners = await _api.faceOwnerFeatures(
+          partId,
+          [MeasureEntityRefDto(occurrenceId: entity.occurrenceId, subshapeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: 'face', index: entity.id))],
+          rollbackExcludedFeatureIds: rollback,
+        );
+        return owners.single;
+      },
+    ));
+  }
+
+  /// Makes [scope]'s field ([active]) or the tool's other field (direction / axis / mirror plane, whose filter is [otherFilter]) the one
+  /// viewport picks go to, swapping the filter on top of the stack. Called inside a `setState`.
+  void _setScopeActive(SeedScopeController scope, bool active, SelectionFilterState otherFilter) {
+    if (scope.scopeActive == active) return;
+    _selectionFilterOverrides.pop();
+    _selectionFilterOverrides.push(active ? _scopeFaceSelectionFilter : otherFilter);
+    scope.setScopeActive(active);
+  }
+
+  /// The Feature / Body tabs and the Scope field for [scope]: the one builder both panels use.
+  Widget _buildScopeSection(
+    SeedScopeController scope, {
+    required String keyPrefix,
+    required SelectionFilterState otherFilter,
+    required _SourceFeaturePickerTarget pickerTarget,
+    required bool editing,
+  }) {
+    final bodyNames = _bodyNames;
+    return SeedScopeSection(
+      keyPrefix: keyPrefix,
+      tab: scope.tab,
+      onTabChanged: scope.setTab,
+      chips: scope.tab == SeedScopeTab.feature
+          ? [for (final id in scope.featureIds) (id: id, label: _toolFeatureSummary(id) ?? id)]
+          : [for (final id in scope.bodyIds) (id: id, label: bodyNames[id] ?? id)],
+      onRemove: scope.remove,
+      active: scope.scopeActive,
+      onActivate: () => setState(() => _setScopeActive(scope, true, otherFilter)),
+      error: scope.pickError ?? _scopeSeed(scope).error,
+      onAddFromTree: () => _startSourceFeaturePicker(pickerTarget),
+      canChangeTab: !editing,
+    );
+  }
+
+  /// Whether [scope] can make a request: something in the active tab and no mixing error.
+  bool _scopeValid(SeedScopeController scope) => !scope.isEmpty && _scopeSeed(scope).error == null;
+
+  /// Pattern's request fields from its scope, re-derived on every change; a tool-feature scope always merges (one target), and
+  /// leaving it goes back to Keep Separate.
+  void _onPatternScopeChanged() {
+    if (_patternStep == null || !mounted) return;
+    final seed = _scopeSeed(_patternScope);
+    setState(() {
+      final wasTool = _patternToolFeatureIds.isNotEmpty;
+      _patternSourceBodyIds = seed.bodyIds;
+      _patternSourceFeatureIds = seed.sourceFeatureIds;
+      _patternToolFeatureIds = seed.toolFeatureIds;
+      if (seed.isToolFeatureSeed) {
+        _patternMerge = MergeMode.fuseIntoOne;
+      } else if (wasTool) {
+        _patternMerge = MergeMode.keepSeparate;
+      }
+    });
+    // Nothing to preview until the scope has something in it (Confirm is off meanwhile).
+    if (!seed.isEmpty) _schedulePatternPreview();
+  }
+
+  /// [_onPatternScopeChanged] for Mirror.
+  void _onMirrorScopeChanged() {
+    if (_mirrorStep == null || !mounted) return;
+    final seed = _scopeSeed(_mirrorScope);
+    setState(() {
+      final wasTool = _mirrorToolFeatureIds.isNotEmpty;
+      _mirrorSourceBodyIds = seed.bodyIds;
+      _mirrorSourceFeatureIds = seed.sourceFeatureIds;
+      _mirrorToolFeatureIds = seed.toolFeatureIds;
+      if (seed.isToolFeatureSeed) {
+        _mirrorMerge = MergeMode.fuseIntoOne;
+      } else if (wasTool) {
+        _mirrorMerge = MergeMode.keepSeparate;
+      }
+    });
+    // Nothing to preview until the scope has something in it (Confirm is off meanwhile).
+    if (!seed.isEmpty) _scheduleMirrorPreview();
+  }
+
+  /// The filter for Pattern's other field: the direction (Rectangular) or the axis (Circular).
+  SelectionFilterState get _patternOtherFilter =>
+      _patternMode == PatternMode.circular ? _patternAxisSelectionFilter : _patternDirectionSelectionFilter;
+
   /// [_toolFeatureSummary] for several tool features: their names joined, or a count when there are many. Null for none.
   String? _toolFeaturesSummary(List<String> featureIds) {
     if (featureIds.isEmpty) return null;
@@ -23843,92 +23790,28 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Bodies are picked (Phase 6 widened this from Phase 2's original
   /// single-Body-immediately-advances shape to mirror [_startMirrorPicker]'s
   /// own multi-select-then-confirm one exactly).
-  void _startPatternPicker() {
+  void _startPatternPicker() => _openPatternTool();
+
+  /// The one way into Pattern (bug report 2026-11-17 item 2B): Start > Pattern (empty scope), the long press on a feature
+  /// ([seedFeatures]), the selection drawer ([bodyIds], Body tab). Opens the panel straight away on the Feature tab (the Body tab for
+  /// bodies) with the Scope field active: face taps fill the scope until a Direction / Axis pick is pressed.
+  void _openPatternTool({List<FeatureDto> seedFeatures = const [], List<String> bodyIds = const []}) {
     setState(() {
-      _patternStep = _PatternStep.pickingBodies;
-      _patternSourceBodyIds = null;
-      _patternSourceFeatureIds = [];
-      _patternToolFeatureIds = [];
-      _patternLongPressSeedFeature = const [];
-      _previewPatternFeatureId = null;
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
-      _selectedEntities = {};
       _selectionMode = true;
       _toolbarOpen = false;
       _featureTreeVisible = false;
-      _selectionFilterOverrides.push(_patternBodyPickerSelectionFilter);
+      _selectionFilterOverrides.push(_scopeFaceSelectionFilter);
+      _resetPatternConfiguringState(const []);
     });
+    _patternScope.reset(
+      tab: bodyIds.isNotEmpty ? SeedScopeTab.body : SeedScopeTab.feature,
+      features: [for (final f in seedFeatures) f.id],
+      bodies: bodyIds,
+    );
   }
 
-  /// The number of Bodies picked so far during the `pickingBodies` step -
-  /// drives the step-1 banner text and gates its confirm FAB. Mirrors
-  /// [_mirrorPickedBodyCount] exactly.
-  int _patternPickedBodyCount() =>
-      _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).length;
-
-  /// Whether `pickingBodies` has anything to confirm yet - true once 1+
-  /// Bodies are tapped in the viewport *or* 1+ Features are picked via the
-  /// ribbon's own "Select Feature" button ([_patternSourceFeatureIds]),
-  /// gating [_confirmPatternBodySelection]'s own ribbon confirm button.
-  bool get _patternHasAnyPickedSource =>
-      _patternPickedBodyCount() > 0 || _patternSourceFeatureIds.isNotEmpty;
-
-  /// The `pickingBodies` ribbon's own tooltip text - names whichever of
-  /// Bodies/Features (or both) are currently picked, mirroring
-  /// [_mirrorPickedBodyCount]'s own single-source banner text exactly when
-  /// only Bodies are involved (the common case), widened for Phase 6's
-  /// "Select Feature" button potentially adding Features to the mix too.
-  String _patternPickingBodiesSummary() {
-    final bodyCount = _patternPickedBodyCount();
-    final featureCount = _patternSourceFeatureIds.length;
-    if (bodyCount == 0 && featureCount == 0) return 'Select Body to Pattern';
-    final parts = [
-      if (bodyCount > 0) '$bodyCount body(s)',
-      if (featureCount > 0) '$featureCount feature(s)',
-    ];
-    return '${parts.join(' + ')} selected - tap checkmark to confirm';
-  }
-
-  /// Confirms the `pickingBodies` step (the banner's checkmark FAB - see
-  /// [_patternPickedBodyCount]) - captures every currently-selected Body,
-  /// pops the body-only filter, pushes the edge-only `configuring` filter,
-  /// and resets every Direction 1/2 field to its default via
-  /// [_resetPatternConfiguringState]. Mirrors
-  /// [_confirmMirrorBodySelection]'s shape exactly.
-  ///
-  /// On-device feedback ("on the flyup ribbon, there should be an extra
-  /// button that says 'select feature'"): [_patternSourceFeatureIds] may
-  /// already be non-empty here - the `pickingBodies` ribbon's own "Select
-  /// Feature" button ([_startSourceFeaturePicker]) accumulates into it
-  /// directly, same as [PatternPanel.onPickSourceFeatures] does once
-  /// `configuring` - so a Pattern can be seeded from Feature-tree picks
-  /// alone, Body taps alone, or both, without ever needing a Body pick
-  /// first. Passed straight through to `configuring` rather than reset to
-  /// empty (unlike every other field here, which Phase 6's own multi-body
-  /// widening left otherwise untouched).
-  void _confirmPatternBodySelection() {
-    final bodyIds =
-        _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
-    final picked = [for (final f in _features) if (_patternSourceFeatureIds.contains(f.id)) f];
-    if (bodyIds.isEmpty && picked.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
-    // The same rule as a long press on a feature: a picked cut is repeated as a tool, a body-making feature is copied (see `pattern_mirror_seed.dart`).
-    final seed = resolveSeed(bodyIds: bodyIds, features: picked, isToolFeature: _isEligibleToolFeature);
-    if (seed.error != null) {
-      _showSnack(seed.error!);
-      return;
-    }
-    setState(() {
-      _selectionFilterOverrides.pop();
-      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState(
-        seed.bodyIds,
-        sourceFeatureIds: seed.sourceFeatureIds,
-        toolFeatureIds: seed.toolFeatureIds,
-        seedFeatures: picked,
-      );
-    });
-  }
 
   /// [SelectionContextPanel.onPattern]'s callback - `contextActionsFor`
   /// enables this button for 1+ Bodies, nothing else, selected (see that
@@ -23943,26 +23826,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         .map((e) => e.bodyId)
         .toList();
     if (bodyIds.isEmpty) return; // Defensive - contextActionsFor already guarantees this.
-    _openPatternPanel(bodyIds);
-  }
-
-  /// Opens [PatternPanel] directly in the `configuring` step for a
-  /// brand-new PatternFeature patterning [sourceBodyIds] - used by
-  /// [_onPatternTapped], whose Bodies are already selected going in, so
-  /// there is nothing for a `pickingBodies` step to do. Pushes the
-  /// edge-only `configuring` filter directly - no body-only filter was
-  /// ever pushed for this entry point, so there is nothing to pop first
-  /// (mirrors [_openMirrorPanel]'s own shape).
-  void _openPatternPanel(List<String> sourceBodyIds) {
-    setState(() {
-      _meshBeforePattern = _bodies;
-      _entitiesBeforePattern = _selectedEntities;
-      _selectionMode = true;
-      _toolbarOpen = false;
-      _featureTreeVisible = false;
-      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState(sourceBodyIds);
-    });
+    _openPatternTool(bodyIds: bodyIds);
   }
 
   /// On-device feedback ("user should now be able to start pattern from
@@ -23983,23 +23847,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// otherwise - [PatternPanel.seedKind]'s own toggle (see
   /// [_patternSeedKind]) lets the user switch between the two afterwards,
   /// when [feature] qualifies for both.
-  void _openPatternPanelFromFeature(FeatureDto feature) {
-    final seed = resolveSeed(bodyIds: const [], features: [feature], isToolFeature: _isEligibleToolFeature);
-    setState(() {
-      _meshBeforePattern = _bodies;
-      _entitiesBeforePattern = _selectedEntities;
-      _selectionMode = true;
-      _toolbarOpen = false;
-      _featureTreeVisible = false;
-      _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
-      _resetPatternConfiguringState(
-        seed.bodyIds,
-        sourceFeatureIds: seed.sourceFeatureIds,
-        toolFeatureIds: seed.toolFeatureIds,
-        seedFeatures: [feature],
-      );
-    });
-  }
+  void _openPatternPanelFromFeature(FeatureDto feature) => _openPatternTool(seedFeatures: [feature]);
+
 
   /// Shared by [_confirmPatternBodySelection]/[_openPatternPanel]/
   /// [_openPatternPanelFromFeature] - resets every Direction 1/2 field to
@@ -24018,14 +23867,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     List<String> sourceBodyIds, {
     List<String> sourceFeatureIds = const [],
     List<String> toolFeatureIds = const [],
-    List<FeatureDto> seedFeatures = const [],
   }) {
     _patternStep = _PatternStep.configuring;
     _patternMode = PatternMode.rectangular;
     _patternSourceBodyIds = sourceBodyIds;
     _patternSourceFeatureIds = sourceFeatureIds;
     _patternToolFeatureIds = toolFeatureIds;
-    _patternLongPressSeedFeature = seedFeatures;
     _patternDirection1 = null;
     _patternDirection1EdgeEntity = null;
     _patternCount1 = 2;
@@ -24072,6 +23919,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// fields (`axis`/`count_angular`/`angle_total`) are entirely disjoint
   /// from Rectangular's (`direction_1`/`count_1`/`spacing_1`) - see
   /// `PatternFeature`'s own backend docstring.
+  /// The scope of a saved Pattern opened for edit: the tab follows what was saved (bodies → Body, features copied or repeated as
+  /// tools → Feature), the direction / axis field stays active.
+  void _resetPatternScopeForEdit(FeatureDto feature, List<String> toolFeatureIds) {
+    _patternScope.reset(
+      tab: feature.sourceBodyIds.isNotEmpty ? SeedScopeTab.body : SeedScopeTab.feature,
+      features: [...feature.sourceFeatureIds, ...toolFeatureIds],
+      bodies: feature.sourceBodyIds,
+    );
+    _patternScope.setScopeActive(false);
+  }
+
   bool _openPatternPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
     final toolFeatureIds = feature.toolFeatureIds.isNotEmpty ? feature.toolFeatureIds : [if (feature.toolFeatureId != null) feature.toolFeatureId!];
@@ -24116,8 +23974,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _patternOrientationMode = PatternOrientationMode.fromApiValue(feature.orientationMode);
         _patternSkipIndices = feature.skipIndices.toSet();
         _patternMerge = merge;
-        _patternLongPressSeedFeature = const [];
-        _patternEditSnapshot = (
+          _patternEditSnapshot = (
           sourceBodyIds: sourceBodyIds,
           direction1: null,
           count1: 1,
@@ -24145,6 +24002,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _selectionMode = true;
         _selectionFilterOverrides.push(_patternAxisSelectionFilter);
       });
+      _resetPatternScopeForEdit(feature, toolFeatureIds);
       // Force every instance visible (and tappable) for the duration of
       // this edit session - see [_ensurePatternFeatureExists]'s own doc
       // comment on why the real skip set is only ever sent once, at
@@ -24192,7 +24050,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _patternOrientationMode = PatternOrientationMode.rotateWithPattern;
       _patternSkipIndices = feature.skipIndices.toSet();
       _patternMerge = merge;
-      _patternLongPressSeedFeature = const [];
       _patternEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         direction1: direction1,
@@ -24222,6 +24079,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _selectionMode = true;
       _selectionFilterOverrides.push(_patternDirectionSelectionFilter);
     });
+    _resetPatternScopeForEdit(feature, toolFeatureIds);
     // Force every instance visible (and tappable) for the duration of this
     // edit session - see [_ensurePatternFeatureExists]'s own doc comment on
     // why the real skip set is only ever sent once, at [_confirmPattern]
@@ -24317,10 +24175,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _setPatternMode(PatternMode mode) {
     if (mode == _patternMode) return;
     setState(() {
-      _selectionFilterOverrides.pop();
-      _selectionFilterOverrides.push(
-        mode == PatternMode.circular ? _patternAxisSelectionFilter : _patternDirectionSelectionFilter,
-      );
+      // While the Scope field is active the faces-only filter stays; the new mode's own filter applies once a direction / axis is.
+      if (!_patternScope.scopeActive) {
+        _selectionFilterOverrides.pop();
+        _selectionFilterOverrides.push(
+          mode == PatternMode.circular ? _patternAxisSelectionFilter : _patternDirectionSelectionFilter,
+        );
+      }
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
       if (_patternDirection1EdgeEntity != null) next.remove(_patternDirection1EdgeEntity);
       if (_patternDirection2EdgeEntity != null) next.remove(_patternDirection2EdgeEntity);
@@ -24414,37 +24275,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// shared across both Rectangular and Circular mode.
   void _setPatternMerge(MergeMode merge) {
     setState(() => _patternMerge = merge);
-    _schedulePatternPreview();
-  }
-
-  /// [PatternPanel.seedKind]'s current value - mirrors [_mirrorSeedKind]'s
-  /// own identical shape: non-null (and the toggle shown) only when
-  /// [_patternLongPressSeedFeature] qualifies for both seed kinds.
-  PatternMirrorSeedKind? get _patternSeedKind {
-    final features = _patternLongPressSeedFeature;
-    if (features.isEmpty || (_patternSourceBodyIds ?? const []).isNotEmpty) return null;
-    final both = features.every((f) => _patternMirrorSourceFeatureTypes.contains(f.type) && _isEligibleToolFeature(f));
-    if (!both) return null;
-    return _patternToolFeatureIds.isNotEmpty ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
-  }
-
-  /// [PatternPanel.onSeedKindChanged] - mirrors [_setMirrorSeedKind]'s own
-  /// identical shape, only reachable while [_patternSeedKind] is non-null.
-  void _setPatternSeedKind(PatternMirrorSeedKind kind) {
-    final features = _patternLongPressSeedFeature;
-    if (features.isEmpty) return;
-    final ids = [for (final f in features) f.id];
-    setState(() {
-      if (kind == PatternMirrorSeedKind.feature) {
-        _patternSourceFeatureIds = [];
-        _patternToolFeatureIds = ids;
-        _patternMerge = MergeMode.fuseIntoOne;
-      } else {
-        _patternSourceFeatureIds = ids;
-        _patternToolFeatureIds = [];
-        _patternMerge = MergeMode.keepSeparate;
-      }
-    });
     _schedulePatternPreview();
   }
 
@@ -24634,6 +24464,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// own, if any, starts being highlighted again) so the viewport always
   /// visually reflects which pick is currently "live".
   void _setPatternActiveDirectionSlot(int slot) {
+    // Pressing a direction's pick button also takes viewport picks away from the Scope field.
+    if (_patternScope.scopeActive) setState(() => _setScopeActive(_patternScope, false, _patternOtherFilter));
     if (slot == _patternActiveDirectionSlot) return;
     setState(() {
       final next = Set<SelectionEntityRef>.of(_selectedEntities);
@@ -28824,18 +28656,23 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                     // key reasoning exactly, above.
                     key: const ValueKey('mirror-panel-slot'),
                     child: MirrorPanel(
-                      key: ValueKey(_editingMirrorFeatureId ?? _mirrorSourceBodyIds?.join(',')),
+                      key: ValueKey(_editingMirrorFeatureId ?? 'new-mirror'),
                       title: _editingMirrorFeatureId != null ? 'Edit Mirror' : 'Mirror',
                       tooltip: _previewMirrorFeatureId == null ? 'Select Mirror Plane or Face' : null,
                       hasPlanePicked: _mirrorPlaneEntity != null,
                       merge: _mirrorMerge,
                       onMergeChanged: _setMirrorMerge,
-                      sourceFeatureIds: _mirrorSourceFeatureIds,
-                      onPickSourceFeatures: () =>
-                          _startSourceFeaturePicker(_SourceFeaturePickerTarget.mirror),
+                      scopeSection: _buildScopeSection(
+                        _mirrorScope,
+                        keyPrefix: 'mirror',
+                        otherFilter: _mirrorSelectionFilter,
+                        pickerTarget: _SourceFeaturePickerTarget.mirror,
+                        editing: _editingMirrorFeatureId != null,
+                      ),
+                      scopeValid: _scopeValid(_mirrorScope),
+                      planeActive: !_mirrorScope.scopeActive,
+                      onActivatePlane: () => setState(() => _setScopeActive(_mirrorScope, false, _mirrorSelectionFilter)),
                       toolFeatureSummary: _toolFeaturesSummary(_mirrorToolFeatureIds),
-                      seedKind: _mirrorSeedKind,
-                      onSeedKindChanged: _setMirrorSeedKind,
                       onConfirm: _confirmMirror,
                       onCancel: _cancelMirror,
                     ),
@@ -29068,7 +28905,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       // are always already whatever the user last set them
                       // to.
                       key: ValueKey(
-                        '${_editingPatternFeatureId ?? _patternSourceBodyIds?.join(',')}-'
+                        '${_editingPatternFeatureId ?? 'new-pattern'}-'
                         '$_patternMode-$_patternHasSecondDirection',
                       ),
                       title: _editingPatternFeatureId != null ? 'Edit Pattern' : 'Pattern',
@@ -29120,12 +28957,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       onOrientationModeChanged: _onPatternOrientationModeChanged,
                       merge: _patternMerge,
                       onMergeChanged: _setPatternMerge,
-                      sourceFeatureIds: _patternSourceFeatureIds,
-                      onPickSourceFeatures: () =>
-                          _startSourceFeaturePicker(_SourceFeaturePickerTarget.pattern),
+                      scopeSection: _buildScopeSection(
+                        _patternScope,
+                        keyPrefix: 'pattern',
+                        otherFilter: _patternOtherFilter,
+                        pickerTarget: _SourceFeaturePickerTarget.pattern,
+                        editing: _editingPatternFeatureId != null,
+                      ),
+                      scopeValid: _scopeValid(_patternScope),
+                      onActivateAxis: () => setState(() => _setScopeActive(_patternScope, false, _patternOtherFilter)),
                       toolFeatureSummary: _toolFeaturesSummary(_patternToolFeatureIds),
-                      seedKind: _patternSeedKind,
-                      onSeedKindChanged: _setPatternSeedKind,
                       onConfirm: _confirmPattern,
                       onCancel: _cancelPattern,
                     ),
@@ -29712,18 +29553,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                 // ChamferFeature being built), so this still needs its own
                 // confirm button, now the ribbon's `onConfirm` instead of
                 // the separate `floatingActionButton` checkmark below.
-                if (_mirrorStep == _MirrorStep.pickingBodies)
-                  Positioned.fill(
-                    child: PickerRibbon(
-                      title: 'Mirror',
-                      tooltip: _mirrorPickedBodyCount() == 0
-                          ? 'Select Body to Mirror'
-                          : '${_mirrorPickedBodyCount()} body(s) selected - tap checkmark to confirm',
-                      onCancel: _cancelMirror,
-                      showConfirm: true,
-                      onConfirm: _busy || _mirrorPickedBodyCount() == 0 ? null : _confirmMirrorBodySelection,
-                    ),
-                  ),
+                // (Bug report 2026-11-17 item M.3: Mirror no longer has this step; it opens on its panel.)
                 // Boolean family, first entry guided "Add" FAB entry
                 // (`_startMergePicker`): shown for the whole `pickingBodies`
                 // step, mirroring [_MirrorStep.pickingBodies]'s own identical
@@ -29873,29 +29703,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                 // to Mirror's own multi-select-then-confirm one). On-device
                 // feedback ("the tooltip at the top of the screen blocks the
                 // FABs"): moved from a full-width `top: 8` banner into this
-                // bottom [PickerRibbon].
-                if (_patternStep == _PatternStep.pickingBodies &&
-                    _sourceFeaturePickerTarget != _SourceFeaturePickerTarget.pattern)
-                  Positioned.fill(
-                    child: PickerRibbon(
-                      title: 'Pattern',
-                      tooltip: _patternPickingBodiesSummary(),
-                      onCancel: _cancelPattern,
-                      showConfirm: true,
-                      onConfirm: _busy || !_patternHasAnyPickedSource ? null : _confirmPatternBodySelection,
-                      // On-device feedback ("on the flyup ribbon, there
-                      // should be an extra button that says 'select
-                      // feature'"): opens the Build Tree's own multi-select
-                      // Feature picker without leaving `pickingBodies` -
-                      // [_confirmSourceFeaturePicker] writes straight into
-                      // [_patternSourceFeatureIds], which
-                      // [_confirmPatternBodySelection] then carries forward
-                      // into `configuring` unchanged (see its own doc
-                      // comment).
-                      extraActionLabel: 'Select Feature',
-                      onExtraAction: () => _startSourceFeaturePicker(_SourceFeaturePickerTarget.pattern),
-                    ),
-                  ),
+                // bottom [PickerRibbon]. (Bug report 2026-11-17 item 2B: Pattern no longer has this step; it opens on its panel.)
                 // On-device feedback ("the tooltip at the top of the screen
                 // blocks the FABs"): the "Select an Edge..." guided-entry
                 // banner for `configuring` used to float here at `top: 8` -

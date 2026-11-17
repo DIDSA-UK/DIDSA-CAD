@@ -42,8 +42,8 @@ The implementation session updates this table as each part lands (one commit per
 | 8 | Copy to cloud storage: new or existing project; Open only opens | Done | 8fbbab8 |
 | 2A | Backend: face → feature endpoint | Done | 87b0335 |
 | M.1 | Backend: Mirror takes several tool features | Done | 8e0aea2 |
-| M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | Done | this commit |
-| 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | To do | |
+| M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | Done | 7b40e2a |
+| 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | Done | this commit |
 
 Suggested order: **4 → 13 → 12 → 8 → 2**. Item 4 is backend + client with a saved-file field. 13 and 12 are desktop
 layout. 8 is a flow change. 2 is the largest: a backend endpoint (2A), the Pattern tool reworked (2B) and Mirror the same way (M);
@@ -379,4 +379,18 @@ Decisions the plan left open, recorded as they were made.
   (`_mirrorToolFeatureIds`, sent as `tool_feature_ids`). The Build tree picker also starts from the tool features already in scope
   (it started from `source_feature_ids` only, so reopening it dropped a picked cut), for both tools.  Slip: the two file renames (no content) went into the 2A commit `87b0335` by accident, so the client does not build at
   `87b0335` / `8e0aea2`; it builds again from the M.2 commit. Pushed history was not rewritten.
+- **2B / M.3 / M.4:** `viewport3d/seed_scope.dart` holds the shared parts: `SeedScopeTab`, `SeedScopeController` (per-tab lists,
+  the active-slot flag, face → feature / body, a reset-generation guard instead of a per-tap token so several quick taps all land
+  while a reset drops late answers, and `seed()` through `resolveSeed`) and `SeedScopeSection` (tabs, Scope field with chips,
+  error, "Add from Tree" on the Feature tab). `part_screen.dart` has one `_patternScope` and one `_mirrorScope`, one face-pick
+  helper, one filter swap and one section builder; each tool keeps only a short listener that copies the seed into its request
+  fields. Choices made here:
+  - The old "Pattern Body / Pattern Feature" pill and its long-press-seed bookkeeping are gone; the tabs replace them. The panels
+    lose the "N Features added from the Build Tree" row (the chips show them). `pickingBodies` and its ribbons are gone.
+  - While editing a saved Pattern / Mirror the tabs are locked (the backend does not switch a feature between source and tool
+    modes on update); the scope field starts inactive (the direction / axis / plane field is active, as before), and tapping it
+    makes it active. A saved feature that has both source bodies and source features (possible from the old UI) opens on the
+    Body tab and its source features are not sent on save. Not covered by the plan; flagged here.
+  - Opening with an empty scope schedules no preview; Confirm stays off until the scope is valid.
+  - The face highlight in the viewport for a scope pick is not added (the existing highlight of the source bodies / tool stays).
 

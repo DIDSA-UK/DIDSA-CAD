@@ -23,7 +23,6 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -44,7 +43,6 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -66,7 +64,6 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () => confirmed = true,
               onCancel: () {},
             ),
@@ -85,7 +82,6 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -103,7 +99,6 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -123,7 +118,6 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -143,7 +137,6 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -163,7 +156,6 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -182,7 +174,6 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.fuseIntoOne,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -202,7 +193,6 @@ void main() {
               hasPlanePicked: true,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (m) => changedTo = m,
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () {},
             ),
@@ -211,222 +201,6 @@ void main() {
       );
       await tester.tap(find.text('Merge into One Body'));
       expect(changedTo, MergeMode.fuseIntoOne);
-    });
-  });
-
-  group('Pattern/Mirror scoping Phase 6: MirrorPanel source Features from tree', () {
-    testWidgets('shows "No Features added" when sourceFeatureIds is empty', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.keepSeparate,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      expect(find.text('No Features added from the Build Tree'), findsOneWidget);
-    });
-
-    testWidgets('shows the count once sourceFeatureIds is non-empty', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.keepSeparate,
-              onMergeChanged: (_) {},
-              sourceFeatureIds: const ['f1', 'f2'],
-              onPickSourceFeatures: () {},
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      expect(find.text('2 Features added from the Build Tree'), findsOneWidget);
-    });
-
-    testWidgets('tapping "Add from Tree" fires onPickSourceFeatures', (tester) async {
-      var tapped = false;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.keepSeparate,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () => tapped = true,
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('Add from Tree'));
-      expect(tapped, isTrue);
-    });
-  });
-
-  group('Pattern/Mirror scoping Phase 8: MirrorPanel tool_feature_id mode', () {
-    testWidgets('toolFeatureSummary shown replaces merge toggle and sourceFeatureIds row', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.fuseIntoOne,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              toolFeatureSummary: 'Extrude 2',
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      expect(find.textContaining('Mirroring Extrude 2 into its own target'), findsOneWidget);
-      expect(find.byType(SegmentedButton<MergeMode>), findsNothing);
-      expect(find.text('Add from Tree'), findsNothing);
-    });
-
-    testWidgets('toolFeatureSummary null shows the ordinary merge toggle and Add from Tree button',
-        (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.keepSeparate,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
-      expect(find.text('Add from Tree'), findsOneWidget);
-    });
-  });
-
-  group('Pattern/Mirror scoping Phase 9: MirrorPanel seed-kind toggle', () {
-    testWidgets('hidden when seedKind is null (not a long-press single-Feature session)',
-        (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.keepSeparate,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      expect(find.text('Mirror Body'), findsNothing);
-      expect(find.text('Mirror Feature'), findsNothing);
-    });
-
-    testWidgets('shown and reflects body as selected', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.keepSeparate,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              seedKind: PatternMirrorSeedKind.body,
-              onSeedKindChanged: (_) {},
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      expect(find.text('Mirror Body'), findsOneWidget);
-      expect(find.text('Mirror Feature'), findsOneWidget);
-      final segmentedButton = tester
-          .widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
-      expect(segmentedButton.selected, {PatternMirrorSeedKind.body});
-    });
-
-    testWidgets('reflects feature as selected', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.fuseIntoOne,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              seedKind: PatternMirrorSeedKind.feature,
-              onSeedKindChanged: (_) {},
-              toolFeatureSummary: 'Extrude 1',
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      final segmentedButton = tester
-          .widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
-      expect(segmentedButton.selected, {PatternMirrorSeedKind.feature});
-    });
-
-    testWidgets('tapping "Mirror Feature" fires onSeedKindChanged(feature)', (tester) async {
-      PatternMirrorSeedKind? picked;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.keepSeparate,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              seedKind: PatternMirrorSeedKind.body,
-              onSeedKindChanged: (k) => picked = k,
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('Mirror Feature'));
-      expect(picked, PatternMirrorSeedKind.feature);
-    });
-
-    testWidgets('tapping "Mirror Body" fires onSeedKindChanged(body)', (tester) async {
-      PatternMirrorSeedKind? picked;
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: MirrorPanel(
-              hasPlanePicked: true,
-              merge: MergeMode.fuseIntoOne,
-              onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
-              seedKind: PatternMirrorSeedKind.feature,
-              onSeedKindChanged: (k) => picked = k,
-              toolFeatureSummary: 'Extrude 1',
-              onConfirm: () {},
-              onCancel: () {},
-            ),
-          ),
-        ),
-      );
-      await tester.tap(find.text('Mirror Body'));
-      expect(picked, PatternMirrorSeedKind.body);
     });
   });
 
@@ -440,7 +214,6 @@ void main() {
               hasPlanePicked: false,
               merge: MergeMode.keepSeparate,
               onMergeChanged: (_) {},
-              onPickSourceFeatures: () {},
               onConfirm: () {},
               onCancel: () => cancelled = true,
             ),
@@ -449,6 +222,46 @@ void main() {
       );
       await tester.tap(find.widgetWithText(TextButton, 'Cancel'));
       expect(cancelled, isTrue);
+    });
+  });
+  // Bug report 2026-11-17 item M.3: the tabs + Scope field on top, then the Mirror plane field, which takes the picks once tapped.
+  group('MirrorPanel scope and plane field', () {
+    Widget panel({bool scopeValid = true, bool planeActive = true, VoidCallback? onActivatePlane, String? toolFeatureSummary}) => MaterialApp(
+          home: Scaffold(
+            body: MirrorPanel(
+              hasPlanePicked: true,
+              merge: MergeMode.keepSeparate,
+              onMergeChanged: (_) {},
+              scopeSection: const Text('SCOPE'),
+              scopeValid: scopeValid,
+              planeActive: planeActive,
+              onActivatePlane: onActivatePlane,
+              toolFeatureSummary: toolFeatureSummary,
+              onConfirm: () {},
+              onCancel: () {},
+            ),
+          ),
+        );
+
+    testWidgets('the scope sits above the Mirror plane field, and an invalid scope disables Confirm', (tester) async {
+      await tester.pumpWidget(panel(scopeValid: false));
+      expect(tester.getTopLeft(find.text('SCOPE')).dy, lessThan(tester.getTopLeft(find.byKey(const ValueKey('mirror-plane-field'))).dy));
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+      await tester.pumpWidget(panel());
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNotNull);
+    });
+
+    testWidgets('tapping the Mirror plane field makes it the active slot', (tester) async {
+      var activated = false;
+      await tester.pumpWidget(panel(planeActive: false, onActivatePlane: () => activated = true));
+      await tester.tap(find.byKey(const ValueKey('mirror-plane-field')));
+      expect(activated, isTrue);
+    });
+
+    testWidgets('tool features: "always merges" replaces the merge choice', (tester) async {
+      await tester.pumpWidget(panel(toolFeatureSummary: 'Extrude 2'));
+      expect(find.textContaining('Mirroring Extrude 2 into its own target'), findsOneWidget);
+      expect(find.byType(SegmentedButton<MergeMode>), findsNothing);
     });
   });
 }

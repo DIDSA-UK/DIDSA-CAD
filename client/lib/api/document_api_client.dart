@@ -3934,6 +3934,28 @@ class DocumentApiClient {
   /// Feature is created) and has no matching update/delete counterpart -
   /// it's called fresh on every selection change (see
   /// `PartScreen._scheduleMeasureQuery`).
+  /// Which Feature made each face (`POST /parts/{id}/face-owner-features`, bug report 2026-11-17 item 2A): what a face pick adds to a
+  /// Pattern / Mirror scope on the Feature tab. One Feature id per face, in order. [rollbackExcludedFeatureIds]: Features rolled back
+  /// in this session, which made nothing.
+  Future<List<String>> faceOwnerFeatures(
+    String partId,
+    List<MeasureEntityRefDto> faces, {
+    List<String> rollbackExcludedFeatureIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/face-owner-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'faces': faces.map((f) => f.toJson()).toList(),
+                if (rollbackExcludedFeatureIds.isNotEmpty) 'rollback_excluded_feature_ids': rollbackExcludedFeatureIds,
+              }),
+            ),
+        (body) => [
+          for (final entry in ((body as Map<String, dynamic>)['features'] as List)) (entry as Map<String, dynamic>)['feature_id'] as String,
+        ],
+      );
+
   Future<MeasurementResultDto> measure(String partId, List<MeasureEntityRefDto> refs) => _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/measure'),
