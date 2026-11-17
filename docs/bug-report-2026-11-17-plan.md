@@ -19,6 +19,7 @@ through the shared backend. It needs no VR change.
 | 7 | Edit Alone: Measure returns 422 `missing_reference` | Picks on the focused Part have `occurrenceId: ''` ("the focused Part"), but Measure sent them against the **root** Part id; the root here has no geometry. | `part_screen.dart` `_scheduleMeasureQuery`: all picks on the focused Part → measure in `_focusPartId` (as the Width mate check already did); mixed with picks elsewhere → root, focused picks given `currentOccurrencePath`. |
 | 9 | Password manager fills only the API key | Android autofill pairs username + password; the address fields had no hint or only `url`, and the storage / relay fields had none at all. | Address fields `AutofillHints.username` (+`url`), keys `password`, each pair in an `AutofillGroup`, `finishAutofillContext()` on save: `home/server_screen.dart`, `home/storage_screen.dart`, `vr_pairing/headset_pairing_screen.dart` (relay). |
 | 10 | AI chat flips between full width and a centred column | `DesktopMaxWidth` only caps in desktop mode, and the mode follows the last pointer, so every touch / mouse switch flipped it. | `ai/ai_modelling_screen.dart`: 900 px cap whatever the mode (a phone is narrower than the cap). |
+| 14 | Desktop: "Select Feature" (Pattern / Mirror) does not open the Build tree | While a tool is open, the desktop left pane shows the tool's panel instead of the tree (`_desktopToolPanelOpen`). The plane / profile / path pickers were exempt, the tree pickers were not. "Select Feature" only sets `_featureTreeVisible`, which only the phone layout reads. The same was true of every other tree picker: loft sections, knit, solid from surfaces, thicken, offset surface, the loft-surface / ruled-surface section pickers, and the sketch pickers. | `part_screen.dart`: new `_treePickerActive` (`_treeSketchPickerMode` + `_treeFeaturePickerMode`, now also what `FeatureTreePanel`'s picker flags read). While true, the desktop pane shows the Build tree, even if the user had folded it away or is in the Assembly lens. Desktop test added (fails without the fix). |
 | 11 | Save dialog file-name field jitters | The collision check ran on every keystroke, flashing a `LinearProgressIndicator`, and the warning row came and went: the dialog changed height. | `relative_path_dialog.dart`: 300 ms debounce, stale answers dropped, no progress bar, warning in a fixed-height slot. Test updated for the debounce. |
 
 Verified: backend sketch / constraint / solver tests (778 passed + the new file, which fails without the fix);
@@ -30,10 +31,10 @@ Measure in Edit Alone against a live backend, the dialog's feel while typing.
 ## To do (plan)
 
 Suggested order: **4 → 13 → 12 → 8 → 2**. Item 4 is backend + client with a saved-file field. 13 and 12 are desktop
-layout. 8 is a flow change. 2 is the largest: a backend endpoint (2A) and the Pattern tool's entry and picking reworked (2B);
-land 2A first.
+layout. 8 is a flow change. 2 is the largest: a backend endpoint (2A), the Pattern tool reworked (2B) and Mirror the same way (M);
+its own order is at the end of the Mirror part.
 
-### 2. Pattern: one tool, two tabs, scope picked by faces, whichever way it was opened
+### 2. Pattern and Mirror: one tool each, two tabs, scope picked by faces, whichever way it was opened
 
 **The intended behaviour (from the tester, 2026-11-17):**
 
@@ -146,10 +147,76 @@ Tests (`test/part_screen_test.dart` and `test/pattern_panel_test.dart` if it exi
 - A cut and a body-making feature together show the message and disable Confirm.
 - Editing a saved feature pattern opens on Feature, and a saved body pattern on Body.
 
-Follow-ups, not in this item:
-- Mirror has the same body/feature pill (`_mirrorSeedKind`) and the same two-pathway split. It should get the same tabs
-  afterwards, reusing the face-owner endpoint.
-- The VR client has no Pattern tool, so there is nothing to change there.
+The VR client has no Pattern or Mirror tool, so there is nothing to change there.
+
+#### M. Mirror: the same tool shape
+
+Same intended behaviour as Pattern: **Feature** (default) / **Body** tabs, scope picked by faces, and Start > Mirror and the
+long press opening one tool.
+
+**What it does today** (`viewport3d/part_screen.dart`, `viewport3d/mirror_panel.dart`):
+- **Start > Mirror** (`_startMirrorPicker`): a `pickingBodies` step with a body-only filter
+  (`_mirrorBodyPickerSelectionFilter`). Its `PickerRibbon` has **no "Select Feature" button** (Pattern's has), and
+  `_confirmMirrorBodySelection` reads bodies only. So from Start, Mirror can only mirror bodies.
+- **Long press > Mirror** (`_openMirrorPanelFromFeature`): skips straight to the plane step with the feature as
+  `tool_feature_id` (cut / boss-into-target) or `source_feature_ids`. The Pattern Body / Pattern Feature-style pill
+  (`_mirrorSeedKind`) shows only when that one feature qualifies both ways.
+- **Selection drawer > Mirror on bodies** (`_onMirrorTapped` → `_openMirrorPanel`): Body.
+- **"Select Feature" inside the panel** (`MirrorPanel.onPickSourceFeatures` → `_startSourceFeaturePicker(mirror)`):
+  `_confirmSourceFeaturePicker` writes the picks straight into `_mirrorSourceFeatureIds`. **That is the bug PR #368 fixed
+  for Pattern only:** a picked cut is sent as a feature whose bodies are copied, which a cut has none of, so it mirrors
+  nothing. It does not go through `resolvePatternSeed`.
+- **Backend:** `MirrorFeature.tool_feature_id` is a single feature (`backend/app/document/models.py`, `mirror.py`). Pattern
+  took a list in PR #368 (`tool_feature_ids`, the first still also in `tool_feature_id`, the rest saved as
+  `extra_tool_feature_ids`).
+- Mirror's own pick after the scope is a **plane** (`_MirrorStep.pickingPlane`, `_mirrorSelectionFilter`). A planar
+  **face** is a valid mirror plane, so face picks for the scope and face picks for the plane must not be confused (see the
+  active slot below).
+
+**Plan:**
+1. **Backend, several tool features** (same shape as PR #368 for Pattern; read `0b8541d`'s diff to `pattern.py`,
+   `models.py`, `native_format.py`, `schemas.py`, `router.py`, `graph.py` and copy it):
+   - `MirrorFeature.tool_feature_ids` on create / update / response; `tool_feature_id` stays and is the first;
+     `extra_tool_feature_ids` in the file (an older file loads with just the first).
+   - Each tool feature is mirrored on its own and applied to the one shared target in feature order. Tool features acting on
+     different bodies are refused (`tool_features_different_targets`).
+   - Add them to the dependency graph (deleting any of them takes the mirror with it) and to the coarse preview.
+   - `tests/test_mirror_several_tool_features.py`, modelled on `test_pattern_several_tool_features.py`.
+2. **Client, one seed rule.** Rename `pattern_seed.dart` → `pattern_mirror_seed.dart` (`resolveSeed`, used by both
+   tools) and use it for Mirror's scope. This fixes the "Select Feature" cut bug above on its own, even before the tabs land,
+   so it can go first.
+3. **Client, the same tool as Pattern.**
+   - `_openMirrorTool({seedFeatures})` from Start (empty scope), the long press (that feature) and the drawer (Body tab with
+     those bodies). No `pickingBodies` step and no `PickerRibbon`.
+   - `MirrorPanel` gets the **Feature | Body** `SegmentedButton` (keys `mirror-tab-feature`, `mirror-tab-body`) replacing
+     `seedKind`, and the same **Scope** field (key `mirror-scope-field`) above the **Mirror plane** field.
+   - Active slot `scope` | `plane`, scope active on opening:
+     - **scope:** a faces-only filter; a face adds its feature (via `faceOwnerFeatures`, from 2A) on the Feature tab, or its
+       body on the Body tab, and tapping again removes it;
+     - **plane:** today's `_mirrorSelectionFilter` (reference plane, planar face, plane feature).
+     - Tapping the Mirror plane field switches slot; picking a plane while the scope slot is active never happens, because the
+       scope filter is faces only and is read as scope.
+     - After the first scope pick, **do not** jump to the plane slot automatically. The user may want several faces.
+   - Per-tab scopes kept separately, as Pattern. The cut + body-making error is shown inline and Confirm disabled.
+   - Edit (`_openMirrorPanelForEdit`): the tab follows what was saved.
+   - Remove `_mirrorSeedKind`, `_setMirrorSeedKind`, `_mirrorLongPressSeedFeature`, `MirrorPanel.seedKind` /
+     `onSeedKindChanged`, `_confirmMirrorBodySelection` and the pickingBodies ribbon.
+   - "Select Feature" / "Add from Tree" stays for the Feature tab (item 14 makes it work on the desktop).
+4. **Share, don't copy.** The tabs + Scope field are the same widget in both panels: a `SeedScopeSection` (new, e.g.
+   `viewport3d/seed_scope_section.dart`) with the tab, the field and its chips, and a callback per face pick. The face →
+   feature / body resolution and the per-tab scope state live in one small controller class used by both tools, not in two
+   copies inside `part_screen.dart`.
+5. **Tests**, the same list as Pattern's, for Mirror:
+   - Start > Mirror opens on Feature with the scope slot active and no `PickerRibbon`;
+   - the long press opens the same panel with the feature in scope;
+   - a hole wall face → `tool_feature_ids: [cut]`;
+   - Body tab → `source_body_ids`;
+   - the tab switch keeps both scopes;
+   - picking a planar face while the **plane** slot is active sets the plane, not the scope;
+   - Select Feature with a cut sends it as a tool feature (the bug in today's code).
+
+Order for 2 + M: **2A** (backend face owner) → **M.1** (backend Mirror several tool features) → **M.2** (shared seed rule,
+fixes Mirror's Select Feature cut bug) → **2B + M.3 + M.4** together (the shared section is written once).
 
 ### 4. Angle dimension: wrong angle drawn, label off the arc, only one choice offered
 

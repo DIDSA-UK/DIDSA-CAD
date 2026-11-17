@@ -4091,6 +4091,62 @@ void main() {
   });
 
   testWidgets(
+      'desktop layout: Pattern "Select Feature" shows the Build Tree in the left pane to pick from '
+      '(it used to stay replaced by the tool, so there was nothing to pick)', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {
+          'type': 'extrude',
+          'id': 'feature-2',
+          'sketch_feature_id': 'feature-1',
+          'extrude_type': 'boss',
+          'start_distance': 0.0,
+          'end_distance': 10.0,
+          'locked': false,
+        },
+      ],
+    );
+    final sketchBackend = _FakeSketchBackend();
+    final layout =
+        LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LayoutModeScope(
+          controller: layout,
+          child: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byKey(const ValueKey('ribbon-Pattern')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Select Feature'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Select source Features'), findsOneWidget);
+    await tester.tap(find.text('Extrude 1'));
+    await tester.pump();
+    expect(find.text('Select source Features - 1 selected'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('Confirm Feature selection'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('1 feature(s) selected - tap checkmark to confirm'), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
       'Pattern/Mirror scoping Phase 6 UX: the pickingBodies ribbon\'s "Select Feature" button '
       'opens the Build Tree picker, and a confirmed pick is reflected back in the ribbon',
       (tester) async {

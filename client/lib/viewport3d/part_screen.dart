@@ -26854,16 +26854,42 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// A tool with its own panel is open: the panel docks at the left in place of the tree (the pickers do not -
   /// they pick from the tree, so it stays).
   bool get _desktopToolPanelOpen =>
-      (_anyToolPanelOpen && !_planeSelectionMode && !_profilePickerActive && !_pathPickerActive) ||
+      (_anyToolPanelOpen && !_planeSelectionMode && !_profilePickerActive && !_pathPickerActive && !_treePickerActive) ||
       _mateActive ||
       _componentPatternPanelActive;
+
+  /// The Build tree is being used to pick from (a sketch, or features: Pattern / Mirror "Select Feature", loft sections,
+  /// knit, thicken, ...). Bug fix (desktop: "Select Feature" did not open the tree): those pickers only set
+  /// [_featureTreeVisible], which the phone layout reads; on the desktop the open tool's panel had taken the tree's place in
+  /// the left pane, so there was nothing to pick from. While this is true the desktop pane shows the tree, even if the user
+  /// had folded the pane away.
+  bool get _treePickerActive => _treeSketchPickerMode || _treeFeaturePickerMode;
+
+  bool get _treeSketchPickerMode =>
+      _sketchPickerActive ||
+      _surfaceSketchPickerActive ||
+      _revolveSketchPickerActive ||
+      _sweepSketchPickerActive ||
+      _planarSurfaceSketchPickerActive ||
+      _revolveSurfaceSketchPickerActive ||
+      _sweptSurfaceSketchPickerActive;
+
+  bool get _treeFeaturePickerMode =>
+      _sourceFeaturePickerTarget != null ||
+      _loftSketchPickerActive ||
+      _loftSurfaceSketchPickerActive ||
+      _ruledSurfaceSketchPickerActive ||
+      _thickenSourcePickerActive ||
+      _knitSurfacePickerActive ||
+      _solidFromSurfacesPickerActive ||
+      _offsetSurfaceSourcePickerActive;
 
   /// Wraps the viewport stack: on the desktop layout the tree is docked to its left.
   Widget _desktopFrame(Widget viewportStack) {
     if (!_desktopLayout) return viewportStack;
     return Row(
       children: [
-        if (_desktopPaneVisible && !_desktopToolPanelOpen && !_chromeHidden)
+        if ((_desktopPaneVisible || _treePickerActive) && !_desktopToolPanelOpen && !_chromeHidden)
           DesktopLeftPane(
             width: _desktopPaneWidth,
             onResize: (delta) => setState(
@@ -26872,7 +26898,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             child: Column(
               children: [
                 Expanded(
-                  child: _lens == AssemblyLens.assembly
+                  child: _lens == AssemblyLens.assembly && !_treePickerActive
                       ? _buildAssemblyTreePanel(docked: true)
                       : _buildFeatureTreePanel(docked: true),
                 ),
@@ -27629,13 +27655,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                     // Loft/Loft Surface/Ruled Surface's own pickers use
                     // isFeaturePickerMode instead (see that block's own top
                     // comment for why), not this one.
-                    isSketchPickerMode: _sketchPickerActive ||
-                        _surfaceSketchPickerActive ||
-                        _revolveSketchPickerActive ||
-                        _sweepSketchPickerActive ||
-                        _planarSurfaceSketchPickerActive ||
-                        _revolveSurfaceSketchPickerActive ||
-                        _sweptSurfaceSketchPickerActive,
+                    isSketchPickerMode: _treeSketchPickerMode,
                     pickableSketchIds: _sketchPickerActive
                         ? _pickableSketchIds
                         : _surfaceSketchPickerActive
@@ -27671,24 +27691,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                     // isSketchPickerMode's single-tap-finalizes shape. Loft
                     // Surface/Ruled Surface join this same mode, mirroring
                     // Loft's own choice exactly.
-                    isFeaturePickerMode: _sourceFeaturePickerTarget != null ||
-                        _loftSketchPickerActive ||
-                        _loftSurfaceSketchPickerActive ||
-                        _ruledSurfaceSketchPickerActive ||
-                        // Phase 2 surfacing package: Thicken/Offset Surface
-                        // use this same mode as a single-pick-commits-
-                        // immediately picker (their own onFeaturePickerToggle
-                        // below never accumulates - it acts the instant a
-                        // row is tapped, mirroring isSketchPickerMode's own
-                        // single-tap-finalizes shape, just over any
-                        // `produces == 'surface'` Feature rather than only
-                        // Sketches); Knit/Solid from Surfaces use it as a
-                        // genuine multi-pick-then-confirm picker, same shape
-                        // as Loft's own section picker.
-                        _thickenSourcePickerActive ||
-                        _knitSurfacePickerActive ||
-                        _solidFromSurfacesPickerActive ||
-                        _offsetSurfaceSourcePickerActive,
+                    // Thicken/Offset Surface use this mode as a single-pick-commits-immediately picker; Knit/Solid from
+                    // Surfaces, Loft and the Pattern/Mirror source pickers as multi-pick-then-confirm (see [_treeFeaturePickerMode]).
+                    isFeaturePickerMode: _treeFeaturePickerMode,
                     pickableFeaturePickerIds: _thickenSourcePickerActive ||
                             _knitSurfacePickerActive ||
                             _solidFromSurfacesPickerActive ||
