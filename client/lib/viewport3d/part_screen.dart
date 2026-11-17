@@ -131,7 +131,7 @@ import 'share_screen.dart';
 import 'part_viewport.dart';
 import 'pattern_panel.dart';
 import 'view_appearance_controls.dart';
-import 'pattern_seed.dart';
+import 'pattern_mirror_seed.dart';
 import 'pending_job_store.dart';
 import 'picker_ribbon.dart';
 import 'planar_surface_panel.dart';
@@ -3659,33 +3659,33 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// kind, in which case the panel already operates in that one mode with
   /// nothing to toggle). Mirrors [_patternSeedKind]'s own identical shape.
   PatternMirrorSeedKind? get _mirrorSeedKind {
-    final feature = _mirrorLongPressSeedFeature;
-    if (feature == null) return null;
-    final qualifiesAsBody = _patternMirrorSourceFeatureTypes.contains(feature.type);
-    final qualifiesAsToolFeature = _isEligibleToolFeature(feature);
-    if (!(qualifiesAsBody && qualifiesAsToolFeature)) return null;
-    return _mirrorToolFeatureId != null ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
+    final features = _mirrorLongPressSeedFeature;
+    if (features.isEmpty || (_mirrorSourceBodyIds ?? const []).isNotEmpty) return null;
+    final both = features.every((f) => _patternMirrorSourceFeatureTypes.contains(f.type) && _isEligibleToolFeature(f));
+    if (!both) return null;
+    return _mirrorToolFeatureIds.isNotEmpty ? PatternMirrorSeedKind.feature : PatternMirrorSeedKind.body;
   }
 
   /// [MirrorPanel.onSeedKindChanged] - only reachable while [_mirrorSeedKind]
   /// is non-null (i.e. [_mirrorLongPressSeedFeature] qualifies for both
   /// kinds), so this never needs to re-check eligibility itself. Flips which
-  /// of [_mirrorSourceFeatureIds]/[_mirrorToolFeatureId] carries the seed
+  /// of [_mirrorSourceFeatureIds]/[_mirrorToolFeatureIds] carries the seed
   /// Feature's id, resetting `merge` the same way
   /// [_resetMirrorConfiguringState]'s own `toolFeatureId` branch does
   /// (`fuseIntoOne` has no referent otherwise - see that method's own doc
   /// comment). Mirrors [_setPatternSeedKind]'s own identical shape.
   void _setMirrorSeedKind(PatternMirrorSeedKind kind) {
-    final feature = _mirrorLongPressSeedFeature;
-    if (feature == null) return;
+    final features = _mirrorLongPressSeedFeature;
+    if (features.isEmpty) return;
+    final ids = [for (final f in features) f.id];
     setState(() {
       if (kind == PatternMirrorSeedKind.feature) {
         _mirrorSourceFeatureIds = [];
-        _mirrorToolFeatureId = feature.id;
+        _mirrorToolFeatureIds = ids;
         _mirrorMerge = MergeMode.fuseIntoOne;
       } else {
-        _mirrorSourceFeatureIds = [feature.id];
-        _mirrorToolFeatureId = null;
+        _mirrorSourceFeatureIds = ids;
+        _mirrorToolFeatureIds = [];
         _mirrorMerge = MergeMode.keepSeparate;
       }
     });
@@ -6420,8 +6420,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [_mirrorSeedKind]/[_setMirrorSeedKind] for how the user can also
   /// switch into/out of this mode afterwards), reconstructed from the
   /// edited Feature's own stored value in [_openMirrorPanelForEdit], reset
-  /// alongside [_mirrorSourceBodyIds] everywhere that field is.
-  String? _mirrorToolFeatureId;
+  /// alongside [_mirrorSourceBodyIds] everywhere that field is. Several cuts can be mirrored together (bug report 2026-11-17 item M.1);
+  /// set from [resolveSeed]'s result (`pattern_mirror_seed.dart`), the rule Pattern uses.
+  List<String> _mirrorToolFeatureIds = [];
 
   /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
   /// §2.12/§4): the Feature a "Mirror" long-press entry started this
@@ -6435,7 +6436,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// own `longPressSeedFeature` param; explicitly cleared everywhere else
   /// `configuring`/`pickingPlane` is (re-)entered. Mirrors
   /// [_patternLongPressSeedFeature]'s own identical shape.
-  FeatureDto? _mirrorLongPressSeedFeature;
+  List<FeatureDto> _mirrorLongPressSeedFeature = const [];
 
   /// The MirrorFeature created (or, in edit mode, already existing) for the
   /// panel session - mirrors [_previewRevolveFeatureId]'s simple pattern.
@@ -6467,7 +6468,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     PlaneRefDto mirrorPlane,
     List<String> sourceFeatureIds,
     MergeMode merge,
-    String? toolFeatureId,
+    List<String> toolFeatureIds,
   })? _mirrorEditSnapshot;
 
   /// [_selectedEntities]' value from just before the panel opened - restored
@@ -7392,10 +7393,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   List<String> _patternSourceFeatureIds = [];
 
   /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
-  /// §2.11/§4): mirrors [_mirrorToolFeatureId]'s own identical shape - non-
+  /// §2.11/§4): mirrors [_mirrorToolFeatureIds]'s own identical shape - non-
   /// null while this session's seed is the third, mutually-exclusive
   /// `tool_feature_id` mode instead of [_patternSourceBodyIds]/
-  /// [_patternSourceFeatureIds], set from [resolvePatternSeed]'s result (every way of starting the tool - see `pattern_seed.dart`). Several cuts can be
+  /// [_patternSourceFeatureIds], set from [resolvePatternSeed]'s result (every way of starting the tool - see `pattern_mirror_seed.dart`). Several cuts can be
   /// patterned together.
   List<String> _patternToolFeatureIds = [];
 
@@ -20850,10 +20851,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _exitAllPickerAndSelectModes();
     setState(() {
       _sourceFeaturePickerTarget = target;
+      // Every feature already in the scope, tool features (cuts) included: confirming re-applies the seed rule to the whole pick.
       _selectedSourceFeatureIds = {
         ...(target == _SourceFeaturePickerTarget.mirror
-            ? _mirrorSourceFeatureIds
-            : _patternSourceFeatureIds),
+            ? [..._mirrorSourceFeatureIds, ..._mirrorToolFeatureIds]
+            : [..._patternSourceFeatureIds, ..._patternToolFeatureIds]),
       };
       _featureTreeVisible = true;
     });
@@ -20898,7 +20900,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (target == null) return;
     setState(() {
       if (target == _SourceFeaturePickerTarget.mirror) {
-        _mirrorSourceFeatureIds = _selectedSourceFeatureIds.toList();
+        _applyMirrorPickedFeatures(_selectedSourceFeatureIds.toList());
       } else {
         _applyPatternPickedFeatures(_selectedSourceFeatureIds.toList());
       }
@@ -20912,7 +20914,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
-  /// Features picked with "Select Feature" / "Add from Tree" while a Pattern is open: the same rule as every other way in (`pattern_seed.dart`), so a
+  /// Features picked with "Select Feature" / "Add from Tree" while a Pattern is open: the same rule as every other way in (`pattern_mirror_seed.dart`), so a
   /// picked cut switches the pattern to repeating it as a tool and a body-making feature is copied. Mixed picks are refused with a message and the
   /// previous seed kept. Called inside a `setState`.
   void _applyPatternPickedFeatures(List<String> featureIds) {
@@ -20922,7 +20924,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _patternSourceFeatureIds = featureIds;
       return;
     }
-    final seed = resolvePatternSeed(bodyIds: _patternSourceBodyIds ?? const [], features: picked, isToolFeature: _isEligibleToolFeature);
+    final seed = resolveSeed(bodyIds: _patternSourceBodyIds ?? const [], features: picked, isToolFeature: _isEligibleToolFeature);
     if (seed.error != null) {
       _showSnack(seed.error!);
       return;
@@ -20935,6 +20937,27 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _patternMerge = MergeMode.fuseIntoOne; // one target by construction
     } else if (wasTool) {
       _patternMerge = MergeMode.keepSeparate;
+    }
+  }
+
+  /// [_applyPatternPickedFeatures] for Mirror (bug report 2026-11-17 item M.2): "Select Feature" / "Add from Tree" inside the Mirror
+  /// panel goes through the same rule (`pattern_mirror_seed.dart`), so a picked cut is mirrored as a tool into its body - before, it was
+  /// sent as `source_feature_ids` (copy the bodies it made, of which a cut has none) and mirrored nothing. Called inside a `setState`.
+  void _applyMirrorPickedFeatures(List<String> featureIds) {
+    final picked = [for (final f in _features) if (featureIds.contains(f.id)) f];
+    final seed = resolveSeed(bodyIds: _mirrorSourceBodyIds ?? const [], features: picked, isToolFeature: _isEligibleToolFeature);
+    if (seed.error != null) {
+      _showSnack(seed.error!);
+      return;
+    }
+    final wasTool = _mirrorToolFeatureIds.isNotEmpty;
+    _mirrorSourceFeatureIds = seed.sourceFeatureIds;
+    _mirrorToolFeatureIds = seed.toolFeatureIds;
+    _mirrorLongPressSeedFeature = picked;
+    if (seed.isToolFeatureSeed) {
+      _mirrorMerge = MergeMode.fuseIntoOne; // one target by construction
+    } else if (wasTool) {
+      _mirrorMerge = MergeMode.keepSeparate;
     }
   }
 
@@ -20967,8 +20990,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _mirrorSourceBodyIds = null;
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
-      _mirrorToolFeatureId = null;
-      _mirrorLongPressSeedFeature = null;
+      _mirrorToolFeatureIds = [];
+      _mirrorLongPressSeedFeature = const [];
       _previewMirrorFeatureId = null;
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -21063,7 +21086,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// (see [_mirrorSeedKind]) lets the user switch between the two
   /// afterwards, when [feature] qualifies for both.
   void _openMirrorPanelFromFeature(FeatureDto feature) {
-    final seedAsToolFeature = _isEligibleToolFeature(feature);
+    // The same rule as Pattern and as "Select Feature" (`pattern_mirror_seed.dart`).
+    final seed = resolveSeed(bodyIds: const [], features: [feature], isToolFeature: _isEligibleToolFeature);
     setState(() {
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -21072,10 +21096,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _featureTreeVisible = false;
       _selectionFilterOverrides.push(_mirrorSelectionFilter);
       _resetMirrorConfiguringState(
-        [],
-        sourceFeatureIds: seedAsToolFeature ? [] : [feature.id],
-        toolFeatureId: seedAsToolFeature ? feature.id : null,
-        longPressSeedFeature: feature,
+        seed.bodyIds,
+        sourceFeatureIds: seed.sourceFeatureIds,
+        toolFeatureIds: seed.toolFeatureIds,
+        seedFeatures: [feature],
       );
     });
   }
@@ -21098,15 +21122,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _resetMirrorConfiguringState(
     List<String> sourceBodyIds, {
     List<String> sourceFeatureIds = const [],
-    String? toolFeatureId,
-    FeatureDto? longPressSeedFeature,
+    List<String> toolFeatureIds = const [],
+    List<FeatureDto> seedFeatures = const [],
   }) {
     _mirrorStep = _MirrorStep.pickingPlane;
     _mirrorSourceBodyIds = sourceBodyIds;
     _mirrorSourceFeatureIds = sourceFeatureIds;
-    _mirrorToolFeatureId = toolFeatureId;
-    _mirrorMerge = toolFeatureId != null ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
-    _mirrorLongPressSeedFeature = longPressSeedFeature;
+    _mirrorToolFeatureIds = toolFeatureIds;
+    _mirrorMerge = toolFeatureIds.isNotEmpty ? MergeMode.fuseIntoOne : MergeMode.keepSeparate;
+    _mirrorLongPressSeedFeature = seedFeatures;
     _previewMirrorFeatureId = null;
     _editingMirrorFeatureId = null;
     _mirrorEditSnapshot = null;
@@ -21138,15 +21162,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   bool _openMirrorPanelForEdit(FeatureDto feature) {
     final sourceBodyIds = feature.sourceBodyIds;
     final mirrorPlane = feature.mirrorPlane;
-    final toolFeatureId = feature.toolFeatureId;
+    final toolFeatureIds = feature.toolFeatureIds.isNotEmpty ? feature.toolFeatureIds : [if (feature.toolFeatureId != null) feature.toolFeatureId!];
     // Bug fix: a MirrorFeature seeded purely via `source_feature_ids` (no
     // direct Body pick) has an empty (not missing) `sourceBodyIds` - the
     // old `sourceBodyIds.isEmpty` check alone made re-opening it for edit
     // silently fail (`false`, no panel, no error) even though the Feature
     // is entirely valid. Phase 8: a `tool_feature_id`-seeded Mirror has
     // both `sourceBodyIds`/`sourceFeatureIds` empty too - equally valid.
-    if ((sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty && toolFeatureId == null) ||
-        mirrorPlane == null) {
+    if ((sourceBodyIds.isEmpty && feature.sourceFeatureIds.isEmpty && toolFeatureIds.isEmpty) || mirrorPlane == null) {
       return false;
     }
 
@@ -21159,14 +21182,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _mirrorSourceBodyIds = sourceBodyIds;
       _mirrorSourceFeatureIds = sourceFeatureIds;
       _mirrorMerge = merge;
-      _mirrorToolFeatureId = toolFeatureId;
-      _mirrorLongPressSeedFeature = null;
+      _mirrorToolFeatureIds = toolFeatureIds;
+      _mirrorLongPressSeedFeature = const [];
       _mirrorEditSnapshot = (
         sourceBodyIds: sourceBodyIds,
         mirrorPlane: mirrorPlane,
         sourceFeatureIds: sourceFeatureIds,
         merge: merge,
-        toolFeatureId: toolFeatureId,
+        toolFeatureIds: toolFeatureIds,
       );
       _meshBeforeMirror = _bodies;
       _entitiesBeforeMirror = _selectedEntities;
@@ -21256,7 +21279,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         mirrorPlane: mirrorPlane,
         sourceFeatureIds: _mirrorSourceFeatureIds,
         merge: _mirrorMerge,
-        toolFeatureId: _mirrorToolFeatureId,
+        toolFeatureIds: _mirrorToolFeatureIds,
       );
       _previewMirrorFeatureId = created.id;
     } else {
@@ -21267,7 +21290,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         mirrorPlane: mirrorPlane,
         sourceFeatureIds: _mirrorSourceFeatureIds,
         merge: _mirrorMerge,
-        toolFeatureId: _mirrorToolFeatureId,
+        toolFeatureIds: _mirrorToolFeatureIds,
       );
     }
     await _refreshMesh();
@@ -21315,7 +21338,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _mirrorSourceBodyIds = null;
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
-      _mirrorToolFeatureId = null;
+      _mirrorToolFeatureIds = [];
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -21343,7 +21366,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _mirrorSourceBodyIds = null;
       _mirrorSourceFeatureIds = [];
       _mirrorMerge = MergeMode.keepSeparate;
-      _mirrorToolFeatureId = null;
+      _mirrorToolFeatureIds = [];
       _selectedEntities = _entitiesBeforeMirror ?? {};
       _entitiesBeforeMirror = null;
       _previewMirrorFeatureId = null;
@@ -21362,7 +21385,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             mirrorPlane: editSnapshot.mirrorPlane,
             sourceFeatureIds: editSnapshot.sourceFeatureIds,
             merge: editSnapshot.merge,
-            toolFeatureId: editSnapshot.toolFeatureId,
+            toolFeatureIds: editSnapshot.toolFeatureIds,
           );
           await _refreshFeatures();
         });
@@ -23889,8 +23912,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _selectedEntities.where((e) => e.kind == SelectionEntityKind.body).map((e) => e.bodyId).toList();
     final picked = [for (final f in _features) if (_patternSourceFeatureIds.contains(f.id)) f];
     if (bodyIds.isEmpty && picked.isEmpty) return; // Defensive - the confirm FAB is disabled until then.
-    // The same rule as a long press on a feature: a picked cut is repeated as a tool, a body-making feature is copied (see `pattern_seed.dart`).
-    final seed = resolvePatternSeed(bodyIds: bodyIds, features: picked, isToolFeature: _isEligibleToolFeature);
+    // The same rule as a long press on a feature: a picked cut is repeated as a tool, a body-making feature is copied (see `pattern_mirror_seed.dart`).
+    final seed = resolveSeed(bodyIds: bodyIds, features: picked, isToolFeature: _isEligibleToolFeature);
     if (seed.error != null) {
       _showSnack(seed.error!);
       return;
@@ -23961,7 +23984,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [_patternSeedKind]) lets the user switch between the two afterwards,
   /// when [feature] qualifies for both.
   void _openPatternPanelFromFeature(FeatureDto feature) {
-    final seed = resolvePatternSeed(bodyIds: const [], features: [feature], isToolFeature: _isEligibleToolFeature);
+    final seed = resolveSeed(bodyIds: const [], features: [feature], isToolFeature: _isEligibleToolFeature);
     setState(() {
       _meshBeforePattern = _bodies;
       _entitiesBeforePattern = _selectedEntities;
@@ -28810,7 +28833,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       sourceFeatureIds: _mirrorSourceFeatureIds,
                       onPickSourceFeatures: () =>
                           _startSourceFeaturePicker(_SourceFeaturePickerTarget.mirror),
-                      toolFeatureSummary: _toolFeatureSummary(_mirrorToolFeatureId),
+                      toolFeatureSummary: _toolFeaturesSummary(_mirrorToolFeatureIds),
                       seedKind: _mirrorSeedKind,
                       onSeedKindChanged: _setMirrorSeedKind,
                       onConfirm: _confirmMirror,

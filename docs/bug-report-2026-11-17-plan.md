@@ -41,8 +41,8 @@ The implementation session updates this table as each part lands (one commit per
 | 12 | Desktop Visibility button and panel; ribbon duplicates removed | Done | 11e74ec |
 | 8 | Copy to cloud storage: new or existing project; Open only opens | Done | 8fbbab8 |
 | 2A | Backend: face → feature endpoint | Done | 87b0335 |
-| M.1 | Backend: Mirror takes several tool features | Done | this commit |
-| M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | To do | |
+| M.1 | Backend: Mirror takes several tool features | Done | 8e0aea2 |
+| M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | Done | this commit |
 | 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | To do | |
 
 Suggested order: **4 → 13 → 12 → 8 → 2**. Item 4 is backend + client with a saved-file field. 13 and 12 are desktop
@@ -375,4 +375,8 @@ Decisions the plan left open, recorded as they were made.
   `resolve_feature_produces`. The router's `_pattern_tool_ids` / `_validate_pattern_tool_feature_ids` became `_payload_tool_ids` /
   `_validate_tool_feature_ids` with a `kind` argument, shared by both. **Not done, by finding:** "add them to the coarse preview" -
   Mirror has no coarse path (`compute_part_bodies_coarse` has no Mirror branch and there is no Mirror coarse-preview endpoint).
+- **M.2:** `pattern_mirror_seed.dart` (`PatternMirrorSeed`, `resolveSeed`). Mirror's client state is a list of tool features now
+  (`_mirrorToolFeatureIds`, sent as `tool_feature_ids`). The Build tree picker also starts from the tool features already in scope
+  (it started from `source_feature_ids` only, so reopening it dropped a picked cut), for both tools.  Slip: the two file renames (no content) went into the 2A commit `87b0335` by accident, so the client does not build at
+  `87b0335` / `8e0aea2`; it builds again from the M.2 commit. Pushed history was not rewritten.
 

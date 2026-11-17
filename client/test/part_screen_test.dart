@@ -3855,6 +3855,66 @@ void main() {
     expect(find.text('Pattern'), findsNothing);
   });
 
+  testWidgets('Mirror "Add from Tree" with a cut mirrors it as a tool into its body (bug report 2026-11-17 item M.2: it was sent '
+      'as a source feature, whose bodies a cut has none of)', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'extrude', 'id': 'feature-2', 'sketch_feature_id': 'feature-1', 'extrude_type': 'boss', 'start_distance': 0.0,
+         'end_distance': 10.0, 'locked': true},
+        {'type': 'sketch', 'id': 'feature-3', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'extrude', 'id': 'feature-4', 'sketch_feature_id': 'feature-3', 'extrude_type': 'cut', 'start_distance': 0.0,
+         'end_distance': 10.0, 'target_body_ids': ['feature-2'], 'locked': false},
+      ],
+    );
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    // Mirror started from the boss (a body-making feature): its bodies are the scope.
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.longPress(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.byTooltip('More actions'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Mirror'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byType(MirrorPanel), findsOneWidget);
+    expect(tester.widget<MirrorPanel>(find.byType(MirrorPanel)).toolFeatureSummary, isNull);
+
+    // Add from Tree: swap the boss for the cut.
+    await tester.ensureVisible(find.text('Add from Tree'));
+    await tester.tap(find.text('Add from Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.text('Select source Features - 1 selected'), findsOneWidget);
+    await tester.tap(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.tap(find.text('Extrude 2'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Confirm Feature selection'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    final panel = tester.widget<MirrorPanel>(find.byType(MirrorPanel));
+    expect(panel.toolFeatureSummary, 'Extrude 2');
+    expect(panel.sourceFeatureIds, isEmpty);
+    await tester.pump(const Duration(milliseconds: 600)); // the preview debounce (no plane yet, so nothing is sent)
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets(
       'Pattern/Mirror scoping Phase 9: long-pressing an eligible Cut Feature still offers the '
       'plain "Pattern"/"Mirror" entries, and tapping "Pattern" opens PatternPanel seeded via '

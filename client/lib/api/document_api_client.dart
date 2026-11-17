@@ -4056,6 +4056,8 @@ class DocumentApiClient {
     // §2.11/§4): a third, mutually-exclusive seed-picking mode - see
     // `FeatureDto.toolFeatureId`'s own doc comment.
     String? toolFeatureId,
+    // Several tool Features mirrored together (sent as `tool_feature_ids`; the backend reports the first as `tool_feature_id`). Wins over [toolFeatureId].
+    List<String>? toolFeatureIds,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4066,7 +4068,10 @@ class DocumentApiClient {
                 'mirror_plane': mirrorPlane.toJson(),
                 'source_feature_ids': sourceFeatureIds,
                 'merge': merge.apiValue,
-                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+                if (toolFeatureIds != null && toolFeatureIds.isNotEmpty)
+                  'tool_feature_ids': toolFeatureIds
+                else if (toolFeatureId != null)
+                  'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4084,6 +4089,8 @@ class DocumentApiClient {
     List<String>? sourceFeatureIds,
     MergeMode? merge,
     String? toolFeatureId,
+    // Several tool Features mirrored together (sent as `tool_feature_ids`). Wins over [toolFeatureId].
+    List<String>? toolFeatureIds,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4094,7 +4101,10 @@ class DocumentApiClient {
                 if (mirrorPlane != null) 'mirror_plane': mirrorPlane.toJson(),
                 if (sourceFeatureIds != null) 'source_feature_ids': sourceFeatureIds,
                 if (merge != null) 'merge': merge.apiValue,
-                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+                if (toolFeatureIds != null && toolFeatureIds.isNotEmpty)
+                  'tool_feature_ids': toolFeatureIds
+                else if (toolFeatureId != null)
+                  'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
