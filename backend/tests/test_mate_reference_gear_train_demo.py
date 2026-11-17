@@ -54,7 +54,7 @@ def _differs(got, want, path="", flip=False):
         return next((d for k in want if (d := _differs(got[k], want[k], f"{path}.{k}")) is not None), None)
     if isinstance(want, list) and path.endswith("basis"):
         for g, w in zip(got, want):
-            if _differs(g, w, path) is not None and _differs(g, [-x for x in w], path) is not None:
+            if _differs(g, w, path + "[row]") is not None and _differs(g, [-x for x in w], path + "[row]") is not None:
                 return f"{path}: a basis row differs beyond its sign"
         return None if len(got) == len(want) else f"{path}: row count"
     if isinstance(want, list):
