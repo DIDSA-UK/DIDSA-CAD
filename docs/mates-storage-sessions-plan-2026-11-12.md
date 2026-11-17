@@ -45,7 +45,7 @@ The implementation session updates this table in its PR.
 | S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (merged 2026-11-14; headless and against the real store, not run on a headset; results: "S3 results" below) |
 | S4 | Sync hardening and set-up polish | all | Done (CAD #366 / VR #87, merged 2026-11-14; headless, Xvfb and a real store killed and restarted, not run on a headset; results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
-| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend (clients later) | Later, by a stronger model after storage has rolled out (owner, 2026-11-14); the head start is "Part 2b" below |
+| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17); ready to build from N1a. Not built |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
 | P1 | Session hub service and read-only document sharing | CAD | Not started |
 | P2 | VR Host / Join Session, roles, avatars, live model state | VR | Not started |
@@ -1265,8 +1265,187 @@ The VR e2e tests that guard the demo are in the three files above plus `tests/e2
 | # | Question | Recommendation |
 |---|---|---|
 | N-1 | Do N1 at all, and where in the order? It has no dependency on S4 or the sessions. | **Owner, 2026-11-14: after storage has rolled out, built by a stronger model.** Reasoning kept: shared storage puts more devices editing the same parts and a renumbered face is a quiet error; lead 1 above (OCCT version) could raise its priority |
-| N-2 | A `potentially_moved` mate reference: bind it and flag it (as Features do), or leave it broken until confirmed? | Bind and flag, the Feature policy, so the two behave alike |
-| N-3 | An unsigned mate in an old file: adopt the signature of what the index names, or require a re-pick? | Adopt, unless the face is the wrong kind for the mate type (then stay broken) |
+| N-2 | A `potentially_moved` mate reference: bind it and flag it (as Features do), or leave it broken until confirmed? | First answer: bind and flag. **Owner, 2026-11-17: show it, hold it out of solves until confirmed ("N1 plan", N-2 (c))** |
+| N-3 | An unsigned mate in an old file: adopt the signature of what the index names, or require a re-pick? | First answer: adopt unless the kind is wrong. **Owner, 2026-11-17: adopt only when the stored placement confirms it ("N1 plan", N-3 (c))** |
+
+### N1 plan (planning session, 2026-11-17)
+
+A plan, not code: nothing in `backend/app/`, `client/` or DIDSA-VR was changed. One test file was written to reproduce the failure and is kept OUT of the suite
+(`backend/tests/n1_repro_mate_reference_renumbered.py`: the name does not match `test_*.py`, so CI does not collect it; run it with
+`pytest tests/n1_repro_mate_reference_renumbered.py`). Everything below was run on one Linux machine against CAD `main` at `c73baec` and VR `main`, headless.
+**Nothing was run on a headset.**
+
+#### What was found
+
+**Lead 1: the face order does not depend on the OCCT version (for the shapes tried).** Every Body of the gear-train demo (plate, pinion, 40-tooth gear, rack,
+rack guide, crank handle, both bevel gears, bearing block), a 10 mm box, the same box with a fillet on each of its 12 edges in turn, and a plate with two holes
+before and after a fillet were built under pythonocc-core **8.0.1.2 (OCCT 8.0.1)** and **7.9.3 (OCCT 7.9.3)**. Every face matched at every index (surface kind,
+centroid and area), and the edge and vertex counts matched. The 8.0 build gave the same output on a second run. Bevel A has 106 faces under both versions (3 sphere,
+4 cone, 104 the back plane, 105 the bore). So the OCCT version does not explain N0. Two versions and these shapes only; not a proof for every shape.
+Side finding: **the backend no longer runs on OCCT 7.9 at all.** `loft_gordon.py` imports `GeomFill_Gordon` and the helix code imports `HelixBRep`, both OCCT 8
+only. The comparison stubbed those two out. A Pi image on 7.9 would fail at startup, not read files differently.
+
+**Lead 2: what renumbered the bevel faces.** Bisected over this repo's history (172 commits since 2026-11-05) by building the demo's Bevel A at each step:
+**`84282c6` (2026-11-12) "Do not run the face-merging pass on a shape OCCT calls invalid"**. `_unify_same_domain` (`extrude.py`) now returns a shape unchanged
+when `BRepCheck_Analyzer` calls it invalid, and **the bevel gear body is one of those**, so it is no longer unified: 105 faces became 106 and almost every index
+moved. On 2026-11-05 the bore was face 3 and the back plane face 4, exactly what the demo (made 2026-10-25 by a generator that finds faces by geometry) stored.
+So the real fragility is **the backend's own body pipeline, not OCCT**: any change to a shared pass (unify, healing, a generator's face order) renumbers every
+saved index into the Bodies it touches, in every file, on every device. Features survived `84282c6` only because they are signed. Separate from N1, and not
+looked into: the bevel gear body fails `BRepCheck_Analyzer`, which is worth its own investigation.
+
+**Lead 3 / step 2: the silent wrong mate, reproduced.** A design-table edit (`POST .../fillet-features`, the route both clients' design tables use) renumbers
+the Part a mate refers to, and the stored index lands on another valid face:
+- *Coincident:* a 10 mm box's bottom (face 4) on a base's top. A fillet on the box's edge 0 makes face 4 the box's **top**. The next solve turns the box upside
+  down (rotation 180 degrees about y, z 20) and the mate reads `ok`.
+- *Concentric:* a pin in a plate's x-30 hole (face 5). A fillet on two plate edges makes face 5 the fillet's own R 1.5 cylinder. The next solve moves the pin to
+  the plate's corner, axis at (1.5, 1.5), and the mate reads `ok`.
+
+In both, the mate reads **`broken` between the edit and the next solve** (the residual at the stored poses), then `ok` once any solve (a drag, `mate-motion`, the
+solve button, VR's Enforce) has moved the part onto the wrong face. Both tests fail on today's code, as they should. VR already works around this on the client:
+`scripts/design_table/mate_health.gd` captures each mated face's triangles before a design-table edit, flags drift after it, suppresses drifted mates before
+Enforce and offers "Remake" on the equivalent face. Its own comment records a real case (a boss on a plate's top turned "face 5, the top" into the +X side). The
+flat app has no such guard.
+
+**Today's signature rules, tried on these cases** (`decide_reference` with a signature stamped before the edit):
+
+| Case | Result | Right? |
+|---|---|---|
+| Box bottom / top, fillet on edge 0 | `followed` to the new index | Yes |
+| Plate hole x 30 (or x 10), fillet on two edges | `potentially_moved`, `nearest_of_identical_vertices`, to the right hole (distance 0; the twin is 20 mm away) | Yes, but flagged |
+| Plate hole x 30 **deleted** (sketch circle removed), twin hole at x 10 remains | `potentially_moved`, `unique_fingerprint_far`, **to the other hole**. OCCT history did not change it in this probe | **No** |
+| Tube (outer R 10, bore R 4), bore's signature, index naming the outer cylinder | **`ok` at the outer cylinder** (the fast path accepts it) | **No, silently** |
+| Bevel A bore (105) or rim (81), renumbered | `lost`, `ambiguous` (bore and rim share the axis) | Safe, but breaks the demo's concentric and gear mates on the next renumbering |
+| Pinion bore, back plane; gear tooth flanks | Bore and planes `followed`; a tooth flank `potentially_moved` to the right flank | Yes |
+
+The coaxial gap: a `FaceSignature` has no radius, and `shape_distance` measures a cylinder by its distance from the stored axis, so **every cylinder on the same
+axis is the same face** to the rules. Concentric mates are mostly that: a bore inside a boss, a stepped shaft, a gear's bore and rim. This also affects signed
+Feature references to cylinders today. The "renumbered" rows were simulated by passing a wrong stored index (exactly what a renumbered Body looks like to the
+rules), not by building a real renumbering edit for each.
+
+**Already in place (checked):**
+- **File format:** `native_format._subshape_ref_to_dict` is shared, so a mate's `subshape_ref`, `plane_ref.face_ref`, `point_ref.vertex_ref` and
+  `midplane.a/b.face_ref` **already write and read `signature` and `lineage`** when the reference has them. A round trip of a signed mate was checked in-process.
+  Both clients pass the file's JSON through without rewriting it (VR writes the backend's export text verbatim, `project_save.gd`; the flat app's composer keeps
+  the decoded maps). So N1 needs no new key and no schema bump, unless N-4 adds one (below).
+- **Resolution:** every place a mate's sub-shape is resolved ends in `resolve_subshape_from_bodies`: `assembly_solver._resolve_local_geometry`, `resolve_plane_ref`,
+  `resolve_point_ref_position`, the Width mid-plane, `mate_suggest`, `coupler`. That function already honours a signature, so a signed mate is re-found at solve
+  time with no solver change.
+- **Status:** `app/document/mate_status.py` (`mate_status_detail`): computed per listing, never stored. A reference that raises (`HTTPException`,
+  `KeyError`, `ValueError`) makes it `broken`; the residual at the stored poses decides the rest. Couplers and limit mates have no residual check (couplers are
+  always `ok`).
+- **Solves:** every non-suppressed mate joins the group (`assembly_group`), so one mate whose reference does not resolve fails the whole group's solve with a 422
+  (what N0 saw as `unsupported_mate_geometry`).
+- **Wire:** `MateCreate` reuses `MateEntityRefResponse`, `SubShapeRefSchema` is `{body_id, shape_type, index}`, and `MateUpdate` cannot change references. VR's
+  `mates_tool.gd` compares a pick's `subshape_ref` dictionary for equality with earlier picks (about l.704) and highlights a mate's faces by the listed `index`
+  (`_add_entity`). So **the listed index must be the current one**, and a signature must **not** be echoed into the client-visible ref (it would break that
+  equality).
+
+**VR guards today:** `e2e_gear_train` (10 SMOKE lines), `e2e_limit` (10) and `user_session_train` (20) all pass against CAD `main`. `e2e_mates_motion` has one
+false line on VR `main` today, repeated on a clean run ("the driven part landed on the plate's CURRENT (lifted) plane"). It is not in `e2e_ci_list.txt` and is
+not about references; recorded here as pre-existing, not investigated.
+
+#### Design
+
+**What is stamped:** every `SubShapeRef` inside a mate's `MateEntityRef`: `subshape_ref` (faces, edges and vertices), `plane_ref.face_ref`,
+`point_ref.vertex_ref`, and both faces of a Width `midplane` (the `b` face on `b_occurrence_id`'s Part). The signature is measured on **the target Part's final
+Bodies** (`compute_part_bodies(target)` through `_target_part_and_transform`, cached per listing as `mate_world_geometries` already does), in the Part-local
+frame, so a placement never disturbs it. Not `bodies_before_feature`: a mate sees the finished Part.
+
+**When:**
+- **On create**, in `create_mate`, for the mate and its Peg-in-hole companion. That is the moment the index is right. Also wherever else mates are made: AI-plan
+  mates (`ai_plan.py`, check whether they go through `create_mate`), component-pattern copies (they copy the source's refs, signatures included) and
+  `add-component` (refs come from the file).
+- **On refresh:** a new `refresh_mate_references(document, part)` (in `subshape_identity.py` beside the Feature one, reusing `decide_subshape` and `_rebuild`
+  over `MateEntityRef`, which is frozen). It runs in `GET .../mates`, in the create / PATCH responses and **before every native export** (so the saved index is the
+  current one). It stamps unsigned references (by the N-3 rule), re-validates signed ones, **persists** a re-found index and refreshed signature for
+  `ok` / `followed`, and returns per mate `{lost, moved, followed, reasons}` keyed by path (`references[0].subshape_ref`, `references[1].midplane.b.face_ref`, ...).
+- Solves need nothing new: `resolve_subshape_from_bodies` honours the signature already. The refresh is for persisting, reporting, and the index the clients
+  highlight.
+
+**How a reference is re-found:** `decide_subshape` as for Features (fast path on the stored index, then the signature search), plus, if N-4 is accepted, the
+radius / cone angle as a tie-break among coaxial candidates. Lineage (OCCT history) is **not** in the first build: `ReferenceHistory.lineage_for` can stamp one
+at the Part's end state, but in the deleted-hole probe history did not change the answer. It is phase N1e, optional.
+
+**Status and solving:** `mate_status_detail` also reads the refresh's state. A lost reference gives `broken` with a reason, and a held reference (N-2, N-3)
+gives the new state below. If N-6 is accepted, the group solve leaves out held and lost mates (as if suppressed) and names them in its answer, instead of failing
+every drag in the group with a 422.
+
+**API (additive; nothing removed or renamed; see N-5):** `MateResponse` gains `lost_references`, `moved_references`, `followed_references` (paths) and
+`reference_reasons` (path to reason), the same names every Feature response uses. It also gains `held: bool` (N-5 (b)) for a mate held out of solves;
+`status` keeps its three values. `MateUpdate` gains `confirm_references: true` (take the bound faces as right and re-stamp them). `SubShapeRefSchema` does
+**not** gain a signature: clients never see or send one.
+
+**Clients:**
+- *VR* (`mates_tool.gd`, `design_table.gd`, `mate_health.gd`, the tablet's mate list): read the new fields. Show an info line for `followed`, an amber "check
+  this mate" with a Confirm action for a held mate (`held: true`), and the reason for `broken`. **Make `mate_health` trust the backend when it reports reference state:**
+  re-read the mate list after an edit and skip the local drift check for references the server signed. Otherwise, once the backend follows a face, VR's drift
+  check still looks at the OLD index, calls it drifted, and Enforce **suppresses a mate the server had already put right** (then offers "Remake"). Ship this
+  close behind the backend phase. Keep the local check for an older backend (no new fields).
+- *Flat app* (`client/lib/api/document_api_client.dart` `MateDto`, `viewport3d/assembly_tree_panel.dart`): parse the fields, a row subtitle and icon like the
+  Feature reference flags already drawn there, and a Confirm item in `mate_context_menu.dart`. No DTO change for refs (the signature never reaches it).
+- Neither client changes how it picks or creates a mate.
+
+**Migration of existing files:** unsigned references in old files are handled by the N-3 rule on their first refresh. The refresh persists, so the next save
+writes the signature (both clients save the backend's export). The old gear-train demo (indices 3 and 4) stays broken with a reason (sphere and cone faces
+fail the geometry check), never adopted. A file saved by an older backend after a renumbering edit AND a solve (parts already on the wrong face, status `ok`)
+will adopt the wrong face: nothing can tell that from a deliberate placement. Say so in the release note.
+
+#### Decisions for the owner (N1 plan)
+
+These settle the saved signature rules, the REST API and how solves treat unsure mates. **Owner, 2026-11-17: the recommendation is accepted for each of N-2 to N-7** (for N-5 that is option (b): `held: bool` beside `status`, no new status value). The options are kept for the record:
+
+| # | Question | Options | Recommendation |
+|---|---|---|---|
+| N-2 | A mate reference the rules bound on weak evidence (`potentially_moved`) | (a) Bind and flag, as Features do: simple and consistent, but in the deleted-hole case the next solve moves the pin into the OTHER hole (flagged, not silent). (b) Broken until re-picked: safe, but the plate-hole renumbering (right face, flagged only because a twin exists) breaks correct mates on every part with a hole pattern. (c) **Bind for display, hold it out of solves until the user confirms** (one tap), and, for mates only, count an exact-place match among twins (distance about 0, the runner-up beyond the search tolerance) as `followed`. | **(c).** A mate's binding moves parts; a Feature's only changes geometry. (c) asks only when it is really unsure. |
+| N-3 | An unsigned mate in an old file | (a) Adopt what the index names (one-time trust): wrong for every file already edited under it. (b) Always re-pick: every old assembly asks on open. (c) **Adopt only when the stored placement confirms it:** the mate is `ok` / `near` at the stored poses with the face the index names (couplers and limits: the face is the kind they need). Otherwise hold it (`held`), with the reason `unconfirmed`. | **(c).** In both reproductions the mate read `broken` right after the edit, so (c) would not adopt the wrong face. The old demo's faces fail the check. |
+| N-4 | Coaxial faces (signature rules, shared with Features) | (a) **Add `radius` (cylinder, sphere, torus) and the cone half-angle to `FaceSignature`, as a tie-break among coaxial candidates, not a fingerprint** (a dimension edit changes them), and refuse the fast path when a coaxial twin's radius is nearer. Adds an optional key to the saved signature: an older backend ignores it; a reference without it behaves as today. (b) Mate-only post-check, Features unchanged. (c) Leave it: concentric mates on stepped parts can still go silently wrong (tube case) or lost (bevel). | **(a)**, as its own small phase first. It also fixes Feature references to cylinders. |
+| N-5 | API shape for the new state | (a) **Feature-style lists on `MateResponse`, a new `status` value `"unconfirmed"`, `MateUpdate.confirm_references`.** An older client treats an unknown status as not broken (VR's `is_broken` checks `== "broken"`), so it sees nothing. (b) Same, but `held: bool` beside `status` and no new status value. (c) A separate `GET .../mates/reference-state`. | **(b)** is the safest for the clients already shipped (no new enum value to trip a strict parser); (a) reads better. Owner's call; either is additive. |
+| N-6 | A mate whose reference is lost or held, during a solve | (a) As today: the group's solve fails with a 422, so nothing in that group can be dragged until the mate is fixed or suppressed. (b) **Leave it out of the solve (as if suppressed) and name it in the answer** (`held_mate_ids`). | **(b).** It is what VR's Enforce already does by hand. |
+| N-7 | Persisting a re-found index | A listing or export writes the new index into the open document, so the assembly needs saving after a part edit even if nothing else changed. Features already behave this way. Whether either client then marks the assembly modified (and so syncs it) was **not checked**. | Persist (as Features). The build phase checks the dirty and sync behaviour and says what it found. |
+
+N-1 stands as the owner decided (after storage, built by a stronger model). Lead 1's answer does not raise N1's priority on its own. **Lead 2's answer does:**
+the bevel renumbering came from an ordinary backend change, and the next one will move indices in every saved assembly the same way.
+
+#### Phases
+
+Each is one session and one PR per repo. Order: N1a, N1b, then N1c and N1d in either order (both only read new fields), and N1e if wanted. The owner's answers
+to N-2 to N-7 are in (2026-11-17), so N1a can start.
+
+| Phase | What | Repo | Size | Agent |
+|---|---|---|---|---|
+| N1a | Coaxial tie-break in the signature rules (N-4): `FaceSignature.radius` / `half_angle`, measured in `reference_signature.py`, read and written optionally in `native_format`, used in `decide_reference` and the fast path. Golden vectors for the pure rules (tube, stepped shaft, bevel bore vs rim, a radius edit that must still follow). The full Feature reference suite must not change. | CAD backend | Small to medium | **Strongest** (rules shared by every reference) |
+| N1b | Mate reference identity: stamp on create, `refresh_mate_references`, the N-2 / N-3 rules, the new `MateResponse` fields, `confirm_references`, status and solve integration (N-6), refresh before export. Promote the reproduction file into the suite as `test_mate_reference_identity.py`. | CAD backend | Medium to large | **Strongest** (solve and status semantics) |
+| N1c | VR: show the states, Confirm, make `mate_health` defer to the server (the Enforce regression above), keep the fallback for old backends; a new e2e test. | DIDSA-VR | Medium | Standard, with the e2e tests as the guard |
+| N1d | Flat app: `MateDto` fields, tree row subtitle and icon, Confirm in the mate context menu; widget tests. | CAD client | Small | Standard |
+| N1e (optional) | Lineage for mate references (`ReferenceHistory.lineage_for` at the Part's end state; a consumed face reads `lost`, not a look-alike). Only if N1b's tests show the signature alone is not enough. | CAD backend | Small to medium | Strongest |
+
+#### Test plan
+
+Backend (N1a, N1b; run the whole suite including `-m gears` and `-m bevel_pair`, which the S1 and S3 runs left out):
+1. The two reproductions (coincident box, concentric pin), promoted into the suite: they must pass (followed; the part stays on the right face; the listing
+   reports `followed`).
+2. Deleted hole with a twin: never solved onto the twin (held, or lost, per N-2).
+3. Coaxial: a tube's bore and outer surface, a stepped shaft, the bevel bore against its rim. Followed by radius, never `ok` on the wrong one (N1a golden vectors
+   for the pure rules, plus an end-to-end mate on each).
+4. Every reference kind in a mate: `subshape_ref` face / edge / vertex, `plane_ref.face_ref`, `point_ref.vertex_ref`, a Width `midplane` with `b` on another
+   occurrence, a nested sub-assembly occurrence path, a component-pattern copy, a Peg-in-hole pair.
+5. Native round trip keeps the mate signatures; an unsigned file adopts by the N-3 rule; the old gear-train demo (indices 3 and 4) is reported broken with a
+   reason, not adopted; the current demo opens with no reference flags and `mate-motion` is unchanged.
+6. Couplers and limit mates: stamped and followed like the rest; their always-`ok` status does not hide a lost reference.
+7. Unchanged: the golden mate and motion vectors in `tests/fixtures` (no reference reaches the wire differently), the M0 bench numbers within noise (a refresh
+   adds a cached body read per listing: measure it on the M0 scaling scenes).
+
+VR (N1c): `e2e_gear_train`, `e2e_limit`, `user_session_train` and `e2e_mates_motion` (its one known false line excepted) unchanged. `mates_motion.gd`, `mate_glide.gd`
+and the M2 mirror tests unchanged. A new `e2e_mate_reference_follow.gd` (needs the live backend; add it to `run_all.sh`, `tests/README.md` and `e2e_ci_list.txt`):
+mate a box on a plate, add a fillet in the design table, check there is no drift warning, that Enforce suppresses nothing and that the box stays upright. The
+headless `mate_health.gd` tests must also cover a mate whose index the server changed.
+
+Flat app (N1d): the Dart mirrors of the constraint model and their vectors unchanged (no wire change for refs); widget tests for the new row states and Confirm.
+
+**Not verified in this session:** anything on a headset; OCCT versions other than 8.0.1 and 7.9.3; whether `84282c6`'s validity guard renumbered other
+shipped parts (only the gear-train demo was built at both commits); whether OCCT history helps in other "consumed" cases (one probe); the clients' dirty and
+sync behaviour after a persisted re-find (N-7); whether AI-plan mates go through `create_mate`; the cost of a refresh on a large assembly; the flat app's mate
+code beyond the DTO, tree panel and context menu files named above.
 
 ---
 
