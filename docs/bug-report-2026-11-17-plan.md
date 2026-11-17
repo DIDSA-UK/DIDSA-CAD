@@ -43,7 +43,7 @@ The implementation session updates this table as each part lands (one commit per
 | 2A | Backend: face → feature endpoint | Done | 87b0335 |
 | M.1 | Backend: Mirror takes several tool features | Done | 8e0aea2 |
 | M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | Done | 7b40e2a |
-| 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | Done | this commit |
+| 2B + M.3 + M.4 | Pattern and Mirror: Feature / Body tabs, face-picked scope, one entry for every pathway | Done | 2b61d41 |
 
 Suggested order: **4 → 13 → 12 → 8 → 2**. Item 4 is backend + client with a saved-file field. 13 and 12 are desktop
 layout. 8 is a flow change. 2 is the largest: a backend endpoint (2A), the Pattern tool reworked (2B) and Mirror the same way (M);
