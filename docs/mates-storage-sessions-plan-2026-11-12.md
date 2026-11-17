@@ -45,7 +45,7 @@ The implementation session updates this table in its PR.
 | S3 | VR: server projects, cache, offline | VR | Done in DIDSA-VR PR #85 (merged 2026-11-14; headless and against the real store, not run on a headset; results: "S3 results" below) |
 | S4 | Sync hardening and set-up polish | all | Done (CAD #366 / VR #87, merged 2026-11-14; headless, Xvfb and a real store killed and restarted, not run on a headset; results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
-| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); waiting on the owner's answers to N-2 to N-7. Not built |
+| N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17); ready to build from N1a. Not built |
 | P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | Not started |
 | P1 | Session hub service and read-only document sharing | CAD | Not started |
 | P2 | VR Host / Join Session, roles, avatars, live model state | VR | Not started |
@@ -1265,8 +1265,8 @@ The VR e2e tests that guard the demo are in the three files above plus `tests/e2
 | # | Question | Recommendation |
 |---|---|---|
 | N-1 | Do N1 at all, and where in the order? It has no dependency on S4 or the sessions. | **Owner, 2026-11-14: after storage has rolled out, built by a stronger model.** Reasoning kept: shared storage puts more devices editing the same parts and a renumbered face is a quiet error; lead 1 above (OCCT version) could raise its priority |
-| N-2 | A `potentially_moved` mate reference: bind it and flag it (as Features do), or leave it broken until confirmed? | First answer: bind and flag. **Revised 2026-11-17 with evidence: show it, hold it out of solves until confirmed (see "N1 plan", N-2)** |
-| N-3 | An unsigned mate in an old file: adopt the signature of what the index names, or require a re-pick? | First answer: adopt unless the kind is wrong. **Revised 2026-11-17: adopt only when the stored placement confirms it (see "N1 plan", N-3)** |
+| N-2 | A `potentially_moved` mate reference: bind it and flag it (as Features do), or leave it broken until confirmed? | First answer: bind and flag. **Owner, 2026-11-17: show it, hold it out of solves until confirmed ("N1 plan", N-2 (c))** |
+| N-3 | An unsigned mate in an old file: adopt the signature of what the index names, or require a re-pick? | First answer: adopt unless the kind is wrong. **Owner, 2026-11-17: adopt only when the stored placement confirms it ("N1 plan", N-3 (c))** |
 
 ### N1 plan (planning session, 2026-11-17)
 
@@ -1371,13 +1371,13 @@ gives the new state below. If N-6 is accepted, the group solve leaves out held a
 every drag in the group with a 422.
 
 **API (additive; nothing removed or renamed; see N-5):** `MateResponse` gains `lost_references`, `moved_references`, `followed_references` (paths) and
-`reference_reasons` (path to reason), the same names every Feature response uses. It also gains `status: "unconfirmed"` (or a separate `held: bool`, see N-5)
-for a mate held out of solves. `MateUpdate` gains `confirm_references: true` (take the bound faces as right and re-stamp them). `SubShapeRefSchema` does
+`reference_reasons` (path to reason), the same names every Feature response uses. It also gains `held: bool` (N-5 (b)) for a mate held out of solves;
+`status` keeps its three values. `MateUpdate` gains `confirm_references: true` (take the bound faces as right and re-stamp them). `SubShapeRefSchema` does
 **not** gain a signature: clients never see or send one.
 
 **Clients:**
 - *VR* (`mates_tool.gd`, `design_table.gd`, `mate_health.gd`, the tablet's mate list): read the new fields. Show an info line for `followed`, an amber "check
-  this mate" with a Confirm action for a held mate, and the reason for `broken`. **Make `mate_health` trust the backend when it reports reference state:**
+  this mate" with a Confirm action for a held mate (`held: true`), and the reason for `broken`. **Make `mate_health` trust the backend when it reports reference state:**
   re-read the mate list after an edit and skip the local drift check for references the server signed. Otherwise, once the backend follows a face, VR's drift
   check still looks at the OLD index, calls it drifted, and Enforce **suppresses a mate the server had already put right** (then offers "Remake"). Ship this
   close behind the backend phase. Keep the local check for an older backend (no new fields).
@@ -1392,12 +1392,12 @@ will adopt the wrong face: nothing can tell that from a deliberate placement. Sa
 
 #### Decisions for the owner (N1 plan)
 
-These settle the saved signature rules, the REST API and how solves treat unsure mates, so they are the owner's. Proposed, **not settled**:
+These settle the saved signature rules, the REST API and how solves treat unsure mates. **Owner, 2026-11-17: the recommendation is accepted for each of N-2 to N-7** (for N-5 that is option (b): `held: bool` beside `status`, no new status value). The options are kept for the record:
 
 | # | Question | Options | Recommendation |
 |---|---|---|---|
 | N-2 | A mate reference the rules bound on weak evidence (`potentially_moved`) | (a) Bind and flag, as Features do: simple and consistent, but in the deleted-hole case the next solve moves the pin into the OTHER hole (flagged, not silent). (b) Broken until re-picked: safe, but the plate-hole renumbering (right face, flagged only because a twin exists) breaks correct mates on every part with a hole pattern. (c) **Bind for display, hold it out of solves until the user confirms** (one tap), and, for mates only, count an exact-place match among twins (distance about 0, the runner-up beyond the search tolerance) as `followed`. | **(c).** A mate's binding moves parts; a Feature's only changes geometry. (c) asks only when it is really unsure. |
-| N-3 | An unsigned mate in an old file | (a) Adopt what the index names (one-time trust): wrong for every file already edited under it. (b) Always re-pick: every old assembly asks on open. (c) **Adopt only when the stored placement confirms it:** the mate is `ok` / `near` at the stored poses with the face the index names (couplers and limits: the face is the kind they need). Otherwise hold it as `unconfirmed`, with the reason. | **(c).** In both reproductions the mate read `broken` right after the edit, so (c) would not adopt the wrong face. The old demo's faces fail the check. |
+| N-3 | An unsigned mate in an old file | (a) Adopt what the index names (one-time trust): wrong for every file already edited under it. (b) Always re-pick: every old assembly asks on open. (c) **Adopt only when the stored placement confirms it:** the mate is `ok` / `near` at the stored poses with the face the index names (couplers and limits: the face is the kind they need). Otherwise hold it (`held`), with the reason `unconfirmed`. | **(c).** In both reproductions the mate read `broken` right after the edit, so (c) would not adopt the wrong face. The old demo's faces fail the check. |
 | N-4 | Coaxial faces (signature rules, shared with Features) | (a) **Add `radius` (cylinder, sphere, torus) and the cone half-angle to `FaceSignature`, as a tie-break among coaxial candidates, not a fingerprint** (a dimension edit changes them), and refuse the fast path when a coaxial twin's radius is nearer. Adds an optional key to the saved signature: an older backend ignores it; a reference without it behaves as today. (b) Mate-only post-check, Features unchanged. (c) Leave it: concentric mates on stepped parts can still go silently wrong (tube case) or lost (bevel). | **(a)**, as its own small phase first. It also fixes Feature references to cylinders. |
 | N-5 | API shape for the new state | (a) **Feature-style lists on `MateResponse`, a new `status` value `"unconfirmed"`, `MateUpdate.confirm_references`.** An older client treats an unknown status as not broken (VR's `is_broken` checks `== "broken"`), so it sees nothing. (b) Same, but `held: bool` beside `status` and no new status value. (c) A separate `GET .../mates/reference-state`. | **(b)** is the safest for the clients already shipped (no new enum value to trip a strict parser); (a) reads better. Owner's call; either is additive. |
 | N-6 | A mate whose reference is lost or held, during a solve | (a) As today: the group's solve fails with a 422, so nothing in that group can be dragged until the mate is fixed or suppressed. (b) **Leave it out of the solve (as if suppressed) and name it in the answer** (`held_mate_ids`). | **(b).** It is what VR's Enforce already does by hand. |
@@ -1408,8 +1408,8 @@ the bevel renumbering came from an ordinary backend change, and the next one wil
 
 #### Phases
 
-Each is one session and one PR per repo. Order: N1a, N1b, then N1c and N1d in either order (both only read new fields), and N1e if wanted. N1a and N1b need
-the owner's answers to N-2 to N-7 first.
+Each is one session and one PR per repo. Order: N1a, N1b, then N1c and N1d in either order (both only read new fields), and N1e if wanted. The owner's answers
+to N-2 to N-7 are in (2026-11-17), so N1a can start.
 
 | Phase | What | Repo | Size | Agent |
 |---|---|---|---|---|
