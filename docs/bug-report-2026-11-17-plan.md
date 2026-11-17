@@ -37,8 +37,8 @@ The implementation session updates this table as each part lands (one commit per
 | Part | Summary | Status | Commit |
 |---|---|---|---|
 | 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | Done | fb4755c |
-| 13 | Desktop never opens the hamburger panel; scene settings dialog | Done | this commit |
-| 12 | Desktop Visibility button and panel; ribbon duplicates removed | To do | |
+| 13 | Desktop never opens the hamburger panel; scene settings dialog | Done | 7f17e9e |
+| 12 | Desktop Visibility button and panel; ribbon duplicates removed | Done | this commit |
 | 8 | Copy to cloud storage: new or existing project; Open only opens | To do | |
 | 2A | Backend: face → feature endpoint | To do | |
 | M.1 | Backend: Mirror takes several tool features | To do | |
@@ -351,4 +351,8 @@ Decisions the plan left open, recorded as they were made.
   properties, Connect a headset, Exit). View: Perspective (ribbon and dialog), reference planes and render mode (ribbon, moved to
   the Visibility panel by item 12), appearance and Scene (dialog), Controls (Options). **Gaps found and closed:** the far clip
   slider had no desktop home (now in the dialog); the Sketch Points / Sketch Lines selection filters had none (now in Options).
+- **12:** the Visibility button toggles the panel (a second click closes it). Removed from the desktop View ribbon tab: **Planes**
+  and the **Shaded / Edges / Wireframe** group (the panel has the reference-planes chip and the render-mode control). Kept: Fit,
+  View cube, Normal to, the standard views, Perspective, the appearance override group, Present. The panel is not drawn while a
+  tool session is open, in either layout.
 

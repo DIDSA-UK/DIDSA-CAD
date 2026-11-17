@@ -9489,6 +9489,43 @@ void main() {
       expect(find.byType(PartToolbar), findsNothing);
     });
 
+    testWidgets('a Visibility button under Reset view opens the Visibility panel top right; the ribbon drops what it duplicates '
+        '(bug report 2026-11-17 item 12)', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      // The button itself is drawn by PartViewport next to Reset view, over the 3D scene, which a headless test does not build;
+      // the screen hands it the callback and the badge.
+      final viewportWidget = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewportWidget.onVisibilityPressed, isNotNull);
+      expect(viewportWidget.showResetViewButton, isTrue);
+      expect(find.byType(VisibilityPanel), findsNothing);
+
+      viewportWidget.onVisibilityPressed!();
+      await tester.pump();
+      expect(find.byType(VisibilityPanel), findsOneWidget);
+      // Docked top right of the viewport, under the Reset view (top 8) and Visibility (top 56) buttons.
+      final panel = tester.getRect(find.byType(VisibilityPanel));
+      final viewport = tester.getRect(find.byType(PartViewport));
+      expect(panel.right, closeTo(viewport.right - 8, 1));
+      expect(panel.top, closeTo(viewport.top + 104, 1));
+
+      await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-view')));
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-view')));
+      await tester.pump();
+      for (final label in ['Planes', 'Shaded', 'Edges', 'Wireframe']) {
+        expect(find.byKey(ValueKey('ribbon-$label')), findsNothing, reason: label);
+      }
+      for (final label in ['Fit', 'View cube', 'Front', 'Isometric', 'Perspective', 'Present']) {
+        expect(find.byKey(ValueKey('ribbon-$label')), findsOneWidget, reason: label);
+      }
+    });
+
+    testWidgets('the phone layout has no viewport Visibility button (it has the quick column)', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).onVisibilityPressed, isNull);
+    });
+
     testWidgets('Presentation mode hides the ribbon, tree pane and status bar, and leaves the desktop layout alone on exit', (
       tester,
     ) async {

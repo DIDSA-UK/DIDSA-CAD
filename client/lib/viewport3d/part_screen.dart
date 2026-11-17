@@ -27343,19 +27343,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             standardView('Isometric', StandardView.isometric, 'Ctrl+7'),
           ]),
           RibbonGroup([
+            // Reference planes and the Shaded / Edges / Wireframe choice live in the Visibility panel (the viewport's
+            // Visibility button), not here as well (bug report 2026-11-17 item 12).
             RibbonCommand(
               label: 'Perspective',
               icon: Icons.panorama_horizontal_outlined,
               selected: _isPerspective,
               onPressed: () => unawaited(_onPerspectiveChanged(!_isPerspective)),
-            ),
-            RibbonCommand(
-              label: 'Planes',
-              svg: _referencePlanesHidden
-                  ? 'assets/icons/feature/parttoolbar_show_reference_planes.svg'
-                  : 'assets/icons/feature/parttoolbar_hide_reference_planes.svg',
-              tooltip: _referencePlanesHidden ? 'Show reference planes' : 'Hide reference planes',
-              onPressed: _onToggleReferencePlanes,
             ),
           ]),
           // The View menu's display override (Item 1 of `docs/view-override-edit-alone-sketch-origin-plan.md`).
@@ -27379,20 +27373,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
               tooltip: viewOverrideOpacitySubtitle(on: _appearanceOverrideOn, opacity: _bodyOpacity),
               onPressed: () => unawaited(_pickOverrideOpacity()),
             ),
-          ]),
-          RibbonGroup([
-            for (final mode in ViewportRenderMode.values)
-              RibbonCommand(
-                label: switch (mode) {
-                  ViewportRenderMode.shaded => 'Shaded',
-                  ViewportRenderMode.shadedWithEdges => 'Edges',
-                  ViewportRenderMode.wireframe => 'Wireframe',
-                },
-                tooltip: mode.label,
-                svg: mode.svgAsset,
-                selected: _renderMode == mode,
-                onPressed: () => unawaited(_onRenderModeChanged(mode)),
-              ),
           ]),
           // Showing the model to a room or TV (`docs/flutter-testing-feedback-2026-11-05-plan.md` item 3).
           RibbonGroup([
@@ -28187,6 +28167,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                   // The phone layout's Fit lives in the Start button's quick column; the desktop layout keeps the
                   // button in the viewport's corner.
                   showResetViewButton: _desktopLayout && !_chromeHidden,
+                  onVisibilityPressed: _desktopLayout ? () => setState(() => _visibilityPanelOpen = !_visibilityPanelOpen) : null,
+                  anythingHidden: _anythingHidden,
                   onTurntableChanged: (on) => setState(() => _turntableOn = on),
                 ),
                 if (_selectOtherCandidates != null)
@@ -29456,11 +29438,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                   ),
                 // The Visibility panel (`docs/touch-viewport-ux-plan.md` section 6): docked bottom left, left of the Start
                 // button, open until its own close. Drawn only while the Start button is - a tool that owns the screen
-                // hides it, and it is back when the tool closes.
-                if (_visibilityPanelOpen && _startButtonVisible)
+                // hides it, and it is back when the tool closes. The desktop layout (no Start button) opens it from the
+                // viewport's Visibility button, top right under Reset view, and docks it under that button (bug report
+                // 2026-11-17 item 12).
+                if (_visibilityPanelOpen &&
+                    (_startButtonVisible || (_desktopLayout && !_chromeHidden)) &&
+                    !_anyToolSessionActive)
                   Positioned(
-                    left: 8,
-                    bottom: 8,
+                    left: _desktopLayout ? null : 8,
+                    bottom: _desktopLayout ? null : 8,
+                    top: _desktopLayout ? 56 + 48 : null,
+                    right: _desktopLayout ? 8 : null,
                     child: SafeArea(
                       top: false,
                       child: SizedBox(
