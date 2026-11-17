@@ -133,6 +133,34 @@ class _ServerProjectsDialogState extends State<_ServerProjectsDialog> {
   }
 }
 
+/// Where "Copy this project to cloud storage" puts the files (bug report 2026-11-17 item 8).
+enum CopyToCloudTarget { newProject, existingProject }
+
+/// "Copy this project to cloud storage", first question: into a new project folder, or one that already exists. Null when cancelled.
+Future<CopyToCloudTarget?> showCopyToCloudTargetDialog(BuildContext context) {
+  return showDialog<CopyToCloudTarget>(
+    context: context,
+    builder: (context) => AlertDialog(
+      key: const ValueKey('copy-to-cloud-target-dialog'),
+      title: const Text('Copy this project to cloud storage'),
+      content: const Text('Copy every file of this project into a new project folder, or into one already in cloud storage?'),
+      actions: [
+        TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
+        TextButton(
+          key: const ValueKey('copy-to-cloud-existing'),
+          onPressed: () => Navigator.of(context).pop(CopyToCloudTarget.existingProject),
+          child: const Text('Existing project folder'),
+        ),
+        FilledButton(
+          key: const ValueKey('copy-to-cloud-new'),
+          onPressed: () => Navigator.of(context).pop(CopyToCloudTarget.newProject),
+          child: const Text('New project folder'),
+        ),
+      ],
+    ),
+  );
+}
+
 /// "Copy this project to cloud storage": asks for the new project's name. Null when cancelled.
 Future<String?> showCopyToServerDialog(BuildContext context, {required String suggestedName}) {
   return showDialog<String>(

@@ -130,11 +130,24 @@ void main() {
       }
     });
 
-    test('the radius is the arc\'s radius about the intersection and along is measured across the chord', () {
-      // The rays are +x and +y, so the arc's chord midpoint is (radius / 2, radius / 2) and the chord runs along (-1, 1).
+    test('the radius is the arc\'s radius about the intersection and along is measured on the arc', () {
+      // The rays are +x and +y, so the arc's middle is at 45 degrees; (3, 4) is 5 from the vertex, at atan2(4, 3) (bug report 2026-11-17
+      // item 4: the label sits on the arc, not on the chord between its ends).
       final placement = LabelDragResolver.angle(line1Start: l1s, line1End: l1e, line2Start: l2s, line2End: l2e, p: (3.0, 4.0))!;
-      expect(placement.radius, closeTo(7, 1e-9));
-      expect(placement.along, closeTo(1 / math.sqrt(2), 1e-9));
+      expect(placement.radius, closeTo(5, 1e-9));
+      expect(placement.along, closeTo(5 * (math.atan2(4, 3) - math.pi / 4), 1e-9));
+    });
+
+    test('with no along the label is at the middle of the arc', () {
+      final center = LabelDragResolver.angleLabelCenter(
+        line1Start: l1s,
+        line1End: l1e,
+        line2Start: l2s,
+        line2End: l2e,
+        placement: const DimensionLabelPlacement(radius: 4),
+      )!;
+      expect(center.$1, closeTo(4 / math.sqrt(2), 1e-9));
+      expect(center.$2, closeTo(4 / math.sqrt(2), 1e-9));
     });
 
     test('a pointer behind the vertex cannot place the arc', () {

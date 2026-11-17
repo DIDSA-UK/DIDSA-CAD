@@ -55,6 +55,8 @@ import 'package:didsa_cad_client/viewport3d/reference_planes.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 import 'package:didsa_cad_client/viewport3d/visibility_panel.dart';
 import 'package:didsa_cad_client/viewport3d/resizable_tool_panel.dart';
+import 'package:didsa_cad_client/viewport3d/picker_ribbon.dart';
+import 'package:didsa_cad_client/viewport3d/seed_scope.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
 import 'package:didsa_cad_client/viewport3d/svg_icon.dart';
 
@@ -85,6 +87,12 @@ class _FakeDocumentBackend {
   /// body, for tests that need to assert on a field (e.g. `source_feature_
   /// ids`) this fake doesn't otherwise expose any other way.
   Map<String, dynamic>? lastPatternPatchBody;
+
+  /// Bug report 2026-11-17 items 2B / M.3: every POST / PATCH to `pattern-features` / `mirror-features` (coarse previews included), in
+  /// order, and what `face-owner-features` answers for a face (`'bodyId:index'` -> feature id).
+  final List<({String method, String path, Map<String, dynamic> body})> patternMirrorRequests = [];
+  final Map<String, String> faceOwners = {};
+  int faceOwnerRequests = 0;
 
   /// M1: makes `POST .../mates` answer 422.
   bool failMateCreate = false;
@@ -744,6 +752,33 @@ class _FakeDocumentBackend {
       return _json(feature, 200);
     }
 
+    if (path == '/document/parts/part-1/face-owner-features' && method == 'POST') {
+      faceOwnerRequests++;
+      final faces = (body['faces'] as List).cast<Map<String, dynamic>>();
+      return _json({
+        'features': [
+          for (final f in faces)
+            {'face': f, 'feature_id': faceOwners['${f['subshape_ref']['body_id']}:${f['subshape_ref']['index']}'] ?? 'unknown'},
+        ],
+      }, 200);
+    }
+    final patternMirrorMatch = RegExp(r'^/document/parts/part-1/(pattern|mirror)-features(/.*)?$').firstMatch(path);
+    if (patternMirrorMatch != null && (method == 'POST' || method == 'PATCH')) {
+      patternMirrorRequests.add((method: method, path: path, body: body));
+      final suffix = patternMirrorMatch.group(2);
+      if (method == 'POST' && suffix == '/coarse-preview') return http.Response('[]', 200);
+      if (method == 'POST' && suffix == null) {
+        final feature = <String, dynamic>{
+          ...body,
+          'id': 'feature-${_nextFeatureId++}',
+          'type': patternMirrorMatch.group(1),
+          'locked': false,
+          'produces': 'body',
+        };
+        features.add(feature);
+        return _json(feature, 201);
+      }
+    }
     final patternPatchMatch =
         RegExp(r'^/document/parts/part-1/pattern-features/([^/]+)$').firstMatch(path);
     if (patternPatchMatch != null && method == 'PATCH') {
@@ -1262,6 +1297,68 @@ class _FakeStorageService with FileByFileCommit implements StorageService {
 /// loading spinner - a [CircularProgressIndicator] with no explicit value
 /// animates indefinitely - so this pumps a bounded number of times instead,
 /// stopping early once [done] is satisfied.
+// Bug report 2026-11-17 items 2B / M.3: a part with a body-making boss (`feature-2`, body `feature-2`) and a cut into it
+// (`feature-4`), for the Pattern / Mirror scope tests.
+const _bossAndCut = [
+  {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+  {'type': 'extrude', 'id': 'feature-2', 'sketch_feature_id': 'feature-1', 'extrude_type': 'boss', 'start_distance': 0.0,
+   'end_distance': 10.0, 'locked': true},
+  {'type': 'sketch', 'id': 'feature-3', 'sketch_id': 'sketch-1', 'locked': true},
+  {'type': 'extrude', 'id': 'feature-4', 'sketch_feature_id': 'feature-3', 'extrude_type': 'cut', 'start_distance': 0.0,
+   'end_distance': 10.0, 'target_body_ids': ['feature-2'], 'locked': false},
+];
+
+Future<_FakeDocumentBackend> _pumpScopeScreen(WidgetTester tester, {List<Map<String, dynamic>> seedFeatures = _bossAndCut}) async {
+  final backend = _FakeDocumentBackend(seedFeatures: [for (final f in seedFeatures) Map<String, dynamic>.from(f)]);
+  final sketchBackend = _FakeSketchBackend();
+  await tester.pumpWidget(
+    MaterialApp(
+      home: PartScreen(
+        documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+        sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+      ),
+    ),
+  );
+  await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+  return backend;
+}
+
+/// A tap on face [index] of [bodyId] in the viewport (the route a real tap takes, `PartViewport.onSelectionToggle`).
+Future<void> _tapFace(WidgetTester tester, String bodyId, int index) async {
+  tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+        SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: bodyId, id: index),
+      );
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 50));
+}
+
+SeedScopeTab _scopeTab(WidgetTester tester) =>
+    tester.widget<SegmentedButton<SeedScopeTab>>(find.byType(SegmentedButton<SeedScopeTab>)).selected.single;
+
+/// The body of the last create (`POST .../pattern-features` or `.../mirror-features`, not a coarse preview).
+Map<String, dynamic>? _lastCreate(_FakeDocumentBackend backend, String kind) {
+  final creates = [
+    for (final r in backend.patternMirrorRequests)
+      if (r.method == 'POST' && r.path == '/document/parts/part-1/$kind-features') r.body,
+  ];
+  return creates.isEmpty ? null : creates.last;
+}
+
+Future<void> _openFromLongPress(WidgetTester tester, String row, String entry) async {
+  await tester.tap(find.byTooltip('Feature tree'));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
+  await tester.longPress(find.text(row));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
+  await tester.tap(find.byTooltip('More actions'));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
+  await tester.tap(find.text(entry));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 250));
+}
+
 Future<void> _pumpUntil(WidgetTester tester, bool Function() done, {int maxPumps = 100}) async {
   for (var i = 0; i < maxPumps; i++) {
     if (done()) return;
@@ -3257,96 +3354,56 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets(
-      'Pattern/Mirror scoping Phase 6: "Add from Tree" opens the Build Tree as a multi-select '
-      'Feature picker, and confirming a pick sends it as source_feature_ids', (tester) async {
-    final backend = _FakeDocumentBackend(
-      seedFeatures: [
-        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {
-          'type': 'extrude',
-          'id': 'feature-2',
-          'sketch_feature_id': 'feature-1',
-          'extrude_type': 'boss',
-          'start_distance': 0.0,
-          'end_distance': 10.0,
-          'locked': true,
-        },
-        {
-          'type': 'pattern',
-          'id': 'feature-3',
-          'source_body_ids': ['body-1'],
-          'source_feature_ids': <String>[],
-          'pattern_type': 'rectangular',
-          'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'},
-          'count_1': 3,
-          'spacing_1': 10.0,
-          'reverse_1': false,
-          'direction_2': null,
-          'count_2': 1,
-          'spacing_2': 0.0,
-          'reverse_2': false,
-          'axis': null,
-          'count_angular': 1,
-          'angle_total': 360.0,
-          'reverse_angular': false,
-          'skip_indices': [],
-          'locked': false,
-        },
-      ],
-    );
-    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
-    final sketchBackend = _FakeSketchBackend();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: PartScreen(
-          documentApi: documentApi,
-          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-        ),
-      ),
-    );
-    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-
+  testWidgets('editing a saved feature pattern opens on the Feature tab with its features in scope; "Add from Tree" adds to it '
+      '(bug report 2026-11-17 item 2B)', (tester) async {
+    final backend = await _pumpScopeScreen(tester, seedFeatures: [
+      ..._bossAndCut,
+      {'type': 'pattern', 'id': 'feature-5', 'source_body_ids': <String>[], 'source_feature_ids': <String>[], 'tool_feature_id': 'feature-4',
+       'tool_feature_ids': ['feature-4'], 'pattern_type': 'rectangular',
+       'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'}, 'count_1': 3, 'spacing_1': 10.0, 'reverse_1': false,
+       'direction_2': null, 'count_2': 1, 'spacing_2': 0.0, 'reverse_2': false, 'axis': null, 'count_angular': 1, 'angle_total': 360.0,
+       'reverse_angular': false, 'skip_indices': [], 'merge': 'fuse_into_one', 'locked': false},
+    ]);
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-
     await tester.tap(find.text('Pattern 1'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    expect(find.text('Edit Pattern'), findsOneWidget);
-    // PatternPanel's own initState eager debounced update - see the "tapping
-    // a Pattern row..." test above for why this pump is needed here too.
     await tester.pump(const Duration(milliseconds: 600));
+    expect(find.text('Edit Pattern'), findsOneWidget);
+    expect(_scopeTab(tester), SeedScopeTab.feature);
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsOneWidget);
 
     await tester.ensureVisible(find.text('Add from Tree'));
     await tester.tap(find.text('Add from Tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-
-    // The Build Tree is now up as a multi-select Feature picker, not the
-    // ordinary read-only tree - PatternPanel itself is hidden underneath.
-    expect(find.text('Select source Features'), findsOneWidget);
-    expect(find.text('Edit Pattern'), findsNothing);
-
-    await tester.tap(find.text('Extrude 1'));
-    await tester.pump();
-    expect(find.text('Select source Features - 1 selected'), findsOneWidget);
-
+    expect(find.text('Select source Features - 1 selected'), findsOneWidget, reason: 'the picker starts from the scope');
     await tester.tap(find.byTooltip('Confirm Feature selection'));
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
-    // PatternPanel is back immediately (the picker's own confirm/cancel are
-    // synchronous UI state) - the debounced live-preview PATCH this
-    // triggers (see [_confirmSourceFeaturePicker]) lands separately, after
-    // its own 500ms debounce.
-    expect(find.text('Edit Pattern'), findsOneWidget);
-    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
-
     await tester.pump(const Duration(milliseconds: 600));
-    expect(backend.lastPatternPatchBody?['source_feature_ids'], ['feature-2']);
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsOneWidget);
+    expect(backend.lastPatternPatchBody?['tool_feature_ids'], ['feature-4']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('editing a saved body pattern opens on the Body tab (bug report 2026-11-17 item 2B)', (tester) async {
+    await _pumpScopeScreen(tester, seedFeatures: [
+      ..._bossAndCut,
+      {'type': 'pattern', 'id': 'feature-5', 'source_body_ids': ['feature-2'], 'source_feature_ids': <String>[], 'pattern_type': 'rectangular',
+       'direction_1': {'edge_ref': null, 'sketch_line_ref': null, 'fixed_axis': 'x'}, 'count_1': 3, 'spacing_1': 10.0, 'reverse_1': false,
+       'direction_2': null, 'count_2': 1, 'spacing_2': 0.0, 'reverse_2': false, 'axis': null, 'count_angular': 1, 'angle_total': 360.0,
+       'reverse_angular': false, 'skip_indices': [], 'locked': false},
+    ]);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Pattern 1'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(_scopeTab(tester), SeedScopeTab.body);
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-2')), findsOneWidget);
+    expect(find.text('Add from Tree'), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -3855,308 +3912,284 @@ void main() {
     expect(find.text('Pattern'), findsNothing);
   });
 
-  testWidgets(
-      'Pattern/Mirror scoping Phase 9: long-pressing an eligible Cut Feature still offers the '
-      'plain "Pattern"/"Mirror" entries, and tapping "Pattern" opens PatternPanel seeded via '
-      'tool_feature_id by default, with the Body/Feature toggle shown', (tester) async {
+  testWidgets('Mirror "Add from Tree" with a cut mirrors it as a tool into its body (bug report 2026-11-17 item M.2: it was sent '
+      'as a source feature, whose bodies a cut has none of)', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {
-          'type': 'extrude',
-          'id': 'feature-2',
-          'sketch_feature_id': 'feature-1',
-          'extrude_type': 'cut',
-          'start_distance': 0.0,
-          'end_distance': 10.0,
-          'target_body_ids': ['feature-0'],
-          'locked': false,
-        },
+        {'type': 'extrude', 'id': 'feature-2', 'sketch_feature_id': 'feature-1', 'extrude_type': 'boss', 'start_distance': 0.0,
+         'end_distance': 10.0, 'locked': true},
+        {'type': 'sketch', 'id': 'feature-3', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'extrude', 'id': 'feature-4', 'sketch_feature_id': 'feature-3', 'extrude_type': 'cut', 'start_distance': 0.0,
+         'end_distance': 10.0, 'target_body_ids': ['feature-2'], 'locked': false},
       ],
     );
-    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
     final sketchBackend = _FakeSketchBackend();
-
     await tester.pumpWidget(
       MaterialApp(
         home: PartScreen(
-          documentApi: documentApi,
+          documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
           sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
         ),
       ),
     );
     await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
 
+    // Mirror started from the boss (a body-making feature): its bodies are the scope.
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-
     await tester.longPress(find.text('Extrude 1'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    // Feature 1 (tree multi-select): long-press now enters multi-select;
-    // the row's own context menu is behind the action bar's "More".
     await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    // Phase 9: the old separate "Pattern into Target"/"Mirror into Target"
-    // entries are gone - a tool-feature-eligible Cut/Boss now shows the
-    // exact same "Pattern"/"Mirror" entries as any other body-producing
-    // Feature (see FeatureContextMenuAction's own doc comment).
-    expect(find.text('Pattern'), findsOneWidget);
-    expect(find.text('Mirror'), findsOneWidget);
-    expect(find.text('Pattern into Target'), findsNothing);
-    expect(find.text('Mirror into Target'), findsNothing);
-
-    await tester.tap(find.text('Pattern'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
-    // Straight to `configuring` (no pickingBodies ribbon/step). Extrude 1
-    // qualifies for both seed kinds (body-producing *and* tool-feature-
-    // eligible), so it defaults to tool_feature_id mode (its own status
-    // line replaces the ordinary merge toggle/sourceFeatureIds row - see
-    // PatternPanel.toolFeatureSummary) and shows the Body/Feature toggle.
-    expect(find.byType(PatternPanel), findsOneWidget);
-    expect(find.text('Edit Pattern'), findsNothing);
-    expect(find.text('Select Body to Pattern'), findsNothing);
-    expect(find.textContaining('Patterning Extrude 1 into its own target'), findsOneWidget);
-    expect(find.text('Pattern Body'), findsOneWidget);
-    expect(find.text('Pattern Feature'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-
-    // Toggling to Body mode swaps the seed field and status line, still
-    // seeded from the same Extrude 1 Feature.
-    await tester.tap(find.text('Pattern Body'));
-    await tester.pump();
-    expect(find.textContaining('Patterning Extrude 1 into its own target'), findsNothing);
-    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
-
-    // direction_1 is still unset, so the debounced live-preview never
-    // actually fires a network call - pump past it so no Timer is left
-    // pending when this test tears down (mirrors the Phase 6 precedent
-    // test's own identical note).
-    await tester.pump(const Duration(milliseconds: 600));
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets(
-      'Pattern/Mirror scoping Phase 9: tapping "Mirror" on an eligible Cut Feature opens '
-      'MirrorPanel directly at the pickingPlane step, seeded via tool_feature_id by default '
-      '(the entry-point asymmetry fix - Mirror never had this long-press entry before)',
-      (tester) async {
-    final backend = _FakeDocumentBackend(
-      seedFeatures: [
-        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {
-          'type': 'extrude',
-          'id': 'feature-2',
-          'sketch_feature_id': 'feature-1',
-          'extrude_type': 'cut',
-          'start_distance': 0.0,
-          'end_distance': 10.0,
-          'target_body_ids': ['feature-0'],
-          'locked': false,
-        },
-      ],
-    );
-    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
-    final sketchBackend = _FakeSketchBackend();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: PartScreen(
-          documentApi: documentApi,
-          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-        ),
-      ),
-    );
-    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-
-    await tester.tap(find.byTooltip('Feature tree'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
-    await tester.longPress(find.text('Extrude 1'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    // Feature 1 (tree multi-select): long-press now enters multi-select;
-    // the row's own context menu is behind the action bar's "More".
-    await tester.tap(find.byTooltip('More actions'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
     await tester.tap(find.text('Mirror'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-
-    // MirrorPanel opens immediately (mirror_plane still required in
-    // tool_feature_id mode), showing its own status line, the Body/Feature
-    // toggle (Extrude 1 qualifies for both), and no plane picked yet -
-    // Confirm stays disabled until one is.
     expect(find.byType(MirrorPanel), findsOneWidget);
-    expect(find.text('Edit Mirror'), findsNothing);
-    expect(find.textContaining('Mirroring Extrude 1 into its own target'), findsOneWidget);
-    expect(find.text('Mirror Body'), findsOneWidget);
-    expect(find.text('Mirror Feature'), findsOneWidget);
-    expect(
-      tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed,
-      isNull,
-    );
-    expect(tester.takeException(), isNull);
+    expect(tester.widget<MirrorPanel>(find.byType(MirrorPanel)).toolFeatureSummary, isNull);
 
-    // Toggling to Body mode swaps the seed field and status line.
-    await tester.tap(find.text('Mirror Body'));
-    await tester.pump();
-    expect(find.textContaining('Mirroring Extrude 1 into its own target'), findsNothing);
-    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
-    expect(tester.takeException(), isNull);
-
-    // Unlike Pattern's own debounce, [PartScreen._scheduleMirrorPreview]
-    // always starts its Timer regardless of whether a plane is picked yet
-    // (the "nothing to preview" guard only runs once the Timer fires) - pump
-    // past it so no Timer is left pending when this test tears down.
-    await tester.pump(const Duration(milliseconds: 600));
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets(
-      'Pattern/Mirror scoping Phase 9: long-pressing a targetless Boss (body-producing but not '
-      'tool-feature-eligible) still offers "Pattern"/"Mirror", opening in source_feature_ids '
-      'mode with the Body/Feature toggle hidden (only qualifies for one seed kind)',
-      (tester) async {
-    final backend = _FakeDocumentBackend(
-      seedFeatures: [
-        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {
-          'type': 'extrude',
-          'id': 'feature-2',
-          'sketch_feature_id': 'feature-1',
-          'extrude_type': 'boss',
-          'start_distance': 0.0,
-          'end_distance': 10.0,
-          'locked': false,
-        },
-      ],
-    );
-    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
-    final sketchBackend = _FakeSketchBackend();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: PartScreen(
-          documentApi: documentApi,
-          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-        ),
-      ),
-    );
-    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-
-    await tester.tap(find.byTooltip('Feature tree'));
+    // Add from Tree: swap the boss for the cut.
+    await tester.ensureVisible(find.text('Add from Tree'));
+    await tester.tap(find.text('Add from Tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-
-    await tester.longPress(find.text('Extrude 1'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-    // Feature 1 (tree multi-select): long-press now enters multi-select;
-    // the row's own context menu is behind the action bar's "More".
-    await tester.tap(find.byTooltip('More actions'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
-    // Still offers the unified "Pattern"/"Mirror" entries - the old,
-    // separate tool_feature_id-mode entries are gone entirely (Phase 9).
-    expect(find.text('Pattern'), findsOneWidget);
-    expect(find.text('Mirror'), findsOneWidget);
-    expect(find.text('Pattern into Target'), findsNothing);
-    expect(find.text('Mirror into Target'), findsNothing);
-
-    await tester.tap(find.text('Pattern'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
-    // A targetless Boss isn't tool-feature-eligible, so this opens in the
-    // ordinary source_feature_ids mode by default, with no Body/Feature
-    // toggle at all (nothing to toggle - it only qualifies for one kind).
-    expect(find.byType(PatternPanel), findsOneWidget);
-    expect(find.text('1 Feature added from the Build Tree'), findsOneWidget);
-    expect(find.textContaining('into its own target'), findsNothing);
-    expect(find.text('Pattern Body'), findsNothing);
-    expect(find.text('Pattern Feature'), findsNothing);
-    expect(tester.takeException(), isNull);
-
-    await tester.pump(const Duration(milliseconds: 600));
-    expect(tester.takeException(), isNull);
-  });
-
-  testWidgets(
-      'Pattern/Mirror scoping Phase 6 UX: the pickingBodies ribbon\'s "Select Feature" button '
-      'opens the Build Tree picker, and a confirmed pick is reflected back in the ribbon',
-      (tester) async {
-    final backend = _FakeDocumentBackend(
-      seedFeatures: [
-        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
-        {
-          'type': 'extrude',
-          'id': 'feature-2',
-          'sketch_feature_id': 'feature-1',
-          'extrude_type': 'boss',
-          'start_distance': 0.0,
-          'end_distance': 10.0,
-          'locked': false,
-        },
-      ],
-    );
-    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
-    final sketchBackend = _FakeSketchBackend();
-
-    await tester.pumpWidget(
-      MaterialApp(
-        home: PartScreen(
-          documentApi: documentApi,
-          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-        ),
-      ),
-    );
-    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-
-    await tapStartCommand(tester, 'Pattern');
-
-    expect(find.text('Select Body to Pattern'), findsOneWidget);
-    expect(find.text('Select Feature'), findsOneWidget);
-
-    await tester.tap(find.text('Select Feature'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 250));
-
-    // The Build Tree's own multi-select picker is up instead of the
-    // ribbon now.
-    expect(find.text('Select source Features'), findsOneWidget);
-    expect(find.text('Select Body to Pattern'), findsNothing);
-
+    expect(find.text('Select source Features - 1 selected'), findsOneWidget);
     await tester.tap(find.text('Extrude 1'));
+    await tester.pump();
+    await tester.tap(find.text('Extrude 2'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Confirm Feature selection'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    final panel = tester.widget<MirrorPanel>(find.byType(MirrorPanel));
+    expect(panel.toolFeatureSummary, 'Extrude 2');
+    expect(find.byKey(const ValueKey('mirror-scope-chip-feature-4')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 600)); // the preview debounce (no plane yet, so nothing is sent)
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the long press on a cut opens the same Pattern tool, Feature tab, with the cut in scope (bug report 2026-11-17 item 2B)',
+      (tester) async {
+    await _pumpScopeScreen(tester);
+    await _openFromLongPress(tester, 'Extrude 2', 'Pattern');
+    expect(find.byType(PatternPanel), findsOneWidget);
+    expect(find.byType(PickerRibbon), findsNothing);
+    expect(_scopeTab(tester), SeedScopeTab.feature);
+    expect(find.byKey(const ValueKey('pattern-scope-field')), findsOneWidget);
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsOneWidget);
+    expect(find.textContaining('Patterning Extrude 2 into its own target'), findsOneWidget);
+    expect(find.text('Pattern Body'), findsNothing);
+
+    // The Body tab has its own (empty) scope; coming back keeps the Feature tab's.
+    await tester.ensureVisible(find.byKey(const ValueKey('pattern-tab-body')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('pattern-tab-body')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsNothing);
+    expect(find.text('Pick faces'), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const ValueKey('pattern-tab-feature')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('pattern-tab-feature')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the long press on a cut opens the same Mirror tool, Feature tab, with the cut in scope (bug report 2026-11-17 item M.3)',
+      (tester) async {
+    await _pumpScopeScreen(tester);
+    await _openFromLongPress(tester, 'Extrude 2', 'Mirror');
+    expect(find.byType(MirrorPanel), findsOneWidget);
+    expect(_scopeTab(tester), SeedScopeTab.feature);
+    expect(find.byKey(const ValueKey('mirror-scope-chip-feature-4')), findsOneWidget);
+    expect(find.textContaining('Mirroring Extrude 2 into its own target'), findsOneWidget);
+    expect(find.text('Mirror Body'), findsNothing);
+    expect(tester.widget<MirrorPanel>(find.byType(MirrorPanel)).planeActive, isFalse, reason: 'the scope field is active on opening');
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull, reason: 'no plane yet');
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('the long press on a body-making boss puts it in the Feature tab\'s scope, copied (not a tool)', (tester) async {
+    await _pumpScopeScreen(tester);
+    await _openFromLongPress(tester, 'Extrude 1', 'Pattern');
+    expect(find.byType(PatternPanel), findsOneWidget);
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-2')), findsOneWidget);
+    expect(find.textContaining('into its own target'), findsNothing);
+    expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets(
+      'desktop layout: Pattern "Add from Tree" shows the Build Tree in the left pane to pick from '
+      '(it used to stay replaced by the tool, so there was nothing to pick)', (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final backend = _FakeDocumentBackend(seedFeatures: [for (final f in _bossAndCut) Map<String, dynamic>.from(f)]);
+    final sketchBackend = _FakeSketchBackend();
+    final layout =
+        LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LayoutModeScope(
+          controller: layout,
+          child: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+
+    await tester.tap(find.byKey(const ValueKey('ribbon-Pattern')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.ensureVisible(find.text('Add from Tree'));
+    await tester.tap(find.text('Add from Tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('Select source Features'), findsOneWidget);
+    await tester.tap(find.text('Extrude 2'));
     await tester.pump();
     expect(find.text('Select source Features - 1 selected'), findsOneWidget);
 
     await tester.tap(find.byTooltip('Confirm Feature selection'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-
-    // Back at the pickingBodies ribbon, now reflecting the picked Feature -
-    // still `pickingBodies`, not advanced to `configuring` (no Body was
-    // ever tapped, and the ribbon's own confirm is a separate, explicit
-    // step - see PartScreen._confirmPatternBodySelection).
-    expect(find.text('1 feature(s) selected - tap checkmark to confirm'), findsOneWidget);
-    expect(find.byType(PatternPanel), findsNothing);
-    expect(tester.takeException(), isNull);
-
-    // [_confirmSourceFeaturePicker] unconditionally reschedules the
-    // debounced live-preview PATCH (harmlessly a no-op here, since
-    // `_patternSourceBodyIds` is still null throughout `pickingBodies` -
-    // see [_schedulePatternPreview]'s own guard) - pump past it so no
-    // Timer is left pending when this test tears down.
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsOneWidget);
     await tester.pump(const Duration(milliseconds: 600));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Start > Pattern opens the panel at once: Feature tab, scope field active, no picking ribbon (bug report 2026-11-17 item 2B)',
+      (tester) async {
+    await _pumpScopeScreen(tester);
+    await tapStartCommand(tester, 'Pattern');
+    expect(find.byType(PatternPanel), findsOneWidget);
+    expect(find.byType(PickerRibbon), findsNothing);
+    expect(_scopeTab(tester), SeedScopeTab.feature);
+    expect(find.text('Pick faces'), findsOneWidget);
+    // The same keys as the long press opens (one tool, whichever way in).
+    expect(find.byKey(const ValueKey('pattern-tab-feature')), findsOneWidget);
+    expect(find.byKey(const ValueKey('pattern-scope-field')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Pattern, Feature tab: tapping a hole wall asks which feature made it and patterns the cut as a tool', (tester) async {
+    final backend = await _pumpScopeScreen(tester);
+    backend.faceOwners['feature-2:5'] = 'feature-4';
+    await tapStartCommand(tester, 'Pattern');
+    await _tapFace(tester, 'feature-2', 5);
+    expect(backend.faceOwnerRequests, 1);
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsOneWidget);
+    await tester.ensureVisible(find.text('X').first);
+    await tester.tap(find.text('X').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(_lastCreate(backend, 'pattern')?['tool_feature_ids'], ['feature-4']);
+    expect(_lastCreate(backend, 'pattern')?['source_body_ids'], isEmpty);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Pattern, Body tab: a tapped face puts its body in scope (no request); tabs keep their own scopes', (tester) async {
+    final backend = await _pumpScopeScreen(tester);
+    backend.faceOwners['feature-2:5'] = 'feature-4';
+    await tapStartCommand(tester, 'Pattern');
+    await _tapFace(tester, 'feature-2', 5); // Feature tab: the cut
+    await tester.ensureVisible(find.byKey(const ValueKey('pattern-tab-body')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('pattern-tab-body')));
+    await tester.pump();
+    await _tapFace(tester, 'feature-2', 5); // Body tab: the body
+    expect(backend.faceOwnerRequests, 1, reason: 'no request on the Body tab');
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-2')), findsOneWidget);
+    await tester.ensureVisible(find.text('X').first);
+    await tester.tap(find.text('X').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(_lastCreate(backend, 'pattern')?['source_body_ids'], ['feature-2']);
+    expect(_lastCreate(backend, 'pattern')?.containsKey('tool_feature_ids'), isFalse);
+    await tester.ensureVisible(find.byKey(const ValueKey('pattern-tab-feature')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('pattern-tab-feature')));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('pattern-scope-chip-feature-4')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Pattern: a cut and a body-making feature together show the message and disable Confirm; removing one clears it',
+      (tester) async {
+    final backend = await _pumpScopeScreen(tester);
+    backend.faceOwners['feature-2:5'] = 'feature-4';
+    backend.faceOwners['feature-2:0'] = 'feature-2';
+    await tapStartCommand(tester, 'Pattern');
+    await _tapFace(tester, 'feature-2', 5);
+    await _tapFace(tester, 'feature-2', 0);
+    expect(find.byKey(const ValueKey('pattern-scope-error')), findsOneWidget);
+    await tester.ensureVisible(find.text('X').first);
+    await tester.tap(find.text('X').first);
+    await tester.pump();
+    await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+    expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+    await _tapFace(tester, 'feature-2', 0); // the same face again removes the boss
+    expect(find.byKey(const ValueKey('pattern-scope-error')), findsNothing);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Start > Mirror opens on the Feature tab with the scope active; a face then the plane: the plane field takes the face as '
+      'the plane, not the scope (bug report 2026-11-17 item M.3)', (tester) async {
+    final backend = await _pumpScopeScreen(tester);
+    backend.faceOwners['feature-2:5'] = 'feature-4';
+    await tapStartCommand(tester, 'Mirror');
+    expect(find.byType(MirrorPanel), findsOneWidget);
+    expect(find.byType(PickerRibbon), findsNothing);
+    expect(_scopeTab(tester), SeedScopeTab.feature);
+    expect(find.byKey(const ValueKey('mirror-scope-field')), findsOneWidget);
+    await _tapFace(tester, 'feature-2', 5);
+    expect(find.byKey(const ValueKey('mirror-scope-chip-feature-4')), findsOneWidget);
+    expect(tester.widget<MirrorPanel>(find.byType(MirrorPanel)).planeActive, isFalse, reason: 'no jump to the plane after a pick');
+
+    await tester.ensureVisible(find.byKey(const ValueKey('mirror-plane-field')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('mirror-plane-field')));
+    await tester.pump();
+    await _tapFace(tester, 'feature-2', 2);
+    expect(backend.faceOwnerRequests, 1, reason: 'a plane pick is not a scope pick');
+    expect(tester.widget<MirrorPanel>(find.byType(MirrorPanel)).hasPlanePicked, isTrue);
+    expect(find.byKey(const ValueKey('mirror-scope-chip-feature-4')), findsOneWidget);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(_lastCreate(backend, 'mirror')?['tool_feature_ids'], ['feature-4']);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('Mirror, Body tab: a face puts its body in scope and the request carries source_body_ids', (tester) async {
+    final backend = await _pumpScopeScreen(tester);
+    await tapStartCommand(tester, 'Mirror');
+    await tester.ensureVisible(find.byKey(const ValueKey('mirror-tab-body')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('mirror-tab-body')));
+    await tester.pump();
+    await _tapFace(tester, 'feature-2', 5);
+    expect(find.byKey(const ValueKey('mirror-scope-chip-feature-2')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const ValueKey('mirror-plane-field')));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('mirror-plane-field')));
+    await tester.pump();
+    await _tapFace(tester, 'feature-2', 2);
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(_lastCreate(backend, 'mirror')?['source_body_ids'], ['feature-2']);
     expect(tester.takeException(), isNull);
   });
 
@@ -7923,12 +7956,40 @@ void main() {
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
     }
 
-    testWidgets('Server projects into an empty project: the session starts saving there, and Save All sends the file', (tester) async {
+    // Bug report 2026-11-17 item 8: Open only opens. Putting the current work into a cloud project (the owner's 13 Nov sequence: a
+    // brand-new part into a new, empty project) is File > Copy this project to cloud storage… > Existing project folder.
+    testWidgets('Open > Cloud storage on an empty project opens nothing and says where to go instead', (tester) async {
+      await pumpNewSession(tester);
+      await openCloudFromMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const ValueKey('server-project-empty')), findsOneWidget);
+      expect(find.textContaining('This project has no files yet'), findsOneWidget);
+      expect(await _syncButtonPresent(tester), isFalse);
+    });
+
+    testWidgets('Open > Cloud storage on a project with files goes straight to choosing a file: no "Save current work here"', (tester) async {
+      store.writeJson('Gearbox', 'Existing.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}});
+      await pumpNewSession(tester);
+      await openCloudFromMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const ValueKey('server-project-choice')), findsNothing);
+      expect(find.text('Save current work here'), findsNothing);
+      expect(find.text('Open Project'), findsOneWidget);
+    });
+
+    testWidgets('Copy to cloud storage > Existing project folder: the session saves into it, and Save All sends the file', (tester) async {
       await pumpNewSession(tester);
       expect(await _syncButtonPresent(tester), isFalse);
 
-      await openCloudFromMenu(tester);
-      expect(find.byKey(const ValueKey('server-project-Gearbox')), findsOneWidget);
+      await tapFileMenu(tester, 'Copy this project to cloud storage…');
+      expect(find.byKey(const ValueKey('copy-to-cloud-target-dialog')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('copy-to-cloud-existing')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
       await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
@@ -7937,7 +7998,6 @@ void main() {
       expect(find.textContaining('now saves into "Gearbox"'), findsOneWidget);
 
       await tapFileMenu(tester, 'Save All');
-      // A part with no file yet is named first (the existing Save All prompt); confirm it.
       expect(find.textContaining('Save "Part 1" as'), findsOneWidget);
       await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Save')));
       await tester.pump();
@@ -7946,25 +8006,13 @@ void main() {
       expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
 
-    testWidgets('Server projects into a project that has files asks: save the current work there, or open a file', (tester) async {
-      store.writeJson('Gearbox', 'Existing.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}});
+    testWidgets('Copy to cloud storage > New project folder is the name prompt, as before', (tester) async {
       await pumpNewSession(tester);
-
-      await openCloudFromMenu(tester);
-      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tapFileMenu(tester, 'Copy this project to cloud storage…');
+      await tester.tap(find.byKey(const ValueKey('copy-to-cloud-new')));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(find.byKey(const ValueKey('server-project-choice')), findsOneWidget);
-      expect(find.text('1 file in this project.'), findsOneWidget);
-
-      await tester.tap(find.byKey(const ValueKey('server-project-save-here')));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(await _syncButtonPresent(tester), isTrue);
-
-      await tapFileMenu(tester, 'Save');
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(store.livePaths('Gearbox'), containsAll(['Existing.didsa', 'Part 1.didsa']), reason: 'requests: ${store.requests}');
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('copy-to-server-dialog')), findsOneWidget);
     });
 
     testWidgets('a local-folder session shows a folder symbol (not synced), and it leads to Server projects', (tester) async {
@@ -9392,6 +9440,82 @@ void main() {
       expect(find.text('Nothing selected'), findsOneWidget);
       // The tree is docked, so it carries no Close button.
       expect(find.byTooltip('Close'), findsNothing);
+    });
+
+    testWidgets('Options > Background, colour and scene opens a dialog, never the phone hamburger panel (bug report 2026-11-17 item 13)', (
+      tester,
+    ) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      expect(find.byType(PartToolbar), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('menu-options')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      // Every hamburger selection filter has a desktop home too.
+      expect(find.text('Select sketch points'), findsOneWidget);
+      expect(find.text('Select sketch lines'), findsOneWidget);
+      await tester.tap(find.text('Background, colour and scene…'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('scene-settings-dialog')), findsOneWidget);
+      expect(find.byType(PartToolbar), findsNothing);
+      for (final label in ['Perspective', 'Background Colour', 'Body Colour', 'Body Transparency', 'Polygon Resolution', 'Scene']) {
+        expect(find.descendant(of: find.byKey(const ValueKey('scene-settings-dialog')), matching: find.text(label)), findsOneWidget,
+            reason: label);
+      }
+      // A change shows in the dialog straight away and reaches the screen.
+      final before = tester.widget<SwitchListTile>(find.byKey(const ValueKey('scene-settings-perspective'))).value;
+      await tester.tap(find.byKey(const ValueKey('scene-settings-perspective')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.widget<SwitchListTile>(find.byKey(const ValueKey('scene-settings-perspective'))).value, !before);
+      await tester.tap(find.byKey(const ValueKey('view-override-switch')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(tester.widget<Switch>(find.byKey(const ValueKey('view-override-switch'))).value, isTrue);
+      expect(find.byKey(const ValueKey('view-override-chip')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('scene-settings-close')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('scene-settings-dialog')), findsNothing);
+      expect(find.byType(PartToolbar), findsNothing);
+    });
+
+    testWidgets('a Visibility button under Reset view opens the Visibility panel top right; the ribbon drops what it duplicates '
+        '(bug report 2026-11-17 item 12)', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester, layout: desktop());
+      // The button itself is drawn by PartViewport next to Reset view, over the 3D scene, which a headless test does not build;
+      // the screen hands it the callback and the badge.
+      final viewportWidget = tester.widget<PartViewport>(find.byType(PartViewport));
+      expect(viewportWidget.onVisibilityPressed, isNotNull);
+      expect(viewportWidget.showResetViewButton, isTrue);
+      expect(find.byType(VisibilityPanel), findsNothing);
+
+      viewportWidget.onVisibilityPressed!();
+      await tester.pump();
+      expect(find.byType(VisibilityPanel), findsOneWidget);
+      // Docked top right of the viewport, under the Reset view (top 8) and Visibility (top 56) buttons.
+      final panel = tester.getRect(find.byType(VisibilityPanel));
+      final viewport = tester.getRect(find.byType(PartViewport));
+      expect(panel.right, closeTo(viewport.right - 8, 1));
+      expect(panel.top, closeTo(viewport.top + 104, 1));
+
+      await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-view')));
+      await tester.tap(find.byKey(const ValueKey('ribbon-tab-view')));
+      await tester.pump();
+      for (final label in ['Planes', 'Shaded', 'Edges', 'Wireframe']) {
+        expect(find.byKey(ValueKey('ribbon-$label')), findsNothing, reason: label);
+      }
+      for (final label in ['Fit', 'View cube', 'Front', 'Isometric', 'Perspective', 'Present']) {
+        expect(find.byKey(ValueKey('ribbon-$label')), findsOneWidget, reason: label);
+      }
+    });
+
+    testWidgets('the phone layout has no viewport Visibility button (it has the quick column)', (tester) async {
+      bigWindow(tester);
+      await pumpScreen(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).onVisibilityPressed, isNull);
     });
 
     testWidgets('Presentation mode hides the ribbon, tree pane and status bar, and leaves the desktop layout alone on exit', (

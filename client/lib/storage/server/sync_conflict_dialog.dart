@@ -101,20 +101,22 @@ class _SyncConflictDialogState extends State<_SyncConflictDialog> {
 }
 
 /// Save All on a local folder found files that changed on disk since this session read them (decision S0-8): the user chooses
-/// instead of the files being overwritten silently.
-Future<ChangedOnDiskChoice> showChangedOnDiskDialog(BuildContext context, List<String> paths) async {
+/// instead of the files being overwritten silently. [title] / [message] reword it for another "these files would be overwritten"
+/// question (copying a project into a cloud project that already has files of the same names, bug report 2026-11-17 item 8).
+Future<ChangedOnDiskChoice> showChangedOnDiskDialog(BuildContext context, List<String> paths, {String? title, String? message}) async {
   final choice = await showDialog<ChangedOnDiskChoice>(
     context: context,
     barrierDismissible: false,
     builder: (context) => AlertDialog(
       key: const ValueKey('changed-on-disk-dialog'),
-      title: Text(paths.length == 1 ? 'A file changed on disk' : '${paths.length} files changed on disk'),
+      title: Text(title ?? (paths.length == 1 ? 'A file changed on disk' : '${paths.length} files changed on disk')),
       content: SingleChildScrollView(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('These were modified after this session read them (by a sync client, another program or another device). Saving would overwrite those changes.'),
+            Text(message ??
+                'These were modified after this session read them (by a sync client, another program or another device). Saving would overwrite those changes.'),
             const SizedBox(height: 8),
             for (final path in paths) Text('• $path'),
           ],

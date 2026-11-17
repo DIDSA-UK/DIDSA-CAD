@@ -38,7 +38,7 @@ from OCC.Core.TopTools import TopTools_IndexedMapOfShape, TopTools_ListOfShape
 
 from app.document import body_cache, reference_history
 from app.document.reference_history import ReShapeHistory
-from app.document.graph import base_feature_id, build_feature_graph, topological_order
+from app.document.graph import base_feature_id, build_feature_graph, excluded_feature_ids_after, topological_order
 from app.document.shell_ops import thicken_capped_solid_to_solid, thicken_shell_to_solid
 from app.document.plane_geometry import (
     resolve_planar_ellipse,
@@ -1668,6 +1668,19 @@ def _fuse_realized_instances(
     for base_id in base_ids:
         del bodies[base_id]
     _register_solids(bodies, survivor_id, merged)
+
+
+def resolve_feature_tool_shape_as_it_ran(
+    part: Part, feature_id: str, excluded_feature_ids: frozenset[str] = frozenset()
+) -> tuple[TopoDS_Shape, list[str], bool] | None:
+    """`resolve_feature_tool_shape` for an already-persisted Feature, resolved against the Part exactly as it stood right before that
+    Feature ran (every Feature from it on excluded, as well as `excluded_feature_ids`), not against some later state of the Bodies:
+    the tool shape re-derives the Feature's own upstream references (its Sketch's anchor Plane's `face_ref`, say), and a raw face index
+    resolved against a Body the Feature itself has already cut can name a different face (see `excluded_feature_ids_after`). The one
+    place this snapshot is taken, for Pattern's and Mirror's tool Features and for which Feature made a face (`face_owner.py`)."""
+    tool_excluded = excluded_feature_ids | {feature_id} | excluded_feature_ids_after(part, feature_id)
+    tool_bodies = compute_part_bodies(part, tool_excluded)
+    return resolve_feature_tool_shape(part, tool_bodies, feature_id, tool_excluded)
 
 
 def resolve_feature_tool_shape(

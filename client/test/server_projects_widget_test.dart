@@ -1,6 +1,7 @@
 // Widgets of the server projects feature (S2): the store section of the server settings, the Server projects list, the conflict
 // dialog and the sync chip, against the fake store. The service logic itself is `remote_storage_service_test.dart`.
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -13,6 +14,7 @@ import 'package:didsa_cad_client/assembly/save_all.dart' show ChangedOnDiskChoic
 import 'package:didsa_cad_client/config.dart';
 import 'package:didsa_cad_client/home/server_screen.dart';
 import 'package:didsa_cad_client/home/storage_screen.dart';
+import 'package:didsa_cad_client/storage/desktop_storage_service.dart';
 import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/server/remote_storage_service.dart';
 import 'package:didsa_cad_client/storage/server/server_projects_dialog.dart';
@@ -284,6 +286,133 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('copy-to-server-confirm')));
       await _settle(tester);
       expect(name, 'Renamed');
+    });
+  });
+
+  // Bug report 2026-11-17 item 8: "Copy this project to cloud storage" asks new or existing, and copies into an existing project,
+  // asking about names it already has.
+  group('copy this project into cloud storage: new or existing project folder', () {
+    testWidgets('the first question offers a new or an existing project folder, and Cancel is neither', (tester) async {
+      for (final entry in {
+        'copy-to-cloud-new': CopyToCloudTarget.newProject,
+        'copy-to-cloud-existing': CopyToCloudTarget.existingProject,
+        null: null,
+      }.entries) {
+        CopyToCloudTarget? result = CopyToCloudTarget.newProject;
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Builder(
+              builder: (context) => Scaffold(
+                body: TextButton(onPressed: () async => result = await showCopyToCloudTargetDialog(context), child: const Text('go')),
+              ),
+            ),
+          ),
+        );
+        await tester.tap(find.text('go'));
+        await _settle(tester);
+        expect(find.byKey(const ValueKey('copy-to-cloud-target-dialog')), findsOneWidget);
+        await tester.tap(entry.key == null ? find.text('Cancel') : find.byKey(ValueKey<String>(entry.key!)));
+        await _settle(tester);
+        expect(result, entry.value);
+      }
+    });
+
+    testWidgets('the name clash question is the Overwrite / Skip / Cancel dialog, reworded', (tester) async {
+      ChangedOnDiskChoice? result;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: TextButton(
+                onPressed: () async => result = await showChangedOnDiskDialog(
+                  context,
+                  ['a.didsa'],
+                  title: 'Already in "Gearbox"',
+                  message: 'The project already has files with these names.',
+                ),
+                child: const Text('go'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.tap(find.text('go'));
+      await _settle(tester);
+      expect(find.text('Already in "Gearbox"'), findsOneWidget);
+      expect(find.text('The project already has files with these names.'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('changed-skip')));
+      await _settle(tester);
+      expect(result, ChangedOnDiskChoice.skipChanged);
+    });
+
+    group('copyProjectIntoServer', () {
+      late Directory temp;
+      late FakeProjectStore store;
+      late RemoteStorageService remote;
+      late DesktopProjectRoot localRoot;
+      final root = ServerProjectRoot(serverUrl: 'https://store.test', project: 'Gearbox');
+
+      setUp(() {
+        temp = Directory.systemTemp.createTempSync('copy-into-');
+        final folder = Directory('${temp.path}/local')..createSync();
+        File('${folder.path}/a.didsa').writeAsBytesSync(_file('mine-a'));
+        Directory('${folder.path}/parts').createSync();
+        File('${folder.path}/parts/b.didsa').writeAsBytesSync(_file('mine-b'));
+        Directory('${folder.path}/.git').createSync();
+        File('${folder.path}/.git/config').writeAsStringSync('x');
+        localRoot = DesktopProjectRoot(folder.path);
+        store = FakeProjectStore();
+        store.write('Gearbox', 'a.didsa', _file('theirs-a'));
+        store.write('Gearbox', 'c.didsa', _file('theirs-c'));
+        remote = _service(store);
+      });
+
+      tearDown(() => temp.deleteSync(recursive: true));
+
+      String rootIdOf(String path) => (jsonDecode(utf8.decode(store.bytesOf('Gearbox', path)!)) as Map)['document']['root_part_id'] as String;
+
+      test('a name the project has is asked about once; Overwrite writes over it in the same commit', () async {
+        final asked = <List<String>>[];
+        final copied = await remote.copyProjectIntoServer(DesktopStorageService(), localRoot, root, onClashes: (clashes) async {
+          asked.add(clashes);
+          return ChangedOnDiskChoice.overwrite;
+        });
+        expect(asked, [
+          ['a.didsa'],
+        ]);
+        expect(copied, unorderedEquals(['a.didsa', 'parts/b.didsa']));
+        expect(store.livePaths('Gearbox'), ['a.didsa', 'c.didsa', 'parts/b.didsa']);
+        expect(rootIdOf('a.didsa'), 'mine-a');
+        expect(rootIdOf('c.didsa'), 'theirs-c');
+        expect(store.count('POST /projects/Gearbox/commit'), 1);
+      });
+
+      test('Skip leaves the project\'s file as it is and copies the rest', () async {
+        final copied =
+            await remote.copyProjectIntoServer(DesktopStorageService(), localRoot, root, onClashes: (_) async => ChangedOnDiskChoice.skipChanged);
+        expect(copied, ['parts/b.didsa']);
+        expect(rootIdOf('a.didsa'), 'theirs-a');
+        expect(rootIdOf('parts/b.didsa'), 'mine-b');
+      });
+
+      test('Cancel copies nothing', () async {
+        final copied =
+            await remote.copyProjectIntoServer(DesktopStorageService(), localRoot, root, onClashes: (_) async => ChangedOnDiskChoice.cancel);
+        expect(copied, isNull);
+        expect(store.livePaths('Gearbox'), ['a.didsa', 'c.didsa']);
+        expect(store.count('POST /projects/Gearbox/commit'), 0);
+      });
+
+      test('no clash: no question, every file copied', () async {
+        File('${localRoot.path}/a.didsa').renameSync('${localRoot.path}/d.didsa');
+        var asked = false;
+        await remote.copyProjectIntoServer(DesktopStorageService(), localRoot, root, onClashes: (_) async {
+          asked = true;
+          return ChangedOnDiskChoice.cancel;
+        });
+        expect(asked, isFalse);
+        expect(store.livePaths('Gearbox'), ['a.didsa', 'c.didsa', 'd.didsa', 'parts/b.didsa']);
+      });
     });
   });
 

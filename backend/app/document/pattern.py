@@ -34,7 +34,6 @@ from app.document.create_plane import resolve_sketch_basis
 from app.document.extrude import basis_point_to_world, compute_part_bodies, resolve_subshape_from_bodies
 from app.document.graph import (
     body_ids_for_feature_id,
-    excluded_feature_ids_after,
     sketch_feature_id_for_sketch,
     tool_feature_qualifies,
 )
@@ -567,7 +566,7 @@ def _resolve_pattern_tool_shape_and_target(
     pre-boolean tool shape against a *separate*, causally-consistent
     snapshot - the Part exactly as it stood right before `tool_feature_id`
     ran - rather than this Pattern's own further-advanced accumulator."""
-    from app.document.extrude import resolve_feature_tool_shape
+    from app.document.extrude import resolve_feature_tool_shape_as_it_ran
 
     # `tool_feature_id` picks which of the Pattern's tool Features to resolve (the first when omitted).
     tool_feature_id = tool_feature_id if tool_feature_id is not None else feature.tool_feature_id
@@ -577,11 +576,7 @@ def _resolve_pattern_tool_shape_and_target(
     if not tool_feature_qualifies(tool_feature):
         raise _invalid_tool_feature_ref(tool_feature_id)
 
-    tool_excluded = (
-        excluded_feature_ids | {tool_feature_id} | excluded_feature_ids_after(part, tool_feature_id)
-    )
-    tool_bodies = compute_part_bodies(part, tool_excluded)
-    result = resolve_feature_tool_shape(part, tool_bodies, tool_feature_id, tool_excluded)
+    result = resolve_feature_tool_shape_as_it_ran(part, tool_feature_id, excluded_feature_ids)
     if result is None:
         raise _invalid_tool_feature_ref(tool_feature_id)
     tool_shape, target_body_ids, is_cut = result

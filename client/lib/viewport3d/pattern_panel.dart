@@ -150,29 +150,21 @@ class PatternPanel extends StatefulWidget {
   final MergeMode merge;
   final void Function(MergeMode merge) onMergeChanged;
 
-  /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
-  /// §2.8/§4): Feature-tree entries (by Feature id) named as additional
-  /// pattern sources, on top of whatever Bodies were picked in the
-  /// viewport - see [PartScreen._patternSourceFeatureIds]. Mirrors
-  /// [MirrorPanel.sourceFeatureIds]/[onPickSourceFeatures] exactly.
-  final List<String> sourceFeatureIds;
-  final VoidCallback onPickSourceFeatures;
+  /// The Feature / Body tabs and the Scope field (`seed_scope.dart` [SeedScopeSection], the same widget Mirror shows - bug report
+  /// 2026-11-17 items 2B / M.4), drawn at the top. Null shows none (a caller with no scope of its own).
+  final Widget? scopeSection;
+
+  /// False while the scope cannot make a pattern (empty, or cuts and bodies mixed): Confirm is disabled.
+  final bool scopeValid;
 
   /// Pattern/Mirror scoping's Phase 8 (`docs/pattern-mirror-scope.md`
   /// §2.11/§4): mirrors [MirrorPanel.toolFeatureSummary]'s own identical
-  /// shape exactly - non-null while this session's seed is the third
-  /// `tool_feature_id` mode (entered via a long-press "Pattern"), a short
-  /// display name for the referenced Feature.
+  /// shape exactly - non-null while the scope's features are repeated as tools (cuts, bosses into a body): a short display name, and
+  /// the merge choice is replaced by "always merges".
   final String? toolFeatureSummary;
 
-  /// Pattern/Mirror scoping's Phase 9 (`docs/pattern-mirror-scope.md`
-  /// §2.12/§4): mirrors [MirrorPanel.seedKind]/[MirrorPanel.onSeedKindChanged]'s
-  /// own identical shape exactly - non-null only while this session was
-  /// opened via a Feature's own long-press "Pattern" entry *and* that
-  /// Feature qualifies for both seed kinds, showing the "Pattern Body"/
-  /// "Pattern Feature" toggle.
-  final PatternMirrorSeedKind? seedKind;
-  final void Function(PatternMirrorSeedKind kind)? onSeedKindChanged;
+  /// Pressed a "Pick Axis" (Circular): viewport picks go to the axis, not the scope.
+  final VoidCallback? onActivateAxis;
 
   final VoidCallback onConfirm;
   final VoidCallback onCancel;
@@ -218,11 +210,10 @@ class PatternPanel extends StatefulWidget {
     this.onOrientationModeChanged,
     required this.merge,
     required this.onMergeChanged,
-    this.sourceFeatureIds = const [],
-    required this.onPickSourceFeatures,
+    this.scopeSection,
+    this.scopeValid = true,
     this.toolFeatureSummary,
-    this.seedKind,
-    this.onSeedKindChanged,
+    this.onActivateAxis,
     required this.onConfirm,
     required this.onCancel,
   });
@@ -316,6 +307,7 @@ class _PatternPanelState extends State<PatternPanel> {
       : value.toString();
 
   bool get _canConfirm {
+    if (!widget.scopeValid) return false;
     if (widget.mode == PatternMode.circular) {
       return widget.hasAxis &&
           _countAngular != null &&
@@ -445,9 +437,8 @@ class _PatternPanelState extends State<PatternPanel> {
             _pickAffordanceButton(
               'Pick Direction',
               'Tap an edge or Sketch Line in the viewport to set $label',
-              onBeforeHint: widget.hasSecondDirection
-                  ? () => widget.onActiveDirectionSlotChanged(slot)
-                  : null,
+              // Always: it also takes viewport picks away from the scope field.
+              onBeforeHint: () => widget.onActiveDirectionSlotChanged(slot),
             ),
             const SizedBox(width: 4),
             _axisButton('x', onSetFixedAxis),
@@ -606,7 +597,8 @@ class _PatternPanelState extends State<PatternPanel> {
             // with no explicit picking affordance whatsoever, viewport-tap
             // discoverable only by already knowing to look for it.
             _pickAffordanceButton(
-                'Pick Axis', 'Tap an edge, a cylindrical face, or a Sketch Line in the viewport for the axis'),
+                'Pick Axis', 'Tap an edge, a cylindrical face, or a Sketch Line in the viewport for the axis',
+                onBeforeHint: widget.onActivateAxis),
           ],
         ),
         const SizedBox(height: 8),
@@ -686,18 +678,7 @@ class _PatternPanelState extends State<PatternPanel> {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (widget.seedKind != null)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: SegmentedButton<PatternMirrorSeedKind>(
-                segments: const [
-                  ButtonSegment(value: PatternMirrorSeedKind.body, label: Text('Pattern Body')),
-                  ButtonSegment(value: PatternMirrorSeedKind.feature, label: Text('Pattern Feature')),
-                ],
-                selected: {widget.seedKind!},
-                onSelectionChanged: (selection) => widget.onSeedKindChanged?.call(selection.first),
-              ),
-            ),
+          if (widget.scopeSection != null) Padding(padding: const EdgeInsets.only(bottom: 12), child: widget.scopeSection),
           if (widget.canChangeMode)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -753,30 +734,6 @@ class _PatternPanelState extends State<PatternPanel> {
               selected: {widget.merge},
               onSelectionChanged: (selection) =>
                   widget.onMergeChanged(selection.first),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    widget.sourceFeatureIds.isEmpty
-                        ? 'No Features added from the Build Tree'
-                        : '${widget.sourceFeatureIds.length} Feature'
-                            '${widget.sourceFeatureIds.length == 1 ? '' : 's'} added from the Build Tree',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      fontSize: 12,
-                    ),
-                  ),
-                ),
-                TextButton.icon(
-                  onPressed: widget.onPickSourceFeatures,
-                  icon: const Icon(Icons.account_tree_outlined, size: 16),
-                  label: const Text('Add from Tree'),
-                ),
-              ],
             ),
           ],
           const SizedBox(height: 8),

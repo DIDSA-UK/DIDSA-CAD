@@ -649,6 +649,7 @@ class _FakeBackend {
       final value = (body['value'] as num).toDouble();
       if (constraint['type'] == 'angle') {
         constraint['angle_degrees'] = value;
+        if (body['quadrant'] != null) constraint['quadrant'] = body['quadrant'];
       } else {
         constraint['distance'] = value;
         // Mirrors the real backend: any explicit value PATCH confirms the
@@ -2290,6 +2291,7 @@ class _FakeBackend {
             'line1_id': body['line1_id'],
             'line2_id': body['line2_id'],
             'angle_degrees': (body['angle_degrees'] as num).toDouble(),
+            if (body['quadrant'] != null) 'quadrant': body['quadrant'],
           };
           break;
         case 'coincident':
@@ -12015,6 +12017,59 @@ void main() {
     expect(controller.ghosts.map((g) => g.key).toSet(), {'angle'});
     expect(controller.ghosts.single.kind, GhostKind.angle);
     expect(controller.currentGhostValue(controller.ghosts.single), closeTo(90.0, 1e-6));
+  });
+
+  group('angle ghost: the cursor picks which of the four angles (bug report 2026-11-17 item 4)', () {
+    // Line 1 along +x, line 2 from the origin up and to the right at about 63.4 degrees.
+    Future<void> pickTwoLines() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.finishChain();
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 10);
+      controller.finishChain();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 0.05);
+      await controller.handleCanvasTap(4, 8); // on line 2, away from its midpoint
+    }
+
+    test('on the line no side is chosen: the outward angle, and no quadrant is sent', () async {
+      await pickTwoLines();
+      final ghost = controller.ghosts.single;
+      expect(controller.angleGhostQuadrant(ghost), isNull);
+      expect(controller.currentGhostValue(ghost), closeTo(63.435, 1e-3));
+      await controller.confirmGhostValue('angle', 60.0);
+      expect(controller.constraints.values.whereType<AngleConstraintDto>().single.quadrant, isNull);
+    });
+
+    test('the cursor in the supplement sector offers it, draws it and saves its quadrant', () async {
+      await pickTwoLines();
+      controller.moveCursorToSketchPoint(-3, 4); // left of line 2, above line 1's extension behind the vertex
+      final ghost = controller.ghosts.single;
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      expect(controller.currentGhostValue(ghost), closeTo(180 - 63.435, 1e-3));
+      final item = controller.dimensionGhostOverlayItems().whereType<ConstraintAngleDimensionItem>().single;
+      expect(item.quadrant, 1);
+
+      controller.tapGhost('angle');
+      controller.moveCursorToSketchPoint(5, -5); // e.g. the pointer going to the value editor: the tapped sector stays
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      await controller.confirmGhostValue('angle', 120.0);
+      final saved = controller.constraints.values.whereType<AngleConstraintDto>().single;
+      expect(saved.quadrant, 1);
+      expect(saved.angleDegrees, 120.0);
+    });
+
+    test('each sector around the vertex is its own quadrant', () async {
+      await pickTwoLines();
+      final ghost = controller.ghosts.single;
+      final expected = {(6.0, 3.0): 0, (-3.0, 4.0): 1, (3.0, -4.0): 2, (-6.0, -3.0): 3};
+      expected.forEach((p, q) {
+        controller.moveCursorToSketchPoint(p.$1, p.$2);
+        expect(controller.angleGhostQuadrant(ghost), q, reason: '$p');
+      });
+    });
   });
 
   test('confirming an angle ghost creates an AngleConstraint between the two Lines', () async {

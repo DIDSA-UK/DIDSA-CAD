@@ -514,6 +514,7 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             line1_id=constraint.line1_id,
             line2_id=constraint.line2_id,
             angle_degrees=constraint.angle_degrees,
+            quadrant=constraint.quadrant,
         )
     if isinstance(constraint, CoincidentConstraint):
         return CoincidentConstraintResponse(
@@ -1655,7 +1656,7 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_horizontal_constraint(payload.line_id)
         elif isinstance(payload, AngleConstraintCreate):
             constraint = sketch.add_angle_constraint(
-                payload.line1_id, payload.line2_id, payload.angle_degrees
+                payload.line1_id, payload.line2_id, payload.angle_degrees, payload.quadrant
             )
         elif isinstance(payload, CoincidentConstraintCreate):
             constraint = sketch.add_coincident_constraint(payload.point_a_id, payload.point_b_id)
@@ -2012,6 +2013,8 @@ def update_constraint_value(
         constraint.distance = -abs(payload.value) if current < 0 else abs(payload.value)
     elif isinstance(constraint, AngleConstraint):
         constraint.angle_degrees = payload.value
+        if payload.quadrant is not None:
+            constraint.quadrant = payload.quadrant
     else:
         raise HTTPException(
             status_code=422,

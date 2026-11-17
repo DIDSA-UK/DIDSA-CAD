@@ -11,6 +11,7 @@ import '../api/sketch_api_client.dart';
 import '../viewport3d/controls_preferences.dart';
 import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
+import 'angle_rays.dart';
 import 'dimension_text.dart';
 import 'label_drag_resolver.dart';
 import 'marquee_selection.dart';
@@ -1384,6 +1385,61 @@ Offset? _lineIntersectionScreen(Offset a1, Offset a2, Offset b1, Offset b2) {
 /// genuinely degenerate (near-parallel-enough-to-blow-up) case.
 const double _maxAngleIntersectionDistance = 20000.0;
 
+/// The screen directions an angle dimension's arc runs between, from the shared rule (`angle_rays.dart` [angleRays], the same one the 3D
+/// view and the label drag use): [valueDegrees] / [quadrant] pick which of the four angles at the vertex is drawn. Null for parallel or
+/// missing lines.
+(Offset, Offset)? _angleScreenDirections(
+  SketchController controller,
+  ViewTransform transform,
+  String? line1Id,
+  String? line2Id, {
+  double? valueDegrees,
+  int? quadrant,
+}) {
+  final line1 = controller.lines[line1Id];
+  final line2 = controller.lines[line2Id];
+  if (line1 == null || line2 == null) return null;
+  final a1 = controller.points[line1.startPointId], a2 = controller.points[line1.endPointId];
+  final b1 = controller.points[line2.startPointId], b2 = controller.points[line2.endPointId];
+  if (a1 == null || a2 == null || b1 == null || b2 == null) return null;
+  final rays = angleRays(
+    line1Start: (a1.x, a1.y),
+    line1End: (a2.x, a2.y),
+    line2Start: (b1.x, b1.y),
+    line2End: (b2.x, b2.y),
+    valueDegrees: valueDegrees,
+    quadrant: quadrant,
+  );
+  if (rays == null) return null;
+  final v = transform.sketchToScreen(rays.vertex.$1, rays.vertex.$2);
+  final d1 = transform.sketchToScreen(rays.vertex.$1 + rays.ray1.$1, rays.vertex.$2 + rays.ray1.$2) - v;
+  final d2 = transform.sketchToScreen(rays.vertex.$1 + rays.ray2.$1, rays.vertex.$2 + rays.ray2.$2) - v;
+  if (d1.distance < 1e-9 || d2.distance < 1e-9) return null;
+  return (d1 / d1.distance, d2 / d2.distance);
+}
+
+/// Where an angle dimension's label goes on the flat canvas (bug report 2026-11-17 item 4): on the arc, in the direction of [restingCenter]
+/// (the arc's middle until the label is dragged), not on the chord between the arc's ends. Dragged beyond an end of the arc, it sits where
+/// it was dropped with a leader from that end.
+({Offset labelCenter, Offset? leaderFrom}) _angleLabelOnArc(
+  Offset vertex,
+  Offset dir1,
+  Offset dir2,
+  Offset restingCenter,
+  double radius,
+) {
+  final toLabel = restingCenter - vertex;
+  final direction = toLabel.distance < 1e-9 ? dir1 : toLabel / toLabel.distance;
+  double cross(Offset a, Offset b) => a.dx * b.dy - a.dy * b.dx;
+  final turn = cross(dir1, dir2);
+  final inside = turn.abs() < 1e-9 || (cross(dir1, direction) * turn >= 0 && cross(direction, dir2) * turn >= 0);
+  final onCircle = vertex + direction * radius;
+  if (inside) return (labelCenter: onCircle, leaderFrom: null);
+  final end1 = vertex + dir1 * radius, end2 = vertex + dir2 * radius;
+  final nearer = (onCircle - end1).distance <= (onCircle - end2).distance ? end1 : end2;
+  return (labelCenter: onCircle, leaderFrom: nearer);
+}
+
 /// On-device feedback (bug fix): [_layoutGhost]'s own relative rejection for
 /// the angle ghost's arc layout - how many multiples of the two Lines' own
 /// midpoint-to-midpoint screen distance the virtual intersection is allowed
@@ -1597,21 +1653,23 @@ _GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform,
       ]);
     }
 
-    // Direction toward each Line's own midpoint (always on the actual
-    // drawn segment, unlike either endpoint, which can land on either
-    // side of an intersection outside the segment itself) - so the arc
-    // sweeps through the angle the two drawn Lines actually appear to
-    // make, not its supplementary angle on the far side of the
-    // intersection.
-    final directionA = midA - intersection;
-    final directionB = midB - intersection;
-    if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+    // The shared ray rule (`angle_rays.dart`): the outward rays until the cursor picks a sector, then that sector
+    // ([SketchController.angleGhostQuadrant]), so the ghost arc shows the angle a confirm would create.
+    final directions = _angleScreenDirections(
+      controller,
+      transform,
+      ghost.lineAId,
+      ghost.lineBId,
+      quadrant: controller.angleGhostQuadrant(ghost),
+    );
+    if (directions == null) {
       final labelCenter = (midA + midB) / 2;
       return _GhostLayout(labelCenter, [
         [midA, labelCenter],
         [midB, labelCenter],
       ]);
     }
+    final (directionA, directionB) = directions;
     final angleA = math.atan2(directionA.dy, directionA.dx);
     var sweep = math.atan2(directionB.dy, directionB.dx) - angleA;
     // Normalize to (-pi, pi] - the shorter way around, i.e. the actual
@@ -2115,20 +2173,23 @@ Offset? _constraintLabelCenter(
       if (intersection == null || intersectionTooFar) {
         return (midA + midB) / 2 + labelOffset;
       }
-      final directionA = midA - intersection;
-      final directionB = midB - intersection;
-      if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+      final directions = _angleScreenDirections(
+        controller,
+        transform,
+        c.line1Id,
+        c.line2Id,
+        valueDegrees: c.angleDegrees,
+        quadrant: c.quadrant,
+      );
+      if (directions == null) {
         return (midA + midB) / 2 + labelOffset;
       }
-      final dir1 = directionA / directionA.distance;
-      final dir2 = directionB / directionB.distance;
+      final (dir1, dir2) = directions;
       final bisector = dir1 + dir2;
       final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
       final restingCenter = intersection + bisectorDirection * _angleGhostArcRadiusPixels + labelOffset;
       final radius = math.max((restingCenter - intersection).distance, _minDimensionOffsetMagnitude);
-      final arcPoint1 = intersection + dir1 * radius;
-      final arcPoint2 = intersection + dir2 * radius;
-      return _dimensionLabelPlacement(arcPoint1, arcPoint2, labelOffset).labelCenter;
+      return _angleLabelOnArc(intersection, dir1, dir2, restingCenter, radius).labelCenter;
     case LineDistanceConstraintDto c:
       // Calls the exact same [_dimensionOffsetDistance]/
       // [_dimensionLabelPlacement] helpers
@@ -2324,21 +2385,42 @@ Offset dimensionLabelPixelOffset(
                   (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance))) {
         return Offset.zero; // The painter's plain-chip fallback: no arc to place.
       }
-      final directionA = midA - intersection;
-      final directionB = midB - intersection;
-      if (directionA.distance < 1e-6 || directionB.distance < 1e-6) return Offset.zero;
-      final dir1 = directionA / directionA.distance;
-      final dir2 = directionB / directionB.distance;
+      final directions = _angleScreenDirections(
+        controller,
+        transform,
+        c.line1Id,
+        c.line2Id,
+        valueDegrees: c.angleDegrees,
+        quadrant: c.quadrant,
+      );
+      final line1 = controller.lines[c.line1Id], line2 = controller.lines[c.line2Id];
+      if (directions == null || line1 == null || line2 == null || placement.radius == null) return Offset.zero;
+      final (dir1, dir2) = directions;
       final bisector = dir1 + dir2;
       final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
-      final chord = dir2 - dir1;
-      final chordDirection = chord.distance < 1e-6 ? Offset(-bisectorDirection.dy, bisectorDirection.dx) : chord / chord.distance;
-      final radiusPixels = placement.radius != null ? math.max(placement.radius! * ppu, _minDimensionOffsetMagnitude) : _angleGhostArcRadiusPixels;
-      final alongPixels = ((placement.along ?? 0.0) * ppu).clamp(-radiusPixels, radiusPixels).toDouble();
-      // The painter takes the arc's radius from the whole offset and the label's slide from its chord component, so the bisector part
-      // is chosen to leave the radius as placed.
-      final bisectorPart = math.sqrt(math.max(radiusPixels * radiusPixels - alongPixels * alongPixels, 0.0)) - _angleGhostArcRadiusPixels;
-      return bisectorDirection * bisectorPart + chordDirection * alongPixels;
+      // The painter puts the label on the arc in the direction of (vertex + bisector * default radius + offset), at that distance, so
+      // the offset is simply from that default point to the placed label (laid out in sketch units by the shared resolver).
+      SketchPoint? at(String id) {
+        final point = controller.points[id];
+        return point == null ? null : (point.x, point.y);
+      }
+
+      final a1 = at(line1.startPointId), a2 = at(line1.endPointId), b1 = at(line2.startPointId), b2 = at(line2.endPointId);
+      if (a1 == null || a2 == null || b1 == null || b2 == null) return Offset.zero;
+      final label = LabelDragResolver.angleLabelCenter(
+        line1Start: a1,
+        line1End: a2,
+        line2Start: b1,
+        line2End: b2,
+        placement: DimensionLabelPlacement(
+          radius: math.max(placement.radius!, _minDimensionOffsetMagnitude / ppu),
+          along: placement.along,
+        ),
+        valueDegrees: c.angleDegrees,
+        quadrant: c.quadrant,
+      );
+      if (label == null) return Offset.zero;
+      return transform.sketchToScreen(label.$1, label.$2) - (intersection + bisectorDirection * _angleGhostArcRadiusPixels);
     default:
       return Offset.zero;
   }
@@ -3509,15 +3591,20 @@ class _SketchPainter extends CustomPainter {
       _drawDimensionLabel(canvas, midpoint + labelOffset, text, color, plainBlackText: true);
       return;
     }
-    final directionA = midA - intersection;
-    final directionB = midB - intersection;
-    if (directionA.distance < 1e-6 || directionB.distance < 1e-6) {
+    final directions = _angleScreenDirections(
+      controller,
+      transform,
+      c.line1Id,
+      c.line2Id,
+      valueDegrees: c.angleDegrees,
+      quadrant: c.quadrant,
+    );
+    if (directions == null) {
       final midpoint = (midA + midB) / 2;
       _drawDimensionLabel(canvas, midpoint + labelOffset, text, color, plainBlackText: true);
       return;
     }
-    final dir1 = directionA / directionA.distance;
-    final dir2 = directionB / directionB.distance;
+    final (dir1, dir2) = directions;
 
     final bisector = dir1 + dir2;
     final bisectorDirection = bisector.distance < 1e-6 ? Offset(-dir1.dy, dir1.dx) : bisector / bisector.distance;
@@ -3561,7 +3648,7 @@ class _SketchPainter extends CustomPainter {
     _drawArrowhead(canvas, arcPoint1, Offset(dir1.dy, -dir1.dx) * sweepSign, color);
     _drawArrowhead(canvas, arcPoint2, Offset(-dir2.dy, dir2.dx) * sweepSign, color);
 
-    final placement = _dimensionLabelPlacement(arcPoint1, arcPoint2, labelOffset);
+    final placement = _angleLabelOnArc(intersection, dir1, dir2, restingCenter, radius);
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }

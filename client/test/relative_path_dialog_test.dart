@@ -381,6 +381,7 @@ void main() {
 
       await tester.enterText(find.byType(TextFormField), 'partx');
       await tester.enterText(find.byType(TextFormField), 'part');
+      await tester.pump(const Duration(milliseconds: 350)); // The collision check is debounced.
       await tester.pumpAndSettle();
 
       expect(find.text('part.DIDSAprt already exists and will be replaced.'), findsOneWidget);
@@ -390,6 +391,7 @@ void main() {
       await openSaveDialog(tester, _FakeStorageService(files: ['other.DIDSAprt']));
 
       await tester.enterText(find.byType(TextFormField), 'part');
+      await tester.pump(const Duration(milliseconds: 350)); // The collision check is debounced.
       await tester.pumpAndSettle();
 
       expect(find.textContaining('already exists'), findsNothing);

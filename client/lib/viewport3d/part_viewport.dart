@@ -953,6 +953,11 @@ class PartViewport extends StatefulWidget {
   /// (desktop sketcher feedback 2026-10-28, item 1).
   final bool showResetViewButton;
 
+  /// The desktop layout's Visibility button, directly under Reset view (bug report 2026-11-17 item 12: the phone opens the Visibility
+  /// panel from the Start button's quick column, which the desktop layout has not got). Null hides it; [anythingHidden] badges it.
+  final VoidCallback? onVisibilityPressed;
+  final bool anythingHidden;
+
   /// A3: far clip override from the View menu slider or the recentre auto-fit
   /// result - null means "let the camera's own setZoomBoundsForRadius manage
   /// it" (i.e. on cold start, before the user opens the slider or recentres).
@@ -1149,6 +1154,8 @@ class PartViewport extends StatefulWidget {
     this.selectionFilter = SelectionFilterState.defaults,
     this.isPerspective = false,
     this.showResetViewButton = true,
+    this.onVisibilityPressed,
+    this.anythingHidden = false,
     this.farClip,
     this.onFarClipChanged,
     this.sketchLineLoopGroup,
@@ -7518,7 +7525,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (scene == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    return LayoutBuilder(
+    // Clipped to the viewport's own box: the overlay painters (dimensions, constraint glyphs) draw wherever the camera projects
+    // them, and in the desktop layout the viewport sits below the ribbon in a Column, so without this a dimension scrolled off the
+    // top was painted over the ribbon.
+    return ClipRect(
+        child: LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _viewportSize = size;
@@ -7645,6 +7656,17 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
                   onPressed: () => setState(_doRecentre),
                 ),
               ),
+            if (widget.showResetViewButton && widget.onVisibilityPressed != null)
+              Positioned(
+                top: 56,
+                right: 8,
+                child: IconButton.filled(
+                  key: const ValueKey('viewport-visibility-button'),
+                  tooltip: 'Visibility',
+                  icon: Badge(isLabelVisible: widget.anythingHidden, smallSize: 8, child: const Icon(Icons.visibility_outlined)),
+                  onPressed: widget.onVisibilityPressed,
+                ),
+              ),
             // P41 (on-device feedback: "the cursor goes behind dimensions
             // and constraint glyphs and I can't grab them or pick a ghost
             // dimension"): moved ahead of both cursor crosshairs below (was
@@ -7769,7 +7791,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           ],
         );
       },
-    );
+    ));
   }
 
   // A4: wrapper for the scroll-wheel signal event. The orbit handler body

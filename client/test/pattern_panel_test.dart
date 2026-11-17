@@ -45,11 +45,10 @@ void main() {
     void Function(PatternOrientationMode mode)? onOrientationModeChanged,
     MergeMode merge = MergeMode.keepSeparate,
     void Function(MergeMode merge)? onMergeChanged,
-    List<String> sourceFeatureIds = const [],
-    VoidCallback? onPickSourceFeatures,
     String? toolFeatureSummary,
-    PatternMirrorSeedKind? seedKind,
-    void Function(PatternMirrorSeedKind kind)? onSeedKindChanged,
+    Widget? scopeSection,
+    bool scopeValid = true,
+    VoidCallback? onActivateAxis,
     String title = 'Pattern',
     VoidCallback? onConfirm,
     VoidCallback? onCancel,
@@ -92,11 +91,10 @@ void main() {
           onOrientationModeChanged: onOrientationModeChanged,
           merge: merge,
           onMergeChanged: onMergeChanged ?? (_) {},
-          sourceFeatureIds: sourceFeatureIds,
-          onPickSourceFeatures: onPickSourceFeatures ?? () {},
           toolFeatureSummary: toolFeatureSummary,
-          seedKind: seedKind,
-          onSeedKindChanged: onSeedKindChanged,
+          scopeSection: scopeSection,
+          scopeValid: scopeValid,
+          onActivateAxis: onActivateAxis,
           onConfirm: onConfirm ?? () {},
           onCancel: onCancel ?? () {},
         ),
@@ -483,97 +481,6 @@ void main() {
     });
   });
 
-  group('Pattern/Mirror scoping Phase 6: PatternPanel source Features from tree', () {
-    testWidgets('shows "No Features added" when sourceFeatureIds is empty', (tester) async {
-      await tester.pumpWidget(harness());
-      await tester.ensureVisible(find.text('No Features added from the Build Tree'));
-      expect(find.text('No Features added from the Build Tree'), findsOneWidget);
-    });
-
-    testWidgets('shows the count once sourceFeatureIds is non-empty', (tester) async {
-      await tester.pumpWidget(harness(sourceFeatureIds: const ['f1', 'f2', 'f3']));
-      await tester.ensureVisible(find.text('3 Features added from the Build Tree'));
-      expect(find.text('3 Features added from the Build Tree'), findsOneWidget);
-    });
-
-    testWidgets('tapping "Add from Tree" fires onPickSourceFeatures', (tester) async {
-      var tapped = false;
-      await tester.pumpWidget(harness(onPickSourceFeatures: () => tapped = true));
-      await tester.ensureVisible(find.text('Add from Tree'));
-      await tester.tap(find.text('Add from Tree'));
-      expect(tapped, isTrue);
-    });
-
-    testWidgets('is shown in Circular mode too', (tester) async {
-      await tester.pumpWidget(harness(mode: PatternMode.circular, hasAxis: true));
-      await tester.ensureVisible(find.text('No Features added from the Build Tree'));
-      expect(find.text('No Features added from the Build Tree'), findsOneWidget);
-    });
-  });
-
-  group('Pattern/Mirror scoping Phase 8: PatternPanel tool_feature_id mode', () {
-    testWidgets('toolFeatureSummary shown replaces merge toggle and sourceFeatureIds row', (tester) async {
-      await tester.pumpWidget(
-        harness(merge: MergeMode.fuseIntoOne, toolFeatureSummary: 'Extrude 2'),
-      );
-      await tester.ensureVisible(find.textContaining('Patterning Extrude 2 into its own target'));
-      expect(find.textContaining('Patterning Extrude 2 into its own target'), findsOneWidget);
-      expect(find.byType(SegmentedButton<MergeMode>), findsNothing);
-      expect(find.text('Add from Tree'), findsNothing);
-    });
-
-    testWidgets('toolFeatureSummary null shows the ordinary merge toggle and Add from Tree button',
-        (tester) async {
-      await tester.pumpWidget(harness());
-      await tester.ensureVisible(find.text('Add from Tree'));
-      expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
-      expect(find.text('Add from Tree'), findsOneWidget);
-    });
-  });
-
-  group('Pattern/Mirror scoping Phase 9: PatternPanel seed-kind toggle', () {
-    testWidgets('hidden when seedKind is null (not a long-press single-Feature session)',
-        (tester) async {
-      await tester.pumpWidget(harness());
-      expect(find.text('Pattern Body'), findsNothing);
-      expect(find.text('Pattern Feature'), findsNothing);
-    });
-
-    testWidgets('shown and reflects body as selected', (tester) async {
-      await tester.pumpWidget(harness(seedKind: PatternMirrorSeedKind.body));
-      expect(find.text('Pattern Body'), findsOneWidget);
-      expect(find.text('Pattern Feature'), findsOneWidget);
-      final segmentedButton =
-          tester.widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
-      expect(segmentedButton.selected, {PatternMirrorSeedKind.body});
-    });
-
-    testWidgets('reflects feature as selected', (tester) async {
-      await tester.pumpWidget(harness(seedKind: PatternMirrorSeedKind.feature));
-      final segmentedButton =
-          tester.widget<SegmentedButton<PatternMirrorSeedKind>>(find.byType(SegmentedButton<PatternMirrorSeedKind>));
-      expect(segmentedButton.selected, {PatternMirrorSeedKind.feature});
-    });
-
-    testWidgets('tapping "Pattern Feature" fires onSeedKindChanged(feature)', (tester) async {
-      PatternMirrorSeedKind? picked;
-      await tester.pumpWidget(
-        harness(seedKind: PatternMirrorSeedKind.body, onSeedKindChanged: (k) => picked = k),
-      );
-      await tester.tap(find.text('Pattern Feature'));
-      expect(picked, PatternMirrorSeedKind.feature);
-    });
-
-    testWidgets('tapping "Pattern Body" fires onSeedKindChanged(body)', (tester) async {
-      PatternMirrorSeedKind? picked;
-      await tester.pumpWidget(
-        harness(seedKind: PatternMirrorSeedKind.feature, onSeedKindChanged: (k) => picked = k),
-      );
-      await tester.tap(find.text('Pattern Body'));
-      expect(picked, PatternMirrorSeedKind.body);
-    });
-  });
-
   group('Pattern/Mirror scoping Phase 9: viewport-tap-to-pick affordance buttons', () {
     testWidgets('Rectangular mode shows a "Pick Direction" button alongside X/Y/Z', (tester) async {
       await tester.pumpWidget(harness());
@@ -666,6 +573,38 @@ void main() {
       await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
       expect(find.widgetWithText(FilledButton, 'Confirm'), findsOneWidget);
       expect(tester.takeException(), isNull);
+    });
+  });
+  // Bug report 2026-11-17 item 2B: the tabs + Scope field come in as one widget; the panel shows it on top and gates Confirm on it.
+  group('PatternPanel scope', () {
+    testWidgets('the scope section is drawn at the top, and an invalid scope disables Confirm', (tester) async {
+      await tester.pumpWidget(harness(hasDirection1: true, scopeSection: const Text('SCOPE'), scopeValid: false));
+      expect(find.text('SCOPE'), findsOneWidget);
+      expect(tester.getTopLeft(find.text('SCOPE')).dy, lessThan(tester.getTopLeft(find.text('Rectangular')).dy));
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNull);
+      await tester.pumpWidget(harness(hasDirection1: true, scopeSection: const Text('SCOPE'), scopeValid: true));
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Confirm'));
+      expect(tester.widget<FilledButton>(find.widgetWithText(FilledButton, 'Confirm')).onPressed, isNotNull);
+    });
+
+    testWidgets('tool features: "always merges" replaces the merge choice', (tester) async {
+      await tester.pumpWidget(harness(merge: MergeMode.fuseIntoOne, toolFeatureSummary: 'Extrude 2'));
+      await tester.ensureVisible(find.textContaining('Patterning Extrude 2 into its own target'));
+      expect(find.byType(SegmentedButton<MergeMode>), findsNothing);
+      await tester.pumpWidget(harness());
+      expect(find.byType(SegmentedButton<MergeMode>), findsOneWidget);
+    });
+
+    testWidgets('Pick Direction / Pick Axis report that picks now go there (away from the scope)', (tester) async {
+      final slots = <int>[];
+      await tester.pumpWidget(harness(onActiveDirectionSlotChanged: slots.add));
+      await tester.tap(find.byTooltip('Pick Direction').first);
+      expect(slots, [1]);
+      var axis = false;
+      await tester.pumpWidget(harness(mode: PatternMode.circular, onActivateAxis: () => axis = true));
+      await tester.tap(find.byTooltip('Pick Axis'));
+      expect(axis, isTrue);
     });
   });
 }

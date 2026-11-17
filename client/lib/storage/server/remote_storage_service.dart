@@ -29,6 +29,7 @@ import 'package:http/http.dart' as http;
 
 import '../../assembly/project_file_index.dart' show rootPartIdOf;
 import '../../assembly/relative_path.dart';
+import '../../assembly/save_all.dart' show ChangedOnDiskChoice;
 import '../../config.dart';
 import '../file_cache.dart';
 import '../file_handle.dart';
@@ -1319,6 +1320,52 @@ class RemoteStorageService implements StorageService, PartIdIndex {
       rethrow;
     }
     return root;
+  }
+
+  /// "Copy this project to cloud storage" into a project that already exists (bug report 2026-11-17 item 8): every file of [localRoot]
+  /// (hidden ones left out, as [copyProjectToServer]) goes into [root] as one commit. Files the project already holds under the same
+  /// name are clashes: [onClashes] is asked once with all of them, and [ChangedOnDiskChoice.overwrite] writes over them,
+  /// [ChangedOnDiskChoice.skipChanged] leaves them as they are in the project, [ChangedOnDiskChoice.cancel] copies nothing. Returns the
+  /// paths written, or null when cancelled.
+  Future<List<String>?> copyProjectIntoServer(
+    StorageService local,
+    ProjectRoot localRoot,
+    ServerProjectRoot root, {
+    required Future<ChangedOnDiskChoice> Function(List<String> clashes) onClashes,
+    void Function(int done, int total)? onProgress,
+  }) async {
+    final paths = [
+      for (final path in await local.listFiles(localRoot))
+        if (!path.split('/').any((segment) => segment.startsWith('.'))) path,
+    ]..sort();
+    beginSession(root);
+    final existing = (await listFiles(root)).toSet();
+    final clashes = [for (final path in paths) if (existing.contains(path)) path];
+    var skip = const <String>{};
+    if (clashes.isNotEmpty) {
+      switch (await onClashes(clashes)) {
+        case ChangedOnDiskChoice.cancel:
+          return null;
+        case ChangedOnDiskChoice.skipChanged:
+          skip = clashes.toSet();
+        case ChangedOnDiskChoice.overwrite:
+          break;
+      }
+    }
+    final toCopy = [for (final path in paths) if (!skip.contains(path)) path];
+    // An overwritten file replaces the version the listing just read; without it the store would see a new file landing on one it
+    // already has, and refuse it as a clash.
+    final listed = (await _store.load(root)).tree;
+    final changes = <FileChange>[];
+    for (var i = 0; i < toCopy.length; i++) {
+      final handle = await local.resolve(localRoot, toCopy[i]);
+      if (handle == null) continue;
+      changes.add(FileChange(path: toCopy[i], bytes: await local.readFile(handle), baseVersion: listed[toCopy[i]]?.version));
+      onProgress?.call(i + 1, toCopy.length);
+    }
+    if (changes.isEmpty) return const [];
+    await commit(root, changes, message: 'Copied from ${localRoot.displayName}');
+    return [for (final change in changes) change.path];
   }
 
   // ------------------------------------------------------------------------------------------ errors

@@ -3934,6 +3934,28 @@ class DocumentApiClient {
   /// Feature is created) and has no matching update/delete counterpart -
   /// it's called fresh on every selection change (see
   /// `PartScreen._scheduleMeasureQuery`).
+  /// Which Feature made each face (`POST /parts/{id}/face-owner-features`, bug report 2026-11-17 item 2A): what a face pick adds to a
+  /// Pattern / Mirror scope on the Feature tab. One Feature id per face, in order. [rollbackExcludedFeatureIds]: Features rolled back
+  /// in this session, which made nothing.
+  Future<List<String>> faceOwnerFeatures(
+    String partId,
+    List<MeasureEntityRefDto> faces, {
+    List<String> rollbackExcludedFeatureIds = const [],
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/face-owner-features'),
+              headers: _headers,
+              body: jsonEncode({
+                'faces': faces.map((f) => f.toJson()).toList(),
+                if (rollbackExcludedFeatureIds.isNotEmpty) 'rollback_excluded_feature_ids': rollbackExcludedFeatureIds,
+              }),
+            ),
+        (body) => [
+          for (final entry in ((body as Map<String, dynamic>)['features'] as List)) (entry as Map<String, dynamic>)['feature_id'] as String,
+        ],
+      );
+
   Future<MeasurementResultDto> measure(String partId, List<MeasureEntityRefDto> refs) => _send(
         () => _httpClient.post(
               _uri('/document/parts/$partId/measure'),
@@ -4056,6 +4078,8 @@ class DocumentApiClient {
     // §2.11/§4): a third, mutually-exclusive seed-picking mode - see
     // `FeatureDto.toolFeatureId`'s own doc comment.
     String? toolFeatureId,
+    // Several tool Features mirrored together (sent as `tool_feature_ids`; the backend reports the first as `tool_feature_id`). Wins over [toolFeatureId].
+    List<String>? toolFeatureIds,
   }) =>
       _send(
         () => _httpClient.post(
@@ -4066,7 +4090,10 @@ class DocumentApiClient {
                 'mirror_plane': mirrorPlane.toJson(),
                 'source_feature_ids': sourceFeatureIds,
                 'merge': merge.apiValue,
-                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+                if (toolFeatureIds != null && toolFeatureIds.isNotEmpty)
+                  'tool_feature_ids': toolFeatureIds
+                else if (toolFeatureId != null)
+                  'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),
@@ -4084,6 +4111,8 @@ class DocumentApiClient {
     List<String>? sourceFeatureIds,
     MergeMode? merge,
     String? toolFeatureId,
+    // Several tool Features mirrored together (sent as `tool_feature_ids`). Wins over [toolFeatureId].
+    List<String>? toolFeatureIds,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -4094,7 +4123,10 @@ class DocumentApiClient {
                 if (mirrorPlane != null) 'mirror_plane': mirrorPlane.toJson(),
                 if (sourceFeatureIds != null) 'source_feature_ids': sourceFeatureIds,
                 if (merge != null) 'merge': merge.apiValue,
-                if (toolFeatureId != null) 'tool_feature_id': toolFeatureId,
+                if (toolFeatureIds != null && toolFeatureIds.isNotEmpty)
+                  'tool_feature_ids': toolFeatureIds
+                else if (toolFeatureId != null)
+                  'tool_feature_id': toolFeatureId,
               }),
             ),
         (body) => FeatureDto.fromJson(body as Map<String, dynamic>),

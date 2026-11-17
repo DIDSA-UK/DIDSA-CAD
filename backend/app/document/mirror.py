@@ -24,7 +24,7 @@ from OCC.Core.TopoDS import TopoDS_Shape
 from app.document.reference_history import note_operation
 from app.document.create_plane import resolve_plane_ref
 from app.document.extrude import compute_part_bodies
-from app.document.graph import body_ids_for_feature_id, excluded_feature_ids_after, tool_feature_qualifies
+from app.document.graph import body_ids_for_feature_id, tool_feature_qualifies
 from app.document.models import MirrorFeature, Part
 
 
@@ -181,11 +181,62 @@ def resolve_mirror_tool_feature_from_bodies(
     branch) to register in place, mirroring `_apply_boss_or_cut`'s own
     Cut-mode `del bodies[target_id]; _register_solids(bodies, target_id,
     ...)` shape exactly."""
-    from app.document.extrude import resolve_feature_tool_shape
+    target_id, mirrored_tools = mirrored_tool_feature_shapes(part, bodies, feature, excluded_feature_ids)
+    current = bodies[target_id]
+    for mirrored_tool, is_cut in mirrored_tools:
+        tool_op = BRepAlgoAPI_Cut(current, mirrored_tool) if is_cut else BRepAlgoAPI_Fuse(current, mirrored_tool)
+        current = tool_op.Shape()
+        note_operation(tool_op)
+    return target_id, current
 
-    tool_feature_id = feature.tool_feature_id
-    assert tool_feature_id is not None
 
+def mirrored_tool_feature_shapes(
+    part: Part,
+    bodies: dict[str, TopoDS_Shape],
+    feature: MirrorFeature,
+    excluded_feature_ids: frozenset[str],
+) -> tuple[str, list[tuple[TopoDS_Shape, bool]]]:
+    """The tool half of `resolve_mirror_tool_feature_from_bodies`: each tool Feature's own pre-boolean tool shape, mirrored across
+    `mirror_plane`, with whether it cuts, and the one target Body they act on - no boolean run. Also what `face_owner.py` tests a face
+    against (a face on a mirrored hole belongs to this Mirror)."""
+    from app.document.extrude import resolve_feature_tool_shape_as_it_ran
+
+    tool_ids = feature.all_tool_feature_ids
+    assert tool_ids
+
+    # Each tool Feature is mirrored on its own; all of them must act on the same Body (bug report 2026-11-17 item M.1, as Pattern's
+    # `resolve_pattern_tool_feature_from_bodies`). The caller applies them in feature order.
+    target_id: str | None = None
+    tools: list[tuple[TopoDS_Shape, bool]] = []
+    for tool_feature_id in tool_ids:
+        this_target, tool_shape, is_cut = _tool_shape_and_target(
+            part, bodies, tool_feature_id, excluded_feature_ids, resolve_feature_tool_shape_as_it_ran
+        )
+        if target_id is None:
+            target_id = this_target
+        elif this_target != target_id:
+            raise HTTPException(
+                status_code=422,
+                detail={"type": "tool_features_different_targets", "feature_id": tool_feature_id, "body_id": this_target},
+            )
+        tools.append((tool_shape, is_cut))
+    assert target_id is not None
+
+    resolved_plane = resolve_plane_ref(part, bodies, feature.mirror_plane, excluded_feature_ids)
+    trsf = gp_Trsf()
+    trsf.SetMirror(gp_Ax2(gp_Pnt(*resolved_plane.origin), gp_Dir(*resolved_plane.normal)))
+    mirrored: list[tuple[TopoDS_Shape, bool]] = []
+    for tool_shape, is_cut in tools:
+        transform = BRepBuilderAPI_Transform(tool_shape, trsf, True)
+        if not transform.IsDone():
+            raise _mirror_failed(target_id)
+        mirrored.append((transform.Shape(), is_cut))
+    return target_id, mirrored
+
+
+def _tool_shape_and_target(part, bodies, tool_feature_id, excluded_feature_ids, resolve_as_it_ran):
+    """One tool Feature's own pre-boolean tool shape, its single target Body and whether it cuts; `invalid_tool_feature_ref` when it
+    no longer qualifies or its target is gone."""
     tool_feature = part.get_feature(tool_feature_id)
     if not tool_feature_qualifies(tool_feature):
         raise _invalid_tool_feature_ref(tool_feature_id)
@@ -200,11 +251,7 @@ def resolve_mirror_tool_feature_from_bodies(
     # Cut/Boss on the very Body an anchor Plane's `face_ref` might point
     # at) - see `app.document.graph.excluded_feature_ids_after`'s own
     # docstring for the full "why".
-    tool_excluded = (
-        excluded_feature_ids | {tool_feature_id} | excluded_feature_ids_after(part, tool_feature_id)
-    )
-    tool_bodies = compute_part_bodies(part, tool_excluded)
-    result = resolve_feature_tool_shape(part, tool_bodies, tool_feature_id, tool_excluded)
+    result = resolve_as_it_ran(part, tool_feature_id, excluded_feature_ids)
     if result is None:
         raise _invalid_tool_feature_ref(tool_feature_id)
     tool_shape, target_body_ids, is_cut = result
@@ -213,27 +260,7 @@ def resolve_mirror_tool_feature_from_bodies(
     target_id = target_body_ids[0]
     if target_id not in bodies:
         raise _invalid_tool_feature_ref(tool_feature_id)
-
-    resolved_plane = resolve_plane_ref(part, bodies, feature.mirror_plane, excluded_feature_ids)
-    origin = gp_Pnt(*resolved_plane.origin)
-    normal = gp_Dir(*resolved_plane.normal)
-    trsf = gp_Trsf()
-    trsf.SetMirror(gp_Ax2(origin, normal))
-
-    transform = BRepBuilderAPI_Transform(tool_shape, trsf, True)
-    if not transform.IsDone():
-        raise _mirror_failed(target_id)
-    mirrored_tool = transform.Shape()
-
-    if is_cut:
-        tool_op = BRepAlgoAPI_Cut(bodies[target_id], mirrored_tool)
-        new_shape = tool_op.Shape()
-        note_operation(tool_op)
-    else:
-        tool_op = BRepAlgoAPI_Fuse(bodies[target_id], mirrored_tool)
-        new_shape = tool_op.Shape()
-        note_operation(tool_op)
-    return target_id, new_shape
+    return target_id, tool_shape, is_cut
 
 
 def resolve_mirror(

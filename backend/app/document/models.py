@@ -1054,6 +1054,17 @@ class MirrorFeature(Feature):
     # Phase 8 (§2.11): a third, mutually-exclusive seed-picking mode - see
     # this class's own docstring.
     tool_feature_id: str | None = None
+    # Several tool Features mirrored together (bug report 2026-11-17 item M.1; the same shape as `PatternFeature.extra_tool_feature_ids`):
+    # `tool_feature_id` stays the first and this holds the rest (an older file has none). All of them must act on the same target Body.
+    # Read the whole list through `all_tool_feature_ids`.
+    extra_tool_feature_ids: list[str] = field(default_factory=list)
+
+    @property
+    def all_tool_feature_ids(self) -> list[str]:
+        """Every tool Feature this Mirror mirrors, in order (empty outside `tool_feature_id` mode)."""
+        if self.tool_feature_id is None:
+            return []
+        return [self.tool_feature_id, *[f for f in self.extra_tool_feature_ids if f != self.tool_feature_id]]
 
     @property
     def type(self) -> str:

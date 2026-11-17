@@ -279,6 +279,27 @@ def _lines_perpendicular(line1_start: Point, line1_end: Point, line2_start: Poin
     return cos_angle <= 1e-4
 
 
+def angle_outward_ray_signs(
+    line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point
+) -> tuple[int, int] | None:
+    """For each Line, +1 when its outward ray from the vertex (where the two infinite extensions meet) runs the same way as start to
+    end, -1 when it runs the other way. The outward ray points from the vertex towards the Line's own segment (its midpoint) - the
+    same rule the clients draw the angle dimension with (`angleRays` in the Flutter client). None for (near-)parallel Lines."""
+    d1x, d1y = line1_end.x - line1_start.x, line1_end.y - line1_start.y
+    d2x, d2y = line2_end.x - line2_start.x, line2_end.y - line2_start.y
+    denom = d1x * d2y - d1y * d2x
+    if abs(denom) < 1e-9 * max(1e-12, math.hypot(d1x, d1y) * math.hypot(d2x, d2y)):
+        return None
+    t = ((line2_start.x - line1_start.x) * d2y - (line2_start.y - line1_start.y) * d2x) / denom
+    vx, vy = line1_start.x + t * d1x, line1_start.y + t * d1y
+
+    def sign(start: Point, end: Point, dx: float, dy: float) -> int:
+        mid_x, mid_y = (start.x + end.x) / 2 - vx, (start.y + end.y) / 2 - vy
+        return 1 if dx * mid_x + dy * mid_y >= 0 else -1
+
+    return sign(line1_start, line1_end, d1x, d1y), sign(line2_start, line2_end, d2x, d2y)
+
+
 def _angle_between_degrees(line1_start: Point, line1_end: Point, line2_start: Point, line2_end: Point) -> float:
     """Unsigned angle (0-180) between two Lines' direction vectors -
     deliberately unsigned since verifying an already-supposedly-satisfied
@@ -391,7 +412,9 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
             )
             target_degrees = abs(constraint.angle_degrees) % 360
             target_degrees = min(target_degrees, 360 - target_degrees)
-            if abs(actual_degrees - target_degrees) > 1e-2:
+            # Magnitude only: a solve that took the supplement (`_angle_needs_supplement`, chosen by the quadrant or the nearest
+            # rule) lands the Lines' directions on 180 - target, which is the same dimension measured on the other side.
+            if min(abs(actual_degrees - target_degrees), abs(actual_degrees - (180.0 - target_degrees))) > 1e-2:
                 return False
         elif isinstance(constraint, TangentConstraint):
             radius = _distance(points[constraint.center_point_id], points[constraint.radius_point_id])
@@ -780,16 +803,23 @@ class _PySlvsBuilder:
         line_a_end_id: str,
         line_b_start_id: str,
         line_b_end_id: str,
+        quadrant: int | None = None,
     ) -> int:
         supplement = self._angle_needs_supplement(
-            degrees, line_a_start_id, line_a_end_id, line_b_start_id, line_b_end_id
+            degrees, line_a_start_id, line_a_end_id, line_b_start_id, line_b_end_id, quadrant
         )
         return self._system.addAngle(
             degrees, supplement, line_a_handle, line_b_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
     def _angle_needs_supplement(
-        self, degrees: float, line_a_start_id: str, line_a_end_id: str, line_b_start_id: str, line_b_end_id: str
+        self,
+        degrees: float,
+        line_a_start_id: str,
+        line_a_end_id: str,
+        line_b_start_id: str,
+        line_b_end_id: str,
+        quadrant: int | None = None,
     ) -> bool:
         """py-slvs's addAngle takes a `supplement` flag choosing between
         constraining the angle to `degrees` or to its supplement
@@ -810,7 +840,12 @@ class _PySlvsBuilder:
         already true" principle `_project_distance` below already uses for
         horizontal_distance/vertical_distance's sign) - a no-op returning
         False when either Line has zero current length, since there is no
-        current angle to preserve in that case."""
+        current angle to preserve in that case.
+
+        With an explicit `quadrant` (`AngleConstraint.quadrant`) the choice is not a guess: the value is the angle between the two
+        outward rays from the vertex, each flipped as the quadrant says, so the supplement is needed exactly when those rays and the
+        Lines' own start-to-end directions disagree in sign an odd number of times. Parallel Lines (no vertex) fall back to the
+        nearest rule."""
         a_start, a_end = self._points[line_a_start_id], self._points[line_a_end_id]
         b_start, b_end = self._points[line_b_start_id], self._points[line_b_end_id]
         a_dx, a_dy = a_end.x - a_start.x, a_end.y - a_start.y
@@ -819,6 +854,13 @@ class _PySlvsBuilder:
         b_len = math.hypot(b_dx, b_dy)
         if a_len == 0 or b_len == 0:
             return False
+        if quadrant is not None:
+            signs = angle_outward_ray_signs(a_start, a_end, b_start, b_end)
+            if signs is not None:
+                sign_a, sign_b = signs
+                flip_a = -1 if quadrant & 1 else 1
+                flip_b = -1 if quadrant & 2 else 1
+                return sign_a * sign_b * flip_a * flip_b < 0
         cos_theta = max(-1.0, min(1.0, (a_dx * b_dx + a_dy * b_dy) / (a_len * b_len)))
         current_angle = math.degrees(math.acos(cos_theta))
         return abs((180.0 - degrees) - current_angle) < abs(degrees - current_angle)
@@ -982,6 +1024,69 @@ def _fix_circle_cardinal_point_signs(sketch: Sketch) -> None:
             if is_positive != expect_positive and actual != 0:
                 point.x = 2 * center.x - point.x
                 point.y = 2 * center.y - point.y
+
+
+def _has_free_motion(sketch: Sketch, anchor_point_ids: frozenset[str]) -> bool:
+    """Whether an already-solved Sketch can still move, tested without trusting py-slvs's rank count (see the call site).
+
+    Every free Point is nudged off the solution by a small, deterministic offset and the system re-solved in a scratch copy:
+    a fully constrained Sketch has a locally unique solution, so the solve returns every Point to where it was, redundant
+    constraints or not; any remaining freedom lets the solve settle on a different nearby solution. Writes nothing back to
+    `sketch`."""
+    xs = [p.x for p in sketch.points.values()] or [0.0]
+    ys = [p.y for p in sketch.points.values()] or [0.0]
+    scale = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+    nudge = 1e-3 * scale
+    # A free direction keeps a sizeable share of the nudge; a fully constrained Sketch returns to within Newton's own
+    # tolerance, which near a tangency is a few percent of a nudge this size at most (a slot's rim points: ~0.5%).
+    tolerance = 0.05 * nudge
+
+    # Points held where they currently are (the origin, drag anchors, external references, FixedConstraint) are not nudged:
+    # the solver pins them at whatever position it is given, so a nudged one would stay nudged.
+    pinned = set(anchor_point_ids) | set(sketch.external_references)
+    if sketch.origin_point_id is not None:
+        pinned.add(sketch.origin_point_id)
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, FixedConstraint):
+            pinned.update(constraint.fixed_point_ids)
+
+    nudged: dict[str, Point] = {}
+    for n, (point_id, point) in enumerate(sketch.points.items()):
+        if point_id in pinned:
+            nudged[point_id] = point
+            continue
+        # Deterministic, different direction per Point, so no single symmetric motion is missed.
+        angle = 2.399963 * (n + 1)  # golden angle
+        nudged[point_id] = Point(
+            id=point.id, x=point.x + nudge * math.cos(angle), y=point.y + nudge * math.sin(angle)
+        )
+
+    system = slvs.System()
+    origin = system.addPoint3dV(0, 0, 0, group=_FIXED_GROUP)
+    normal = system.addNormal3dV(1, 0, 0, 0, group=_FIXED_GROUP)
+    workplane = system.addWorkplane(origin, normal, group=_FIXED_GROUP)
+    builder = _PySlvsBuilder(
+        system,
+        workplane,
+        nudged,
+        origin_point_id=sketch.origin_point_id,
+        anchor_point_ids=anchor_point_ids,
+    )
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
+            continue
+        constraint.add_to_solver(builder)
+    for point_id in sketch.points:
+        builder.point2d(point_id)
+    system.solve(group=_SOLVE_GROUP, reportFailed=False)
+    for point_id in builder.solved_point_ids():
+        handle = builder.handle_for_point(point_id)
+        x = system.getParam(system.getEntityParam(handle, 0)).val
+        y = system.getParam(system.getEntityParam(handle, 1)).val
+        original = sketch.points[point_id]
+        if math.hypot(x - original.x, y - original.y) > tolerance:
+            return True
+    return False
 
 
 def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> SolveResult:
@@ -1203,12 +1308,26 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
     # redundant sub-system has actually been confirmed - `provisional`
     # existing at all on such a Constraint means the opposite by
     # definition, so bump the floor to 1 rather than trust py-slvs's count.
+    # Bug fix (Component 2 report: an L-profile with only one dimension
+    # showed green/fully constrained): whenever `result_code != 0` the
+    # system is rank-deficient, and py-slvs's `Dof` for a rank-deficient
+    # solve is not a free-parameter count at all (it read 0 for a sketch
+    # with 3 real DOF, because a LineDistance's companion Parallel between
+    # two already-Vertical lines was one redundant equation). Once one of
+    # the overrides above has accepted the solve as `converged`, check it
+    # with a test that is not fooled by the redundancy.
+    # A positive count is kept (the indicator only needs "zero or not"); a zero is double-checked by perturbing the solution
+    # (`_has_free_motion`), which does not depend on the rank count.
+    base_dof = system.Dof
+    if converged and result_code != 0 and base_dof <= 0 and _has_free_motion(sketch, anchor_point_ids):
+        base_dof = 1  # At least one; the exact count is not known on this path.
+
     if converged and any(
         isinstance(c, DistanceConstraint) and c.provisional for c in sketch.constraints.values()
     ):
-        dof = max(system.Dof, 1)
+        dof = max(base_dof, 1)
     else:
-        dof = system.Dof
+        dof = base_dof
 
     # Bug fix (on-device feedback: a Polygon's own across-flats
     # LineDistanceConstraint - or a Horizontal/Vertical one on an edge -

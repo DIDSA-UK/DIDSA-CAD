@@ -5,6 +5,8 @@ import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/dimension_label_placement.dart';
+import '../layout/layout_mode.dart';
+import '../sketch/angle_rays.dart';
 import '../sketch/label_drag_resolver.dart';
 import '../sketch/sketch_controller.dart'
     show
@@ -66,6 +68,10 @@ class ConstraintOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
+    // Dimension text follows the system text size, and is larger in the desktop layout, where the viewport is usually a big
+    // monitor viewed from further away and the phone-sized labels were hard to read.
+    final labelScale =
+        MediaQuery.textScalerOf(context).scale(1.0) * (LayoutModeScope.isDesktop(context) ? _desktopLabelScale : 1.0);
     return IgnorePointer(
       child: CustomPaint(
         size: Size.infinite,
@@ -75,6 +81,7 @@ class ConstraintOverlay extends StatelessWidget {
           basis: basis,
           items: items,
           focusTransform: focusTransform,
+          labelScale: labelScale,
         ),
       ),
     );
@@ -85,6 +92,7 @@ const Color _selectedColor = Colors.purple;
 const Color _dimensionLineColor = Colors.black;
 const Color _constraintBadgeColor = Color(0xFFF5A623);
 const double _dimensionFontSize = 9.5;
+const double _desktopLabelScale = 1.5;
 // On-device feedback ("what font options are available for dimension text?
 // anything more suiting technical drawing?"): dimension/constraint labels
 // previously had no fontFamily at all (bare platform default) - Lekton
@@ -240,26 +248,16 @@ Offset _pairGlyphMidpoint(Offset a, Offset b) {
 ((double, double) vertex, (double, double) ray1, (double, double) ray2)? angleDimensionVertexAndRays(
   ConstraintAngleDimensionItem item,
 ) {
-  final p1 = item.line1Start, p2 = item.line1End;
-  final p3 = item.line2Start, p4 = item.line2End;
-  final d1x = p2.$1 - p1.$1, d1y = p2.$2 - p1.$2;
-  final d2x = p4.$1 - p3.$1, d2y = p4.$2 - p3.$2;
-  final denom = d1x * d2y - d1y * d2x;
-  if (denom.abs() < 1e-9) return null;
-  final t = ((p3.$1 - p1.$1) * d2y - (p3.$2 - p1.$2) * d2x) / denom;
-  final vertex = (p1.$1 + t * d1x, p1.$2 + t * d1y);
-
-  (double, double) outwardRay(double dx, double dy, (double, double) a, (double, double) b) {
-    final len = math.sqrt(dx * dx + dy * dy);
-    if (len < 1e-9) return (1.0, 0.0);
-    final ux = dx / len, uy = dy / len;
-    final midX = (a.$1 + b.$1) / 2 - vertex.$1;
-    final midY = (a.$2 + b.$2) / 2 - vertex.$2;
-    final dot = ux * midX + uy * midY;
-    return dot >= 0 ? (ux, uy) : (-ux, -uy);
-  }
-
-  return (vertex, outwardRay(d1x, d1y, p1, p2), outwardRay(d2x, d2y, p3, p4));
+  // The shared rule (`angle_rays.dart`): the item's value and saved quadrant pick which of the four angles at the vertex is drawn.
+  final rays = angleRays(
+    line1Start: item.line1Start,
+    line1End: item.line1End,
+    line2Start: item.line2Start,
+    line2End: item.line2End,
+    valueDegrees: item.valueDegrees,
+    quadrant: item.quadrant,
+  );
+  return rays == null ? null : (rays.vertex, rays.ray1, rays.ray2);
 }
 
 /// Screen-space vertex/arc-endpoint points for [item] - shared by
@@ -304,6 +302,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
   final SketchPlaneBasis basis;
   final List<ConstraintOverlayItem> items;
   final vm.Matrix4? focusTransform;
+  final double labelScale;
 
   _ConstraintOverlayPainter({
     required this.camera,
@@ -311,6 +310,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
     required this.basis,
     required this.items,
     this.focusTransform,
+    this.labelScale = 1.0,
   });
 
   Offset? _project((double, double) sketchXY) =>
@@ -684,30 +684,9 @@ class _ConstraintOverlayPainter extends CustomPainter {
     _drawArrowhead(canvas, arcPoint1, Offset(dir1.dy, -dir1.dx) * sweepSign, color);
     _drawArrowhead(canvas, arcPoint2, Offset(-dir2.dy, dir2.dx) * sweepSign, color);
 
-    // The chord between the two arc endpoints stands in for the arc's own
-    // tangent/midpoint in [_dimensionLabelPlacement]'s along/leader-
-    // threshold heuristic - a close approximation for any non-reflex angle
-    // span, and reuses the exact existing inline-vs-leader placement logic.
-    //
-    // Bug fix (same class as [ConstraintLinearDimensionItem.
-    // sketchLocalAlongOffset]'s own doc comment - "the dimension only moves
-    // left/right/one way"): [item.sketchLocalAlongOffset] (camera-
-    // independent, sketch-local) wins once the user has dragged the label
-    // off the chord's midpoint at least once. [radiusPixels]/
-    // [item.sketchLocalArcRadius] stands in for the local pixels-per-
-    // sketch-unit ratio near the vertex (a length scales with the same
-    // local projection factor regardless of its direction), mirroring
-    // every other dimension kind's own "known reference length's
-    // sketch-vs-screen ratio" technique - only meaningful once the radius
-    // itself has been dragged at least once (before that there's no
-    // sketch-unit reference for the screen-only default radius to scale
-    // against), same "falls back to the old behaviour pre-drag" contract
-    // every other dimension kind already has.
-    final placement = _placedAngleLabel(_project, item, arcPoint1, arcPoint2) ??
-        (item.sketchLocalAlongOffset != null && (item.sketchLocalArcRadius ?? 0) > 1e-9
-            ? _dimensionLabelPlacementAlong(
-                arcPoint1, arcPoint2, item.sketchLocalAlongOffset! * (radiusPixels / item.sketchLocalArcRadius!))
-            : _dimensionLabelPlacement(arcPoint1, arcPoint2, item.labelOffset));
+    // Bug report 2026-11-17 item 4: the label sits ON the arc (its middle by default), not on the chord between its ends, which for a
+    // wide angle is near the vertex and far off the arc.
+    final placement = _angleLabelLayout(_project, item, vertexScreen, arcPoint1, arcPoint2);
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
@@ -745,7 +724,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
   void _drawDimensionLabel(Canvas canvas, Offset center, String text, Color color, {bool plainBlackText = false}) {
     final baseStyle = TextStyle(
       color: plainBlackText ? Colors.black : Colors.white,
-      fontSize: _dimensionFontSize,
+      fontSize: _dimensionFontSize * labelScale,
       fontWeight: FontWeight.w600,
       fontFamily: _dimensionFontFamily,
     );
@@ -753,7 +732,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final textSpan = isDiameter
         ? TextSpan(
             children: [
-              TextSpan(text: '⌀', style: baseStyle.copyWith(fontSize: _dimensionFontSize * _diameterSymbolScale)),
+              TextSpan(text: '⌀', style: baseStyle.copyWith(fontSize: _dimensionFontSize * labelScale * _diameterSymbolScale)),
               TextSpan(text: text.substring(1), style: baseStyle),
             ],
           )
@@ -780,7 +759,8 @@ class _ConstraintOverlayPainter extends CustomPainter {
     return oldDelegate.camera != camera ||
         oldDelegate.viewportSize != viewportSize ||
         oldDelegate.items != items ||
-        oldDelegate.focusTransform != focusTransform;
+        oldDelegate.focusTransform != focusTransform ||
+        oldDelegate.labelScale != labelScale;
   }
 }
 
@@ -837,11 +817,42 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
   );
 }
 
-/// The label position, in screen space, of an angle dimension whose arc has been placed ([ConstraintAngleDimensionItem.sketchLocalArcRadius]
-/// and `sketchLocalAlongOffset` set), laid out in sketch space and projected. Null before it has been placed.
+/// Where an angle dimension's label goes, in screen space (bug report 2026-11-17 item 4): on the arc. Before it has been placed, at the arc's
+/// middle (moved by the item's legacy pixel [ConstraintAngleDimensionItem.labelOffset], with a leader once that is past the threshold).
+/// Once placed ([ConstraintAngleDimensionItem.sketchLocalArcRadius] and `sketchLocalAlongOffset` set), where the user dropped it, laid
+/// out in sketch space by [LabelDragResolver.angleLabelCenter] (on the arc's circle) and projected; a label dropped beyond the arc's ends
+/// gets a leader from the nearer end. Shared by the painter and the hit test so they cannot drift.
+({Offset labelCenter, Offset? leaderFrom}) _angleLabelLayout(
+  Offset? Function((double, double)) project,
+  ConstraintAngleDimensionItem item,
+  Offset vertexScreen,
+  Offset arcPoint1,
+  Offset arcPoint2,
+) {
+  final placed = _placedAngleLabel(project, item, vertexScreen, arcPoint1, arcPoint2);
+  if (placed != null) return placed;
+  final middle = angleArcMiddleScreen(vertexScreen, arcPoint1, arcPoint2);
+  return _labelOnOrOffLine(middle, middle + item.labelOffset);
+}
+
+/// The middle of the (non-reflex) arc about [vertexScreen] from [arcPoint1] to [arcPoint2], both at the arc's radius.
+Offset angleArcMiddleScreen(Offset vertexScreen, Offset arcPoint1, Offset arcPoint2) {
+  final radius = (arcPoint1 - vertexScreen).distance;
+  if (radius < 1e-9) return vertexScreen;
+  final dir1 = (arcPoint1 - vertexScreen) / radius;
+  final r2 = (arcPoint2 - vertexScreen).distance;
+  final dir2 = r2 < 1e-9 ? dir1 : (arcPoint2 - vertexScreen) / r2;
+  final sum = dir1 + dir2;
+  final mid = sum.distance < 1e-9 ? Offset(-dir1.dy, dir1.dx) : sum / sum.distance;
+  return vertexScreen + mid * radius;
+}
+
+/// The placed label of an angle dimension ([ConstraintAngleDimensionItem.sketchLocalArcRadius] and `sketchLocalAlongOffset` set), in
+/// screen space. Null before it has been placed.
 ({Offset labelCenter, Offset? leaderFrom})? _placedAngleLabel(
   Offset? Function((double, double)) project,
   ConstraintAngleDimensionItem item,
+  Offset vertexScreen,
   Offset arcPoint1,
   Offset arcPoint2,
 ) {
@@ -853,11 +864,20 @@ double _dimensionOffsetDistance(Offset normal, Offset labelOffset) {
     line2Start: item.line2Start,
     line2End: item.line2End,
     placement: DimensionLabelPlacement(radius: radius, along: item.sketchLocalAlongOffset),
+    valueDegrees: item.valueDegrees,
+    quadrant: item.quadrant,
   );
   if (wanted == null) return null;
   final wantedScreen = project(wanted);
   if (wantedScreen == null) return null;
-  return _labelOnOrOffLine((arcPoint1 + arcPoint2) / 2, wantedScreen);
+  // Inside the arc's span (the label's direction lies between the two ends') it sits on the arc itself; beyond an end, a leader joins it.
+  final d1 = arcPoint1 - vertexScreen, d2 = arcPoint2 - vertexScreen, w = wantedScreen - vertexScreen;
+  double cross(Offset a, Offset b) => a.dx * b.dy - a.dy * b.dx;
+  final turn = cross(d1, d2);
+  final inside = turn.abs() < 1e-9 || (cross(d1, w) * turn >= 0 && cross(w, d2) * turn >= 0);
+  if (inside) return (labelCenter: wantedScreen, leaderFrom: null);
+  final nearer = (wantedScreen - arcPoint1).distance <= (wantedScreen - arcPoint2).distance ? arcPoint1 : arcPoint2;
+  return _labelOnOrOffLine(nearer, wantedScreen);
 }
 
 /// The dimension line of a point-to-point (or point-to-line) linear dimension in the general direction, in screen space.
@@ -1261,17 +1281,8 @@ Offset? constraintOverlayItemLabelCenter(
       final arcPoints = _angleArcScreenPoints(project, it);
       if (arcPoints == null) return null;
       final (vertexScreen, arcPoint1, arcPoint2) = arcPoints;
-      // Mirrors [_ConstraintOverlayPainter._paintAngleDimension]'s own
-      // [sketchLocalAlongOffset] handling exactly - see that method's own
-      // doc comment.
-      final radiusPixels = (arcPoint1 - vertexScreen).distance;
-      final placedAngleLabel = _placedAngleLabel(project, it, arcPoint1, arcPoint2);
-      if (placedAngleLabel != null) return placedAngleLabel.labelCenter;
-      return (it.sketchLocalAlongOffset != null && (it.sketchLocalArcRadius ?? 0) > 1e-9
-              ? _dimensionLabelPlacementAlong(
-                  arcPoint1, arcPoint2, it.sketchLocalAlongOffset! * (radiusPixels / it.sketchLocalArcRadius!))
-              : _dimensionLabelPlacement(arcPoint1, arcPoint2, it.labelOffset))
-          .labelCenter;
+      // The same layout [_ConstraintOverlayPainter._paintAngleDimension] draws.
+      return _angleLabelLayout(project, it, vertexScreen, arcPoint1, arcPoint2).labelCenter;
   }
 }
 

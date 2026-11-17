@@ -381,6 +381,31 @@ class MeasureRequest(BaseModel):
         ]
 
 
+class FaceOwnerFeaturesRequest(BaseModel):
+    """`POST /parts/{part_id}/face-owner-features` (bug report 2026-11-17 item 2A): faces picked for a Pattern / Mirror scope, as the
+    selection sends them (`MeasureRequest`'s ref shape, a bare `{body_id, shape_type, index}` included). `rollback_excluded_feature_ids`:
+    the Features the client has rolled back, which made nothing."""
+
+    faces: list[MeasureEntityRefSchema]
+    rollback_excluded_feature_ids: list[str] = []
+
+    @field_validator("faces", mode="before")
+    @classmethod
+    def _wrap_legacy_flat_refs(cls, value: Any) -> Any:
+        return MeasureRequest._wrap_legacy_flat_refs(value)
+
+
+class FaceOwnerEntry(BaseModel):
+    face: MeasureEntityRefSchema
+    feature_id: str
+
+
+class FaceOwnerFeaturesResponse(BaseModel):
+    """One entry per requested face, in order: the Feature that made it (`app.document.face_owner`)."""
+
+    features: list[FaceOwnerEntry]
+
+
 class ComponentPatternDirectionFromRefRequest(BaseModel):
     """Bug fix (assembly testing: "pattern component tool: selecting a
     custom line to use as a direction always seems to silently fail and
@@ -1195,6 +1220,8 @@ class MirrorFeatureCreate(BaseModel):
     # Cut/Boss-into-target Feature instead of `source_body_ids`/`source_
     # feature_ids` (see `app.document.router._validate_tool_feature_id`).
     tool_feature_id: str | None = None
+    # Several tool Features mirrored together; the first is also reported as `tool_feature_id`. Give this or `tool_feature_id`, not both.
+    tool_feature_ids: list[str] | None = None
 
 
 class MirrorFeatureUpdate(BaseModel):
@@ -1211,6 +1238,7 @@ class MirrorFeatureUpdate(BaseModel):
     source_feature_ids: list[str] | None = None
     merge: MergeMode | None = None
     tool_feature_id: str | None = None
+    tool_feature_ids: list[str] | None = None
 
 
 class MirrorFeatureResponse(FeatureResponseBase):
@@ -1221,6 +1249,7 @@ class MirrorFeatureResponse(FeatureResponseBase):
     source_feature_ids: list[str] = []
     merge: MergeMode
     tool_feature_id: str | None = None
+    tool_feature_ids: list[str] = []
     locked: bool
     # B1: see SketchFeatureResponse.produces above - always BODY for a
     # MirrorFeature.

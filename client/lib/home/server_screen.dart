@@ -141,7 +141,8 @@ class _ServerScreenState extends State<ServerScreen> {
                         key: const ValueKey('server-url-field'),
                         controller: _urlController,
                         keyboardType: TextInputType.url,
-                        autofillHints: const [AutofillHints.url],
+                        // Password managers fill a username + password pair; the address is the "username" here.
+                        autofillHints: const [AutofillHints.username, AutofillHints.url],
                         decoration: const InputDecoration(labelText: 'Server URL'),
                       ),
                       const SizedBox(height: 16),

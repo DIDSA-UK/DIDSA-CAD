@@ -1,4 +1,5 @@
 import 'package:http/http.dart' as http;
+import 'package:flutter/services.dart' show TextInput;
 import 'package:material_ui/material_ui.dart';
 
 import '../config.dart';
@@ -83,6 +84,8 @@ class _StorageScreenState extends State<StorageScreen> {
       _message = null;
     });
     await ApiConfig.saveStore(storeUrl: url, storeApiKey: key);
+    // Offers the address + key to the password manager.
+    if (url.isNotEmpty && key.isNotEmpty) TextInput.finishAutofillContext();
     await ApiConfig.saveDeviceName(_deviceController.text);
     await ApiConfig.saveCacheLimitMb(int.tryParse(_cacheController.text.trim()) ?? ApiConfig.cacheLimitMb);
     String? problem;
@@ -150,23 +153,32 @@ class _StorageScreenState extends State<StorageScreen> {
                 heading('Cloud storage'),
                 Text('Projects kept on your own server, shared between your devices, with a local copy for offline work.', style: home.caption(size: 12)),
                 const SizedBox(height: 16),
-                TextField(
-                  key: const ValueKey('store-url-field'),
-                  controller: _urlController,
-                  keyboardType: TextInputType.url,
-                  decoration: const InputDecoration(labelText: 'Address', hintText: 'https://storage.example.com'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  key: const ValueKey('store-key-field'),
-                  controller: _keyController,
-                  obscureText: _obscureKey,
-                  decoration: InputDecoration(
-                    labelText: 'Key',
-                    suffixIcon: IconButton(
-                      icon: Icon(_obscureKey ? Icons.visibility_outlined : Icons.visibility_off_outlined),
-                      onPressed: () => setState(() => _obscureKey = !_obscureKey),
-                    ),
+                // A password manager fills these as a username (the address) + password (the key) pair.
+                AutofillGroup(
+                  child: Column(
+                    children: [
+                      TextField(
+                        key: const ValueKey('store-url-field'),
+                        controller: _urlController,
+                        keyboardType: TextInputType.url,
+                        autofillHints: const [AutofillHints.username, AutofillHints.url],
+                        decoration: const InputDecoration(labelText: 'Address', hintText: 'https://storage.example.com'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        key: const ValueKey('store-key-field'),
+                        controller: _keyController,
+                        obscureText: _obscureKey,
+                        autofillHints: const [AutofillHints.password],
+                        decoration: InputDecoration(
+                          labelText: 'Key',
+                          suffixIcon: IconButton(
+                            icon: Icon(_obscureKey ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                            onPressed: () => setState(() => _obscureKey = !_obscureKey),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const SizedBox(height: 12),

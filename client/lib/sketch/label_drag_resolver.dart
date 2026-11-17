@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import '../api/dimension_label_placement.dart';
+import 'angle_rays.dart';
 
 typedef SketchPoint = (double, double);
 
@@ -25,8 +26,8 @@ typedef SketchPoint = (double, double);
 ///   connector (from its midpoint, towards line 2).
 /// * **Radius / diameter:** `angle` is the leader's direction in degrees counter-clockwise from the rim point's direction, `leg` the label's
 ///   distance beyond the circle.
-/// * **Angle:** `radius` is the arc's radius about the lines' intersection, `along` the label's distance from the middle of the arc's chord,
-///   towards the second line.
+/// * **Angle:** `radius` is the arc's radius about the lines' intersection, `along` the label's distance along the arc from its middle,
+///   towards the second line (so the label stays on the arc).
 class LabelDragResolver {
   const LabelDragResolver._();
 
@@ -194,62 +195,65 @@ class LabelDragResolver {
 
   // ---- angle --------------------------------------------------------------
 
-  /// The point the two lines meet at (their infinite extensions) and the unit rays from it towards each line's own end of the drawn segment.
-  /// Null for (near-)parallel lines. Same rule as the 3D overlay's `angleDimensionVertexAndRays`.
+  /// The point the two lines meet at (their infinite extensions) and the two unit rays the angle is drawn between: the shared rule in
+  /// `angle_rays.dart` ([angleRays]), so [valueDegrees] / [quadrant] pick the sector exactly as the painters do. Null for (near-)parallel
+  /// lines.
   static (SketchPoint vertex, SketchPoint ray1, SketchPoint ray2)? angleVertexAndRays({
     required SketchPoint line1Start,
     required SketchPoint line1End,
     required SketchPoint line2Start,
     required SketchPoint line2End,
+    double? valueDegrees,
+    int? quadrant,
   }) {
-    final p1 = line1Start, p2 = line1End, p3 = line2Start, p4 = line2End;
-    final d1x = p2.$1 - p1.$1, d1y = p2.$2 - p1.$2;
-    final d2x = p4.$1 - p3.$1, d2y = p4.$2 - p3.$2;
-    final denom = d1x * d2y - d1y * d2x;
-    if (denom.abs() < 1e-9) return null;
-    final t = ((p3.$1 - p1.$1) * d2y - (p3.$2 - p1.$2) * d2x) / denom;
-    final vertex = (p1.$1 + t * d1x, p1.$2 + t * d1y);
-
-    SketchPoint outwardRay(double dx, double dy, SketchPoint a, SketchPoint b) {
-      final len = math.sqrt(dx * dx + dy * dy);
-      if (len < 1e-9) return (1.0, 0.0);
-      final ux = dx / len, uy = dy / len;
-      final midX = (a.$1 + b.$1) / 2 - vertex.$1;
-      final midY = (a.$2 + b.$2) / 2 - vertex.$2;
-      final dot = ux * midX + uy * midY;
-      return dot >= 0 ? (ux, uy) : (-ux, -uy);
-    }
-
-    return (vertex, outwardRay(d1x, d1y, p1, p2), outwardRay(d2x, d2y, p3, p4));
+    final rays = angleRays(
+      line1Start: line1Start,
+      line1End: line1End,
+      line2Start: line2Start,
+      line2End: line2End,
+      valueDegrees: valueDegrees,
+      quadrant: quadrant,
+    );
+    return rays == null ? null : (rays.vertex, rays.ray1, rays.ray2);
   }
 
-  /// Null for parallel lines, or when [p] is not on the side of the vertex the angle opens towards.
+  /// The arc's radius is the pointer's distance from the vertex and `along` its distance ALONG THE ARC from the arc's midpoint (positive
+  /// towards the second ray), so the label sits on the arc. Null for parallel lines, or when [p] is behind the vertex (on the far side
+  /// from the sector the angle opens into).
   static DimensionLabelPlacement? angle({
     required SketchPoint line1Start,
     required SketchPoint line1End,
     required SketchPoint line2Start,
     required SketchPoint line2End,
     required SketchPoint p,
+    double? valueDegrees,
+    int? quadrant,
   }) {
-    final basis = angleVertexAndRays(line1Start: line1Start, line1End: line1End, line2Start: line2Start, line2End: line2End);
+    final basis = angleVertexAndRays(
+      line1Start: line1Start,
+      line1End: line1End,
+      line2Start: line2Start,
+      line2End: line2End,
+      valueDegrees: valueDegrees,
+      quadrant: quadrant,
+    );
     if (basis == null) return null;
     final (vertex, ray1, ray2) = basis;
     final dx = p.$1 - vertex.$1;
     final dy = p.$2 - vertex.$2;
-    // The label sits at vertex + radius * m + along * chord, where m is the middle of the two rays and the chord runs across them at right
-    // angles to m, so the point under the pointer splits into the two exactly.
-    final mx = (ray1.$1 + ray2.$1) / 2;
-    final my = (ray1.$2 + ray2.$2) / 2;
-    final mLength = math.sqrt(mx * mx + my * my);
-    final chord = _angleChord(ray1, ray2);
-    if (mLength < 1e-6 || chord == null) {
-      // Rays (nearly) opposite or equal: no chord to slide along, so the radius is just the distance.
-      final distance = math.sqrt(dx * dx + dy * dy);
-      return distance < 1e-6 ? null : DimensionLabelPlacement(radius: distance);
+    final distance = math.sqrt(dx * dx + dy * dy);
+    if (distance < 1e-6) return null;
+    final mid = _arcMiddle(ray1, ray2);
+    if (_dot((dx, dy), mid) <= 1e-9 * distance) return null;
+    final sweepSign = _sweepSign(ray1, ray2);
+    var delta = math.atan2(dy, dx) - math.atan2(mid.$2, mid.$1);
+    while (delta <= -math.pi) {
+      delta += 2 * math.pi;
     }
-    final radius = (dx * mx + dy * my) / (mLength * mLength);
-    if (radius < 1e-6) return null;
-    return DimensionLabelPlacement(radius: radius, along: _dot((dx, dy), chord));
+    while (delta > math.pi) {
+      delta -= 2 * math.pi;
+    }
+    return DimensionLabelPlacement(radius: distance, along: delta * sweepSign * distance);
   }
 
   static SketchPoint? angleLabelCenter({
@@ -258,24 +262,37 @@ class LabelDragResolver {
     required SketchPoint line2Start,
     required SketchPoint line2End,
     required DimensionLabelPlacement placement,
+    double? valueDegrees,
+    int? quadrant,
   }) {
-    final basis = angleVertexAndRays(line1Start: line1Start, line1End: line1End, line2Start: line2Start, line2End: line2End);
+    final basis = angleVertexAndRays(
+      line1Start: line1Start,
+      line1End: line1End,
+      line2Start: line2Start,
+      line2End: line2End,
+      valueDegrees: valueDegrees,
+      quadrant: quadrant,
+    );
     final radius = placement.radius;
     if (basis == null || radius == null) return null;
     final (vertex, ray1, ray2) = basis;
-    final mid = (vertex.$1 + radius * (ray1.$1 + ray2.$1) / 2, vertex.$2 + radius * (ray1.$2 + ray2.$2) / 2);
-    final chord = _angleChord(ray1, ray2) ?? (0.0, 0.0);
-    final along = placement.along ?? 0.0;
-    return (mid.$1 + chord.$1 * along, mid.$2 + chord.$2 * along);
+    final mid = _arcMiddle(ray1, ray2);
+    final angle = math.atan2(mid.$2, mid.$1) + _sweepSign(ray1, ray2) * (placement.along ?? 0.0) / radius;
+    return (vertex.$1 + radius * math.cos(angle), vertex.$2 + radius * math.sin(angle));
   }
 
-  /// The unit direction of the arc's chord, from the first ray's end to the second's. Null when the rays coincide.
-  static SketchPoint? _angleChord(SketchPoint ray1, SketchPoint ray2) {
-    final dx = ray2.$1 - ray1.$1;
-    final dy = ray2.$2 - ray1.$2;
-    final length = math.sqrt(dx * dx + dy * dy);
-    return length < 1e-9 ? null : (dx / length, dy / length);
+  /// The unit direction from the vertex to the middle of the (non-reflex) arc between two unit rays. For opposite rays (a straight
+  /// angle) the arc's middle is a quarter turn counter-clockwise from the first.
+  static SketchPoint _arcMiddle(SketchPoint ray1, SketchPoint ray2) {
+    final mx = ray1.$1 + ray2.$1;
+    final my = ray1.$2 + ray2.$2;
+    final length = math.sqrt(mx * mx + my * my);
+    if (length < 1e-9) return (-ray1.$2, ray1.$1);
+    return (mx / length, my / length);
   }
+
+  /// +1 when the arc from the first ray to the second turns counter-clockwise, -1 when clockwise.
+  static double _sweepSign(SketchPoint ray1, SketchPoint ray2) => ray1.$1 * ray2.$2 - ray1.$2 * ray2.$1 < 0 ? -1.0 : 1.0;
 
   static double _dot(SketchPoint a, SketchPoint b) => a.$1 * b.$1 + a.$2 * b.$2;
 }
