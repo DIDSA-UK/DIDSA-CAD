@@ -7979,12 +7979,40 @@ void main() {
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
     }
 
-    testWidgets('Server projects into an empty project: the session starts saving there, and Save All sends the file', (tester) async {
+    // Bug report 2026-11-17 item 8: Open only opens. Putting the current work into a cloud project (the owner's 13 Nov sequence: a
+    // brand-new part into a new, empty project) is File > Copy this project to cloud storage… > Existing project folder.
+    testWidgets('Open > Cloud storage on an empty project opens nothing and says where to go instead', (tester) async {
+      await pumpNewSession(tester);
+      await openCloudFromMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const ValueKey('server-project-empty')), findsOneWidget);
+      expect(find.textContaining('This project has no files yet'), findsOneWidget);
+      expect(await _syncButtonPresent(tester), isFalse);
+    });
+
+    testWidgets('Open > Cloud storage on a project with files goes straight to choosing a file: no "Save current work here"', (tester) async {
+      store.writeJson('Gearbox', 'Existing.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}});
+      await pumpNewSession(tester);
+      await openCloudFromMenu(tester);
+      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(find.byKey(const ValueKey('server-project-choice')), findsNothing);
+      expect(find.text('Save current work here'), findsNothing);
+      expect(find.text('Open Project'), findsOneWidget);
+    });
+
+    testWidgets('Copy to cloud storage > Existing project folder: the session saves into it, and Save All sends the file', (tester) async {
       await pumpNewSession(tester);
       expect(await _syncButtonPresent(tester), isFalse);
 
-      await openCloudFromMenu(tester);
-      expect(find.byKey(const ValueKey('server-project-Gearbox')), findsOneWidget);
+      await tapFileMenu(tester, 'Copy this project to cloud storage…');
+      expect(find.byKey(const ValueKey('copy-to-cloud-target-dialog')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('copy-to-cloud-existing')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
       await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 600));
@@ -7993,7 +8021,6 @@ void main() {
       expect(find.textContaining('now saves into "Gearbox"'), findsOneWidget);
 
       await tapFileMenu(tester, 'Save All');
-      // A part with no file yet is named first (the existing Save All prompt); confirm it.
       expect(find.textContaining('Save "Part 1" as'), findsOneWidget);
       await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Save')));
       await tester.pump();
@@ -8002,25 +8029,13 @@ void main() {
       expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
 
-    testWidgets('Server projects into a project that has files asks: save the current work there, or open a file', (tester) async {
-      store.writeJson('Gearbox', 'Existing.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}});
+    testWidgets('Copy to cloud storage > New project folder is the name prompt, as before', (tester) async {
       await pumpNewSession(tester);
-
-      await openCloudFromMenu(tester);
-      await tester.tap(find.byKey(const ValueKey('server-project-Gearbox')));
+      await tapFileMenu(tester, 'Copy this project to cloud storage…');
+      await tester.tap(find.byKey(const ValueKey('copy-to-cloud-new')));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(find.byKey(const ValueKey('server-project-choice')), findsOneWidget);
-      expect(find.text('1 file in this project.'), findsOneWidget);
-
-      await tester.tap(find.byKey(const ValueKey('server-project-save-here')));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(await _syncButtonPresent(tester), isTrue);
-
-      await tapFileMenu(tester, 'Save');
-      await tester.pump(const Duration(milliseconds: 600));
-      expect(store.livePaths('Gearbox'), containsAll(['Existing.didsa', 'Part 1.didsa']), reason: 'requests: ${store.requests}');
+      await tester.pump(const Duration(milliseconds: 400));
+      expect(find.byKey(const ValueKey('copy-to-server-dialog')), findsOneWidget);
     });
 
     testWidgets('a local-folder session shows a folder symbol (not synced), and it leads to Server projects', (tester) async {

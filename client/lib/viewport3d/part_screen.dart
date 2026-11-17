@@ -16217,8 +16217,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (project == null || !mounted) return;
     remote.beginSession(project);
 
-    // An empty project (a new one, say) has no file to open: this session simply starts saving into it, so Save and Save All
-    // write there. A project with files asks: open one of them, or save the current work into it.
+    // Open only opens (bug report 2026-11-17 item 8): putting the current work into a project is File > Copy this project to cloud
+    // storage…, which asks for a new or an existing project folder. An empty project has nothing to open, so say where to go instead.
     List<String> existing = const [];
     try {
       existing = await _storageService.listFiles(project);
@@ -16228,33 +16228,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     if (!mounted) return;
     if (existing.isEmpty) {
-      _adoptServerProject(project, markUnsaved: true, note: 'This session now saves into "${project.project}". Use Save or Save All.');
-      return;
-    }
-    final choice = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        key: const ValueKey('server-project-choice'),
-        title: Text(project.project),
-        content: Text('${existing.length} file${existing.length == 1 ? '' : 's'} in this project.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Cancel')),
-          TextButton(
-            key: const ValueKey('server-project-save-here'),
-            onPressed: () => Navigator.of(context).pop('save'),
-            child: const Text('Save current work here'),
-          ),
-          FilledButton(
-            key: const ValueKey('server-project-open'),
-            onPressed: () => Navigator.of(context).pop('open'),
-            child: const Text('Open a file…'),
-          ),
-        ],
-      ),
-    );
-    if (choice == null || !mounted) return;
-    if (choice == 'save') {
-      _adoptServerProject(project, markUnsaved: true, note: 'This session now saves into "${project.project}". Use Save or Save All.');
+      ScaffoldMessenger.of(context)
+        ..clearSnackBars()
+        ..showSnackBar(const SnackBar(
+          key: ValueKey('server-project-empty'),
+          content: Text('This project has no files yet. Use File > Copy this project to cloud storage… to put your work in it.'),
+        ));
       return;
     }
     if (!await _confirmExitPart() || !mounted) return;
@@ -16288,8 +16267,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     await _openComposedProject(root, relativePath);
   }
 
-  /// File > Copy this project to cloud storage…: every file of the open local project folder goes into a new server project in one
-  /// commit, and this session carries on in that server project (paths are relative, so they stay valid).
+  /// File > Copy this project to cloud storage…: every file of the open local project folder goes into a server project in one commit,
+  /// and this session carries on in that server project (paths are relative, so they stay valid). It first asks whether into a new
+  /// project folder or one that already exists (bug report 2026-11-17 item 8); copying into an existing one asks about names it
+  /// already has (Overwrite / Skip / Cancel).
   Future<void> _onCopyToServerPressed() async {
     setState(() => _toolbarOpen = false);
     final remote = _remote;
@@ -16302,6 +16283,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (local == null || !mounted) return;
     if (local is ServerProjectRoot) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('This project is already in cloud storage.')));
+      return;
+    }
+    final target = await showCopyToCloudTargetDialog(context);
+    if (target == null || !mounted) return;
+    if (target == CopyToCloudTarget.existingProject) {
+      await _copyIntoExistingServerProject(remote, local);
       return;
     }
     final name = await showCopyToServerDialog(context, suggestedName: local.displayName);
@@ -16332,6 +16319,52 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       note: hadFiles
           ? 'Copied to cloud storage as "${root.project}". This session now works on that copy.'
           : 'The folder had no files to copy, so "${root.project}" is empty. This session now saves into it: use Save or Save All.',
+    );
+  }
+
+  /// [_onCopyToServerPressed]'s "Existing project folder": pick the project, copy every local file into it (asking about names it has
+  /// already), then carry on in it.
+  Future<void> _copyIntoExistingServerProject(RemoteStorageService remote, ProjectRoot local) async {
+    final project = await showServerProjectsDialog(context, remote);
+    if (project == null || !mounted) return;
+    List<String>? copied;
+    var skipped = 0;
+    await _runGuarded(() async {
+      try {
+        final storage = _storageService;
+        final localService = storage is RoutingStorageService ? storage.local : storage;
+        copied = await remote.copyProjectIntoServer(
+          localService,
+          local,
+          project,
+          onClashes: (clashes) async {
+            final choice = await showChangedOnDiskDialog(
+              context,
+              clashes,
+              title: clashes.length == 1 ? 'A file is already in "${project.project}"' : '${clashes.length} files are already in "${project.project}"',
+              message: 'The project already has files with these names. Copying would overwrite them.',
+            );
+            if (choice == ChangedOnDiskChoice.skipChanged) skipped = clashes.length;
+            return choice;
+          },
+        );
+      } on StorageException catch (e) {
+        setState(() => _errorMessage = e.message);
+      }
+    });
+    final paths = copied;
+    if (paths == null || !mounted) return;
+    // Nothing is marked unsaved when files were skipped: the session still holds this folder's version of them, and Save would write
+    // it over the project's. A folder with no files at all is the new-project case: the session's Parts are written on the next Save.
+    _adoptServerProject(
+      project,
+      markUnsaved: paths.isEmpty && skipped == 0,
+      note: skipped > 0
+          ? 'Copied ${paths.length} file${paths.length == 1 ? '' : 's'} into "${project.project}"; $skipped left as they were in the project. '
+              'This session now works there: saving a Part you skipped writes your version over the project\'s.'
+          : paths.isEmpty
+              ? 'The folder had no files to copy. This session now saves into "${project.project}": use Save or Save All.'
+              : 'Copied ${paths.length} file${paths.length == 1 ? '' : 's'} into "${project.project}". This session now works there.',
     );
   }
 

@@ -38,8 +38,8 @@ The implementation session updates this table as each part lands (one commit per
 |---|---|---|---|
 | 4 | Angle dimension: quadrant field, shared ray rule, label on the arc, choices | Done | fb4755c |
 | 13 | Desktop never opens the hamburger panel; scene settings dialog | Done | 7f17e9e |
-| 12 | Desktop Visibility button and panel; ribbon duplicates removed | Done | this commit |
-| 8 | Copy to cloud storage: new or existing project; Open only opens | To do | |
+| 12 | Desktop Visibility button and panel; ribbon duplicates removed | Done | 11e74ec |
+| 8 | Copy to cloud storage: new or existing project; Open only opens | Done | this commit |
 | 2A | Backend: face → feature endpoint | To do | |
 | M.1 | Backend: Mirror takes several tool features | To do | |
 | M.2 | Shared seed rule for Pattern and Mirror (fixes Mirror's Select Feature with a cut) | To do | |
@@ -355,4 +355,12 @@ Decisions the plan left open, recorded as they were made.
   and the **Shaded / Edges / Wireframe** group (the panel has the reference-planes chip and the render-mode control). Kept: Fit,
   View cube, Normal to, the standard views, Perspective, the appearance override group, Present. The panel is not drawn while a
   tool session is open, in either layout.
+- **8:** `RemoteStorageService.copyProjectIntoServer(local, localRoot, root, onClashes:)` (a sibling of `copyProjectToServer`):
+  one commit; clashing names are asked once, all together, through the reworded `showChangedOnDiskDialog` (Overwrite / Skip these
+  files / Cancel); an overwrite sends the listed version as its base. Open > Cloud storage on a project with files now goes straight
+  to choosing a file. **Choice made here (not in the plan):** after Skip, the session is not marked unsaved (it still holds the
+  local folder's version of the skipped files, and Save would write it over the project's); the snack bar says so. The owner's
+  13 Nov sequence (a brand-new part into an empty cloud project) is now File > Copy this project to cloud storage… > Existing
+  project folder (the old Open-based test is rewritten that way); for a session with no local folder yet this first asks for one
+  (`_ensureProjectRoot`), as the New project folder path always did.
 
