@@ -1,0 +1,2400 @@
+{
+ "_about": "N1a golden vectors for app.sketch.reference_signature.decide_reference (coaxial tie-break by radius / cone half-angle). Signatures in the native format's tagged face shape. Expectations set by hand (tests/test_coaxial_signature_rules.py); body_diagonal 30 mm throughout.",
+ "cases": [
+  {
+   "name": "tube: the bore's index now names the outer cylinder",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 1,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "tube: the outer cylinder's index now names the bore",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 10.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 0,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "tube: the bore's index still names the bore",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 1,
+    "reason": ""
+   }
+  },
+  {
+   "name": "tube: the bore's index now names a plane",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 1,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "stepped shaft: R5's index names R8",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     15.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 5.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      25.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 3.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      15.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 8.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 1,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "stepped shaft: R5's index names R3",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     15.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 5.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      25.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 3.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      15.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 8.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 1,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "stepped shaft: R3's index names R5",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     25.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 3.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      25.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 3.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      15.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 8.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 0,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "stepped shaft: R8's index names R3",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 8.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      25.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 3.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      15.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 8.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 2,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "stepped shaft: R5's index still right",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     15.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 5.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      25.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 3.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      15.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 8.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 1,
+    "reason": ""
+   }
+  },
+  {
+   "name": "radius edit: bore 4 -> 5 (outer 10), index still on the bore",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 1,
+    "reason": ""
+   }
+  },
+  {
+   "name": "radius edit: bore 4 -> 5 (outer 10), index renumbered onto the outer",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 1,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "radius edit: outer 10 -> 12 (bore 4), index renumbered onto the bore",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 10.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 12.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 0,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "radius edit too far: bore 4 -> 7 beside the outer 10, index on the outer: twin not clearly nearer, kept as before",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 7.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 0,
+    "reason": ""
+   }
+  },
+  {
+   "name": "radius edit too far: bore 4 -> 7 beside the outer 10, index on a plane: ambiguous",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 7.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "lost",
+    "index": null,
+    "reason": "ambiguous"
+   }
+  },
+  {
+   "name": "radius edit too far: bore 4 -> 7, index still on the bore: kept (no twin clearly nearer)",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 7.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 1,
+    "reason": ""
+   }
+  },
+  {
+   "name": "equal radii on one axis (a bore split by a groove), index on the outer: ambiguous",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     2.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      2.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      8.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    }
+   ],
+   "expect": {
+    "status": "lost",
+    "index": null,
+    "reason": "ambiguous"
+   }
+  },
+  {
+   "name": "equal radii on one axis, index on the other R4: kept, as before (size cannot tell them apart)",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     2.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      2.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      8.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 2,
+    "reason": ""
+   }
+  },
+  {
+   "name": "radii within 1 % on one axis, index on the other: kept (not clearly a different size)",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.03
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 0,
+    "reason": ""
+   }
+  },
+  {
+   "name": "radii within 1 %, index on a plane: ambiguous",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 4.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.03
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "lost",
+    "index": null,
+    "reason": "ambiguous"
+   }
+  },
+  {
+   "name": "cone pair: 20 degrees' index names the 24 degree cone",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0,
+     0,
+     5.0
+    ],
+    "surface_kind": "cone",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "half_angle": 20.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      5.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 20.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      6.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 24.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 0,
+    "reason": "nearest_half_angle"
+   }
+  },
+  {
+   "name": "cone pair: 24 degrees' index names the 20 degree cone",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0,
+     0,
+     6.0
+    ],
+    "surface_kind": "cone",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "half_angle": 24.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      5.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 20.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      6.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 24.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 1,
+    "reason": "nearest_half_angle"
+   }
+  },
+  {
+   "name": "cone pair: index still right",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0,
+     0,
+     5.0
+    ],
+    "surface_kind": "cone",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "half_angle": 20.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      5.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 20.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      6.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 24.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 0,
+    "reason": ""
+   }
+  },
+  {
+   "name": "cone pair 0.3 degrees apart: ambiguous",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0,
+     0,
+     5.0
+    ],
+    "surface_kind": "cone",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "half_angle": 20.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      5.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 20.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      6.0
+     ],
+     "surface_kind": "cone",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "half_angle": 20.3
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "lost",
+    "index": null,
+    "reason": "ambiguous"
+   }
+  },
+  {
+   "name": "torus pair (inner and outer fillet of a ring, both R1): the major radius decides",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0,
+     0,
+     10.0
+    ],
+    "surface_kind": "torus",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 50.0,
+    "body_diagonal": 30.0,
+    "radius": 1.0,
+    "major_radius": 4.0
+   },
+   "index": 1,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "torus",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 50.0,
+     "body_diagonal": 30.0,
+     "radius": 1.0,
+     "major_radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.2
+     ],
+     "surface_kind": "torus",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 50.0,
+     "body_diagonal": 30.0,
+     "radius": 1.0,
+     "major_radius": 9.0
+    }
+   ],
+   "expect": {
+    "status": "followed",
+    "index": 0,
+    "reason": "nearest_radius"
+   }
+  },
+  {
+   "name": "old signature: the bore's index on the outer: ok on the outer, as before",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0
+   },
+   "index": 0,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 0,
+    "reason": ""
+   }
+  },
+  {
+   "name": "old signature: the bore's index on a plane: ambiguous, as before",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 10.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 4.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "lost",
+    "index": null,
+    "reason": "ambiguous"
+   }
+  },
+  {
+   "name": "old signature against old candidates: unchanged",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      0.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      -1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "lost",
+    "index": null,
+    "reason": "ambiguous"
+   }
+  },
+  {
+   "name": "old signature, stepped shaft, index on R8: ok on R8, as before",
+   "stored": {
+    "kind": "face",
+    "position": [
+     0.0,
+     0.0,
+     15.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      25.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 3.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      15.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 5.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 8.0
+    }
+   ],
+   "expect": {
+    "status": "ok",
+    "index": 2,
+    "reason": ""
+   }
+  },
+  {
+   "name": "two holes 20 mm apart, R3 and R2: the R3's index on a plane is chosen by position, as before",
+   "stored": {
+    "kind": "face",
+    "position": [
+     10.0,
+     0.0,
+     5.0
+    ],
+    "surface_kind": "cylinder",
+    "direction": [
+     0,
+     0,
+     1
+    ],
+    "area": 100.0,
+    "body_diagonal": 30.0,
+    "radius": 3.0
+   },
+   "index": 2,
+   "candidates": [
+    {
+     "kind": "face",
+     "position": [
+      10.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 3.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      30.0,
+      0.0,
+      5.0
+     ],
+     "surface_kind": "cylinder",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 100.0,
+     "body_diagonal": 30.0,
+     "radius": 2.0
+    },
+    {
+     "kind": "face",
+     "position": [
+      0,
+      0,
+      10.0
+     ],
+     "surface_kind": "plane",
+     "direction": [
+      0,
+      0,
+      1
+     ],
+     "area": 300.0,
+     "body_diagonal": 30.0
+    }
+   ],
+   "expect": {
+    "status": "potentially_moved",
+    "index": 0,
+    "reason": "nearest_of_identical_vertices"
+   }
+  }
+ ]
+}
