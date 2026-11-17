@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/services.dart' show TextInput;
 import 'package:material_ui/material_ui.dart';
 import 'package:http/http.dart' as http;
 import 'package:qr_flutter/qr_flutter.dart';
@@ -98,6 +99,8 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
     final url = _relayUrlField.text.trim();
     final key = _relayKeyField.text.trim();
     await (widget.saveRelay ?? (u, k) => ApiConfig.saveRelay(relayUrl: u, relayApiKey: k))(url, key);
+    // Offers the address + key to the password manager.
+    if (url.isNotEmpty && key.isNotEmpty) TextInput.finishAutofillContext();
     if (!mounted) return;
     setState(() {
       _relayUrl = url;
@@ -240,19 +243,28 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                       'CAD key) go in the code with the server.',
                       style: TextStyle(fontSize: 12),
                     ),
-                    TextField(
-                      key: const ValueKey('headset-pairing-relay-url'),
-                      controller: _relayUrlField,
-                      decoration: const InputDecoration(labelText: 'Relay address (ws:// or wss://)'),
-                      keyboardType: TextInputType.url,
-                      autocorrect: false,
-                    ),
-                    TextField(
-                      key: const ValueKey('headset-pairing-relay-key'),
-                      controller: _relayKeyField,
-                      decoration: const InputDecoration(labelText: 'Relay key'),
-                      obscureText: true,
-                      autocorrect: false,
+                    // A password manager fills these as a username (the address) + password (the key) pair.
+                    AutofillGroup(
+                      child: Column(
+                        children: [
+                          TextField(
+                            key: const ValueKey('headset-pairing-relay-url'),
+                            controller: _relayUrlField,
+                            decoration: const InputDecoration(labelText: 'Relay address (ws:// or wss://)'),
+                            keyboardType: TextInputType.url,
+                            autocorrect: false,
+                            autofillHints: const [AutofillHints.username, AutofillHints.url],
+                          ),
+                          TextField(
+                            key: const ValueKey('headset-pairing-relay-key'),
+                            controller: _relayKeyField,
+                            decoration: const InputDecoration(labelText: 'Relay key'),
+                            obscureText: true,
+                            autocorrect: false,
+                            autofillHints: const [AutofillHints.password],
+                          ),
+                        ],
+                      ),
                     ),
                     const SizedBox(height: 8),
                     Align(

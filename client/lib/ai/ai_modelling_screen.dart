@@ -44,7 +44,6 @@ import 'ai_provider_settings_screen.dart';
 import 'ai_scoping_prompt.dart';
 import 'ai_system_prompt_preferences.dart';
 import 'ai_validation_feedback.dart';
-import '../layout/desktop_width.dart';
 
 /// `GearPresetStore`'s discriminator for a saved AI Modelling plan -
 /// `02-scoping-conversation.md`'s "Bolt-on: save plan as preset" section.
@@ -3123,9 +3122,13 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
         ],
       ),
       body: SafeArea(
-        // Desktop layout (D6): a readable column in a big window, whichever step is showing.
-        child: DesktopMaxWidth(
-          maxWidth: 900,
+        // A readable column in a big window, whichever step is showing. Capped whatever the layout mode: the mode follows the
+        // last pointer, so with a mouse and a touch screen on one monitor a desktop-only cap made the chat jump between full width
+        // and a centred column on every switch. A phone is narrower than the cap, so nothing changes there.
+        child: Align(
+          alignment: Alignment.topCenter,
+          child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
           child: _proposedPlan != null
               ? _buildReviewAndGenerate(context, _proposedPlan!)
               : _orchestrating
@@ -3133,6 +3136,7 @@ class _AiModellingScreenState extends State<AiModellingScreen> {
                   : _partManifest != null
                       ? _buildManifestConfirm(context)
                       : _buildChat(context),
+        ),
         ),
       ),
     );

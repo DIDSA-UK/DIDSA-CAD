@@ -105,15 +105,19 @@ Future<String?> showRelativePathPromptDialog(
   var currentRoot = root;
   String value = initialValue;
   String? validationError = validateProjectRelativePath(value);
-  bool checkingCollision = false;
+  // Bug fix (the dialog jittered while typing): the collision check ran on every keystroke and flashed a progress bar, and the
+  // warning row came and went, so the dialog changed height each time. Now debounced, stale answers are dropped, and the
+  // warning sits in a fixed-height slot.
+  Timer? collisionDebounce;
+  var collisionToken = 0;
   // The existing file the typed name would collide with (null: none). Named
   // in the warning, because it can differ from what was typed: `Bracket`
   // collides with a legacy `Bracket.DIDSAprt` as well as with `Bracket.didsa`.
   String? collidingFile;
 
   Future<void> checkCollision(void Function(void Function()) setDialogState) async {
+    final token = ++collisionToken;
     final path = withDefaultExtension(value);
-    setDialogState(() => checkingCollision = true);
     // Compared by `nativeBaseNameKey` against a listing, because a single
     // `resolve` call on the exact name can't see the other extension.
     String? collision;
@@ -123,13 +127,22 @@ Future<String?> showRelativePathPromptDialog(
       collision = null;
     }
     if (collision == null && await storageService.resolve(currentRoot, path) != null) collision = path;
-    setDialogState(() {
-      checkingCollision = false;
-      collidingFile = collision;
-    });
+    if (token != collisionToken) return; // Typed on since: a newer check owns the answer.
+    try {
+      setDialogState(() => collidingFile = collision);
+    } on FlutterError {
+      // The dialog closed while the check was running.
+    }
   }
 
-  return showDialog<String>(
+  void scheduleCollisionCheck(void Function(void Function()) setDialogState) {
+    collisionDebounce?.cancel();
+    collisionToken++;
+    if (validationError != null) return;
+    collisionDebounce = Timer(const Duration(milliseconds: 300), () => unawaited(checkCollision(setDialogState)));
+  }
+
+  final picked = await showDialog<String>(
     context: context,
     builder: (context) => StatefulBuilder(
       builder: (context, setDialogState) => AlertDialog(
@@ -154,26 +167,25 @@ Future<String?> showRelativePathPromptDialog(
                 setDialogState(() {
                   value = text;
                   validationError = validateProjectRelativePath(value);
-                  collidingFile = null;
+                  if (validationError != null) collidingFile = null;
                 });
-                if (validationError == null) {
-                  unawaited(checkCollision(setDialogState));
-                }
+                scheduleCollisionCheck(setDialogState);
               },
             ),
-            if (checkingCollision)
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
-                child: LinearProgressIndicator(),
-              ),
-            if (collidingFile != null)
-              Padding(
+            SizedBox(
+              height: 44,
+              child: Padding(
                 padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  '${collidingFile!.split('/').last} already exists and will be replaced.',
-                  style: const TextStyle(color: Colors.orange),
-                ),
+                child: collidingFile == null
+                    ? null
+                    : Text(
+                        '${collidingFile!.split('/').last} already exists and will be replaced.',
+                        style: const TextStyle(color: Colors.orange),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
               ),
+            ),
           ],
         ),
         actions: [
@@ -193,9 +205,7 @@ Future<String?> showRelativePathPromptDialog(
                 onRootChanged(newRoot);
                 if (!context.mounted) return;
                 setDialogState(() => collidingFile = null);
-                if (validationError == null) {
-                  unawaited(checkCollision(setDialogState));
-                }
+                scheduleCollisionCheck(setDialogState);
               },
               child: const Text('Change Folder'),
             ),
@@ -209,6 +219,9 @@ Future<String?> showRelativePathPromptDialog(
       ),
     ),
   );
+  collisionDebounce?.cancel();
+  collisionToken++;
+  return picked;
 }
 
 /// The simpler sibling prompt for "Open Project…" - the root-relative path

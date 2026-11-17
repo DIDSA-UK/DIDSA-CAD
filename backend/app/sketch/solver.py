@@ -984,6 +984,69 @@ def _fix_circle_cardinal_point_signs(sketch: Sketch) -> None:
                 point.y = 2 * center.y - point.y
 
 
+def _has_free_motion(sketch: Sketch, anchor_point_ids: frozenset[str]) -> bool:
+    """Whether an already-solved Sketch can still move, tested without trusting py-slvs's rank count (see the call site).
+
+    Every free Point is nudged off the solution by a small, deterministic offset and the system re-solved in a scratch copy:
+    a fully constrained Sketch has a locally unique solution, so the solve returns every Point to where it was, redundant
+    constraints or not; any remaining freedom lets the solve settle on a different nearby solution. Writes nothing back to
+    `sketch`."""
+    xs = [p.x for p in sketch.points.values()] or [0.0]
+    ys = [p.y for p in sketch.points.values()] or [0.0]
+    scale = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+    nudge = 1e-3 * scale
+    # A free direction keeps a sizeable share of the nudge; a fully constrained Sketch returns to within Newton's own
+    # tolerance, which near a tangency is a few percent of a nudge this size at most (a slot's rim points: ~0.5%).
+    tolerance = 0.05 * nudge
+
+    # Points held where they currently are (the origin, drag anchors, external references, FixedConstraint) are not nudged:
+    # the solver pins them at whatever position it is given, so a nudged one would stay nudged.
+    pinned = set(anchor_point_ids) | set(sketch.external_references)
+    if sketch.origin_point_id is not None:
+        pinned.add(sketch.origin_point_id)
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, FixedConstraint):
+            pinned.update(constraint.fixed_point_ids)
+
+    nudged: dict[str, Point] = {}
+    for n, (point_id, point) in enumerate(sketch.points.items()):
+        if point_id in pinned:
+            nudged[point_id] = point
+            continue
+        # Deterministic, different direction per Point, so no single symmetric motion is missed.
+        angle = 2.399963 * (n + 1)  # golden angle
+        nudged[point_id] = Point(
+            id=point.id, x=point.x + nudge * math.cos(angle), y=point.y + nudge * math.sin(angle)
+        )
+
+    system = slvs.System()
+    origin = system.addPoint3dV(0, 0, 0, group=_FIXED_GROUP)
+    normal = system.addNormal3dV(1, 0, 0, 0, group=_FIXED_GROUP)
+    workplane = system.addWorkplane(origin, normal, group=_FIXED_GROUP)
+    builder = _PySlvsBuilder(
+        system,
+        workplane,
+        nudged,
+        origin_point_id=sketch.origin_point_id,
+        anchor_point_ids=anchor_point_ids,
+    )
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
+            continue
+        constraint.add_to_solver(builder)
+    for point_id in sketch.points:
+        builder.point2d(point_id)
+    system.solve(group=_SOLVE_GROUP, reportFailed=False)
+    for point_id in builder.solved_point_ids():
+        handle = builder.handle_for_point(point_id)
+        x = system.getParam(system.getEntityParam(handle, 0)).val
+        y = system.getParam(system.getEntityParam(handle, 1)).val
+        original = sketch.points[point_id]
+        if math.hypot(x - original.x, y - original.y) > tolerance:
+            return True
+    return False
+
+
 def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> SolveResult:
     """One py-slvs solve attempt - see `solve_sketch` for the retry-without-
     anchors fallback built on top of this.
@@ -1203,12 +1266,26 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
     # redundant sub-system has actually been confirmed - `provisional`
     # existing at all on such a Constraint means the opposite by
     # definition, so bump the floor to 1 rather than trust py-slvs's count.
+    # Bug fix (Component 2 report: an L-profile with only one dimension
+    # showed green/fully constrained): whenever `result_code != 0` the
+    # system is rank-deficient, and py-slvs's `Dof` for a rank-deficient
+    # solve is not a free-parameter count at all (it read 0 for a sketch
+    # with 3 real DOF, because a LineDistance's companion Parallel between
+    # two already-Vertical lines was one redundant equation). Once one of
+    # the overrides above has accepted the solve as `converged`, check it
+    # with a test that is not fooled by the redundancy.
+    # A positive count is kept (the indicator only needs "zero or not"); a zero is double-checked by perturbing the solution
+    # (`_has_free_motion`), which does not depend on the rank count.
+    base_dof = system.Dof
+    if converged and result_code != 0 and base_dof <= 0 and _has_free_motion(sketch, anchor_point_ids):
+        base_dof = 1  # At least one; the exact count is not known on this path.
+
     if converged and any(
         isinstance(c, DistanceConstraint) and c.provisional for c in sketch.constraints.values()
     ):
-        dof = max(system.Dof, 1)
+        dof = max(base_dof, 1)
     else:
-        dof = system.Dof
+        dof = base_dof
 
     # Bug fix (on-device feedback: a Polygon's own across-flats
     # LineDistanceConstraint - or a Horizontal/Vertical one on an edge -

@@ -4487,17 +4487,24 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       });
       return;
     }
+    // Bug fix (Edit Alone measure 422 `missing_reference`): a pick on the focused Part's own bodies (Make Focus / Edit Alone)
+    // has an empty occurrenceId, meaning "the focused Part" - it was sent against the root Part, which may have no geometry at
+    // all. All picks on the focused Part: measure in that Part (the same as the Width mate check). Mixed with picks on the rest
+    // of the assembly (root-relative paths): measure in the root, the focused picks given their path from the root.
+    final focusPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    final allOnFocus = _selectedEntities.every((e) => e.occurrenceId.isEmpty);
+    final measurePartId = allOnFocus ? _focusPartId : part.id;
     final refs = [
       for (final entity in _selectedEntities)
         MeasureEntityRefDto(
-          occurrenceId: entity.occurrenceId,
+          occurrenceId: allOnFocus || entity.occurrenceId.isNotEmpty ? entity.occurrenceId : focusPath.join('/'),
           subshapeRef: SubShapeRefDto(bodyId: entity.bodyId, shapeType: _subShapeTypeFor(entity.kind), index: entity.id),
         ),
     ];
     final token = ++_measureRequestToken;
     setState(() => _measurementLoading = true);
     try {
-      final result = await _api.measure(part.id, refs);
+      final result = await _api.measure(measurePartId, refs);
       if (!mounted || token != _measureRequestToken) return;
       setState(() {
         _measurementResult = result;
@@ -11680,7 +11687,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _sceneEmissiveIntensity = ScenePreferences.emissiveIntensity;
     });
     if (meshQualityChanged && _part != null) {
-      await _refreshMesh();
+      await Future.wait([_refreshMesh(), _refreshAssemblyMesh()]);
     }
   }
 
@@ -11758,7 +11765,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   Future<void> _onMeshQualityChanged(double quality) async {
     setState(() => _meshQuality = quality);
     await ViewPreferences.setMeshQuality(quality);
-    await _refreshMesh();
+    await Future.wait([_refreshMesh(), _refreshAssemblyMesh()]);
   }
 
   /// A4: toggles perspective/orthographic projection.
@@ -13256,7 +13263,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (_assemblyMesh != null && mounted) setState(() => _assemblyMesh = null);
       return;
     }
-    final mesh = await _api.getAssemblyMesh(part.id);
+    // Polygon Resolution applies to everything in the viewport, child Occurrences included.
+    final mesh = await _api.getAssemblyMesh(part.id, meshQuality: _meshQuality);
     if (!mounted) return;
     setState(() {
       _assemblyMesh = mesh;

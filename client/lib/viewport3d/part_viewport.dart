@@ -7518,7 +7518,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (scene == null) {
       return const Center(child: CircularProgressIndicator());
     }
-    return LayoutBuilder(
+    // Clipped to the viewport's own box: the overlay painters (dimensions, constraint glyphs) draw wherever the camera projects
+    // them, and in the desktop layout the viewport sits below the ribbon in a Column, so without this a dimension scrolled off the
+    // top was painted over the ribbon.
+    return ClipRect(
+        child: LayoutBuilder(
       builder: (context, constraints) {
         final size = Size(constraints.maxWidth, constraints.maxHeight);
         _viewportSize = size;
@@ -7769,7 +7773,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           ],
         );
       },
-    );
+    ));
   }
 
   // A4: wrapper for the scroll-wheel signal event. The orbit handler body

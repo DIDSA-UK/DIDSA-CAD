@@ -5,6 +5,7 @@ import 'package:flutter_scene/scene.dart' show Camera;
 import 'package:vector_math/vector_math.dart' as vm;
 
 import '../api/dimension_label_placement.dart';
+import '../layout/layout_mode.dart';
 import '../sketch/label_drag_resolver.dart';
 import '../sketch/sketch_controller.dart'
     show
@@ -66,6 +67,10 @@ class ConstraintOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
+    // Dimension text follows the system text size, and is larger in the desktop layout, where the viewport is usually a big
+    // monitor viewed from further away and the phone-sized labels were hard to read.
+    final labelScale =
+        MediaQuery.textScalerOf(context).scale(1.0) * (LayoutModeScope.isDesktop(context) ? _desktopLabelScale : 1.0);
     return IgnorePointer(
       child: CustomPaint(
         size: Size.infinite,
@@ -75,6 +80,7 @@ class ConstraintOverlay extends StatelessWidget {
           basis: basis,
           items: items,
           focusTransform: focusTransform,
+          labelScale: labelScale,
         ),
       ),
     );
@@ -85,6 +91,7 @@ const Color _selectedColor = Colors.purple;
 const Color _dimensionLineColor = Colors.black;
 const Color _constraintBadgeColor = Color(0xFFF5A623);
 const double _dimensionFontSize = 9.5;
+const double _desktopLabelScale = 1.5;
 // On-device feedback ("what font options are available for dimension text?
 // anything more suiting technical drawing?"): dimension/constraint labels
 // previously had no fontFamily at all (bare platform default) - Lekton
@@ -304,6 +311,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
   final SketchPlaneBasis basis;
   final List<ConstraintOverlayItem> items;
   final vm.Matrix4? focusTransform;
+  final double labelScale;
 
   _ConstraintOverlayPainter({
     required this.camera,
@@ -311,6 +319,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
     required this.basis,
     required this.items,
     this.focusTransform,
+    this.labelScale = 1.0,
   });
 
   Offset? _project((double, double) sketchXY) =>
@@ -745,7 +754,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
   void _drawDimensionLabel(Canvas canvas, Offset center, String text, Color color, {bool plainBlackText = false}) {
     final baseStyle = TextStyle(
       color: plainBlackText ? Colors.black : Colors.white,
-      fontSize: _dimensionFontSize,
+      fontSize: _dimensionFontSize * labelScale,
       fontWeight: FontWeight.w600,
       fontFamily: _dimensionFontFamily,
     );
@@ -753,7 +762,7 @@ class _ConstraintOverlayPainter extends CustomPainter {
     final textSpan = isDiameter
         ? TextSpan(
             children: [
-              TextSpan(text: '⌀', style: baseStyle.copyWith(fontSize: _dimensionFontSize * _diameterSymbolScale)),
+              TextSpan(text: '⌀', style: baseStyle.copyWith(fontSize: _dimensionFontSize * labelScale * _diameterSymbolScale)),
               TextSpan(text: text.substring(1), style: baseStyle),
             ],
           )
@@ -780,7 +789,8 @@ class _ConstraintOverlayPainter extends CustomPainter {
     return oldDelegate.camera != camera ||
         oldDelegate.viewportSize != viewportSize ||
         oldDelegate.items != items ||
-        oldDelegate.focusTransform != focusTransform;
+        oldDelegate.focusTransform != focusTransform ||
+        oldDelegate.labelScale != labelScale;
   }
 }
 
