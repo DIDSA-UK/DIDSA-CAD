@@ -11,6 +11,7 @@ repo's CI needs no VR checkout):
 The file name says `gear`, so conftest marks it `gears`."""
 
 import json
+import math
 
 import pytest
 
@@ -48,6 +49,22 @@ def _stored_mates(root):
 def _differs(got, want, path="", flip=False):
     """None when `got` is `want` to 1e-6. The recording is one machine's (x86-64); on another CPU (CI's arm64 runner) the free-motion `basis` comes out with the
     opposite overall sign (a null-space vector has no sign), so each basis row may be negated as a whole."""
+    if isinstance(want, dict) and "rotation_axis" in want:
+        # a pose: translation to 1e-6, rotation as a rotation (a quaternion up to sign), not as axis and angle: with no turn (or a half turn) the axis is arbitrary
+        # and another CPU picks another one
+        if not isinstance(got, dict) or set(got) != set(want):
+            return f"{path}: keys differ"
+        if any(abs(a - b) > 1e-6 for a, b in zip(got["translation"], want["translation"])):
+            return f"{path}.translation: {got['translation']} != {want['translation']}"
+
+        def quaternion(pose):
+            half = math.radians(pose["rotation_angle_degrees"]) / 2.0
+            axis = pose["rotation_axis"]
+            norm = math.sqrt(sum(c * c for c in axis)) or 1.0
+            return [math.cos(half)] + [math.sin(half) * c / norm for c in axis]
+
+        dot = abs(sum(a * b for a, b in zip(quaternion(got), quaternion(want))))
+        return None if math.sqrt(max(0.0, 1.0 - min(dot, 1.0) ** 2)) <= 1e-6 else f"{path}: rotation {got['rotation_axis']}/{got['rotation_angle_degrees']} != {want['rotation_axis']}/{want['rotation_angle_degrees']}"
     if isinstance(want, dict):
         if not isinstance(got, dict) or set(got) != set(want):
             return f"{path}: keys differ"
