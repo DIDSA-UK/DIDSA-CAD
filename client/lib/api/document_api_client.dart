@@ -2263,6 +2263,53 @@ class MateDto {
   bool get isBroken => status == 'broken';
   bool get isNear => status == 'near';
 
+  /// N1d (`docs/mates-storage-sessions-plan-2026-11-12.md`, "N1b results"): what the backend says about this mate's references.
+  /// Paths read `references[0].subshape_ref`, `references[1].midplane.b.face_ref` ...; [referenceReasons] maps a path to a reason code.
+  /// [lostReferences] (face gone / ambiguous: the mate is `broken`, nothing to confirm), [movedReferences] (bound on weak evidence: the mate
+  /// is [held]), [followedReferences] (re-found after an edit: the backend says so ONCE, see `MateFollowedNotes`). An older backend sends
+  /// none of these, and they all read as empty / `false`.
+  final List<String> lostReferences;
+  final List<String> movedReferences;
+  final List<String> followedReferences;
+  final Map<String, String> referenceReasons;
+
+  /// `true`: out of every solve until `PATCH .../mates/{id} {"confirm_references": true}`. Never `true` together with [lostReferences].
+  final bool held;
+
+  /// Whether the backend sent any of the N1b fields (it always sends `held`): `false` for an older backend.
+  final bool hasReferenceState;
+
+  bool get hasLostReference => lostReferences.isNotEmpty;
+
+  /// Held and needing a Confirm: a lost mate has nothing to confirm, so it never counts.
+  bool get needsConfirm => held && !hasLostReference;
+  bool get hasFollowedReference => followedReferences.isNotEmpty;
+
+  /// This mate with [followed] / [reasons] added to what the backend said (the client keeps a followed reference until it is dismissed).
+  MateDto withFollowed(List<String> followed, Map<String, String> reasons) => MateDto(
+        id: id,
+        type: type,
+        references: references,
+        value: value,
+        flipped: flipped,
+        suppressed: suppressed,
+        allowRotation: allowRotation,
+        alignment: alignment,
+        secondaryFlip: secondaryFlip,
+        limitMin: limitMin,
+        limitMax: limitMax,
+        limitValue: limitValue,
+        status: status,
+        statusResidualMm: statusResidualMm,
+        statusResidualDeg: statusResidualDeg,
+        lostReferences: lostReferences,
+        movedReferences: movedReferences,
+        followedReferences: followed,
+        referenceReasons: {...referenceReasons, ...reasons},
+        held: held,
+        hasReferenceState: hasReferenceState,
+      );
+
   MateDto({
     required this.id,
     required this.type,
@@ -2279,6 +2326,12 @@ class MateDto {
     this.status = 'ok',
     this.statusResidualMm,
     this.statusResidualDeg,
+    this.lostReferences = const [],
+    this.movedReferences = const [],
+    this.followedReferences = const [],
+    this.referenceReasons = const {},
+    this.held = false,
+    this.hasReferenceState = false,
   });
 
   factory MateDto.fromJson(Map<String, dynamic> json) => MateDto(
@@ -2299,7 +2352,19 @@ class MateDto {
         status: json['status'] as String? ?? 'ok',
         statusResidualMm: (json['status_residual_mm'] as num?)?.toDouble(),
         statusResidualDeg: (json['status_residual_deg'] as num?)?.toDouble(),
+        lostReferences: _stringList(json['lost_references']),
+        movedReferences: _stringList(json['moved_references']),
+        followedReferences: _stringList(json['followed_references']),
+        referenceReasons: _stringMap(json['reference_reasons']),
+        held: json['held'] as bool? ?? false,
+        hasReferenceState: const ['lost_references', 'moved_references', 'followed_references', 'reference_reasons', 'held']
+            .any(json.containsKey),
       );
+
+  static List<String> _stringList(Object? raw) => raw is List ? [for (final p in raw) p.toString()] : const [];
+
+  static Map<String, String> _stringMap(Object? raw) =>
+      raw is Map ? {for (final e in raw.entries) e.key.toString(): e.value.toString()} : const {};
 }
 
 /// One occurrence a mate preview moves: [MateSolvePreviewDto.members].
@@ -6120,6 +6185,8 @@ class DocumentApiClient {
     bool setLimitRange = false,
     double? limitMin,
     double? limitMax,
+    // N1d: accept the face a held mate is bound to (`confirm_references`); with [solve] the mate is solved in the same call.
+    bool confirmReferences = false,
   }) =>
       _send(
         () => _httpClient.patch(
@@ -6139,6 +6206,7 @@ class DocumentApiClient {
                 if (branchChanges.isNotEmpty) 'branch_changes': [for (final c in branchChanges) c.toJson()],
                 if (setLimitRange) 'limit_min': limitMin,
                 if (setLimitRange) 'limit_max': limitMax,
+                if (confirmReferences) 'confirm_references': true,
               }),
             ),
         (body) => MateDto.fromJson(body as Map<String, dynamic>),

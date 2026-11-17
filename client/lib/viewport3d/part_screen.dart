@@ -113,6 +113,7 @@ import 'loft_panel.dart';
 import 'loft_surface_panel.dart';
 import 'merge_panel.dart';
 import 'mate_context_menu.dart';
+import 'mate_reference_state.dart';
 import 'pattern_context_menu.dart';
 import 'mate_panel.dart';
 import 'mate_pick_point.dart';
@@ -643,6 +644,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// different things that happen to coexist on the same Part.
   List<OccurrenceDto> _occurrences = [];
   List<MateDto> _mates = [];
+
+  /// N1d: followed references the backend reported once, kept until the user dismisses them ("Got it"); never polled for, and never
+  /// a reason to mark the document dirty (decision N-7).
+  final MateFollowedNotes _mateFollowedNotes = MateFollowedNotes();
   List<ComponentPatternDto> _componentPatterns = [];
 
   /// Mates a pattern edit left broken ([_announceBrokenMates]): the Assembly tree flashes these rows whenever [_flashMateToken] changes.
@@ -13199,7 +13204,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (!mounted) return;
     setState(() {
       _occurrences = occurrences;
-      _mates = mates;
+      _mates = _mateFollowedNotes.merge(mates);
       _componentPatterns = patterns;
       _constraintStatusByOccurrenceId = constraintStatus;
       if (_selectedOccurrenceId != null && !occurrences.any((o) => o.id == _selectedOccurrenceId)) {
@@ -25615,9 +25620,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [showMateContextMenu]'s own two actions.
   Future<void> _onMateLongPress(MateDto mate, {Offset? at}) async {
     _onMateTap(mate);
-    final action = await showMateContextMenu(context, at: at);
+    final action = await showMateContextMenu(context, at: at, mate: mate);
     if (!mounted || action == null) return;
     switch (action) {
+      case MateContextMenuAction.confirmReferences:
+        await _confirmMateReferences(mate);
+      case MateContextMenuAction.gotIt:
+        setState(() => _mateFollowedNotes.dismiss(mate.id));
+        _applyMateFollowedNotes();
       case MateContextMenuAction.edit:
         await _openMateEdit(mate);
       case MateContextMenuAction.delete:
@@ -25854,6 +25864,43 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } on ApiException catch (e) {
       if (!mounted) return;
       _abortMatePreviewGlideCommit();
+      setState(() => _errorMessage = e.message);
+    }
+  }
+
+  /// N1d: "Got it" took the followed note away; redraws the rows without it (no request, no dirty flag).
+  void _applyMateFollowedNotes() {
+    if (!mounted) return;
+    setState(() => _mates = [
+          for (final m in _mates)
+            if (m.hasFollowedReference && !_mateFollowedNotes.has(m.id)) m.withFollowed(const [], const {}) else m,
+        ]);
+  }
+
+  /// N1d: `MateContextMenuAction.confirmReferences`' handler for a held mate: `PATCH .../mates/{id}` `{"confirm_references": true}`,
+  /// solved in the same call the way [_openMateEdit]'s Save is (so the driven part moves with it), then the tree and mesh refresh. The
+  /// stored reference changes, so the Part is marked dirty; a mates listing and "Got it" never do (N-7).
+  Future<void> _confirmMateReferences(MateDto mate) async {
+    final part = _part;
+    final focusPartId = _focusStack?.current ?? part?.id;
+    if (part == null || focusPartId == null) return;
+    final drivenOccurrenceId = mate.references.length == 2
+        ? _drivableOccurrenceId([mate.references[1].occurrenceId, mate.references[0].occurrenceId])
+        : null;
+    try {
+      await _api.updateMate(
+        focusPartId,
+        mate.id,
+        confirmReferences: true,
+        solve: drivenOccurrenceId == null || isLimitMateType(mate.type) ? null : _mateMovement,
+        solveOccurrenceId: drivenOccurrenceId,
+      );
+      if (!mounted) return;
+      setState(() => _markPartDirty(focusPartId));
+      await _refreshAssemblyTree();
+      await _refreshAssemblyMesh();
+    } on ApiException catch (e) {
+      if (!mounted) return;
       setState(() => _errorMessage = e.message);
     }
   }
