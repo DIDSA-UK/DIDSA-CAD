@@ -15,6 +15,10 @@ A `VertexSignature` is captured when a reference is created and refreshed every 
 `decide_reference` is the (b) + (d) of the design: index still right -> keep it; else the unique vertex with the same fingerprint; else the nearest of
 several with the same fingerprint if clearly nearest and close; else a lone vertex sitting where the old one was (flagged "potentially moved");
 else lost. It never returns a rebinding it is not sure about.
+
+Faces (N1a): a cylinder / sphere / torus face also carries its radius and a cone its half-angle (`FaceSignature`), not as fingerprint but as the tie-break
+among coaxial faces, which the position rules cannot separate (`size_error` and the constants beside `RADIUS_TOLERANCE_REL`). A signature without them (every
+one saved before N1a) decides exactly as before.
 """
 
 from __future__ import annotations
@@ -33,7 +37,25 @@ SEARCH_TOLERANCE_REL = 0.05
 # The nearest candidate must be this many times nearer than the runner-up to be considered unambiguous.
 UNAMBIGUOUS_RATIO = 3.0
 # A vertex whose fingerprint changed but which still sits within this fraction of the diagonal of the old position is a "potentially moved" binding.
+# Also the band within which two fingerprint-equal faces count as "at the same distance" for the size tie-break below (coaxial faces are at ~0 both).
 SOFT_TOLERANCE_REL = 0.01
+
+# The size tie-break among coaxial faces (N1a; plan decision N-4 (a)). A cylinder / cone face is measured by its distance from the stored AXIS
+# (`shape_distance`), so every cylinder on one axis (a bore and the boss around it, the steps of a shaft, a gear's bore and rim) is equally near and the
+# fingerprint (kind + axis) cannot tell them apart. `FaceSignature.radius` / `major_radius` / `half_angle` can. They are NOT fingerprint (a dimension edit
+# changes them); they only decide between candidates the position rules leave level. One candidate's size is "clearly nearer" the stored size than
+# another's when BOTH hold:
+#   * the other is clearly a different size: its error exceeds the tolerance below. Distinct coaxial faces of a real part differ by a wall, a step or a
+#     tooth depth, which is a few per cent of the radius or more (the gear-train bevel: bore 4 / rim 28 mm; a 1 mm wall on a 50 mm tube is 2 %), while
+#     OCCT measures an analytic radius to ~1e-9 relative; 1 % separates the two with room either side. Two radii closer than that stay ambiguous.
+#   * the nearer one is at least `SIZE_UNAMBIGUOUS_RATIO` times nearer: the same factor the position rule asks of the runner-up (`UNAMBIGUOUS_RATIO`), so a
+#     radius edit that moved a face most of the way to its coaxial twin's radius is ambiguous, not a guess (bore 4 -> 5 beside an outer 10: errors 1 and 6,
+#     clear; bore 4 -> 7: errors 3 and 6, ambiguous).
+RADIUS_TOLERANCE_REL = 0.01  # of the stored radius (for a torus, of the larger of its two stored radii)
+# The cone's half-angle tolerance, in degrees. Coaxial cones of one part differ by whole degrees (a bevel gear's face, pitch and root cones differ by its
+# addendum / dedendum angles, typically 1 to 4 degrees; countersinks come in 82 / 90 / 100 / 120); OCCT measures the angle exactly. 0.5 degrees sits between.
+HALF_ANGLE_TOLERANCE_DEGREES = 0.5
+SIZE_UNAMBIGUOUS_RATIO = 3.0
 
 
 @dataclass(frozen=True)
@@ -69,13 +91,21 @@ class EdgeSignature:
 class FaceSignature:
     """A face: `position` is its centroid, `surface_kind` "plane" / "cylinder" / ..., `direction` the OUTWARD unit normal for a plane (signed: the top and the
     bottom of a box are different faces) and the unsigned unit axis for a cylinder / cone / sphere / torus (the unsigned normal at the middle of the
-    parameter range for anything else), `area` its area (not part of the fingerprint)."""
+    parameter range for anything else), `area` its area (not part of the fingerprint).
+
+    The size (N1a), also NOT fingerprint, only a tie-break among coaxial candidates (`size_error`): `radius` for a cylinder and a sphere, the MINOR (tube)
+    radius for a torus (a fillet's own radius) with its MAJOR radius (axis to tube centre) in `major_radius`; `half_angle` for a cone, in degrees, unsigned
+    (OCCT's semi-angle carries the sign of the axis direction, and the axis here is unsigned). None when not measured: every signature saved before N1a,
+    and every other surface kind."""
 
     position: tuple[float, float, float]
     surface_kind: str
     direction: tuple[float, float, float] = (0.0, 0.0, 0.0)
     area: float = 0.0
     body_diagonal: float = 0.0
+    radius: float | None = None
+    major_radius: float | None = None
+    half_angle: float | None = None
 
 
 ShapeSignature = VertexSignature | EdgeSignature | FaceSignature
@@ -218,6 +248,47 @@ def shape_distance(stored: ShapeSignature, other: ShapeSignature) -> float:
     return distance(stored.position, other.position)
 
 
+def size_error(stored: ShapeSignature, other: ShapeSignature) -> tuple[float, float] | None:
+    """How far `other`'s size is from `stored`'s, and the tolerance within which that counts as the same size, for two faces that both carry one: the
+    half-angle difference (degrees) for cones, the radius difference (plus the major-radius difference for tori) for the rest. None when either has no size
+    (a signature saved before N1a, a plane, a free-form face): then no size rule applies and every decision is exactly what it was before N1a."""
+    if not isinstance(stored, FaceSignature) or not isinstance(other, FaceSignature):
+        return None
+    if stored.half_angle is not None and other.half_angle is not None:
+        return abs(stored.half_angle - other.half_angle), HALF_ANGLE_TOLERANCE_DEGREES
+    if stored.radius is not None and other.radius is not None:
+        error = abs(stored.radius - other.radius)
+        scale = stored.radius
+        if stored.major_radius is not None and other.major_radius is not None:
+            error += abs(stored.major_radius - other.major_radius)
+            scale = max(scale, stored.major_radius)
+        return error, RADIUS_TOLERANCE_REL * scale
+    return None
+
+
+def size_unchanged(stored: ShapeSignature, other: ShapeSignature) -> bool:
+    """Whether `other` has `stored`'s size to within the tolerance, or either has no size. The fast path's extra condition: a face that kept its size cannot have a
+    coaxial twin clearly nearer in size, so only a face whose size changed needs the whole Body measured."""
+    measured = size_error(stored, other)
+    return measured is None or measured[0] <= measured[1]
+
+
+def _size_clearly_nearer(nearer: tuple[float, float], farther: tuple[float, float]) -> bool:
+    """`nearer` (error, tolerance) is clearly nearer the stored size than `farther` (see the constants above)."""
+    return farther[0] > farther[1] and farther[0] >= SIZE_UNAMBIGUOUS_RATIO * nearer[0]
+
+
+def _size_winner(stored: ShapeSignature, pool: list[int], candidates: list[ShapeSignature]) -> int | None:
+    """Of `pool` (two or more candidates the position rules leave level), the one whose size is clearly nearer the stored size than every other's; None when
+    any of them has no size or no one is clearly nearest."""
+    errors = {i: size_error(stored, candidates[i]) for i in pool}
+    if any(e is None for e in errors.values()):
+        return None
+    ranked = sorted(pool, key=lambda i: errors[i][0])
+    best, runner_up = ranked[0], ranked[1]
+    return best if _size_clearly_nearer(errors[best], errors[runner_up]) else None
+
+
 def decide_reference(
     stored: ShapeSignature,
     index: int,
@@ -235,9 +306,20 @@ def decide_reference(
     if 0 <= index < len(candidates) and index in equal:
         mine = shape_distance(stored, candidates[index])
         twin_nearer = any(i != index and shape_distance(stored, candidates[i]) < mine - 1e-9 for i in equal)
-        if mine <= search_tolerance or not twin_nearer:
+        # N1a: a twin level with it (a coaxial face, at the same distance from the stored axis) whose size is clearly nearer the stored size: the index now
+        # names the wrong one of several coaxial faces (a bore's index landing on the boss around it). Never `ok` on it.
+        my_size = size_error(stored, candidates[index])
+        twin_nearer_in_size = my_size is not None and any(
+            i != index
+            and abs(shape_distance(stored, candidates[i]) - mine) <= soft_tolerance
+            and (twin_size := size_error(stored, candidates[i])) is not None
+            and _size_clearly_nearer(twin_size, my_size)
+            for i in equal
+        )
+        if (mine <= search_tolerance or not twin_nearer) and not twin_nearer_in_size:
             return ReferenceDecision(ReferenceStatus.OK, index, method="index")
-        # Same fingerprint but it travelled far and an identical-looking twin is nearer to where it was: fall through to the search below.
+        # Same fingerprint but it travelled far and an identical-looking twin is nearer to where it was, or a coaxial twin is clearly nearer in size: fall
+        # through to the search below.
 
     if len(equal) == 1:
         only = equal[0]
@@ -250,6 +332,16 @@ def decide_reference(
         )
     if len(equal) > 1:
         d1 = shape_distance(stored, candidates[by_distance[0]])
+        # N1a: several level at the nearest distance (coaxial faces): their size decides, provided every candidate outside that level set is clearly farther
+        # by the usual position rule. The winner is `followed`: the same kind, the same axis, and a size the others clearly do not have.
+        level = [i for i in by_distance if shape_distance(stored, candidates[i]) <= d1 + soft_tolerance]
+        if d1 <= search_tolerance and len(level) > 1:
+            outside = [shape_distance(stored, candidates[i]) for i in by_distance if i not in level]
+            if all(d >= UNAMBIGUOUS_RATIO * d1 and d > d1 + 1e-9 for d in outside):
+                winner = _size_winner(stored, level, candidates)
+                if winner is not None:
+                    reason = "nearest_half_angle" if getattr(stored, "half_angle", None) is not None else "nearest_radius"
+                    return ReferenceDecision(ReferenceStatus.FOLLOWED, winner, reason=reason, method="signature", candidates=tuple(level))
         d2 = shape_distance(stored, candidates[by_distance[1]])
         if d1 <= search_tolerance and d2 >= UNAMBIGUOUS_RATIO * d1 and d2 > d1 + 1e-9:
             return ReferenceDecision(

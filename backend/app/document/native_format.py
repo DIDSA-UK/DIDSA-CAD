@@ -672,6 +672,11 @@ def _shape_signature_to_dict(signature: ShapeSignature) -> dict:
         "direction": list(signature.direction),
         "area": signature.area,
         "body_diagonal": signature.body_diagonal,
+        # N1a: the size of a cylinder / sphere / torus / cone face, written only when measured (no schema bump: an older backend ignores the keys, and a file
+        # without them reads with no size, which decides exactly as before).
+        **({"radius": signature.radius} if signature.radius is not None else {}),
+        **({"major_radius": signature.major_radius} if signature.major_radius is not None else {}),
+        **({"half_angle": signature.half_angle} if signature.half_angle is not None else {}),
     }
 
 
@@ -696,6 +701,9 @@ def _shape_signature_from_dict(data: dict) -> ShapeSignature:
             direction=tuple(data.get("direction", (0.0, 0.0, 0.0))),
             area=float(data.get("area", 0.0)),
             body_diagonal=float(data.get("body_diagonal", 0.0)),
+            radius=float(data["radius"]) if data.get("radius") is not None else None,
+            major_radius=float(data["major_radius"]) if data.get("major_radius") is not None else None,
+            half_angle=float(data["half_angle"]) if data.get("half_angle") is not None else None,
         )
     return _signature_from_dict(data)
 

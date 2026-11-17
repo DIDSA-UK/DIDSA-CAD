@@ -128,6 +128,19 @@ mechanism (`app/document/subshape_identity.py`), not one per consumer:
 * `SubShapeRef.signature` (`compare=False`, `repr=False`: equality, hashing and the body-cache fingerprint are unchanged) holds a `VertexSignature`, `EdgeSignature` or `FaceSignature`. Edge: curve kind, unsigned direction (axis for a circle), adjacent
   faces' normals / kinds at the midpoint; face: surface kind and the outward normal (planes, signed) or axis. Length, radius, area are not fingerprint. **Distances are measured so that trimming does not read as moving** (`shape_distance`): a
   straight edge by its distance from the stored LINE (a neighbouring fillet shortens it and shifts its midpoint), a circle by its centre, a plane by its offset along the normal, a cylinder / cone by its distance from the axis.
+* **Coaxial faces: size as the tie-break (N1a, 2026-11-17; `docs/mates-storage-sessions-plan-2026-11-12.md`, decision N-4 (a)).** Measuring a cylinder / cone by its distance from the stored axis makes every face on one axis (a bore and the
+  boss around it, the steps of a shaft, a gear's bore and rim) equally near, and kind + axis cannot tell them apart: a bore's index renumbered onto the boss read `ok` there (silently wrong), a bevel gear's bore beside its rim read `ambiguous`.
+  A `FaceSignature` now also carries its size, **not as fingerprint** (a dimension edit changes it): `radius` (cylinder, sphere; for a torus the MINOR radius, with the MAJOR one in `major_radius`) and `half_angle` (cone, degrees, unsigned).
+  It is used twice:
+  1. *Tie-break:* when two or more fingerprint-equal faces are level at the nearest distance (within `SOFT_TOLERANCE_REL` of it) and every other candidate is clearly farther by the usual position rule, the one whose size is **clearly nearest**
+     the stored size is `followed` (reason `nearest_radius` / `nearest_half_angle`). Otherwise the old rule applies (equal radii on one axis stay `ambiguous`).
+  2. *Fast path:* the stored index is kept only if its face has the same size (within the tolerance), or, when its size changed (a radius edit), no level twin's size is clearly nearer the stored one. So a bore's index that now names the boss is
+     never `ok`; a bore resized 4 -> 5 mm beside a 10 mm boss keeps its index (and, renumbered, is followed to the bore).
+
+  "Clearly nearer" (`app/sketch/reference_signature.py`, constants beside the others, reasons in their comments): the other face is clearly a different size (its error exceeds `RADIUS_TOLERANCE_REL` 0.01 of the stored radius, or
+  `HALF_ANGLE_TOLERANCE_DEGREES` 0.5) **and** the nearer one is at least `SIZE_UNAMBIGUOUS_RATIO` (3, as `UNAMBIGUOUS_RATIO`) times nearer. A signature without a size (every one saved before N1a) decides exactly as before; it gains its size the
+  next time a refresh re-stamps it (`ok` / `followed`). Native format: `radius` / `major_radius` / `half_angle` are written only when present and read optionally (no schema bump; an older backend ignores them). Tests:
+  `tests/test_coaxial_signature_rules.py` (golden vectors in `tests/data/coaxial_signature_vectors.json`), `test_coaxial_reference_identity.py` (a tube), `test_coaxial_bevel_reference.py` (the gear-train demo's Bevel A).
 * `resolve_subshape_from_bodies` - the one function every consumer resolves through - honours a signature: the stored index is trusted while it still names a sub-shape with that fingerprint nearby, else the unique match is used, else it
   **fails closed** with the usual `missing_reference` 422, now carrying a `reason` (`no_match` | `ambiguous`). Nothing silently resolves to a look-alike any more, in replay or at create / update.
 * Stamping and refreshing happen when a Feature's response is built (`_feature_response`: create, update and every `GET .../features`). A reference with no signature is stamped from the Bodies the Feature saw as its input
@@ -156,6 +169,9 @@ stands INCLUDING later features, which is pre-existing and unchanged (it can ref
 
 * A `followed` outcome persists the new index silently apart from the informational list; if a stricter "always ask" mode is wanted, make `followed` also `potentially_moved`.
 * A vertex consumed by an edit *and* an identical twin existing is lost (history) or ambiguous (signature), never rebound; the cost is a flag after some edits a human would call fine.
-* Tolerances (`SEARCH_TOLERANCE_REL` 0.05, `UNAMBIGUOUS_RATIO` 3, `SOFT_TOLERANCE_REL` 0.01, `NORMAL_TOLERANCE_DEGREES` 8) are first cuts, named constants in `reference_signature.py`; no on-device tuning yet.
+* Tolerances (`SEARCH_TOLERANCE_REL` 0.05, `UNAMBIGUOUS_RATIO` 3, `SOFT_TOLERANCE_REL` 0.01, `NORMAL_TOLERANCE_DEGREES` 8, and N1a's `RADIUS_TOLERANCE_REL` 0.01, `HALF_ANGLE_TOLERANCE_DEGREES` 0.5, `SIZE_UNAMBIGUOUS_RATIO` 3) are first cuts, named constants in `reference_signature.py`; no on-device tuning yet.
+* Coaxial size tie-break (N1a) limits: the stored index is refused only when a twin is *clearly* nearer in size. A radius edit that takes a face most of the way to its coaxial twin's radius, together with a renumbering onto that twin, keeps the
+  wrong index (bore 4 -> 7 mm beside a 10 mm boss, index on the boss: errors 6 and 3, ratio 2 < 3), as before N1a; without the renumbering the same edit keeps the right one. Two coaxial faces of equal radius (a bore split by a groove) stay
+  indistinguishable. Edges are unchanged (an `EdgeSignature` already carried its radius, still not used to decide). Sketch external references (vertices, circle centres) are unaffected.
 * Cost: a refresh on the fast path measures one vertex per reference; the slow path measures a whole Body and (for a lineage reference) replays the Part once per edit (memoised).
   A very heavy Part (a complex herringbone gear) pays one uncached replay the first time one of its references goes stale.

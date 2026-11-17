@@ -4,8 +4,8 @@ A `SubShapeRef` is a body id plus a raw OCCT index; an upstream edit that renumb
 sketch's external references got a geometric signature and a re-find rule (`app.sketch.reference_signature`); this module gives every other consumer of a
 `SubShapeRef` (Fillet / Chamfer `edge_refs`, Create Plane, Pattern directions and axes, Mirror planes, Shell / Delete / Move Face selections, ...) the same:
 
-* `decide_subshape` - where does one reference point now? (fast path: the index still names a sub-shape with the same fingerprint nearby; else the signature
-  search; else lost);
+* `decide_subshape` - where does one reference point now? (fast path: the index still names a sub-shape with the same fingerprint nearby and, for a face that
+  carries one, the same radius / cone half-angle; else the signature search, where a face's size breaks ties among coaxial faces; else lost);
 * `resolve_subshape_from_bodies` (app.document.extrude, the one place every consumer resolves through) honours it: a signed reference is re-found, never
   silently rebound, and fails closed with the usual `missing_reference` 422 (now carrying a `reason`) when it cannot be found unambiguously;
 * `refresh_feature_subshape_refs` - run when a Feature's response is built (create, update and every `GET .../features`): stamps a signature on any reference
@@ -44,6 +44,7 @@ from app.sketch.reference_signature import (
     decide_reference,
     shape_distance,
     fingerprint_matches,
+    size_unchanged,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,7 +82,9 @@ def decide_subshape(
     if in_range:
         here = measurer.signature(ref.index)
         tolerance = SEARCH_TOLERANCE_REL * (ref.signature.body_diagonal or measurer.diagonal)
-        if fingerprint_matches(ref.signature, here) and shape_distance(ref.signature, here) <= tolerance:
+        # N1a: and the same size (radius / cone half-angle) when the signature has one. A face whose size changed goes through `decide_reference`, which
+        # keeps it unless a coaxial twin's size is clearly nearer the stored one (a bore's index now naming the boss around it is never `ok`).
+        if fingerprint_matches(ref.signature, here) and shape_distance(ref.signature, here) <= tolerance and size_unchanged(ref.signature, here):
             return ReferenceDecision(ReferenceStatus.OK, ref.index, method="index")
     signature_decision = decide_reference(ref.signature, ref.index, measurer.all())
     if history is not None and ref.lineage is not None and feature_id is not None:

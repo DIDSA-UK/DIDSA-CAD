@@ -304,6 +304,9 @@ class BodyFaceMeasurer:
         surface = BRepAdaptor_Surface(face, True)
         kind = _SURFACE_KIND_NAMES.get(int(surface.GetType()), "other")
         direction = (0.0, 0.0, 0.0)
+        radius: float | None = None
+        major_radius: float | None = None
+        half_angle: float | None = None
         try:
             if kind in ("cylinder", "cone", "sphere", "torus"):
                 axis = {
@@ -313,6 +316,16 @@ class BodyFaceMeasurer:
                     "torus": lambda: surface.Torus().Axis(),
                 }[kind]().Direction()
                 direction = _unsigned((axis.X(), axis.Y(), axis.Z()))
+                # N1a: the size, a tie-break among coaxial faces (`app.sketch.reference_signature.size_error`), not fingerprint.
+                if kind == "cylinder":
+                    radius = surface.Cylinder().Radius()
+                elif kind == "sphere":
+                    radius = surface.Sphere().Radius()
+                elif kind == "torus":
+                    torus = surface.Torus()
+                    radius, major_radius = torus.MinorRadius(), torus.MajorRadius()
+                else:
+                    half_angle = abs(math.degrees(surface.Cone().SemiAngle()))
             else:
                 u_min, u_max, v_min, v_max = breptools.UVBounds(face)
                 point, normal = gp_Pnt(), gp_Vec()
@@ -328,6 +341,9 @@ class BodyFaceMeasurer:
             direction=direction,
             area=props.Mass(),
             body_diagonal=self._diagonal,
+            radius=radius,
+            major_radius=major_radius,
+            half_angle=half_angle,
         )
         self._cache[index] = measured
         return measured
