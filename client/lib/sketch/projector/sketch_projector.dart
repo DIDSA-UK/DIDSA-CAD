@@ -240,6 +240,9 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
   if (c is HorizontalAngleConstraintDto) return ids([c.lineStartId, c.lineEndId]);
   if (c is PointAngleConstraintDto) return ids([c.vertexPointId, c.point1Id, c.point2Id]);
   if (c is PointCircleDistanceConstraintDto) return ids([c.pointId, c.centerPointId, c.radiusPointId]);
+  if (c is CircleCircleDistanceConstraintDto) {
+    return ids([c.center1PointId, c.radius1PointId, c.center2PointId, c.radius2PointId]);
+  }
   return null;
 }
 
@@ -382,6 +385,13 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
     final supplement = q == null ? br.horizontalSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
     final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
     return [u.x - _len(u).scale(math.cos(target * math.pi / 180))];
+  }
+  if (c is CircleCircleDistanceConstraintDto) {
+    // Along the centre line: the gap d - r1 - r2, or the overall size d + r1 + r2.
+    final c1 = a(c.center1PointId), c2 = a(c.center2PointId);
+    final d = _len(_sub(c2, c1));
+    final radii = _len(_sub(a(c.radius1PointId), c1)) + _len(_sub(a(c.radius2PointId), c2));
+    return [(c.side == 'max' ? d + radii : d - radii).plus(-c.distance)];
   }
   if (c is PointCircleDistanceConstraintDto) {
     // d = |point - centre|, r = |rim - centre|. Maximum: d + r. Minimum: d - r outside the circle, r - d inside (the side the reference

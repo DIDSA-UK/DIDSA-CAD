@@ -59,3 +59,13 @@ def point_circle_distance(point: XY, center: XY, rim: XY, side: str) -> float | 
         return None
     r = math.dist(center, rim)
     return abs(d - r) if side == "min" else d + r
+
+
+def circle_circle_distance(center1: XY, rim1: XY, center2: XY, rim2: XY, side: str) -> float | None:
+    """Between two circles along their centre line: "min" the gap between them (d - r1 - r2, negative where they overlap), "max" the
+    farthest points apart (d + r1 + r2). None for concentric circles (no centre line)."""
+    d = math.dist(center1, center2)
+    if d < 1e-12:
+        return None
+    r1, r2 = math.dist(center1, rim1), math.dist(center2, rim2)
+    return d - r1 - r2 if side == "min" else d + r1 + r2

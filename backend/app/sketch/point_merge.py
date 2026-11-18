@@ -29,6 +29,7 @@ from app.sketch.constraints import (
     HorizontalConstraint,
     PointAngleConstraint,
     PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
@@ -192,6 +193,10 @@ def _collapse(constraint: Constraint) -> str:
     if isinstance(constraint, (HorizontalConstraint, VerticalConstraint)):
         if constraint.point_a_id == constraint.point_b_id:
             raise MergeRefused("degenerate_constraint", f"This would break the {constraint.type} on them.", [constraint.id])
+        return _KEEP
+    if isinstance(constraint, CircleCircleDistanceConstraint):
+        if constraint.center1_point_id == constraint.center2_point_id:
+            raise MergeRefused("degenerate_constraint", "This would make the two circles concentric, which breaks the distance between them.", [constraint.id])
         return _KEEP
     if isinstance(constraint, PointCircleDistanceConstraint):
         if constraint.point_id in (constraint.center_point_id, constraint.radius_point_id):

@@ -375,4 +375,75 @@ void main() {
       _expectDraggedLabelLandsWhereDropped(controller, 'pc', [(7, 3), (12, -2), (6, 0.5)]);
     });
   });
+
+  group('minimum / maximum distance, two circles', () {
+    CircleCircleDistanceConstraintDto dim(String side, [double value = 6]) => CircleCircleDistanceConstraintDto(
+          id: 'cc',
+          entity1Id: 'one',
+          center1PointId: 'c1',
+          radius1PointId: 'r1',
+          entity2Id: 'two',
+          center2PointId: 'c2',
+          radius2PointId: 'r2',
+          distance: value,
+          side: side,
+        );
+    final apart = <String, Pt>{'c1': (0, 0), 'r1': (0, 4), 'c2': (15, 0), 'r2': (15, 3)};
+
+    test('measures the gap (negative when they overlap) and the overall size', () {
+      expect(measureDimension(dim('min'), _at(apart)), closeTo(8, 1e-12));
+      expect(measureDimension(dim('max'), _at(apart)), closeTo(22, 1e-12));
+      expect(measureDimension(dim('min'), _at({...apart, 'c2': (5, 0), 'r2': (5, 3)})), closeTo(-2, 1e-12));
+    });
+
+    test('laid out between the circles\' points on the centre line; placement round trip', () {
+      expect(dimensionLayout(dim('min'), _at(apart), null)!.arrows.map((a) => a.$1).toSet(), {(4.0, 0.0), (12.0, 0.0)});
+      expect(dimensionLayout(dim('max'), _at(apart), null)!.arrows.map((a) => a.$1).toSet(), {(-4.0, 0.0), (18.0, 0.0)});
+      for (final p in [(7.0, 3.0), (20.0, -2.0)]) {
+        final placement = dimensionPlacementAt(dim('max'), _at(apart), p)!;
+        expect(_dist(dimensionLayout(dim('max'), _at(apart), placement)!.label, p), closeTo(0, 1e-9));
+      }
+    });
+
+    test('create body, identity (either order), DOF and points', () {
+      expect(dimensionCreateJson(dim('min'), 5),
+          {'type': 'circle_distance', 'entity1_id': 'one', 'entity2_id': 'two', 'distance': 5.0, 'side': 'min'});
+      const swapped = CircleCircleDistanceConstraintDto(
+          id: 'x',
+          entity1Id: 'two',
+          center1PointId: 'c2',
+          radius1PointId: 'r2',
+          entity2Id: 'one',
+          center2PointId: 'c1',
+          radius2PointId: 'r1',
+          distance: 1);
+      expect(sameDimensionTarget(dim('min'), swapped), isTrue);
+      expect(dofCostByConstraintType['circle_distance'], 1);
+      expect(constraintPointIds(dim('min'), const {}), {'c1', 'r1', 'c2', 'r2'});
+      expect(describeConstraint(dim('min'), const {}, const {}).pointIds.toSet(), {'c1', 'r1', 'c2', 'r2'});
+    });
+
+    test('the drag projector holds the gap while the second circle is dragged', () {
+      final projection = projectSketch(
+        points: {...apart, 'c2': (20, 5), 'r2': (20, 8)},
+        constraints: [
+          dim('min'),
+          const DistanceConstraintDto(id: 'rad2', pointAId: 'c2', pointBId: 'r2', distance: 3),
+        ],
+        lineEndpoints: (id) => throw StateError('no lines'),
+        anchorPointIds: {'c2'},
+        pinnedPointIds: {'c1', 'r1'},
+      );
+      expect(projection.converged, isTrue);
+      final pts = {...apart, ...projection.points};
+      expect(measureDimension(dim('min'), _at(pts)), closeTo(6, 1e-5));
+    });
+
+    test('flat canvas: a dragged label is drawn where it was dropped', () {
+      final controller = SketchController(api: SketchApiClient(httpClient: null));
+      apart.forEach((id, p) => controller.points[id] = SketchPointView(id: id, x: p.$1, y: p.$2));
+      controller.constraints['cc'] = dim('min');
+      _expectDraggedLabelLandsWhereDropped(controller, 'cc', [(7, 3), (20, -2), (8, 0.5)]);
+    });
+  });
 }

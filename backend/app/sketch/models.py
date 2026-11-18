@@ -17,6 +17,7 @@ from app.sketch.constraints import (
     HorizontalAngleConstraint,
     PointAngleConstraint,
     PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
     CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -105,7 +106,7 @@ class ExternalVertexReference:
 
 # Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180),
 # "point_angle" (three points, the vertex first: the angle at it, 0-180), "min_distance" / "max_distance" (a point and a circle or arc, either
-# order: the nearest / farthest distance).
+# order, or two circles / arcs: the nearest / farthest distance).
 REFERENCE_DIMENSION_KINDS = (
     "distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle", "min_distance", "max_distance"
 )
@@ -4772,6 +4773,39 @@ class Sketch:
             circle_or_arc_id=circle_or_arc_id,
             center_point_id=center_point_id,
             radius_point_id=radius_point_id,
+            distance=distance,
+            side=side,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_circle_circle_distance_constraint(
+        self, entity1_id: str, entity2_id: str, distance: float, side: str = "min"
+    ) -> CircleCircleDistanceConstraint:
+        """Bug report 2026-11-18 part D: the gap ("min") or overall size ("max") of two Circles / Arcs along their centre line (see
+        `CircleCircleDistanceConstraint`). Refused for one entity twice, concentric circles, a gap between circles that overlap now, and
+        a value not above 0."""
+        if side not in ("min", "max"):
+            raise ValueError(f"side must be 'min' or 'max', got {side!r}")
+        if entity1_id == entity2_id:
+            raise ValueError("A distance between circles needs two different circles")
+        center1_id, radius1_id = self._center_radius_point_ids(entity1_id)
+        center2_id, radius2_id = self._center_radius_point_ids(entity2_id)
+        c1, r1, c2, r2 = (self.points[i] for i in (center1_id, radius1_id, center2_id, radius2_id))
+        d = math.hypot(c2.x - c1.x, c2.y - c1.y)
+        if center1_id == center2_id or d < 1e-9:
+            raise ValueError("The circles are concentric, so there is no line between their centres to measure along")
+        if side == "min" and d < math.hypot(r1.x - c1.x, r1.y - c1.y) + math.hypot(r2.x - c2.x, r2.y - c2.y):
+            raise ValueError("The circles overlap, so there is no gap between them to dimension")
+        check_length_value(distance)
+        constraint = CircleCircleDistanceConstraint(
+            id=str(uuid.uuid4()),
+            entity1_id=entity1_id,
+            center1_point_id=center1_id,
+            radius1_point_id=radius1_id,
+            entity2_id=entity2_id,
+            center2_point_id=center2_id,
+            radius2_point_id=radius2_id,
             distance=distance,
             side=side,
         )

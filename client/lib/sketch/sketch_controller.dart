@@ -9530,6 +9530,10 @@ class SketchController extends ChangeNotifier {
       HorizontalAngleConstraintDto d => (pointIds: {d.lineStartId, d.lineEndId}, lineIds: {d.lineId}),
       PointAngleConstraintDto d => (pointIds: {d.vertexPointId, d.point1Id, d.point2Id}, lineIds: <String>{}),
       PointCircleDistanceConstraintDto d => (pointIds: {d.pointId, d.centerPointId, d.radiusPointId}, lineIds: <String>{}),
+      CircleCircleDistanceConstraintDto d => (
+          pointIds: {d.center1PointId, d.radius1PointId, d.center2PointId, d.radius2PointId},
+          lineIds: <String>{},
+        ),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
   }
@@ -15376,21 +15380,52 @@ class SketchController extends ChangeNotifier {
   /// Bug report 2026-11-18 part D: the minimum and maximum distances for a Point and a Circle or Arc picked together (after the centre
   /// distances); none for a Point of the curve itself.
   List<DimensionGhost> _curveDistanceGhosts(SketchSelection a, SketchSelection b) {
+    (String, String, Set<String>) curveOf(SketchSelection curve) => switch (curve.kind) {
+          SelectionKind.circle => (
+              circles[curve.id]!.centerPointId,
+              circles[curve.id]!.radiusPointId,
+              {circles[curve.id]!.centerPointId, circles[curve.id]!.radiusPointId},
+            ),
+          _ => (
+              arcs[curve.id]!.centerPointId,
+              arcs[curve.id]!.startPointId,
+              {arcs[curve.id]!.centerPointId, arcs[curve.id]!.startPointId, arcs[curve.id]!.endPointId},
+            ),
+        };
+    if (_curveCentrePointId(a) != null && _curveCentrePointId(b) != null) {
+      // Two circles / arcs: the gap (only while they do not overlap) and the overall size, along the centre line.
+      final (c1, r1, _) = curveOf(a);
+      final (c2, r2, _) = curveOf(b);
+      final p1 = points[c1], q1 = points[r1], p2 = points[c2], q2 = points[r2];
+      if (p1 == null || q1 == null || p2 == null || q2 == null) return const [];
+      double dist(SketchPointView u, SketchPointView v) => math.sqrt(math.pow(u.x - v.x, 2) + math.pow(u.y - v.y, 2));
+      final apart = dist(p1, p2);
+      if (apart < 1e-9) return const [];
+      DimensionGhost ghost(String side, String label) => DimensionGhost(
+            key: '${side}Distance',
+            kind: GhostKind.typed,
+            label: label,
+            template: CircleCircleDistanceConstraintDto(
+              id: '${side}Distance',
+              entity1Id: a.id,
+              center1PointId: c1,
+              radius1PointId: r1,
+              entity2Id: b.id,
+              center2PointId: c2,
+              radius2PointId: r2,
+              distance: 0,
+              side: side,
+            ),
+          );
+      return [
+        if (apart > dist(p1, q1) + dist(p2, q2)) ghost('min', 'Minimum distance'),
+        ghost('max', 'Maximum distance'),
+      ];
+    }
     final point = a.kind == SelectionKind.point ? a : (b.kind == SelectionKind.point ? b : null);
     final curve = _curveCentrePointId(a) != null ? a : (_curveCentrePointId(b) != null ? b : null);
     if (point == null || curve == null) return const [];
-    final (String centre, String rim, Set<String> own) = switch (curve.kind) {
-      SelectionKind.circle => (
-          circles[curve.id]!.centerPointId,
-          circles[curve.id]!.radiusPointId,
-          {circles[curve.id]!.centerPointId, circles[curve.id]!.radiusPointId},
-        ),
-      _ => (
-          arcs[curve.id]!.centerPointId,
-          arcs[curve.id]!.startPointId,
-          {arcs[curve.id]!.centerPointId, arcs[curve.id]!.startPointId, arcs[curve.id]!.endPointId},
-        ),
-    };
+    final (String centre, String rim, Set<String> own) = curveOf(curve);
     if (own.contains(point.id)) return const [];
     DimensionGhost ghost(String side, String label) => DimensionGhost(
           key: '${side}Distance',

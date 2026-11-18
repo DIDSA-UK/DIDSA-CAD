@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import uuid
 
-from app.sketch.dimension_geometry import angle_between_degrees, arc_length, point_circle_distance
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, circle_circle_distance, point_circle_distance
 from app.sketch.models import REFERENCE_DIMENSION_KINDS, Arc, Circle, Line, ReferenceDimension, Sketch
 
 _ENTITY_TYPES = ("point", "line", "circle", "arc")
@@ -47,7 +47,10 @@ def _center_and_rim(sketch: Sketch, shape):
 
 
 # Bug report 2026-11-18 part D: what a minimum / maximum distance measures (more pairs come with the circle-circle and line-circle types).
-_CURVE_DISTANCE_REFS = [["point", "circle"], ["circle", "point"], ["point", "arc"], ["arc", "point"]]
+_CURVE_DISTANCE_REFS = [
+    ["point", "circle"], ["circle", "point"], ["point", "arc"], ["arc", "point"],
+    ["circle", "circle"], ["circle", "arc"], ["arc", "circle"], ["arc", "arc"],
+]
 
 
 def _ends(sketch: Sketch, line: Line):
@@ -108,6 +111,13 @@ def measure(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> float | N
             other = 1 - types.index("point")
             center, rim = _center_and_rim(sketch, _round(sketch, types[other], ids[other]))
             return point_circle_distance((point.x, point.y), center, rim, side)
+        if all(t in ("circle", "arc") for t in types):
+            if ids[0] == ids[1]:
+                return None
+            c1, r1 = _center_and_rim(sketch, _round(sketch, types[0], ids[0]))
+            c2, r2 = _center_and_rim(sketch, _round(sketch, types[1], ids[1]))
+            value = circle_circle_distance(c1, r1, c2, r2, side)
+            return None if value is None or value < 0 else value
     if kind == "point_angle":
         v, a, b = (_point(sketch, i) for i in ids)
         return angle_between_degrees((a.x - v.x, a.y - v.y), (b.x - v.x, b.y - v.y))

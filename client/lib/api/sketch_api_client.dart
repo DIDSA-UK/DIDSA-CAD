@@ -948,6 +948,8 @@ abstract class ConstraintDto {
         return PointAngleConstraintDto.fromJson(json);
       case 'point_circle_distance':
         return PointCircleDistanceConstraintDto.fromJson(json);
+      case 'circle_distance':
+        return CircleCircleDistanceConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1636,6 +1638,45 @@ class PointCircleDistanceConstraintDto extends ConstraintDto {
         circleOrArcId: json['circle_or_arc_id'] as String,
         centerPointId: json['center_point_id'] as String,
         radiusPointId: json['radius_point_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+        side: json['side'] as String? ?? 'min',
+      );
+}
+
+/// Bug report 2026-11-18 part D: the gap ([side] "min") or overall size ("max") of two Circles / Arcs along their centre line (the
+/// backend's `CircleCircleDistanceConstraint`). Each radius Point is the rim Point carrying that circle's radius.
+class CircleCircleDistanceConstraintDto extends ConstraintDto {
+  final String entity1Id;
+  final String center1PointId;
+  final String radius1PointId;
+  final String entity2Id;
+  final String center2PointId;
+  final String radius2PointId;
+  final double distance;
+  final String side;
+
+  const CircleCircleDistanceConstraintDto({
+    required super.id,
+    super.label,
+    required this.entity1Id,
+    required this.center1PointId,
+    required this.radius1PointId,
+    required this.entity2Id,
+    required this.center2PointId,
+    required this.radius2PointId,
+    required this.distance,
+    this.side = 'min',
+  });
+
+  factory CircleCircleDistanceConstraintDto.fromJson(Map<String, dynamic> json) => CircleCircleDistanceConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        entity1Id: json['entity1_id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        radius1PointId: json['radius1_point_id'] as String,
+        entity2Id: json['entity2_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
+        radius2PointId: json['radius2_point_id'] as String,
         distance: (json['distance'] as num).toDouble(),
         side: json['side'] as String? ?? 'min',
       );

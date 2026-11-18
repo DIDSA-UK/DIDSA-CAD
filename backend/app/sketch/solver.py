@@ -22,6 +22,7 @@ from app.sketch.constraints import (
     MeasuredDimension,
     PointAngleConstraint,
     PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
@@ -94,6 +95,7 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     HorizontalAngleConstraint,
     PointAngleConstraint,
     PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
 )
 
 # CurveTangentConstraint is deliberately NOT in the allowlist above -
@@ -218,6 +220,7 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     HorizontalAngleConstraint,
     PointAngleConstraint,
     PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -1046,6 +1049,14 @@ class _PySlvsBuilder:
     def point_circle_distance(self, point_id: str, center_id: str, radius_point_id: str, value: float, side: str) -> int:
         helper = self._point_on_circle_helper(center_id, radius_point_id, point_id, 1.0 if side == "min" else -1.0)
         return self.distance(self.point2d(point_id), helper, value)
+
+    def circle_circle_distance(
+        self, center1_id: str, radius1_id: str, center2_id: str, radius2_id: str, value: float, side: str
+    ) -> int:
+        toward = 1.0 if side == "min" else -1.0
+        helper1 = self._point_on_circle_helper(center1_id, radius1_id, center2_id, toward)
+        helper2 = self._point_on_circle_helper(center2_id, radius2_id, center1_id, toward)
+        return self.distance(helper1, helper2, value)
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
         helper = self._system.addLineSegment(

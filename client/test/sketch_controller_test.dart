@@ -63,6 +63,7 @@ const _valueFieldOfType = {
   'horizontal_angle': 'angle_degrees',
   'point_angle': 'angle_degrees',
   'point_circle_distance': 'distance',
+  'circle_distance': 'distance',
 };
 
 class _FakeBackend {
@@ -2481,6 +2482,29 @@ class _FakeBackend {
             'id': id,
             'type': 'fixed',
             'point_ids': fixedPointIds,
+          };
+          break;
+        case 'circle_distance':
+          (String, String)? curve(Object? id) {
+            final circle = circles[id];
+            if (circle != null) return (circle['center_point_id'] as String, circle['radius_point_id'] as String);
+            final arc = arcs[id];
+            if (arc != null) return (arc['center_point_id'] as String, arc['start_point_id'] as String);
+            return null;
+          }
+          final one = curve(body['entity1_id']), two = curve(body['entity2_id']);
+          if (one == null || two == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'circle_distance',
+            'entity1_id': body['entity1_id'],
+            'center1_point_id': one.$1,
+            'radius1_point_id': one.$2,
+            'entity2_id': body['entity2_id'],
+            'center2_point_id': two.$1,
+            'radius2_point_id': two.$2,
+            'distance': (body['distance'] as num).toDouble(),
+            'side': body['side'] ?? 'min',
           };
           break;
         case 'point_circle_distance':
@@ -16140,7 +16164,7 @@ void main() {
       await controller.handleCanvasTap(3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4));
       await controller.handleCanvasTap(30 + 4 * math.cos(math.pi / 4), 10 + 4 * math.sin(math.pi / 4));
 
-      expect(optionKeys().toSet(), {'linear', 'h', 'v'});
+      expect(optionKeys().toSet(), {'linear', 'h', 'v', 'minDistance', 'maxDistance'}); // part D added the gap and the overall size
       final ghost = controller.pendingDimensionGhost!;
       expect({ghost.pointAId, ghost.pointBId}, centres);
       controller.moveCursorToSketchPoint(15, 5); // inside the centres' box
@@ -16412,6 +16436,29 @@ void main() {
       final made = controller.constraints.values.whereType<PointCircleDistanceConstraintDto>().single;
       expect((made.pointId, made.circleOrArcId, made.side, made.distance), (pointId, circle.id, 'min', 10.0));
       expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single.text, '10.00');
+    });
+
+    test('two circles offer the gap and the overall size (the gap only while they do not overlap)', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(3, 0);
+      await controller.handleCanvasTap(30, 10);
+      await controller.handleCanvasTap(34, 10);
+      final ids = controller.circles.keys.toList();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4));
+      await controller.handleCanvasTap(30 + 4 * math.cos(math.pi / 4), 10 + 4 * math.sin(math.pi / 4));
+      expect(controller.selectPendingDimensionKind('minDistance'), isTrue);
+      final apart = math.sqrt(30 * 30 + 10 * 10);
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(apart - 7, 1e-9));
+      controller.selectPendingDimensionKind('maxDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(apart + 7, 1e-9));
+      await controller.confirmGhostValue('maxDistance', 40.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<CircleCircleDistanceConstraintDto>().single;
+      expect({made.entity1Id, made.entity2Id}, ids.toSet());
+      expect((made.side, made.distance), ('max', 40.0));
+      expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>(), hasLength(1));
     });
   });
 }

@@ -37,6 +37,7 @@ Set<String> constraintPointIds(ConstraintDto constraint, Map<String, (String, St
     HorizontalAngleConstraintDto c => {c.lineStartId, c.lineEndId},
     PointAngleConstraintDto c => {c.vertexPointId, c.point1Id, c.point2Id},
     PointCircleDistanceConstraintDto c => {c.pointId, c.centerPointId, c.radiusPointId},
+    CircleCircleDistanceConstraintDto c => {c.center1PointId, c.radius1PointId, c.center2PointId, c.radius2PointId},
     SplineTangentConstraintDto c => {
         c.segmentAP0,
         c.segmentAP1,

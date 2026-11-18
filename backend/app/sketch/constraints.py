@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays, point_circle_distance
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays, point_circle_distance, circle_circle_distance
 
 
 class SolverBuilder(Protocol):
@@ -233,6 +233,14 @@ class SolverBuilder(Protocol):
         through the Point and the centre (`point_on_line`) at the radius from the centre (`equal_length` with the centre-to-rim
         segment), seeded on the Point's side for "min" and the far side for "max"; then `distance(Point, H) = value`. H's two unknowns
         are taken by its two equations, so the net is the one equation of the value."""
+        ...
+
+    def circle_circle_distance(
+        self, center1_id: str, radius1_id: str, center2_id: str, radius2_id: str, value: float, side: str
+    ) -> int:
+        """Pins the gap ("min") or the overall size ("max") of two circles along their centre line: a helper point on each circle on
+        that line (as `point_circle_distance`'s, seeded facing the other circle for "min", facing away for "max"), then
+        `distance(H1, H2) = value`. Each helper's two unknowns are taken by its two equations."""
         ...
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
@@ -1448,3 +1456,45 @@ class PointCircleDistanceConstraint(MeasuredDimension):
     def measured_value(self, points) -> float | None:
         p, c, r = points[self.point_id], points[self.center_point_id], points[self.radius_point_id]
         return point_circle_distance((p.x, p.y), (c.x, c.y), (r.x, r.y), self.side)
+
+
+
+@dataclass
+class CircleCircleDistanceConstraint(MeasuredDimension):
+    """The minimum or maximum distance between two Circles / Arcs (bug report 2026-11-18, part D), measured along their centre line:
+    "min" the gap between them, "max" from the far side of one to the far side of the other. Arcs are measured as their circles.
+
+    One solver-only helper point per circle (see `SolverBuilder.circle_circle_distance`): zero net DOF from the helpers, one equation for
+    the value. The re-measure after a solve (`MeasuredDimension`) catches a helper on the wrong side, and circles that overlap where a
+    gap was asked for (the gap reads negative).
+
+    `point_ids` are both centres and both rim Points carrying the radii."""
+
+    id: str
+    entity1_id: str
+    center1_point_id: str
+    radius1_point_id: str
+    entity2_id: str
+    center2_point_id: str
+    radius2_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+    @property
+    def type(self) -> str:
+        return "circle_distance"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.center1_point_id, self.radius1_point_id, self.center2_point_id, self.radius2_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.circle_circle_distance(
+            self.center1_point_id, self.radius1_point_id, self.center2_point_id, self.radius2_point_id, self.distance, self.side
+        )
+
+    def value(self) -> float:
+        return self.distance
+
+    def measured_value(self, points) -> float | None:
+        c1, r1, c2, r2 = (points[i] for i in self.point_ids())
+        return circle_circle_distance((c1.x, c1.y), (r1.x, r1.y), (c2.x, c2.y), (r2.x, r2.y), self.side)

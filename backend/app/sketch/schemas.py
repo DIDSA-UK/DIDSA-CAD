@@ -1123,6 +1123,16 @@ class PointCircleDistanceConstraintCreate(BaseModel):
     side: Literal["min", "max"] = "min"
 
 
+class CircleCircleDistanceConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: the gap ("min") or overall size ("max") of two Circles / Arcs along their centre line."""
+
+    type: Literal["circle_distance"]
+    entity1_id: str
+    entity2_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
 class FixedConstraintCreate(BaseModel):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
@@ -1158,6 +1168,7 @@ ConstraintCreate = Union[
     HorizontalAngleConstraintCreate,
     PointAngleConstraintCreate,
     PointCircleDistanceConstraintCreate,
+    CircleCircleDistanceConstraintCreate,
 ]
 
 
@@ -1418,6 +1429,19 @@ class PointCircleDistanceConstraintResponse(_ConstraintResponseBase):
     side: Literal["min", "max"] = "min"
 
 
+class CircleCircleDistanceConstraintResponse(_ConstraintResponseBase):
+    type: Literal["circle_distance"] = "circle_distance"
+    id: str
+    entity1_id: str
+    center1_point_id: str
+    radius1_point_id: str
+    entity2_id: str
+    center2_point_id: str
+    radius2_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -1444,6 +1468,7 @@ ConstraintResponse = Union[
     HorizontalAngleConstraintResponse,
     PointAngleConstraintResponse,
     PointCircleDistanceConstraintResponse,
+    CircleCircleDistanceConstraintResponse,
 ]
 
 
