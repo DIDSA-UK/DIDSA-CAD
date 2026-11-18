@@ -41,6 +41,7 @@ Who may send what, the snapshot, voice framing and every field: `docs/live-sessi
 - An observer's presenter-only message is dropped and counted, not answered.
 - Limits: 64 KB a text message; 60 text messages a second (averaged over 5 s) and 100 voice frames a second per connection;
   10 wrong codes a minute from one address and it is refused for 10 minutes.
+- A close is preceded by a 150 ms pause after the last message and carries the error code or end reason as its reason: Godot's `WebSocketPeer` drops a message that arrives in the same read as the close frame (found in DIDSA-VR P2).
 - Keep-alive: the hub pings every 10 s; 30 s of silence is a drop.
 - A slow receiver's queue is latest-wins (presence per sender, each piece of presenter state, and pose deltas merged), and voice
   frames over 200 ms old are not sent to it.

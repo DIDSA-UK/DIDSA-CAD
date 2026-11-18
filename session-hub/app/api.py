@@ -22,6 +22,7 @@ from app.hub import PROTO, Hub
 log = logging.getLogger("session_hub")
 
 VOICE_MAX_AGE_S = 0.2
+CLOSE_GRACE_S = 0.15  # between the last message and the close frame: a client that processes both in one read (Godot's WebSocketPeer) drops the message, so it is given a moment to read it first
 MAX_QUEUE = 512  # unkeyed messages queued for one receiver before it is treated as gone
 
 API_FEATURES = ["rooms", "resume", "snapshot", "voice_relay", "marks"]
@@ -38,6 +39,7 @@ class WsConnection:
         self._serial = 0
         self._wake = asyncio.Event()
         self._close_code: int | None = None
+        self._close_reason = ""
 
     # Called by the hub (never awaits).
     def send(self, message: dict, key=None, merge=None) -> None:
@@ -63,9 +65,10 @@ class WsConnection:
         self._queue[("voice", self._serial)] = ("voice", frame, at)
         self._wake.set()
 
-    def close(self, code: int = 1000) -> None:
+    def close(self, code: int = 1000, reason: str = "") -> None:
         if self._close_code is None:
             self._close_code = code
+            self._close_reason = reason[:100]
             self._wake.set()
 
     @property
@@ -78,15 +81,19 @@ class WsConnection:
             while True:
                 await self._wake.wait()
                 self._wake.clear()
+                sent_something = False
                 while self._queue:
                     _key, item = self._queue.popitem(last=False)
+                    sent_something = True
                     if item[0] == "json":
                         await self.websocket.send_text(json.dumps(item[1], separators=(",", ":")))
                     elif self._clock() - item[2] <= VOICE_MAX_AGE_S:
                         await self.websocket.send_bytes(item[1])
                 if self._close_code is not None:
+                    if sent_something:
+                        await asyncio.sleep(CLOSE_GRACE_S)
                     with contextlib.suppress(Exception):
-                        await self.websocket.close(self._close_code)
+                        await self.websocket.close(code=self._close_code, reason=self._close_reason)
                     return
         except Exception:  # noqa: BLE001 - a dead socket; the receive loop sees it too
             return

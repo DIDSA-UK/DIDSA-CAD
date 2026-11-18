@@ -21,6 +21,8 @@ class ApiConfig {
   static const String localServerOnWifiPrefKey = 'local_server_on_wifi';
   static const String relayUrlPrefKey = 'browser_relay_url';
   static const String relayApiKeyPrefKey = 'browser_relay_api_key';
+  static const String hubUrlPrefKey = 'session_hub_url';
+  static const String hubApiKeyPrefKey = 'session_hub_api_key';
   static const String storeUrlPrefKey = 'project_store_url';
   static const String storeApiKeyPrefKey = 'project_store_api_key';
   static const String deviceNamePrefKey = 'project_store_device_name';
@@ -32,6 +34,8 @@ class ApiConfig {
   static bool _localServerOnWifi = false;
   static String _relayUrl = '';
   static String _relayApiKey = '';
+  static String _hubUrl = '';
+  static String _hubApiKey = '';
   static String _storeUrl = '';
   static String _storeApiKey = '';
   static String _deviceName = '';
@@ -68,6 +72,14 @@ class ApiConfig {
 
   /// The relay's own key (`BROWSER_RELAY_API_KEY`), not the CAD key.
   static String get relayApiKey => _relayApiKey;
+
+  /// The session hub (`session-hub/`, live sessions, `docs/live-sessions-scope.md`, LS-11; a `ws://` or `wss://` address) that Connect a
+  /// VR headset puts in the pairing code (`h` / `hk`), so a headset can host a session without typing. This app never connects to it
+  /// (the flat app does not join sessions yet, plan P6); it only hands it on. Empty when not set.
+  static String get hubUrl => _hubUrl;
+
+  /// The hub's own key (`SESSION_HUB_API_KEY`), not the CAD key.
+  static String get hubApiKey => _hubApiKey;
 
   /// The project store (`project-store/`, shared storage, `docs/shared-storage-scope.md`): its address and its own key
   /// (`PROJECT_STORE_API_KEY`, never the CAD key). Entered once in the server settings. Empty until set.
@@ -142,6 +154,8 @@ class ApiConfig {
     _localServerOnWifi = prefs.getBool(localServerOnWifiPrefKey) ?? false;
     _relayUrl = prefs.getString(relayUrlPrefKey) ?? '';
     _relayApiKey = prefs.getString(relayApiKeyPrefKey) ?? '';
+    _hubUrl = prefs.getString(hubUrlPrefKey) ?? '';
+    _hubApiKey = prefs.getString(hubApiKeyPrefKey) ?? '';
     _storeUrl = prefs.getString(storeUrlPrefKey) ?? '';
     _storeApiKey = prefs.getString(storeApiKeyPrefKey) ?? '';
     _deviceName = prefs.getString(deviceNamePrefKey) ?? '';
@@ -170,6 +184,16 @@ class ApiConfig {
     final prefs = await SharedPreferences.getInstance();
     _cacheLimitMb = mb < 0 ? 0 : mb;
     await prefs.setInt(cacheLimitMbPrefKey, _cacheLimitMb);
+  }
+
+  /// Saves (or, with empty strings, clears) the session hub handed to a VR headset when pairing.
+  static Future<void> saveHub({required String hubUrl, required String hubApiKey}) async {
+    final prefs = await SharedPreferences.getInstance();
+    final url = hubUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    await prefs.setString(hubUrlPrefKey, url);
+    await prefs.setString(hubApiKeyPrefKey, hubApiKey.trim());
+    _hubUrl = url;
+    _hubApiKey = hubApiKey.trim();
   }
 
   /// Saves (or, with empty strings, clears) the browser relay handed to a VR headset when pairing.

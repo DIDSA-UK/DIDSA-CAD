@@ -64,7 +64,7 @@ class Connection(Protocol):
 
     def send_voice(self, frame: bytes, at: float) -> None: ...
 
-    def close(self, code: int = 1000) -> None: ...
+    def close(self, code: int = 1000, reason: str = "") -> None: ...
 
 
 @dataclass
@@ -293,7 +293,7 @@ class Hub:
                 continue
             if now - cs.last_seen > lim.silent_s:
                 cs.closed = True
-                cs.conn.close(1001)
+                cs.conn.close(1001, "silent")
                 self.on_close(cs.conn)
                 continue
             if now - cs.last_ping >= lim.ping_s:
@@ -383,7 +383,7 @@ class Hub:
             old = self._conns.pop(id(participant.conn), None)
             if old is not None:
                 old.closed = True
-                old.conn.close(1000)
+                old.conn.close(1000, "taken_over")
         participant.conn = cs.conn
         participant.dropped_at = None
         cs.room, cs.participant = room, participant
@@ -509,7 +509,7 @@ class Hub:
         if target.conn is not None:
             tcs = self._conns.pop(id(target.conn), None)
             target.conn.send({"t": "error", "code": "removed", "message": "The presenter removed you from this session."})
-            target.conn.close(4003)
+            target.conn.close(4003, "removed")
             if tcs is not None:
                 tcs.closed = True
         log.info("room %s: %s (%d) removed", room.code, target.name, target.id)
@@ -614,7 +614,7 @@ class Hub:
             if p.conn is not None:
                 cs = self._conns.pop(id(p.conn), None)
                 p.conn.send({"t": "end", "reason": reason})
-                p.conn.close(1000)
+                p.conn.close(1000, reason)  # ("ended" / "presenter_gone": the words of the end message, in the close frame too)
                 if cs is not None:
                     cs.closed = True
             self._resume.pop(p.resume, None)
@@ -623,7 +623,7 @@ class Hub:
     def _fail(self, cs: _ConnState, code: str, message: str) -> None:
         cs.closed = True
         cs.conn.send({"t": "error", "code": code, "message": message})
-        cs.conn.close(4000)
+        cs.conn.close(4000, code)  # the error code rides in the close frame's reason as well as the error message (see CLOSE_GRACE_S in api.py)
         self._conns.pop(id(cs.conn), None)
         if cs.participant is not None and cs.room is not None and cs.participant.conn is cs.conn:
             cs.participant.conn = None

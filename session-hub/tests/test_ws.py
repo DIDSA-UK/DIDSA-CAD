@@ -85,8 +85,9 @@ class _SlowSocket:
     async def send_bytes(self, data):
         self.out.append(data)
 
-    async def close(self, code):
+    async def close(self, code, reason=""):
         self.out.append(("closed", code))
+        self.close_reason = reason
 
 
 def test_a_slow_receiver_gets_the_latest_state_not_a_backlog():
@@ -114,3 +115,41 @@ def test_a_slow_receiver_gets_the_latest_state_not_a_backlog():
     assert kinds == ["presence", "poses", "joined", b"new", ("closed", 1000)]
     assert socket.out[0]["n"] == 2
     assert {i["path"] for i in socket.out[1]["items"]} == {"a", "b"}
+
+
+def test_the_close_frame_carries_the_reason_and_waits_a_moment_after_the_last_message():
+    """Godot's WebSocketPeer drops a message that arrives in the same read as the close frame (found in DIDSA-VR P2): the hub leaves a moment between them
+    and also puts the code in the close frame's reason, which a client can read even when it lost the message."""
+    import time
+
+    socket = _SlowSocket()
+    conn = WsConnection(type("W", (), {"client": None})(), lambda: 0.0)
+    conn.websocket = socket
+    conn.send({"t": "error", "code": "bad_code", "message": "No session has that code."})
+    conn.close(4000, "bad_code")
+    started = time.monotonic()
+    asyncio.run(conn.pump())
+    assert [m["code"] if isinstance(m, dict) else m for m in socket.out] == ["bad_code", ("closed", 4000)]
+    assert socket.close_reason == "bad_code"
+    assert time.monotonic() - started >= 0.1
+
+
+def test_a_close_with_nothing_queued_does_not_wait():
+    import time
+
+    socket = _SlowSocket()
+    conn = WsConnection(type("W", (), {"client": None})(), lambda: 0.0)
+    conn.websocket = socket
+    conn.close(1000)
+    started = time.monotonic()
+    asyncio.run(conn.pump())
+    assert socket.out == [("closed", 1000)] and time.monotonic() - started < 0.1
+
+
+def test_the_real_socket_delivers_the_error_and_closes_with_its_reason(client):
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"t": "join", "proto": 1, "code": "ZZZZZZ"})
+        assert ws.receive_json()["code"] == "bad_code"
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_json()
+        assert closed.value.code == 4000 and closed.value.reason == "bad_code"

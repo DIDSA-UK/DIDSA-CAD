@@ -35,6 +35,12 @@ class HeadsetPairingScreen extends StatefulWidget {
   final String? relayApiKey;
   final Future<void> Function(String relayUrl, String relayApiKey)? saveRelay;
 
+  /// The session hub to put in the code, so the headset can host a live session without typing (LS-11); default [ApiConfig.hubUrl] /
+  /// [ApiConfig.hubApiKey]. [saveHub] stores what is typed (default [ApiConfig.saveHub]; tests replace it).
+  final String? hubUrl;
+  final String? hubApiKey;
+  final Future<void> Function(String hubUrl, String hubApiKey)? saveHub;
+
   /// The cloud storage (project store) to put in the code, so the headset finds it without typing; default [ApiConfig.storeUrl] /
   /// [ApiConfig.storeApiKey]. Both are written only when both are set.
   final String? storeUrl;
@@ -51,6 +57,9 @@ class HeadsetPairingScreen extends StatefulWidget {
     this.relayUrl,
     this.relayApiKey,
     this.saveRelay,
+    this.hubUrl,
+    this.hubApiKey,
+    this.saveHub,
     this.storeUrl,
     this.storeApiKey,
   });
@@ -68,6 +77,10 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
   late final TextEditingController _relayKeyField;
   late String _relayUrl;
   late String _relayApiKey;
+  late final TextEditingController _hubUrlField;
+  late final TextEditingController _hubKeyField;
+  late String _hubUrl;
+  late String _hubApiKey;
 
   String get _baseUrl => widget.baseUrl ?? ApiConfig.baseUrl;
   String get _apiKey => widget.apiKey ?? ApiConfig.apiKey;
@@ -84,6 +97,10 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
     _relayApiKey = widget.relayApiKey ?? ApiConfig.relayApiKey;
     _relayUrlField = TextEditingController(text: _relayUrl);
     _relayKeyField = TextEditingController(text: _relayApiKey);
+    _hubUrl = widget.hubUrl ?? ApiConfig.hubUrl;
+    _hubApiKey = widget.hubApiKey ?? ApiConfig.hubApiKey;
+    _hubUrlField = TextEditingController(text: _hubUrl);
+    _hubKeyField = TextEditingController(text: _hubApiKey);
     _runChecks();
   }
 
@@ -92,6 +109,8 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
     _timer?.cancel();
     _relayUrlField.dispose();
     _relayKeyField.dispose();
+    _hubUrlField.dispose();
+    _hubKeyField.dispose();
     super.dispose();
   }
 
@@ -109,6 +128,19 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
     await _runChecks();
   }
 
+  Future<void> _saveHub() async {
+    final url = _hubUrlField.text.trim();
+    final key = _hubKeyField.text.trim();
+    await (widget.saveHub ?? (u, k) => ApiConfig.saveHub(hubUrl: u, hubApiKey: k))(url, key);
+    if (url.isNotEmpty && key.isNotEmpty) TextInput.finishAutofillContext();
+    if (!mounted) return;
+    setState(() {
+      _hubUrl = url;
+      _hubApiKey = key;
+    });
+    await _runChecks();
+  }
+
   Future<void> _runChecks() async {
     _hide();
     setState(() => _result = null);
@@ -122,6 +154,8 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
         wifiAddresses: widget.wifiAddresses,
         relayUrl: _relayUrl,
         relayApiKey: _relayApiKey,
+        hubUrl: _hubUrl,
+        hubApiKey: _hubApiKey,
       );
       if (!mounted) return;
       setState(() => _result = result);
@@ -194,6 +228,8 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                           apiKey: _apiKey,
                           relayUrl: result.relayUrl,
                           relayApiKey: _relayApiKey,
+                          hubUrl: result.hubUrl,
+                          hubApiKey: _hubApiKey,
                           storeUrl: widget.storeUrl ?? ApiConfig.storeUrl,
                           storeApiKey: widget.storeApiKey ?? ApiConfig.storeApiKey,
                         );
@@ -219,6 +255,13 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                       key: const ValueKey('headset-pairing-store-note'),
                       textAlign: TextAlign.center,
                       style: const TextStyle(fontSize: 12),
+                    ),
+                  if (result.hubUrl != null)
+                    const Text(
+                      'The code includes your session hub address and key, so the headset can host live sessions. Anyone who photographs it can host on your hub.',
+                      key: ValueKey('headset-pairing-hub-note'),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 12),
                     ),
                   Text('Hides in $_secondsLeft s', textAlign: TextAlign.center),
                   const SizedBox(height: 8),
@@ -273,10 +316,51 @@ class _HeadsetPairingScreenState extends State<HeadsetPairingScreen> {
                     ),
                   ],
                 ),
+                ExpansionTile(
+                  key: const ValueKey('headset-pairing-hub'),
+                  tilePadding: EdgeInsets.zero,
+                  title: const Text('Live sessions (optional)'),
+                  subtitle: Text(_hubUrl.isEmpty ? 'Not set: the headset cannot host a session until it is given the hub.' : _hubUrl),
+                  children: [
+                    const Text(
+                      'Hosting a live session in the headset needs the session-hub service (session-hub/ in DIDSA-CAD; port 8300 by '
+                      'default). Its address, for example wss://sessions.example.net, and its own key (SESSION_HUB_API_KEY, not the '
+                      'CAD key) go in the code with the server. People who only join a session need neither: the join code carries the hub.',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                    AutofillGroup(
+                      child: Column(
+                        children: [
+                          TextField(
+                            key: const ValueKey('headset-pairing-hub-url'),
+                            controller: _hubUrlField,
+                            decoration: const InputDecoration(labelText: 'Hub address (ws:// or wss://)'),
+                            keyboardType: TextInputType.url,
+                            autocorrect: false,
+                            autofillHints: const [AutofillHints.username, AutofillHints.url],
+                          ),
+                          TextField(
+                            key: const ValueKey('headset-pairing-hub-key'),
+                            controller: _hubKeyField,
+                            decoration: const InputDecoration(labelText: 'Hub key'),
+                            obscureText: true,
+                            autocorrect: false,
+                            autofillHints: const [AutofillHints.password],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: OutlinedButton(onPressed: _saveHub, child: const Text('Save hub and check again')),
+                    ),
+                  ],
+                ),
                 if (_compatible) ...[
                   const SizedBox(height: 16),
                   const Text(
-                    'The code contains this server\'s API key (and the relay\'s, when set). Anyone who photographs it can use your '
+                    'The code contains this server\'s API key (and the relay\'s, hub\'s and store\'s, when set). Anyone who photographs it can use your '
                     'server, so show it only to your own headset.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 12),
