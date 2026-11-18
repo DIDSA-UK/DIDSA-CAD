@@ -291,6 +291,14 @@ run in parallel with A once A's drawer exists, or after it.
 |---|---|---|---|
 | 1, 2a, 2b, 4 | Fixes above | Done | (this branch) |
 | A | Dimension preview at the cursor, drawer, click to drop | **Done, client only** (every row marked "now" or "client only"; the D rows are left out, see "Notes from the implementation of A") | (this branch) |
-| B | Feature tree in the sketcher | To do | |
+| B | Feature tree in the sketcher | **Done, client only** (`SketchScreen.featureTreeBuilder` + `SketchReferenceSource`; `FeatureTreePanel.lockedReason`; see "Notes from the implementation of B") | (this branch) |
 | C | Convert Entities: real projection, bodies and other sketches (C1 projection + body edges, C2 sketch sources, C3 client picks) | To do after B | |
 | D | New dimension types (arc length, angle to horizontal, three-point angle, min / max / tangent distances) | To do; drawer rows after A | |
+
+### Notes from the implementation of B
+
+- `SketchScreen` takes `featureTreeBuilder` (`Widget Function(BuildContext, VoidCallback onClose)`) and `referenceSource` (`SketchReferenceSource`, a `ChangeNotifier` holding the current `bodies` and `otherSketchGeometries`). `sketch-tree-fab` (top left, same tree icon) toggles the tree: phone, slides over the viewport (mounted only while open, 200 ms slide in, no slide out); desktop, a `DesktopLeftPane` beside the viewport (resizable). Closed by default. No builder, no button (the standalone 2D Drawing keeps its File button; if both exist the tree button sits to its right).
+- Following changes: `PartScreen.build` calls `_pingSketchSource`, which after the frame hands the source the current `_visibleBodies` and the other sketches' geometry (this sketch's own entry left out) and notifies; `SketchScreen` rebuilds, so the tree and the sketcher's bodies follow a visibility toggle. The ghost outline (`referenceGhostSegments` / `Vertices` / `Edges`, projected when the sketch opened) is **not** refreshed: hiding a body in the tree does not remove its outline from the flat ghost, and dimension picks on it still resolve.
+- Read-mostly: `FeatureTreePanel.lockedReason` ("Exit the sketch first"). Feature, plane-feature, body, surface and curve rows have no tap, long-press, right-click menu or multi-select, and show the reason as a tooltip (hover on a mouse, long press on touch). Each row has a Hide / Show eye (`onToggleVisibility`, `tree-visibility-<id>`) instead; the sketch being edited is highlighted and has no eye. The XY / XZ / YZ eyes work as before. `PartScreen._buildSketchTreePanel` builds it (not `_buildFeatureTreePanel`, so no picker or multi-select state can leak in); the eyes call `_toggleFeatureVisibility`, so they use the same saved-visibility path as the Part's tree.
+- Tests: `test/sketch_screen_feature_tree_test.dart` (button only with a builder, phone overlay, desktop pane, source change rebuilds), `test/feature_tree_panel_test.dart` ("locked" group), `test/part_screen_test.dart` (opening a sketch from the Part: tree closed, then open, sketch highlighted, another row does not open, eye hides).
+

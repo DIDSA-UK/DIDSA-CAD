@@ -1,4 +1,5 @@
 import 'package:material_ui/material_ui.dart';
+import 'package:flutter/gestures.dart' show PointerDeviceKind;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
@@ -21,6 +22,7 @@ FeatureDto _surface(String id, {bool locked = true}) =>
 Widget _wrap(FeatureTreePanel panel) => MaterialApp(home: Scaffold(body: panel));
 
 void main() {
+  _lockedMain();
   testWidgets('"Build Tree" is the panel title, not "Features"', (tester) async {
     await tester.pumpWidget(
       _wrap(
@@ -1077,5 +1079,87 @@ void main() {
     expect(find.byTooltip('Close'), findsNothing);
     // The rows keep the rest of the panel.
     expect(find.text('Features'), findsOneWidget);
+  });
+}
+
+/// Bug report 2026-11-18, part B: the tree inside the sketcher is read-mostly (`lockedReason`).
+void _lockedMain() {
+  group('locked (inside the sketcher)', () {
+    Future<List<String>> pumpLocked(WidgetTester tester, {required List<String> taps}) async {
+      final toggles = <String>[];
+      await tester.pumpWidget(
+        _wrap(
+          FeatureTreePanel(
+            visible: true,
+            docked: true,
+            features: [_sketch('s1'), _extrude('e1', locked: false), _sketch('s2', locked: false)],
+            selectedFeatureId: 's2',
+            hiddenFeatureIds: const {'e1'},
+            onFeatureTap: (f) => taps.add('tap ${f.id}'),
+            onFeatureLongPress: (f) => taps.add('long ${f.id}'),
+            onFeatureContextMenu: (f, _) => taps.add('menu ${f.id}'),
+            onClose: () {},
+            onBodyTap: (id) => taps.add('body $id'),
+            bodyIds: const ['e1'],
+            bodyNames: const {'e1': 'Body 1'},
+            hiddenBodyIds: const {'e1'},
+            lockedReason: 'Exit the sketch first',
+            onToggleVisibility: toggles.add,
+          ),
+        ),
+      );
+      await tester.pump();
+      return toggles;
+    }
+
+    testWidgets('a row does not open, long-press or offer a menu, and says why', (tester) async {
+      final taps = <String>[];
+      await pumpLocked(tester, taps: taps);
+      await tester.tap(find.text('Sketch 1'));
+      await tester.longPress(find.text('Extrude 1'));
+      await tester.pump();
+      expect(taps, isEmpty, reason: 'editing, rolling back and the row menu are all disabled');
+      expect(find.text('Exit the sketch first'), findsOneWidget, reason: 'the long press shows the tooltip');
+    });
+
+    testWidgets('a mouse hover on a row shows the "Exit the sketch first" tooltip', (tester) async {
+      await pumpLocked(tester, taps: []);
+      final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+      await mouse.addPointer(location: Offset.zero);
+      addTearDown(mouse.removePointer);
+      await mouse.moveTo(tester.getCenter(find.text('Sketch 1')));
+      await tester.pump(const Duration(seconds: 2));
+      expect(find.text('Exit the sketch first'), findsOneWidget);
+    });
+
+    testWidgets('the eye hides or shows a feature, and the sketch being edited has none', (tester) async {
+      final toggles = await pumpLocked(tester, taps: []);
+      await tester.tap(find.byKey(const ValueKey('tree-visibility-s1')));
+      await tester.tap(find.byKey(const ValueKey('tree-visibility-e1')));
+      expect(toggles, ['s1', 'e1']);
+      expect(find.byKey(const ValueKey('tree-visibility-s2')), findsNothing);
+      // A hidden feature's eye offers Show.
+      expect(find.byTooltip('Show'), findsOneWidget);
+      expect(find.byTooltip('Hide'), findsOneWidget);
+    });
+
+    testWidgets('the sketch being edited is highlighted', (tester) async {
+      await pumpLocked(tester, taps: []);
+      final tiles = tester.widgetList<ListTile>(find.byType(ListTile)).toList();
+      final selected = tiles.where((t) => t.selected).toList();
+      expect(selected, hasLength(1));
+      expect((selected.single.title as Text).data, 'Sketch 2');
+    });
+
+    testWidgets('a body row has an eye too and no tap', (tester) async {
+      final taps = <String>[];
+      final toggles = await pumpLocked(tester, taps: taps);
+      await tester.tap(find.text('Bodies'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Body 1'));
+      expect(taps, isEmpty);
+      await tester.tap(find.byKey(const ValueKey('tree-visibility-e1')).last);
+      expect(toggles, ['e1']);
+    });
   });
 }

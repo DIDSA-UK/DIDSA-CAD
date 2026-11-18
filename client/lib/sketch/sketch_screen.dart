@@ -319,6 +319,25 @@ Map<String, List<TextContourDto>> _textContoursFrom(SketchController controller)
 /// [adoptSketchId] is given instead - the case when this is pushed from
 /// [PartScreen] for an existing SketchFeature - it initializes from that
 /// already-created Sketch instead (see [SketchController.adoptSketch]).
+/// What a Part-anchored [SketchScreen] shows of the rest of the model, kept current while the sketch is open
+/// (bug report 2026-11-18, part B). [SketchScreen.bodies] and [SketchScreen.otherSketchGeometries] are a snapshot taken when
+/// the sketch opens; with the feature tree inside the sketcher a visibility toggle changes them, so the owner ([PartScreen])
+/// pushes the current values here and [SketchScreen] rebuilds. [notifyListeners] also fires when only the tree's own inputs
+/// changed (the tree is built by [SketchScreen.featureTreeBuilder] on every rebuild).
+class SketchReferenceSource extends ChangeNotifier {
+  SketchReferenceSource({this.bodies = const [], this.otherSketchGeometries = const {}});
+
+  List<BodyMeshDto> bodies;
+  Map<String, SketchGeometry3D> otherSketchGeometries;
+
+  /// Takes the current values and tells the listeners (always: the tree may have changed even if these did not).
+  void update({required List<BodyMeshDto> bodies, required Map<String, SketchGeometry3D> otherSketchGeometries}) {
+    this.bodies = bodies;
+    this.otherSketchGeometries = otherSketchGeometries;
+    notifyListeners();
+  }
+}
+
 class SketchScreen extends StatefulWidget {
   /// Overridable for tests, so they don't talk to the real backend.
   final SketchController? controller;
@@ -412,6 +431,17 @@ class SketchScreen extends StatefulWidget {
   /// as [bodies].
   final Map<String, SketchGeometry3D> otherSketchGeometries;
 
+  /// Bug report 2026-11-18, part B: builds the Part's feature tree for use inside the sketcher, so the sketcher does not need
+  /// the tree's many parameters. `onClose` closes the tree (the sketcher's own button toggles it too). When given, a top-left
+  /// button (`sketch-tree-fab`) opens it: on the phone it slides over the viewport, on the desktop it is a left pane beside
+  /// the viewport. Null (the standalone 2D Drawing, tests) shows no button. Called on every rebuild of the screen, so the
+  /// tree it returns follows [referenceSource] changes.
+  final Widget Function(BuildContext context, VoidCallback onClose)? featureTreeBuilder;
+
+  /// The current [bodies] / [otherSketchGeometries] while the sketch is open (see [SketchReferenceSource]). Null: the two
+  /// snapshots above are used as given.
+  final SketchReferenceSource? referenceSource;
+
   const SketchScreen({
     super.key,
     this.controller,
@@ -424,6 +454,8 @@ class SketchScreen extends StatefulWidget {
     this.sketchFeatureId,
     this.planeBasis,
     this.otherSketchGeometries = const {},
+    this.featureTreeBuilder,
+    this.referenceSource,
     this.standalone = false,
   });
 
@@ -450,6 +482,19 @@ class _SketchScreenState extends State<SketchScreen> {
 
   /// Whether the standalone 2D Drawing's File menu (Save / Open / Exit, top left) is open.
   bool _fileMenuOpen = false;
+
+  /// Whether the feature tree ([SketchScreen.featureTreeBuilder]) is open: over the viewport on the phone, a left pane on the
+  /// desktop. Session-only.
+  bool _treeOpen = false;
+  double _treePaneWidth = DesktopLeftPane.defaultWidth;
+
+  List<BodyMeshDto> get _bodies => widget.referenceSource?.bodies ?? widget.bodies;
+  Map<String, SketchGeometry3D> get _otherSketchGeometries =>
+      widget.referenceSource?.otherSketchGeometries ?? widget.otherSketchGeometries;
+
+  void _onReferenceSourceChanged() {
+    if (mounted) setState(() {});
+  }
 
   /// Stage 23f's View submenu controls - all in-memory only/session-only
   /// per the brief, with no `shared_preferences` persistence (unlike
@@ -521,6 +566,7 @@ class _SketchScreenState extends State<SketchScreen> {
   void initState() {
     super.initState();
     _controller = widget.controller ?? SketchController();
+    widget.referenceSource?.addListener(_onReferenceSourceChanged);
     final adoptSketchId = widget.adoptSketchId;
     if (adoptSketchId != null) {
       _controller.adoptSketch(
@@ -570,6 +616,7 @@ class _SketchScreenState extends State<SketchScreen> {
 
   @override
   void dispose() {
+    widget.referenceSource?.removeListener(_onReferenceSourceChanged);
     _controller.removeListener(_enterOrbitViewOncePlaneReadyIfPreferred);
     // Only dispose a controller this widget created itself - an injected
     // (e.g. test-owned, or PartScreen-owned) controller's lifecycle belongs
@@ -587,6 +634,24 @@ class _SketchScreenState extends State<SketchScreen> {
     return CadShortcutScope(
       bindings: () => _shortcutBindings,
       child: ToolPanelKeyScope(registry: _toolPanelKeys, child: _buildScaffold(context)),
+    );
+  }
+
+  /// Bug report 2026-11-18, part B: on the desktop the open feature tree is a left pane beside the viewport (as the Part
+  /// screen's docked tree); on the phone it slides over the viewport instead (see the Stack in [_buildScaffold]).
+  Widget _withDesktopTreePane(Widget viewport) {
+    final builder = widget.featureTreeBuilder;
+    if (builder == null || !_treeOpen || !_desktopLayout) return viewport;
+    return Row(
+      children: [
+        DesktopLeftPane(
+          width: _treePaneWidth,
+          onResize: (delta) =>
+              setState(() => _treePaneWidth = (_treePaneWidth + delta).clamp(DesktopLeftPane.minWidth, DesktopLeftPane.maxWidth)),
+          child: builder(context, () => setState(() => _treeOpen = false)),
+        ),
+        Expanded(child: viewport),
+      ],
     );
   }
 
@@ -937,7 +1002,8 @@ class _SketchScreenState extends State<SketchScreen> {
             _ReferenceHealthBanner(controller: _controller),
             if (_desktopLayout) _buildDesktopSketchRibbon(context),
             Expanded(
-              child: Stack(
+              child: _withDesktopTreePane(
+Stack(
                 children: [
                   // On-device feedback: this used to be called directly
                   // (unwrapped) here, so it only ever reflected
@@ -991,7 +1057,7 @@ class _SketchScreenState extends State<SketchScreen> {
                                 ),
                               ),
                             ),
-                          if (widget.referenceGhostSegments.isNotEmpty || widget.otherSketchGeometries.isNotEmpty) ...[
+                          if (widget.referenceGhostSegments.isNotEmpty || _otherSketchGeometries.isNotEmpty) ...[
                             // No gap when Exit Sketch above is hidden (desktop, standalone).
                             if (!widget.standalone && !_desktopLayout) const SizedBox(height: 8),
                             FloatingActionButton.small(
@@ -1129,6 +1195,25 @@ class _SketchScreenState extends State<SketchScreen> {
                         ),
                       ),
                     ),
+                  // Bug report 2026-11-18, part B: the Part's feature tree, opened from this button (only when the owner gave a
+                  // builder). Rendered before the ribbon, like the File button, so the ribbon sits in front when it shows.
+                  if (widget.featureTreeBuilder != null)
+                    Positioned(
+                      top: 8,
+                      left: widget.standalone ? 56 : 8,
+                      child: SafeArea(
+                        bottom: false,
+                        child: FloatingActionButton.small(
+                          key: const ValueKey('sketch-tree-fab'),
+                          heroTag: 'sketch-tree-fab',
+                          tooltip: 'Feature tree',
+                          backgroundColor: _treeOpen ? Theme.of(context).colorScheme.primary : null,
+                          foregroundColor: _treeOpen ? Theme.of(context).colorScheme.onPrimary : null,
+                          onPressed: () => setState(() => _treeOpen = !_treeOpen),
+                          child: const SvgIcon('assets/icons/feature/feature_tree.svg'),
+                        ),
+                      ),
+                    ),
                   Positioned.fill(child: SketchRibbon(controller: _controller)),
                   // 3D-viewport Text tool round
                   // (`docs/text-tool-3d-viewport-scope.md` §2.3): the Text
@@ -1140,6 +1225,18 @@ class _SketchScreenState extends State<SketchScreen> {
                   // needs it - see the mode-keyed `bar` switch's own doc
                   // comment on `usesResizableToolPanel`.
                   Positioned.fill(child: TextValueBar(controller: _controller)),
+                  // The phone's feature tree slides over the viewport; on the desktop it is a pane beside it (_buildScaffold).
+                  if (_treeOpen && widget.featureTreeBuilder != null && !_desktopLayout)
+                    Positioned.fill(
+                      child: TweenAnimationBuilder<double>(
+                        key: const ValueKey('sketch-tree-overlay'),
+                        tween: Tween(begin: -1, end: 0),
+                        duration: const Duration(milliseconds: 200),
+                        curve: Curves.easeOut,
+                        builder: (context, dx, child) => FractionalTranslation(translation: Offset(dx, 0), child: child),
+                        child: widget.featureTreeBuilder!(context, () => setState(() => _treeOpen = false)),
+                      ),
+                    ),
                   // Tap-outside barrier: while the FAB menu is open, any tap
                   // outside the FAB itself (which sits above this in the
                   // Stack, so remains tappable) closes the menu instead of
@@ -1453,7 +1550,7 @@ class _SketchScreenState extends State<SketchScreen> {
                       ),
                     ),
                 ],
-              ),
+              )),
             ),
             if (_desktopLayout) _buildDesktopSketchStatusBar(),
           ],
@@ -1528,7 +1625,7 @@ class _SketchScreenState extends State<SketchScreen> {
     if (_orbitViewActive && orbitBasis != null) {
       return PartViewport(
         key: _orbitViewportKey,
-        bodies: widget.bodies,
+        bodies: _bodies,
         // On-device feedback ("Show reference body button in the sketcher
         // should now toggle visibility of all bodies on/off"): the same
         // toggle that used to only gate the 2D canvas's own projected
@@ -1885,7 +1982,7 @@ class _SketchScreenState extends State<SketchScreen> {
   /// ordering this doc comment used to describe happening here directly.
   void _convertFaceEdges(SelectionEntityRef faceEntity) {
     BodyMeshDto? body;
-    for (final candidate in widget.bodies) {
+    for (final candidate in _bodies) {
       if (candidate.bodyId == faceEntity.bodyId) {
         body = candidate;
         break;
@@ -2760,7 +2857,7 @@ class _SketchScreenState extends State<SketchScreen> {
     // On-device feedback: other sketches share the Body hide/show toggle
     // (see [SketchScreen.otherSketchGeometries]'s own doc comment) - hidden
     // exactly like [widget.bodies] is via `bodiesHidden` a few lines below.
-    final others = _referenceBodyHidden ? const <String, SketchGeometry3D>{} : widget.otherSketchGeometries;
+    final others = _referenceBodyHidden ? const <String, SketchGeometry3D>{} : _otherSketchGeometries;
     final cached = _cachedEmbeddedSketchGeometries;
     final cachedGeometry = cached[key];
     if (cached.length == others.length + 1 &&
