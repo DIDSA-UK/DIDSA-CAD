@@ -567,6 +567,18 @@ tried on a real Quest. Items marked **backend** land in this repo.
    good; its layout is not good enough, and its use of space and colour needs a human-factors pass (reach and reading distance at arm's length, how much sits in the primary view,
    grouping, size and contrast of targets, colour meaning and accessibility including colour-blind safety). It replaces the deck's single options row of six buttons plus More. Scope: audit
    the current deck against a headset session, propose a layout, then rebuild. Not scoped yet; needs its own scoping doc.
+9. **Dimensions and constraints at parity with the flat app (design table).** Scoped, decisions recorded (2026-11-18):
+   `DIDSA-VR/docs/dimension-constraint-parity-scope.md`; **sessions S0-S10 in `DIDSA-VR/docs/dimension-constraint-parity-plan.md`, to start once
+   `docs/bug-report-2026-11-18-plan.md` is complete and merged** (its gate). Every dimension type and option the flat app has (including the six part D types of
+   `docs/bug-report-2026-11-18-plan.md`), the flat app's preview / choose / drop workflow on the controllers, saved label placement and angle sides,
+   constraint-state colours, one rule for conflicting constraints in both apps, and a shared option catalogue (`docs/sketch-dimension-catalogue.json`)
+   with a test in each client so the two move together. Constrained sketch drag in VR by a GDScript port of the projector. Pieces P0-P6; small flat-app
+   changes ride along (reference dimension offered between pinned things, the part D reference kinds, the conflict rule).
+10. **Hand tracking across the whole VR client (VR).** Hands as an input alongside the controllers (pinch to select, poke for panels and buttons, aim
+   from the hand), rolled out client-wide rather than tool by tool: every tool, window, the wrist tablet, the tool wheel and the rooms need it. Pieces
+   to scope: an input-intent layer every tool uses (select, cancel, next / previous, adjust, drag, grab), so a hand source plugs in beside the
+   controller; a button for every thumbstick action (hands have no stick); hit sizes per input; what replaces the grips for move / turn / scale; and
+   tuning on the owner's Quest. The design-table sketcher prepares for it in item 9 (P5). Not scoped yet; needs its own scoping doc and a headset.
 
 ### DIDSA-VR: parity gap review and rollout order (added 2026-10-12)
 
