@@ -46,7 +46,7 @@ The implementation session updates this table in its PR.
 | S4 | Sync hardening and set-up polish | all | Done (CAD #366 / VR #87, merged 2026-11-14; headless, Xvfb and a real store killed and restarted, not run on a headset; results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
 | N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17). **N1a built** (2026-11-17, coaxial tie-break by radius / cone half-angle; CAD #372, merged). **N1b built** (2026-11-17, mate reference identity: stamp, refresh, held mates, `confirm_references`, held and lost mates left out of the group solve; CAD #373, merged; "N1b results" below). **N1c built** (2026-11-17, VR shows followed / held / lost with Confirm, `mate_health` defers to the server; DIDSA-VR PR #88, merged; "N1c results" below). **N1d built** (2026-11-17, flat app shows followed / held / lost with Confirm and Got it; CAD #375 and #376, merged; "N1d results" below). N1e not started |
-| P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | **Scope and audit written, spikes written as plans and not run** (2026-11-18, docs only): `docs/live-sessions-scope.md` (decisions LS-1 to LS-13 await the owner), DIDSA-VR `docs/main-gd-split-audit.md`, DIDSA-VR `docs/live-sessions-spikes.md` (the owner runs both spikes on a Quest and a phone); CAD #377 / VR #89, open, not merged ("P0 results" below) |
+| P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | **Scope and audit written, spikes written as plans and not run** (2026-11-18, docs only): `docs/live-sessions-scope.md` (decisions LS-1 to LS-13 accepted by the owner, 2026-11-18), DIDSA-VR `docs/main-gd-split-audit.md`, DIDSA-VR `docs/live-sessions-spikes.md` (the owner runs both spikes on a Quest and a phone); CAD #377 / VR #89, merged 2026-11-18 ("P0 results" below) |
 | P1 | Session hub service and read-only document sharing | CAD | Not started |
 | P2 | VR Host / Join Session, roles, avatars, live model state | VR | Not started |
 | P3 | Voice | CAD hub, VR | Not started |
@@ -1693,7 +1693,7 @@ Docs only: nothing in `backend/`, `client/`, `project-store/` or DIDSA-VR's code
 **What was written:**
 - `docs/live-sessions-scope.md` (this repo): roles, every message with who may send it, the snapshot, the read-only view token and its
   allowlist, the document revision, the hub's shape, what is never sent, what is not mirrored in v1, and a check against P1 and P2.
-  Thirteen decisions (LS-1 to LS-13, its section 10) are recommendations **for the owner to confirm**; P2's open question (shared
+  Thirteen decisions (LS-1 to LS-13, its section 10) were recommendations; **the owner accepted all thirteen on 2026-11-18**; P2's open question (shared
   scale) is LS-6, answered with the plan's own recommendation.
 - DIDSA-VR `docs/main-gd-split-audit.md`: `main.gd` counted by category, the couplings that stop the viewing lines being lifted out, and
   what a view-only build must not load.

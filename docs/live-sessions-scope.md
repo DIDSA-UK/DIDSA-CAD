@@ -5,7 +5,7 @@ Phase P0 of `docs/mates-storage-sessions-plan-2026-11-12.md` (Part 3). Written 2
 headset or a phone.** The companion pieces are in DIDSA-VR: `docs/main-gd-split-audit.md` (what a view-only build must not load) and
 `docs/live-sessions-spikes.md` (the voice and Cardboard spikes, for the owner's devices).
 
-Every choice the plan left open is decided below with one line of reasoning and listed in section 10 for the owner to confirm.
+Every choice the plan left open is decided below with one line of reasoning and listed in section 10; **the owner accepted all thirteen on 2026-11-18**, so P1 builds them as written.
 P1 (hub and backend token) and P2 (VR Host / Join) should be buildable from this doc alone; section 11 checks that.
 
 ## 1. What this does, in one paragraph
@@ -271,7 +271,9 @@ about 150 bytes x 30 Hz = 36 kbit/s. Voice: about 30 kbit/s per talker with fram
 talking and one dragging: under 1 Mbit/s out of the hub. The glb is the large item: one fetch per observer per `doc_changed` (a 304
 when nothing changed for that query). To be measured in P1's scripted test and P2 on the tunnel.
 
-## 10. Decisions for the owner (recommendations; please confirm)
+## 10. Decisions for the owner (all thirteen recommendations ACCEPTED, 2026-11-18)
+
+The owner accepted every recommendation below on 2026-11-18; the table is kept as the record of what was asked.
 
 | # | Question | Recommendation and one line of reasoning |
 |---|---|---|
