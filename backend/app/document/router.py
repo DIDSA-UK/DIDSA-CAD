@@ -7,7 +7,7 @@ import time
 import uuid
 from typing import Iterable, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer
@@ -451,7 +451,10 @@ from app.document.section import SectionBodyTarget, SectionPlaneSpec, compute_se
 from app.document.split import CONNECTABLE_CURVE_ENTITY_TYPES, resolve_split
 from app.document.sweep import resolve_sweep
 from app.document.store import get_document, get_part_or_404, replace_document
-from app.session_context import bind_session_id
+from app.document import revision as document_revision
+from app.document import view_glb_cache
+from app.document.view_routes import router as view_router
+from app.session_context import bind_session_id, get_current_session_id
 from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
 from app.sketch.reference_signature import ReferenceStatus
 from app.sketch.profile import OpenChainStatus, Profile, ProfileStatus, detect_open_chain, detect_profile
@@ -9676,6 +9679,7 @@ def _walk_assembly_glb_instances(
     color: str | None = None,
     owner_part_id: str = "",
     occurrence_id: str = "",
+    name: str = "",
 ) -> None:
     """`assembly-mesh.glb`'s own counterpart to `get_assembly_mesh`'s own
     `_walk` (identical traversal shape - resolved-`part_id`/suppressed/cycle
@@ -9708,6 +9712,7 @@ def _walk_assembly_glb_instances(
             owner_part_id=owner_part_id,
             occurrence_id=occurrence_id,
             instance_path="/".join(occurrence_path),
+            name=name or part.name,
         )
     )
 
@@ -9732,6 +9737,7 @@ def _walk_assembly_glb_instances(
             color=occurrence.color,
             owner_part_id=part.id,
             occurrence_id=occurrence.id,
+            name=occurrence.name_override or child_part.name,
         )
     for pattern in part.component_patterns:
         if pattern.suppressed:
@@ -9759,6 +9765,7 @@ def _walk_assembly_glb_instances(
                     color=source_occurrence.color,
                     owner_part_id=part.id,
                     occurrence_id="",  # pattern-derived copy: no Occurrence entry of its own to reference
+                    name=source_occurrence.name_override or pattern_child_part.name,
                 )
 
 
@@ -9787,6 +9794,7 @@ def _paint_glb_instances(
 
 @router.get("/parts/{part_id}/assembly-mesh.glb")
 def get_assembly_mesh_glb(
+    request: Request,
     part_id: str,
     quality: float | None = Query(default=None, ge=0.0, le=1.0),
     tier: Literal["full", "coarse"] = Query(default="full"),
@@ -9833,7 +9841,24 @@ def get_assembly_mesh_glb(
     the REQUESTED part's own geometry only, never to the placed child Parts of
     an assembly, the same rule the JSON assembly endpoint already states (they
     are the open Part's live-editing state). Both default to empty: the
-    response is then byte-identical to before."""
+    response is then byte-identical to before.
+
+    Live sessions (docs/live-sessions-scope.md section 5): an observer's request (a view token, `app.view_tokens`) is answered
+    from a small per-session cache keyed by the document revision and the query, so six observers fetching after one edit cost
+    one encode, and carries an `ETag` (`"<rev>-<hash of part and query>"`) so a refetch with `If-None-Match` gets a 304. The
+    presenter's own requests (the API key) are computed as before and never cached."""
+    view_token = getattr(request.state, "view_token", None)
+    cache_key = etag = None
+    if view_token is not None:
+        session_id = get_current_session_id()
+        rev = document_revision.current(session_id)
+        cache_key = view_glb_cache.key(session_id, rev, part_id, request.url.query)
+        etag = view_glb_cache.etag(rev, part_id, request.url.query)
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
+        cached = view_glb_cache.get(cache_key)
+        if cached is not None:
+            return Response(content=cached, media_type="model/gltf-binary", headers={"ETag": etag})
     document = get_document()
     root_part = get_part_or_404(part_id)
     mesh_quality = DEFAULT_MESH_QUALITY if quality is None else mesh_quality_from_slider(quality)
@@ -9867,6 +9892,10 @@ def get_assembly_mesh_glb(
     _paint_glb_instances(document, root_part, visible_instances, geometry_by_part_id)
 
     data = encode_assembly_glb(geometry_by_part_id, visible_instances, include_topology=topology)
+    if cache_key is not None:
+        view_glb_cache.put(cache_key, data)
+        # No Content-Disposition for an observer: it would carry the Part's name as a file name (scope section 7: no file names).
+        return Response(content=data, media_type="model/gltf-binary", headers={"ETag": etag})
     return Response(
         content=data,
         media_type="model/gltf-binary",
@@ -10474,3 +10503,4 @@ router.include_router(gear_router)
 router.include_router(spring_router)
 router.include_router(appearance_router)
 router.include_router(scenes_router)
+router.include_router(view_router)

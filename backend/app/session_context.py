@@ -25,7 +25,7 @@ isolation.
 
 import contextvars
 
-from fastapi import Header
+from fastapi import Header, Request
 
 DEFAULT_SESSION_ID = "default"
 
@@ -43,6 +43,7 @@ def set_current_session_id(session_id: str | None) -> None:
 
 
 async def bind_session_id(
+    request: Request,
     x_document_session: str | None = Header(default=None, alias="X-Document-Session"),
 ) -> None:
     """FastAPI dependency: binds the current request's session id from the
@@ -55,5 +56,9 @@ async def bind_session_id(
     (also threadpooled, but as a *separate* copy taken from this same
     request's async context) actually runs in. Running here, before that
     handoff, means the mutation is visible everywhere downstream.
+
+    Live sessions (docs/live-sessions-scope.md section 5): a request let in by a view token (`app.auth.verify_access`) is bound
+    to the token's session and the header is ignored, so an observer can neither read the "default" document nor name another.
     """
-    set_current_session_id(x_document_session)
+    token_session = getattr(request.state, "view_token_session", None)
+    set_current_session_id(token_session if token_session else x_document_session)

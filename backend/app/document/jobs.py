@@ -59,10 +59,12 @@ from enum import Enum
 from fastapi import HTTPException
 from OCC.Core.TopoDS import TopoDS_Shape
 
+from app.document import revision
 from app.document.bevel_pair import resolve_bevel_pair
 from app.document.job_cancellation import CancellationToken, JobCancelled
 from app.document.models import BevelPairFeature, Part, PlanetaryGearFeature
 from app.document.planetary_gear import resolve_planetary
+from app.session_context import get_current_session_id
 
 JobFeature = BevelPairFeature | PlanetaryGearFeature
 """The Feature types job-mode currently supports - see this module's own
@@ -125,6 +127,9 @@ class JobRecord:
     error: dict | None = None
     created_at: float = field(default_factory=time.monotonic)
     finished_at: float | None = None
+    # The document session the job builds into (captured in the request thread): the build thread bumps that session's revision
+    # when it adds the Feature (`app.document.revision`, docs/live-sessions-scope.md section 5).
+    session_id: str = ""
 
 
 _lock = threading.Lock()
@@ -229,6 +234,8 @@ def _run_job(job_id: str, resolve_fn: _ResolveFn) -> None:
             return
         part.add_feature(feature)
         _finish_job_locked(job_id, JobStatus.SUCCEEDED, warnings=warnings)
+    if record.session_id:
+        revision.bump(record.session_id)
 
 
 def _submit_job(part_id: str, part: Part, feature: JobFeature, resolve_fn: _ResolveFn) -> JobRecord:
@@ -255,7 +262,9 @@ def _submit_job(part_id: str, part: Part, feature: JobFeature, resolve_fn: _Reso
                 },
             )
         job_id = str(uuid.uuid4())
-        record = JobRecord(id=job_id, part_id=part_id, part=part, feature=feature, cancellation=CancellationToken())
+        record = JobRecord(
+            id=job_id, part_id=part_id, part=part, feature=feature, cancellation=CancellationToken(), session_id=get_current_session_id()
+        )
         _jobs[job_id] = record
         _running_job_id = job_id
 

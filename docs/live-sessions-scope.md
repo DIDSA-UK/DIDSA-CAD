@@ -78,20 +78,20 @@ reconnecting" meanwhile and keep the last state.
 - **A target** names a thing in the model: `{"path": "<instance_path>", "body": "<body_id>"?, "face": <int>?}`. `path` is the glb's
   `extras.instance_path`, which is unique per placed instance (pattern copies included); occurrence ids alone are not (VR's tree
   addresses rows by path for this reason).
-- **Limits** (hub-enforced): a text message at most **64 KB**; per participant at most **60 messages a second** averaged over 5 s, then
-  `error rate_limited` and close.
+- **Limits** (hub-enforced): a text message at most **64 KB**; per connection at most **60 text messages a second** and **100 voice
+  frames a second**, each averaged over 5 s, then `error rate_limited` and close.
 
 ### 4.2 Joining, leaving and room control
 
 | `t` | Direction | Fields | Meaning |
 |---|---|---|---|
-| `host` | presenter → hub (first message) | `proto: 1`, `name`, `device` (`quest` / `pcvr` / `phone` / `desktop`), `client`, `model` (4.3), `backend_url`, `view_token`, `view_expires_at` | Create a room. The handshake must carry the hub key, else 401 before upgrade |
+| `host` | presenter → hub (first message) | `proto: 1`, `name`, `device` (`quest` / `pcvr` / `phone` / `desktop`), `client`, `model` (4.3, with `kind`), `backend_url`, `view_token`, `view_expires_at` | Create a room. A handshake with a **wrong** hub key is refused before the upgrade; a `host` on a handshake with **no** key gets `error not_allowed` (observers' handshakes carry none, so a missing key cannot be refused earlier) |
 | `join` | observer → hub (first message) | `proto: 1`, `code`, `name`, `device`, `client` | Join by code |
-| `resume` | either → hub (first message) | `proto: 1`, `resume` | Come back after a drop with the token from `welcome`; the hub restores id, name, colour and role |
+| `resume` | either → hub (first message) | `proto: 1`, `resume` | Come back after a drop with the token from `welcome`; the hub restores id, name, colour and role. Resuming as the presenter needs the hub key on the handshake too |
 | `welcome` | hub → the one who connected | `you: {id, name, colour, role}`, `room: {code, join_uri, locked}`, `resume`, `participants: [...]`, `snapshot` (4.7). **To an observer also:** `backend_url`, `view_token` | Accepted |
-| `error` | hub → client | `code`, `message` | Then the hub closes. Codes: `proto_unsupported`, `bad_code`, `room_full`, `room_locked`, `removed`, `not_allowed`, `rate_limited`, `too_big`, `resume_expired` |
+| `error` | hub → client | `code`, `message` | Then the hub closes. Codes: `proto_unsupported`, `bad_code`, `room_full`, `room_locked`, `removed`, `not_allowed`, `rate_limited`, `too_big`, `resume_expired`, `hub_full` (no room for another session), `bad_message` (a `host` without a usable model) |
 | `joined` / `left` | hub → all | participant / `id`, `reason` (`left`, `dropped`, `removed`) | Roster changes. A `dropped` presenter is shown as reconnecting |
-| `roster` | hub → all | `participants: [{id, name, colour, role, device, hand, muted}]` | Sent on any change of a participant's own fields |
+| `roster` | hub → all | `participants: [{id, name, colour, role, device, hand, muted, talking, connected}]` | Sent on any change of a participant's own fields (hand, mute, talking) |
 | `lock` | presenter → hub → all | `locked: bool` | No new joins while locked (`resume` still works) |
 | `remove` | presenter → hub | `id` | The hub sends that participant `error removed`, closes it, and refuses its `resume` |
 | `token` | presenter → hub → observers | `view_token`, `view_expires_at` | A renewed token (section 5); observers swap it in |
@@ -103,7 +103,8 @@ reconnecting" meanwhile and keep the last state.
 - **Colour:** the hub gives each participant the first free colour of a fixed palette of 8 (D6: one colour each); the presenter's is
   always the first.
 - **Join code:** 6 characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789` (no 0/O, 1/I/L), e.g. `K7XQ4M`, unique among live rooms.
-  The QR code is `didsa-join:1?h=<hub wss address>&c=<code>`: a **separate scheme** from pairing (`didsa-vr:1`) so a join code can
+  The QR code is `didsa-join:1?h=<hub wss address>&c=<code>` (the hub writes `h` into `welcome.room.join_uri` when it is told its
+  public address, `SESSION_HUB_PUBLIC_URL`; otherwise `join_uri` has only `c` and the presenter's app adds the address it used): a **separate scheme** from pairing (`didsa-vr:1`) so a join code can
   never be mistaken for, or carry, a server's keys (decision LS-2).
 - **Admission:** anyone with the code is admitted, the presenter sees them arrive and can Remove them or Lock the room (decision LS-2).
   A wrong code costs: 10 wrong codes from one address in a minute and that address is refused for 10 minutes.
@@ -194,15 +195,16 @@ token: 401 with `detail: "view_token_invalid"`, so the observer can ask the hub 
 Part's name) to each glb node's `extras`, beside `instance_path`. Additive; DIDSA-VR ignores unknown extras. This avoids opening
 `/parts/{id}` or `/occurrences` to a token (section 7 says why).
 
-**The document revision** (`rev`): an integer per document session, starting at 1 on import, bumped by every request that changes
-the document. Returned on **every** response as `X-Document-Revision` (so the presenter learns it from the request it just made,
+**The document revision** (`rev`): an integer per document session, starting at 1 and bumped by every request that changes the
+document (an import is a change; nothing resets it), and by a background job when it adds its Feature. Returned on **every** response as `X-Document-Revision` (so the presenter learns it from the request it just made,
 with no extra call) and as the glb's `ETag` (`"<rev>-<hash of the query>"`), so an observer's refetch can send `If-None-Match` and
-get a **304**. P1 decides where to bump it; the recommendation is "every non-GET that answers 2xx, except a short list of routes
-known not to mutate (previews, measure, section, solve-preview)", because a missed bump shows stale geometry while a spare bump only
-costs a 304.
+get a **304**. As built (P1, `backend/app/session_hooks.py`): every non-GET that answers 2xx bumps it, except routes whose path says
+preview, measure, import probe, AI-plan validate, job cancel, and minting or revoking a view token, because a missed bump shows stale
+geometry while a spare bump only costs a 304. `ETag` and `304` are for token requests only.
 
 **A small glb cache** (per session: the last 4 `(rev, query) -> bytes`, at most 64 MB in all) so six observers fetching after one
-edit cost one encode on the Pi, not six.
+edit cost one encode on the Pi, not six. **Token requests only:** the presenter's own requests are computed as before, so a bump the
+backend missed can never show the presenter a stale model.
 
 **Gotchas for P1, found in the code:**
 
@@ -213,9 +215,10 @@ edit cost one encode on the Pi, not six.
    `default` document, or any session it names.
 3. **A second reader is new.** Today a session's only client is the app that made it (`store.py`'s lock guards the dict lookup, not a
    mutation). An observer's glb GET can now run in another worker thread while the presenter's edit is mutating the same `Document`.
-   (Whether the presenter's own app already overlaps requests across its tools was not checked.) P1's first test should be a
-   glb fetch racing an edit; the simplest fix is a per-session lock held by every request of that session (the glb cache keeps the
-   cost of holding it to one encode per rev).
+   (Whether the presenter's own app already overlaps requests across its tools was not checked.) **As built:** a per-session lock
+   (`app/session_hooks.py`) held by every token GET and every non-GET of that session (not a job cancel, which must reach a running
+   request; not the presenter's own GETs, which behave as before). A background job's commit is outside it (known gap; it is rare
+   and bumps the revision).
 4. The `/openapi.json` and `/docs` routes stay reachable without auth (`main.py` says so); they show the schema, not data. Nothing to do.
 
 ## 6. The hub (P1)

@@ -12,7 +12,7 @@
 # (already gitignored here - see .gitignore's own comment - specifically
 # because that filename has historically been used to stash a real
 # CAD_API_KEY for local runs) and fill in real values, or just set
-# CAD_API_KEY, BROWSER_RELAY_API_KEY and PROJECT_STORE_API_KEY in the environment before running
+# CAD_API_KEY, BROWSER_RELAY_API_KEY, PROJECT_STORE_API_KEY and SESSION_HUB_API_KEY in the environment before running
 # `docker compose -f docker-compose.example.yml up`. A .env file next to
 # whichever copy you run from is the easiest way (docker compose loads it
 # automatically, and it's covered by the same .gitignore rule); see each
@@ -28,6 +28,8 @@ services:
       - CAD_API_KEY=${CAD_API_KEY:?set CAD_API_KEY before starting}
       # Optional: the project store's public address (never its key), advertised in this backend's /health so clients find it.
       - PROJECT_STORE_URL=${PROJECT_STORE_URL:-}
+      # Optional: the session hub's public wss:// address (never its key), advertised the same way (docs/live-sessions-scope.md).
+      - SESSION_HUB_URL=${SESSION_HUB_URL:-}
     restart: unless-stopped
 
   browser-relay:
@@ -65,4 +67,20 @@ services:
     # A starting point for measurement on the real Pi, not derived from a load test.
     mem_limit: "512m"
     cpus: 1.0
+    restart: unless-stopped
+
+  # The live-session hub (session-hub/README.md, docs/live-sessions-scope.md): rooms, presence, the presenter's state stream and
+  # voice frames for design reviews. Its own container and key (LS-1): no geometry, no files, no keys pass through it, and a hub
+  # restart ends sessions without touching any document. ONE worker: rooms live in memory.
+  session-hub:
+    build: ./session-hub
+    ports:
+      - "8300:8300"
+    environment:
+      - SESSION_HUB_API_KEY=${SESSION_HUB_API_KEY:?set SESSION_HUB_API_KEY before starting}
+      # Optional: this hub's public wss:// address, so the join QR code carries it.
+      - SESSION_HUB_PUBLIC_URL=${SESSION_HUB_PUBLIC_URL:-}
+    # A starting point for measurement on the real Pi, not derived from a load test.
+    mem_limit: "256m"
+    cpus: 0.5
     restart: unless-stopped
