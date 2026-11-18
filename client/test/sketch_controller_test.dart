@@ -13,6 +13,7 @@ import 'package:didsa_cad_client/api/dimension_label_placement.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'support/slvs_reference/slvs_bindings.dart';
 import 'support/slvs_reference/solvespace_clamp.dart';
+import 'package:didsa_cad_client/sketch/label_drag_resolver.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt, dimensionLabelCenterScreen;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
@@ -2353,6 +2354,15 @@ class _FakeBackend {
             'distance': (body['distance'] as num).toDouble(),
           };
           break;
+        case 'point_line_distance':
+          constraint = {
+            'id': id,
+            'type': 'point_line_distance',
+            'point_id': body['point_id'],
+            'line_id': body['line_id'],
+            'distance': (body['distance'] as num).toDouble(),
+          };
+          break;
         case 'at_midpoint':
           constraint = {
             'id': id,
@@ -4053,7 +4063,8 @@ void main() {
 
     expect(controller.dimensionSelection.single.kind, SelectionKind.arc);
     expect(controller.dimensionSelection.single.id, arcId);
-    expect(controller.ghosts.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
+    // Part A: the kinds are the drawer's options now; one of them (Radius for an arc) is previewed.
+    expect(controller.pendingDimensionOptions.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
   });
 
   test('confirming a new radius for an Arc updates its one real DistanceConstraint - feedback round: '
@@ -7488,8 +7499,8 @@ void main() {
 
     expect(controller.dimensionSelection.single.kind, SelectionKind.ellipse);
     expect(controller.dimensionSelection.single.id, ellipseId);
-    expect(controller.ghosts.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
-    expect(controller.ghosts.map((g) => g.key), containsAll(['majorradius', 'majordiameter', 'minorradius', 'minordiameter']));
+    expect(controller.pendingDimensionOptions.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
+    expect(controller.pendingDimensionOptions.map((g) => g.key), containsAll(['majorradius', 'majordiameter', 'minorradius', 'minordiameter']));
   });
 
   test('confirming the minor-axis radius ghost PATCHes its DistanceConstraint, feedback round: the '
@@ -9158,7 +9169,7 @@ void main() {
       await freshController.handleCanvasTap(20, 20);
 
       expect(freshController.dimensionSelection, hasLength(2));
-      expect(freshController.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+      expect(freshController.pendingDimensionOptions.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
     });
 
     test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
@@ -10651,7 +10662,7 @@ void main() {
     expect(controller.ghosts, isNotEmpty);
   });
 
-  test('tapping two distinct points in dimension mode shows simultaneous V, H, and linear ghosts', () async {
+  test('tapping two distinct points in dimension mode offers V, H, and linear (aligned) in the drawer, previewing one', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
@@ -10661,7 +10672,8 @@ void main() {
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
 
-    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    expect(controller.ghosts, hasLength(1));
   });
 
   test('confirming a vertical/horizontal/linear ghost creates a DistanceConstraint with the '
@@ -10823,7 +10835,8 @@ void main() {
     // so a diagonal spot is the only genuinely empty-space point on it.
     await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
 
-    expect(controller.ghosts.map((g) => g.key).toSet(), {'radius', 'diameter'});
+    expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'radius', 'diameter'});
+    expect(controller.pendingDimensionKey, 'diameter'); // a circle's default
 
     await controller.confirmGhostValue('diameter', 40.0);
 
@@ -11046,7 +11059,8 @@ void main() {
     expect(controller.mode, SketchMode.select);
   });
 
-  test('tapping empty canvas after a pick in dimension mode clears the pick but stays in dimension mode', () async {
+  test('tapping empty canvas after a pick in dimension mode drops the previewed dimension (part A); cancelling clears the '
+      'pick but stays in dimension mode', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
@@ -11056,6 +11070,10 @@ void main() {
     expect(controller.ghosts, isNotEmpty);
 
     await controller.handleCanvasTap(50, 50);
+    expect(controller.activeGhostKey, 'length'); // dropped, its value editor is open
+
+    expect(controller.cancelDimensionStep(), isTrue); // the editor goes back to the preview
+    expect(controller.cancelDimensionStep(), isTrue); // the preview goes back to picking
 
     expect(controller.mode, SketchMode.dimension);
     expect(controller.ghosts, isEmpty);
@@ -11810,8 +11828,8 @@ void main() {
       await controller.handleCanvasTap(25, 0); // arc2's apex
 
       expect(controller.points.length, pointCountBefore + 2);
-      expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
-      final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
+      expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+      final linearGhost = controller.pendingDimensionOptions.firstWhere((g) => g.key == 'linear');
       expect(controller.currentGhostValue(linearGhost), closeTo(30.0, 1e-6));
     });
 
@@ -12151,11 +12169,12 @@ void main() {
     await controller.handleCanvasTap(0, 5); // the point
     await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (nearer to its end)
 
-    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    // Part A: the perpendicular distance is the default now; the point-distance kinds stay as options, to the nearer end.
+    expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'perpendicular', 'v', 'h', 'linear'});
     // The line's start point (0, 0) is nearer to (0, 5) than its end point
     // (10, 0) is - distance 5 vs sqrt(125) - so the ghost set is built
     // against the start point, giving a linear distance of 5.
-    final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
+    final linearGhost = controller.pendingDimensionOptions.firstWhere((g) => g.key == 'linear');
     expect(controller.currentGhostValue(linearGhost), closeTo(5.0, 1e-9));
   });
 
@@ -15742,4 +15761,367 @@ void main() {
       expect(merging.selectionSet.single.id, 'lone');
     });
   });
+
+  // --- Part A of docs/bug-report-2026-11-18-plan.md: one dimension previewed at the cursor, chosen in a drawer, dropped by a click ------
+
+  group('dimension preview at the cursor (bug report 2026-11-18, part A)', () {
+    Future<void> drawLine(double x1, double y1, double x2, double y2) async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(x1, y1);
+      await controller.handleCanvasTap(x2, y2);
+      controller.finishChain();
+    }
+
+    Future<void> drawPoint(double x, double y) async {
+      controller.selectDrawTool(SketchTool.point);
+      await controller.handleCanvasTap(x, y);
+    }
+
+    Future<void> drawCircle(double cx, double cy, double r) async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(cx, cy);
+      await controller.handleCanvasTap(cx + r, cy);
+    }
+
+    List<String> optionKeys() => controller.pendingDimensionOptions.map((g) => g.key).toList();
+
+    test('one line: Length (default), Horizontal length, Vertical length; the cursor does not change the kind', () async {
+      await drawLine(2, 2, 12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10, 6); // on the line, away from its midpoint
+
+      expect(optionKeys(), ['length', 'h', 'v']);
+      expect(controller.pendingDimensionKind, GhostKind.length);
+      expect(controller.ghosts.length, 1);
+      controller.moveCursorToSketchPoint(7, 30); // above the line's box: a point pair would go horizontal, a line does not
+      expect(controller.pendingDimensionKey, 'length');
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Length', 'Horizontal length', 'Vertical length']);
+    });
+
+    test('the preview is laid out from the cursor by the label-drag rules, and follows it', () async {
+      await drawLine(2, 2, 12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10, 6);
+
+      controller.moveCursorToSketchPoint(4, 12);
+      final first = controller.pendingPlacementFromCursor();
+      expect(first, LabelDragResolver.linear(a: (2, 2), b: (12, 7), p: (4, 12)));
+      controller.moveCursorToSketchPoint(9, -3);
+      expect(controller.pendingPlacementFromCursor(), isNot(first));
+
+      // The overlay item the 3D view draws carries that placement, and a "?" for the value.
+      final item = controller.dimensionGhostOverlayItems().whereType<ConstraintLinearDimensionItem>().single;
+      expect(item.text, '?');
+      expect(item.sketchLocalOffsetDistance, controller.pendingPlacementFromCursor()!.offset);
+      expect(item.sketchLocalAlongOffset, controller.pendingPlacementFromCursor()!.along);
+    });
+
+    test('horizontal / vertical length of a line: the drawer picks it, it stays, and confirm saves orientation and placement', () async {
+      await drawLine(2, 2, 12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10, 6);
+
+      expect(controller.selectPendingDimensionKind('h'), isTrue);
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      controller.moveCursorToSketchPoint(7, -9);
+      expect(controller.pendingDimensionKey, 'h');
+      expect(controller.pendingPlacementFromCursor(), LabelDragResolver.linear(a: (2, 2), b: (12, 7), orientation: 'horizontal', p: (7, -9)));
+
+      await controller.handleCanvasTap(7, -9); // empty space: drops it
+      expect(controller.activeGhostKey, 'h');
+      await controller.confirmGhostValue('h', 12.0);
+
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.orientation, 'horizontal');
+      expect(saved.distance, 12.0);
+      final placement = controller.labelPlacementFor(saved.id)!;
+      expect(placement, LabelDragResolver.linear(a: (2, 2), b: (12, 7), orientation: 'horizontal', p: (7, -9)));
+      await Future<void>.delayed(Duration.zero);
+      expect(backend.labelWrites.single['id'], saved.id);
+      expect(backend.labelWrites.single['offset'], placement.offset);
+    });
+
+    test('a circle: Diameter first (the default), then Radius', () async {
+      await drawCircle(0, 0, 10);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
+
+      expect(optionKeys(), ['diameter', 'radius']);
+      expect(controller.pendingDimensionKind, GhostKind.diameter);
+      // The preview is a radial dimension placed by the radial rule.
+      controller.moveCursorToSketchPoint(-20, 5);
+      final placement = controller.pendingPlacementFromCursor()!;
+      expect(placement.angle, isNotNull);
+      expect(placement.leg, isNotNull);
+      final item = controller.dimensionGhostOverlayItems().whereType<ConstraintRadialDimensionItem>().single;
+      expect(item.isDiameter, isTrue);
+      expect(item.text, '⌀?');
+
+      await controller.handleCanvasTap(-20, 5);
+      await controller.confirmGhostValue('diameter', 40.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.distance, 20.0);
+      expect(controller.labelPlacementFor(saved.id), placement);
+    });
+
+    test('an arc: Radius (the default), then Diameter', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      await controller.handleCanvasTap(0, 5);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(5 * math.sqrt(0.5), 5 * math.sqrt(0.5));
+
+      expect(optionKeys(), ['radius', 'diameter']);
+      expect(controller.pendingDimensionKind, GhostKind.radius);
+    });
+
+    test('two points: the kind follows the cursor (above / below: horizontal, left / right: vertical, else aligned) until the drawer picks', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+
+      expect(optionKeys().toSet(), {'linear', 'h', 'v'});
+      controller.moveCursorToSketchPoint(7, 20); // above the pair's box
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      controller.moveCursorToSketchPoint(7, -20); // below
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      controller.moveCursorToSketchPoint(30, 4); // right of it
+      expect(controller.pendingDimensionKind, GhostKind.vertical);
+      controller.moveCursorToSketchPoint(-30, 4); // left of it
+      expect(controller.pendingDimensionKind, GhostKind.vertical);
+      controller.moveCursorToSketchPoint(7, 4); // inside the box
+      expect(controller.pendingDimensionKind, GhostKind.linear);
+      controller.moveCursorToSketchPoint(30, 30); // a corner region
+      expect(controller.pendingDimensionKind, GhostKind.linear);
+
+      expect(controller.pendingKindChosenInDrawer, isFalse);
+      controller.selectPendingDimensionKind('v');
+      controller.moveCursorToSketchPoint(7, 20); // would be horizontal by the cursor rule; the drawer's choice stays
+      expect(controller.pendingDimensionKind, GhostKind.vertical);
+    });
+
+    test('dropping freezes the kind and placement: later cursor moves do not change them, and confirm uses the frozen kind', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+
+      controller.moveCursorToSketchPoint(7, 20);
+      final atDrop = controller.pendingPlacementFromCursor();
+      await controller.handleCanvasTap(7, 20); // empty space
+      expect(controller.activeGhostKey, 'h');
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+
+      controller.moveCursorToSketchPoint(50, 4); // would be vertical now
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      expect(controller.ghostPlacement(controller.pendingDimensionGhost!), atDrop);
+
+      await controller.confirmGhostValue('h', 10.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.orientation, 'horizontal');
+      expect(controller.labelPlacementFor(saved.id), atDrop);
+      expect(controller.ghosts, isEmpty);
+    });
+
+    test('a click on another entity changes the pick instead of dropping', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      await drawPoint(20, 3);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+      expect(controller.pendingDimensionGhost, isNotNull);
+
+      await controller.handleCanvasTap(20, 3); // a third point: a new pick, not a drop
+      expect(controller.activeGhostKey, isNull);
+      expect(controller.dimensionSelection.single.kind, SelectionKind.point);
+      expect(controller.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+    });
+
+    test('Esc / right-click / back: an open editor goes back to the preview, then the preview back to picking', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+      controller.moveCursorToSketchPoint(7, 20);
+      await controller.handleCanvasTap(7, 20);
+      expect(controller.activeGhostKey, isNotNull);
+
+      expect(controller.cancelDimensionStep(), isTrue);
+      expect(controller.activeGhostKey, isNull);
+      expect(controller.pendingDimensionGhost, isNotNull); // the preview is back
+
+      expect(controller.cancelDimensionStep(), isTrue);
+      expect(controller.dimensionSelection, isEmpty);
+      expect(controller.ghosts, isEmpty);
+      expect(controller.mode, SketchMode.dimension); // still in the tool
+
+      expect(controller.cancelDimensionStep(), isFalse); // nothing left to cancel
+    });
+
+    test('a tap on empty space with nothing picked still leaves the tool, and with no preview still clears the pick', () async {
+      await drawPoint(2, 2);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2); // a lone point: nothing to dimension
+      expect(controller.dimensionSelection, hasLength(1));
+      expect(controller.pendingDimensionOptions, isEmpty);
+      await controller.handleCanvasTap(40, 40);
+      expect(controller.dimensionSelection, isEmpty);
+      await controller.handleCanvasTap(40, 40);
+      expect(controller.mode, SketchMode.select);
+    });
+
+    test('point + line: Perpendicular is the default (a PointLineDistanceConstraint), then Horizontal, Vertical, Aligned to the nearer end', () async {
+      await drawLine(0, 10, 20, 10);
+      await drawPoint(8, 3);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 3);
+      await controller.handleCanvasTap(4, 10.05); // on the line, off its midpoint
+
+      expect(optionKeys(), ['perpendicular', 'h', 'v', 'linear']);
+      expect(controller.pendingDimensionKind, GhostKind.pointLine);
+      controller.moveCursorToSketchPoint(14, 6);
+      expect(controller.pendingDimensionKind, GhostKind.pointLine); // the cursor does not change it
+      final ghost = controller.pendingDimensionGhost!;
+      expect(controller.currentGhostValue(ghost), closeTo(7.0, 1e-9));
+      expect(controller.pendingPlacementFromCursor(), LabelDragResolver.linear(a: (8, 3), b: (8, 10), p: (14, 6)));
+
+      await controller.handleCanvasTap(14, 6);
+      expect(controller.activeGhostKey, 'perpendicular');
+      await controller.confirmGhostValue('perpendicular', 5.0);
+
+      final saved = controller.constraints.values.whereType<PointLineDistanceConstraintDto>().single;
+      expect(saved.distance, 5.0);
+      expect(controller.labelPlacementFor(saved.id), LabelDragResolver.linear(a: (8, 3), b: (8, 10), p: (14, 6)));
+      expect(controller.constraints.values.whereType<DistanceConstraintDto>().where((c) => !c.provisional), isEmpty);
+    });
+
+    test('point + line: the Horizontal option measures to the line\'s nearer end', () async {
+      await drawLine(0, 10, 20, 10);
+      await drawPoint(8, 3);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 3);
+      await controller.handleCanvasTap(4, 10.05);
+      final lineStart = controller.points.values.firstWhere((p) => p.x == 0 && p.y == 10);
+
+      controller.selectPendingDimensionKind('h');
+      final ghost = controller.pendingDimensionGhost!;
+      expect(ghost.kind, GhostKind.horizontal);
+      expect(ghost.pointBId, lineStart.id);
+      expect(controller.currentGhostValue(ghost), closeTo(8.0, 1e-9));
+    });
+
+    test('a point that is an end of the line offers no dimension to it', () async {
+      await drawLine(0, 10, 20, 10);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(20, 10); // the line's end point
+      await controller.handleCanvasTap(4, 10.05); // the line
+      expect(controller.pendingDimensionOptions, isEmpty);
+    });
+
+    test('two parallel lines: Distance; two other lines: Angle', () async {
+      await drawLine(0, 0, 10, 0);
+      await drawLine(0, 6, 10, 6);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 0.05);
+      await controller.handleCanvasTap(8, 6.05);
+      expect(optionKeys(), ['lineDistance']);
+      expect(controller.pendingDimensionKind, GhostKind.lineDistance);
+      controller.moveCursorToSketchPoint(5, 3);
+      final ghost = controller.pendingDimensionGhost!;
+      expect(
+        controller.pendingPlacementFromCursor(),
+        LabelDragResolver.lineDistance(line1Start: (0, 0), line1End: (10, 0), line2Start: (0, 6), p: (5, 3)),
+      );
+      expect(controller.ghostAsConstraint(ghost), isA<LineDistanceConstraintDto>());
+    });
+
+    test('point + circle: the centre distance, by cursor (Aligned / Horizontal / Vertical), to the centre Point', () async {
+      await drawCircle(20, 20, 4);
+      await drawPoint(2, 2);
+      final circle = controller.circles.values.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 20 + 4 * math.sin(math.pi / 4)); // on the rim, off the cardinals
+
+      expect(optionKeys().toSet(), {'linear', 'h', 'v'});
+      expect(controller.pendingDimensionGhost!.pointBId, circle.centerPointId);
+      controller.moveCursorToSketchPoint(10, 40); // above the box of the point and the centre
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      await controller.handleCanvasTap(10, 40);
+      await controller.confirmGhostValue('h', 18.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().where((c) => !c.provisional && c.orientation == 'horizontal').single;
+      expect({saved.pointAId, saved.pointBId}, contains(circle.centerPointId));
+      expect(saved.distance, 18.0);
+    });
+
+    test('two circles: the centre distance by cursor', () async {
+      await drawCircle(0, 0, 3);
+      await drawCircle(30, 10, 4);
+      final centres = controller.circles.values.map((c) => c.centerPointId).toSet();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4));
+      await controller.handleCanvasTap(30 + 4 * math.cos(math.pi / 4), 10 + 4 * math.sin(math.pi / 4));
+
+      expect(optionKeys().toSet(), {'linear', 'h', 'v'});
+      final ghost = controller.pendingDimensionGhost!;
+      expect({ghost.pointAId, ghost.pointBId}, centres);
+      controller.moveCursorToSketchPoint(15, 5); // inside the centres' box
+      expect(controller.pendingDimensionKind, GhostKind.linear);
+    });
+
+    test('line + circle: the perpendicular distance from the centre (a PointLineDistanceConstraint on the centre)', () async {
+      await drawLine(0, 0, 40, 0);
+      await drawCircle(20, 15, 4);
+      final circle = controller.circles.values.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(5, 0.05);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 15 + 4 * math.sin(math.pi / 4));
+
+      expect(optionKeys(), ['perpendicular']);
+      expect(controller.pendingDimensionOptions.single.displayLabel, 'Perpendicular from centre');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(15.0, 1e-9));
+      controller.moveCursorToSketchPoint(30, 8);
+      await controller.handleCanvasTap(30, 8);
+      await controller.confirmGhostValue('perpendicular', 12.0);
+      final saved = controller.constraints.values.whereType<PointLineDistanceConstraintDto>().single;
+      expect(saved.pointId, circle.centerPointId);
+      expect(saved.distance, 12.0);
+    });
+
+    test('the ribbon chips still jump straight to the editor, with no dropped placement', () async {
+      await drawCircle(0, 0, 10);
+      final circleId = controller.circles.keys.single;
+      await controller.addRadiusDimensionFor(SketchSelection(kind: SelectionKind.circle, id: circleId), diameter: true);
+      expect(controller.activeGhostKey, 'diameter');
+      await controller.confirmGhostValue('diameter', 30.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.distance, 15.0);
+      expect(controller.labelPlacementFor(saved.id), isNull);
+    });
+
+    test('an ellipse: Major radius first, then the other axis; the preview is a tip-to-tip length like the confirmed one', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      await controller.handleCanvasTap(5, 4);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 4 * math.sin(math.pi / 4)); // on the boundary
+
+      expect(optionKeys(), ['majorradius', 'majordiameter', 'minorradius', 'minordiameter']);
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Major radius', 'Major diameter', 'Minor radius', 'Minor diameter']);
+      controller.moveCursorToSketchPoint(0, -15);
+      final item = controller.dimensionGhostOverlayItems().whereType<ConstraintLinearDimensionItem>().single;
+      expect(item.sketchLocalOffsetDistance, isNotNull);
+      await controller.handleCanvasTap(0, -15);
+      await controller.confirmGhostValue('majorradius', 12.0);
+      expect(controller.errorMessage, isNull);
+    });
+  });
+
 }

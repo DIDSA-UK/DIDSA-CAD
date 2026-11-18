@@ -596,18 +596,14 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
       print('[SketchDrag] tap: mode=${controller.mode.name} dragMode=${controller.dragModeEnabled} grabbed=${controller.isEntityGrabbed} '
           'cursor=(${controller.cursorX.toStringAsFixed(2)}, ${controller.cursorY.toStringAsFixed(2)})');
     }
-    if (controller.mode == SketchMode.dimension) {
-      final hitKey = _ghostKeyAt(controller, transform, cursorScreen);
-      if (controller.activeGhostKey != null) {
-        if (hitKey != controller.activeGhostKey) {
-          controller.cancelGhostEdit();
-        }
-        return;
+    if (controller.mode == SketchMode.dimension && controller.activeGhostKey != null) {
+      // The value editor is open on the dropped dimension: a click on its label keeps it, anywhere else goes back to the live preview.
+      // (With no editor open, a click that is not on an entity drops the previewed dimension - see
+      // [SketchController.dropPendingDimension], reached through [SketchController.handleCanvasTap] below.)
+      if (_ghostKeyAt(controller, transform, cursorScreen) != controller.activeGhostKey) {
+        controller.cancelGhostEdit();
       }
-      if (hitKey != null) {
-        controller.tapGhost(hitKey);
-        return;
-      }
+      return;
     }
     // Reference-identity overhaul: while re-attaching a lost / potentially-moved reference, the next tap on a ghost corner IS the replacement pick
     // (see SketchController.beginReattach); a tap anywhere else does nothing (the banner's Cancel leaves the mode).
@@ -1158,13 +1154,13 @@ class SketchCanvasState extends State<SketchCanvas> with TickerProviderStateMixi
                   }
                 }
                 if (ghost == null) return const SizedBox.shrink();
-                final layout = _layoutGhost(widget.controller, transform, ghost);
-                if (layout == null) return const SizedBox.shrink();
+                final anchor = _ghostLabelCenter(widget.controller, transform, ghost);
+                if (anchor == null) return const SizedBox.shrink();
                 return GhostValueEditor(
                   key: ValueKey(key),
                   controller: widget.controller,
                   ghost: ghost,
-                  anchor: layout.labelCenter,
+                  anchor: anchor,
                 );
               },
             ),
@@ -1311,26 +1307,9 @@ class _LongPressPopPainter extends CustomPainter {
       oldDelegate.center != center || oldDelegate.radius != radius || oldDelegate.opacity != opacity;
 }
 
-/// The screen-space geometry for one rendered [DimensionGhost] - shared by
-/// the painter (drawing the dashed extension/dimension lines and the label
-/// pill) and the canvas state (hit-testing a tap against the label, see
-/// [_ghostKeyAt]), so the two never disagree about where a ghost actually
-/// is on screen.
-class _GhostLayout {
-  final Offset labelCenter;
-  final List<List<Offset>> segments;
-
-  const _GhostLayout(this.labelCenter, this.segments);
-}
-
-/// How far (screen pixels) a ghost's dimension line sits offset from the
-/// entity/points it measures - mirrors [_SketchPainter._paintDistanceDimension]'s
-/// own `offsetDistance`, just renamed for this file's ghost-only geometry.
-const double _ghostOffsetPixels = 20.0;
-
 /// Fixed screen-pixel radius of the angle ghost's arc, centered on the two
 /// Lines' virtual intersection - independent of either Line's actual
-/// length or the current zoom, same convention as [_ghostOffsetPixels].
+/// length or the current zoom, same convention as the other dimension-line distances.
 const double _angleGhostArcRadiusPixels = 40.0;
 
 /// A Line's current midpoint in screen space - null if the Line or either
@@ -1580,177 +1559,16 @@ Offset? _twoLineMidpointScreen(
   return (mid1 + mid2) / 2;
 }
 
-/// Computes [ghost]'s on-screen layout - null if its anchor Points/Lines
-/// are missing from [controller] (e.g. a stale ghost after a delete). Point-
-/// anchored kinds (length/linear/vertical/horizontal/radius/diameter) lay
-/// out from [ghost.pointAId]/[ghost.pointBId] directly; line-anchored kinds
-/// (lineDistance/angle - new work package item 6's two-Line ghosts) lay out
-/// from each Line's current midpoint instead, since there's no single pair
-/// of Points to anchor to.
-_GhostLayout? _layoutGhost(SketchController controller, ViewTransform transform, DimensionGhost ghost) {
-  if (ghost.kind == GhostKind.lineDistance) {
-    final midA = _lineMidpointScreenFor(controller, transform, ghost.lineAId);
-    final midB = _lineMidpointScreenFor(controller, transform, ghost.lineBId);
-    if (midA == null || midB == null) return null;
-    final delta = midB - midA;
-    final len = delta.distance;
-    if (len < 1e-6) return null;
-    final normal = Offset(-delta.dy, delta.dx) / len * _ghostOffsetPixels;
-    final p1 = midA + normal;
-    final p2 = midB + normal;
-    return _GhostLayout((p1 + p2) / 2, [
-      [midA, p1],
-      [midB, p2],
-      [p1, p2],
-    ]);
+/// Where the dimension being placed ([ghost]) draws its label on the flat canvas, in screen pixels - the point the value editor anchors
+/// to and a click on the label is tested against. Null when its geometry is missing.
+Offset? _ghostLabelCenter(SketchController controller, ViewTransform transform, DimensionGhost ghost) {
+  final constraint = controller.ghostAsConstraint(ghost);
+  if (constraint == null) return null;
+  final offset = _placedLabelPixelOffset(controller, transform, constraint, controller.ghostPlacement(ghost));
+  if (constraint is DistanceConstraintDto && controller.isRadiusDistanceConstraint(constraint)) {
+    return _radialDimensionGeometry(controller, transform, constraint, offset)?.labelCenter;
   }
-
-  // On-device feedback: an arc between the two Lines (centered on their
-  // virtual intersection, even though they don't share an endpoint) reads
-  // as an actual angle at a glance, the way a straight line meeting at a
-  // point never did. Falls back to the previous straight-line-to-midpoint
-  // layout for the rare degenerate case [_lineIntersectionScreen] itself
-  // already guards against (near-parallel enough that the intersection is
-  // numerically unreliable or implausibly far off-screen).
-  if (ghost.kind == GhostKind.angle) {
-    final endpointsA = _lineEndpointsScreenFor(controller, transform, ghost.lineAId);
-    final endpointsB = _lineEndpointsScreenFor(controller, transform, ghost.lineBId);
-    final midA = _lineMidpointScreenFor(controller, transform, ghost.lineAId);
-    final midB = _lineMidpointScreenFor(controller, transform, ghost.lineBId);
-    if (midA == null || midB == null) return null;
-
-    final intersection = endpointsA != null && endpointsB != null
-        ? _lineIntersectionScreen(endpointsA.$1, endpointsA.$2, endpointsB.$1, endpointsB.$2)
-        : null;
-    // On-device feedback (bug fix): "angle isn't offered" for two ordinary,
-    // clearly non-parallel Lines - traced to this, not to ghost-building
-    // (already covered by its own passing test). [_lineIntersectionScreen]'s
-    // own rejection only guards against genuine numeric blow-up near-
-    // parallel (a large *absolute* screen-pixel constant), not against how
-    // far apart the two Lines actually sit on screen right now - two Lines
-    // positioned far apart with only a shallow angle between their
-    // directions can produce a virtual intersection technically under that
-    // constant yet many times farther away than the Lines themselves,
-    // landing the whole arc well outside the visible canvas - "offered" in
-    // that a real DimensionGhost object exists, but invisible in practice
-    // (this is exactly what made confirming it feel like nothing happened).
-    // Falls back to the same straight-line-to-midpoint layout the null-
-    // intersection case already uses whenever the intersection lands
-    // unreasonably far from *either* Line's own midpoint, scaled to how far
-    // apart the two midpoints already are - so this degrades gracefully
-    // regardless of zoom level or how the two Lines happen to be
-    // positioned, rather than guessing at one fixed pixel constant.
-    final refDistance = (midB - midA).distance;
-    final intersectionTooFar = intersection != null &&
-        refDistance > 1e-6 &&
-        ((intersection - midA).distance > refDistance * _maxAngleIntersectionRelativeDistance ||
-            (intersection - midB).distance > refDistance * _maxAngleIntersectionRelativeDistance);
-    if (intersection == null || intersectionTooFar) {
-      final labelCenter = (midA + midB) / 2;
-      return _GhostLayout(labelCenter, [
-        [midA, labelCenter],
-        [midB, labelCenter],
-      ]);
-    }
-
-    // The shared ray rule (`angle_rays.dart`): the outward rays until the cursor picks a sector, then that sector
-    // ([SketchController.angleGhostQuadrant]), so the ghost arc shows the angle a confirm would create.
-    final directions = _angleScreenDirections(
-      controller,
-      transform,
-      ghost.lineAId,
-      ghost.lineBId,
-      quadrant: controller.angleGhostQuadrant(ghost),
-    );
-    if (directions == null) {
-      final labelCenter = (midA + midB) / 2;
-      return _GhostLayout(labelCenter, [
-        [midA, labelCenter],
-        [midB, labelCenter],
-      ]);
-    }
-    final (directionA, directionB) = directions;
-    final angleA = math.atan2(directionA.dy, directionA.dx);
-    var sweep = math.atan2(directionB.dy, directionB.dx) - angleA;
-    // Normalize to (-pi, pi] - the shorter way around, i.e. the actual
-    // angle between the Lines rather than its reflex complement.
-    if (sweep > math.pi) sweep -= 2 * math.pi;
-    if (sweep <= -math.pi) sweep += 2 * math.pi;
-
-    const segmentCount = 20;
-    final radius = _angleGhostArcRadiusPixels;
-    Offset pointAt(double angle) => intersection + Offset(math.cos(angle), math.sin(angle)) * radius;
-    final segments = <List<Offset>>[
-      for (var i = 0; i < segmentCount; i++)
-        [pointAt(angleA + sweep * i / segmentCount), pointAt(angleA + sweep * (i + 1) / segmentCount)],
-    ];
-    return _GhostLayout(pointAt(angleA + sweep / 2), segments);
-  }
-
-  final a = controller.points[ghost.pointAId];
-  final b = controller.points[ghost.pointBId];
-  if (a == null || b == null) return null;
-  final aScreen = transform.sketchToScreen(a.x, a.y);
-  final bScreen = transform.sketchToScreen(b.x, b.y);
-
-  switch (ghost.kind) {
-    case GhostKind.length:
-    case GhostKind.linear:
-      final delta = bScreen - aScreen;
-      final len = delta.distance;
-      if (len < 1e-6) return null;
-      final normal = Offset(-delta.dy, delta.dx) / len * _ghostOffsetPixels;
-      final p1 = aScreen + normal;
-      final p2 = bScreen + normal;
-      return _GhostLayout((p1 + p2) / 2, [
-        [aScreen, p1],
-        [bScreen, p2],
-        [p1, p2],
-      ]);
-
-    case GhostKind.vertical:
-      final offsetX = math.max(aScreen.dx, bScreen.dx) + _ghostOffsetPixels + 4;
-      final p1 = Offset(offsetX, aScreen.dy);
-      final p2 = Offset(offsetX, bScreen.dy);
-      return _GhostLayout((p1 + p2) / 2, [
-        [aScreen, p1],
-        [bScreen, p2],
-        [p1, p2],
-      ]);
-
-    case GhostKind.horizontal:
-      final offsetY = math.max(aScreen.dy, bScreen.dy) + _ghostOffsetPixels + 4;
-      final p1 = Offset(aScreen.dx, offsetY);
-      final p2 = Offset(bScreen.dx, offsetY);
-      return _GhostLayout((p1 + p2) / 2, [
-        [aScreen, p1],
-        [bScreen, p2],
-        [p1, p2],
-      ]);
-
-    case GhostKind.radius:
-      return _GhostLayout((aScreen + bScreen) / 2, [
-        [aScreen, bScreen],
-      ]);
-
-    case GhostKind.diameter:
-      // The full diameter line through the center, offset perpendicular to
-      // the radius vector so it reads as a distinct line from the radius
-      // ghost's, rather than the same segment extended underneath it.
-      final vector = bScreen - aScreen;
-      final len = vector.distance;
-      if (len < 1e-6) return null;
-      final normal = Offset(-vector.dy, vector.dx) / len * 16.0;
-      final opposite = aScreen - vector + normal;
-      final far = bScreen + normal;
-      return _GhostLayout((opposite + far) / 2, [
-        [opposite, far],
-      ]);
-
-    case GhostKind.lineDistance:
-    case GhostKind.angle:
-      return null; // handled above.
-  }
+  return _constraintLabelCenter(controller, transform, constraint, offset);
 }
 
 /// How close (screen pixels) a tap must land to a ghost's label center to
@@ -1781,9 +1599,9 @@ double _distanceToSegmentScreen(Offset point, Offset start, Offset end) {
 /// [SketchCanvasState._dispatchTap].
 String? _ghostKeyAt(SketchController controller, ViewTransform transform, Offset screenPosition) {
   for (final ghost in controller.ghosts) {
-    final layout = _layoutGhost(controller, transform, ghost);
-    if (layout == null) continue;
-    if ((screenPosition - layout.labelCenter).distance <= _ghostHitRadiusPixels) {
+    final center = _ghostLabelCenter(controller, transform, ghost);
+    if (center == null) continue;
+    if ((screenPosition - center).distance <= _ghostHitRadiusPixels) {
       return ghost.key;
     }
   }
@@ -2321,7 +2139,17 @@ Offset dimensionLabelPixelOffset(
   if (!controller.labelUsesPlacement(constraintId)) {
     return controller.labelOffsetForZoom(constraintId, transform.pixelsPerUnit);
   }
-  final placement = controller.labelPlacementFor(constraintId);
+  return _placedLabelPixelOffset(controller, transform, constraint, controller.labelPlacementFor(constraintId));
+}
+
+/// [dimensionLabelPixelOffset] for an explicit [placement] - also what the dimension being placed ([SketchController.ghostPlacement]) is
+/// drawn with, so a preview is laid out exactly as the dimension it becomes.
+Offset _placedLabelPixelOffset(
+  SketchController controller,
+  ViewTransform transform,
+  ConstraintDto constraint,
+  DimensionLabelPlacement? placement,
+) {
   if (placement == null) return Offset.zero;
   final ppu = transform.pixelsPerUnit;
   // Sketch (y up) to screen (y down) for a direction.
@@ -2780,10 +2608,8 @@ class _SketchPainter extends CustomPainter {
   /// blue for the ghost currently being edited, dimmer grey for the
   /// unchosen ghost in a V/H or radius/diameter pair while the other one is
   /// being edited.
-  static const Color _ghostDefaultColor = Color(0xFF888888);
   static const Color _ghostActiveColor = Color(0xFF4A90D9);
-  static const Color _ghostInactiveColor = Color(0xFF555555);
-  static const Color _ghostLabelBackground = Color(0xCC222222);
+  static const Color _ghostPreviewColor = Color(0xFF4A90D9);
 
   /// Sketcher global size-down: every point/line/label size below is
   /// centralized here (rather than scattered magic numbers) specifically so
@@ -3212,7 +3038,7 @@ class _SketchPainter extends CustomPainter {
   /// radial leader, with the label doubled from the underlying (still
   /// centre-based, semi-axis) constraint value - the same "double for
   /// display" trick a Circle's diameter already uses.
-  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color, Offset labelOffset) {
+  void _paintDistanceDimension(Canvas canvas, DistanceConstraintDto c, Color color, Offset labelOffset, {String? labelText}) {
     final ellipseAxis = controller.ellipseAxisForDistanceConstraint(c);
     final String pointAId;
     final String pointBId;
@@ -3286,7 +3112,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(displayValue), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, labelText ?? dimensionValueText(displayValue), color, plainBlackText: true);
   }
 
   /// Radial (radius/diameter) dimension for a Circle or Arc's
@@ -3309,8 +3135,9 @@ class _SketchPainter extends CustomPainter {
     DistanceConstraintDto c,
     Color color,
     Offset labelOffset,
-    bool showsDiameter,
-  ) {
+    bool showsDiameter, {
+    String? labelText,
+  }) {
     final geometry = _radialDimensionGeometry(controller, transform, c, labelOffset);
     if (geometry == null) return;
 
@@ -3330,7 +3157,7 @@ class _SketchPainter extends CustomPainter {
       _drawDimensionLabel(
         canvas,
         geometry.labelCenter,
-        '⌀${dimensionValueText(c.distance * 2)}',
+        labelText ?? '⌀${dimensionValueText(c.distance * 2)}',
         color,
         plainBlackText: true,
       );
@@ -3346,7 +3173,7 @@ class _SketchPainter extends CustomPainter {
       _drawDimensionLabel(
         canvas,
         geometry.labelCenter,
-        'R${dimensionValueText(c.distance)}',
+        labelText ?? 'R${dimensionValueText(c.distance)}',
         color,
         plainBlackText: true,
       );
@@ -3440,7 +3267,7 @@ class _SketchPainter extends CustomPainter {
   /// of its own Line's two actual endpoints sits nearer the dimension
   /// segment, instead of from that Line's midpoint - a floating point with
   /// no relation to either Line's own geometry.
-  void _paintLineDistanceDimension(Canvas canvas, LineDistanceConstraintDto c, Color color, Offset labelOffset) {
+  void _paintLineDistanceDimension(Canvas canvas, LineDistanceConstraintDto c, Color color, Offset labelOffset, {String? labelText}) {
     final midA = _lineMidpointScreen(c.line1Id);
     final endpointsA = _lineEndpointsScreenFor(controller, transform, c.line1Id);
     final endpointsB = _lineEndpointsScreenFor(controller, transform, c.line2Id);
@@ -3525,7 +3352,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(c.distance), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, labelText ?? dimensionValueText(c.distance), color, plainBlackText: true);
   }
 
   /// Vertical/Horizontal glyph: just a 'V'/'H' chip at the constrained
@@ -3569,8 +3396,8 @@ class _SketchPainter extends CustomPainter {
   /// nudging a fixed floating chip. Falls back to the old plain-chip look
   /// for the same degenerate/near-parallel/implausibly-far-vertex cases
   /// [_layoutGhost]'s own angle preview already guards against.
-  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset) {
-    final text = '${dimensionValueText(c.angleDegrees, decimals: 1)}°';
+  void _paintAngleDimension(Canvas canvas, AngleConstraintDto c, Color color, Offset labelOffset, {String? labelText}) {
+    final text = labelText ?? '${dimensionValueText(c.angleDegrees, decimals: 1)}°';
     final midA = _lineMidpointScreen(c.line1Id);
     final midB = _lineMidpointScreen(c.line2Id);
     if (midA == null || midB == null) return;
@@ -3692,8 +3519,9 @@ class _SketchPainter extends CustomPainter {
     Canvas canvas,
     PointLineDistanceConstraintDto c,
     Color color,
-    Offset labelOffset,
-  ) {
+    Offset labelOffset, {
+    String? labelText,
+  }) {
     final point = controller.points[c.pointId];
     final line = controller.lines[c.lineId];
     if (point == null || line == null) return;
@@ -3721,7 +3549,7 @@ class _SketchPainter extends CustomPainter {
 
     final delta = footScreen - pointScreen;
     if (delta.distance < 1e-6) {
-      _drawDimensionLabel(canvas, pointScreen + labelOffset, dimensionValueText(c.distance), color, plainBlackText: true);
+      _drawDimensionLabel(canvas, pointScreen + labelOffset, labelText ?? dimensionValueText(c.distance), color, plainBlackText: true);
       return;
     }
     final normal = _canonicalPerpendicular(delta);
@@ -3738,7 +3566,7 @@ class _SketchPainter extends CustomPainter {
     if (placement.leaderFrom != null) {
       canvas.drawLine(placement.leaderFrom!, placement.labelCenter, dimPaint);
     }
-    _drawDimensionLabel(canvas, placement.labelCenter, dimensionValueText(c.distance), color, plainBlackText: true);
+    _drawDimensionLabel(canvas, placement.labelCenter, labelText ?? dimensionValueText(c.distance), color, plainBlackText: true);
   }
 
   Offset? _lineMidpointScreen(String lineId) {
@@ -3829,23 +3657,36 @@ class _SketchPainter extends CustomPainter {
   /// itself never shows a number. The currently-tapped ghost (if any) is
   /// drawn in the active color; its sibling, if there is one, is dimmed.
   void _paintGhosts(Canvas canvas) {
-    if (controller.ghosts.isEmpty) return;
-    final activeKey = controller.activeGhostKey;
-    for (final ghost in controller.ghosts) {
-      final layout = _layoutGhost(controller, transform, ghost);
-      if (layout == null) continue;
-      final isActive = ghost.key == activeKey;
-      final color = isActive
-          ? _ghostActiveColor
-          : (activeKey != null ? _ghostInactiveColor : _ghostDefaultColor);
-      final dashPaint = Paint()
-        ..color = color
-        ..strokeWidth = 1;
-      for (final segment in layout.segments) {
-        _drawDashedLine(canvas, segment[0], segment[1], dashPaint);
-      }
-      final label = ghost.kind == GhostKind.diameter ? '⌀?' : '?';
-      _drawDimensionLabel(canvas, layout.labelCenter, label, _ghostLabelBackground);
+    final ghost = controller.pendingDimensionGhost;
+    if (ghost == null) return;
+    final constraint = controller.ghostAsConstraint(ghost);
+    if (constraint == null) return;
+    // The preview is drawn by the very painters a confirmed dimension uses, at the placement the cursor gives it (or, once a click has
+    // dropped it, where it was dropped), with a "?" for the value: what you see is what a click confirms.
+    final color = ghost.key == controller.activeGhostKey ? _ghostActiveColor : _ghostPreviewColor;
+    final offset = _placedLabelPixelOffset(controller, transform, constraint, controller.ghostPlacement(ghost));
+    switch (constraint) {
+      case DistanceConstraintDto c:
+        if (controller.isRadiusDistanceConstraint(c) && (ghost.kind == GhostKind.radius || ghost.kind == GhostKind.diameter)) {
+          _paintRadiusDiameterDimension(
+            canvas,
+            c,
+            color,
+            offset,
+            ghost.kind == GhostKind.diameter,
+            labelText: ghost.kind == GhostKind.diameter ? '⌀?' : 'R?',
+          );
+        } else {
+          _paintDistanceDimension(canvas, c, color, offset, labelText: '?');
+        }
+      case PointLineDistanceConstraintDto c:
+        _paintPointLineDistanceDimension(canvas, c, color, offset, labelText: '?');
+      case LineDistanceConstraintDto c:
+        _paintLineDistanceDimension(canvas, c, color, offset, labelText: '?');
+      case AngleConstraintDto c:
+        _paintAngleDimension(canvas, c, color, offset, labelText: '?');
+      default:
+        break;
     }
   }
 

@@ -7,7 +7,7 @@ import 'sketch_controller.dart';
 /// [SketchController.dimensionSelection]) plus an explicit Exit button -
 /// makes clear which mode is active and what's been picked, the same way
 /// [SketchConstructionMethodBar] does for draw mode's construction-method
-/// choice. A plain non-modal [Material] panel, not a real
+/// choice. Part A of docs/bug-report-2026-11-18-plan.md added the option chips (the kinds of dimension that fit the pick). A plain non-modal [Material] panel, not a real
 /// [showModalBottomSheet], for the same reason as that bar: a modal barrier
 /// would block the canvas taps this very panel exists to accompany.
 class SketchDimensionBar extends StatelessWidget {
@@ -63,6 +63,29 @@ class SketchDimensionBar extends StatelessWidget {
                         ),
                       ),
                     ),
+                  // Part A of docs/bug-report-2026-11-18-plan.md: the kinds of dimension that fit what is picked, the one being previewed at the
+                  // cursor highlighted. A click picks the kind (it then stays); a click on the canvas drops it and opens its value.
+                  if (controller.pendingDimensionOptions.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 6),
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: Row(
+                          children: [
+                            for (final option in controller.pendingDimensionOptions)
+                              Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: ChoiceChip(
+                                  key: ValueKey('dimension-option-${option.key}'),
+                                  label: Text(option.displayLabel),
+                                  selected: controller.pendingDimensionKey == option.key,
+                                  onSelected: (_) => controller.selectPendingDimensionKind(option.key),
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
                   Row(
                     children: [
                       Expanded(
@@ -73,6 +96,11 @@ class SketchDimensionBar extends StatelessWidget {
                                 child: Row(
                                   children: [
                                     for (final entry in selection) _chip(entry),
+                                    if (controller.pendingDimensionGhost != null && controller.activeGhostKey == null)
+                                      const Padding(
+                                        padding: EdgeInsets.only(left: 4),
+                                        child: Text('Move to place it, click to drop'),
+                                      ),
                                   ],
                                 ),
                               ),

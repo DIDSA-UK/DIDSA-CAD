@@ -96,6 +96,34 @@ types of part D: the drawer offers them once D has landed (A can ship first with
 
 Size: medium-large. Suitable for a Sonnet session with this section as the brief.
 
+#### Notes from the implementation of A (2026-11-18)
+
+* **One pending dimension.** `SketchController._ghosts` still holds the candidates, now called the *options* (`pendingDimensionOptions`,
+  default first); `ghosts` returns only the previewed one, `pendingDimensionGhost` (the drawer's choice, else the cursor rule, else the
+  first option). `tapGhost(key)` and `confirmGhostValue(key, ...)` still take any option's key, so the ribbon's Length / Radius /
+  Diameter chips (`addRadiusDimensionFor`) still open the editor straight away, with no dropped placement.
+* **Placement.** `pendingPlacementFromCursor()` / `ghostPlacement(ghost)` call `LabelDragResolver` (`linear`, `lineDistance`, `radial`,
+  `angle`), so a dropped dimension and a dragged one agree; the angle's sector is the sticky one from fix 2a. `dropPendingDimension()`
+  freezes the placement and the sector and opens the editor; `confirmGhostValue` writes the placement under the new constraint's id and
+  saves it (`PUT .../label`) after the solve. An Ellipse axis is previewed tip to tip (as it is drawn once confirmed) and placed with the
+  linear rule on those tips.
+* **Where the click goes.** `_handleDimensionTap` drops when nothing is under the cursor and a preview exists; a click on another entity
+  still changes the pick, and with nothing previewed the old rules hold (clear the pick, then leave the tool). With the editor open a
+  click away from it cancels the edit (2D `_dispatchTap`; 3D `_handleEmbeddedConstraintOverlayTap`, which is now only asked while an
+  editor is open, so the label at the cursor never catches the dropping click). Esc, right-click (both views) and
+  `cancelDimensionStep()` go back one step: editor to preview, preview to picking. The Android back button was not touched.
+* **Flat canvas.** The old private ghost layout (`_layoutGhost`, `_GhostLayout`) is gone. The preview is the controller's synthetic
+  constraint (`ghostAsConstraint`) drawn by the very painters a confirmed dimension uses, with a "?" for the value; the editor anchors at
+  the label centre those painters give.
+* **The table.** Line: Length, Horizontal length, Vertical length. Circle: Diameter (default), Radius. Arc: Radius, Diameter. Ellipse:
+  Major / Minor radius and diameter. Two points: Aligned / Horizontal / Vertical by cursor (above or below the pair's box: horizontal;
+  left or right: vertical; inside or a corner region: aligned). Point + line: Perpendicular (a `PointLineDistanceConstraint`, the
+  default), Horizontal, Vertical, Aligned to the nearer end; none when the point is an end of the line. Two parallel lines: Distance.
+  Two other lines: Angle. Point / circle / arc against a point, circle or arc: centre distance by cursor (a point-pair dimension on the
+  centre Point). Line + circle / arc: perpendicular distance from the centre. Not offered until part D: arc length, angle to
+  horizontal, three-point angle, minimum / maximum / tangent / far-side distances.
+* **Not done.** The Android back button; the third pick for a three-point angle (D).
+
 ### B. Feature tree available inside the sketcher
 
 The sketcher is a separate route (`PartScreen._openSketch` pushes `SketchScreen`), so the Part's `FeatureTreePanel` is not on
@@ -262,7 +290,7 @@ run in parallel with A once A's drawer exists, or after it.
 | Part | Summary | Status | Commit |
 |---|---|---|---|
 | 1, 2a, 2b, 4 | Fixes above | Done | (this branch) |
-| A | Dimension preview at the cursor, drawer, click to drop | To do (agreed 2026-11-18) | |
+| A | Dimension preview at the cursor, drawer, click to drop | **Done, client only** (every row marked "now" or "client only"; the D rows are left out, see "Notes from the implementation of A") | (this branch) |
 | B | Feature tree in the sketcher | To do | |
 | C | Convert Entities: real projection, bodies and other sketches (C1 projection + body edges, C2 sketch sources, C3 client picks) | To do after B | |
 | D | New dimension types (arc length, angle to horizontal, three-point angle, min / max / tangent distances) | To do; drawer rows after A | |

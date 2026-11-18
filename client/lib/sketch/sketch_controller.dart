@@ -1543,7 +1543,10 @@ class ConstraintOption {
 /// (two parallel Lines) and [angle] (two non-parallel Lines) are the
 /// dimension-mode revamp's line-pair ghosts - see
 /// [SketchController._buildLinePairGhosts].
-enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDistance, angle }
+///
+/// [pointLine] is the perpendicular distance from a Point to a Line's infinite extension (a Circle's or Arc's centre stands in for the
+/// Point when a Circle/Arc is dimensioned against a Line) - backed by a `PointLineDistanceConstraint`.
+enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDistance, angle, pointLine }
 
 /// Bug fix (on-device feedback: dragging a Circle with an already-confirmed
 /// driving dimension used to silently overwrite that dimension's value
@@ -1581,6 +1584,9 @@ class DimensionGhost {
   final String? lineAId;
   final String? lineBId;
 
+  /// The text the dimension drawer ([SketchDimensionBar]) shows for this kind; null falls back to [displayLabel]'s default for [kind].
+  final String? label;
+
   const DimensionGhost({
     required this.key,
     required this.kind,
@@ -1588,7 +1594,23 @@ class DimensionGhost {
     this.pointBId,
     this.lineAId,
     this.lineBId,
+    this.label,
   });
+
+  /// What the dimension drawer calls this kind.
+  String get displayLabel =>
+      label ??
+      switch (kind) {
+        GhostKind.length => 'Length',
+        GhostKind.linear => 'Aligned',
+        GhostKind.vertical => 'Vertical',
+        GhostKind.horizontal => 'Horizontal',
+        GhostKind.radius => 'Radius',
+        GhostKind.diameter => 'Diameter',
+        GhostKind.lineDistance => 'Distance',
+        GhostKind.angle => 'Angle',
+        GhostKind.pointLine => 'Perpendicular',
+      };
 }
 
 /// Owns the sketch's client-side state (cursor, points, lines, the
@@ -12103,12 +12125,17 @@ class SketchController extends ChangeNotifier {
   /// third tap starts a fresh pick rather than accumulating further.
   List<SketchSelection> get dimensionSelection => List.unmodifiable(_dimensionSelection);
 
+  /// Every kind of dimension that fits [dimensionSelection] - the options table of docs/bug-report-2026-11-18-plan.md, default first.
+  /// Only one of them is previewed at a time ([ghosts]); the dimension drawer lists them all ([pendingDimensionOptions]).
   List<DimensionGhost> _ghosts = [];
 
-  /// The ghost dimension(s) currently shown for [dimensionSelection] - one
-  /// (length) for a Line, two (V/H or radius/diameter) otherwise. Empty
-  /// when nothing is picked.
-  List<DimensionGhost> get ghosts => List.unmodifiable(_ghosts);
+  /// The one dimension being placed for [dimensionSelection]: previewed live at the cursor, its "?" label under it, until a click drops
+  /// it ([dropPendingDimension]) and the value editor opens. Empty when nothing is picked or nothing fits the pick. (It used to be every
+  /// kind at once; the kinds now live in [pendingDimensionOptions].)
+  List<DimensionGhost> get ghosts {
+    final ghost = pendingDimensionGhost;
+    return ghost == null ? const [] : [ghost];
+  }
 
   String? _activeGhostKey;
 
@@ -12117,15 +12144,291 @@ class SketchController extends ChangeNotifier {
   /// which ghost the inline text input is attached to.
   String? get activeGhostKey => _activeGhostKey;
 
+  // --- Part A of docs/bug-report-2026-11-18-plan.md: preview at the cursor, choose in a drawer, click to drop ------------------------
+
+  /// The kind the user clicked in the drawer ([selectPendingDimensionKind]); null until one is, then the default ([_cursorChoosesKind]
+  /// or the first option) applies.
+  String? _pendingKey;
+
+  /// True when the kind follows the cursor until the drawer picks one: two Points (or centres) - horizontal when the cursor is above or
+  /// below the pair's bounding box, vertical when left or right of it, aligned otherwise (SolidWorks' rule).
+  bool _cursorChoosesKind = false;
+
+  /// The placement frozen when the dimension was dropped, with the kind it belongs to; used while the value editor is open and written
+  /// with the constraint on confirm. Null for a dimension that went straight to the editor (the ribbon's Radius / Diameter / Length).
+  ({String key, DimensionLabelPlacement? placement})? _frozenPlacement;
+
+  /// The kinds the dimension drawer offers for [dimensionSelection], default first - empty when nothing fits.
+  List<DimensionGhost> get pendingDimensionOptions => List.unmodifiable(_ghosts);
+
+  /// The dimension currently previewed (or being edited), or null.
+  DimensionGhost? get pendingDimensionGhost {
+    if (_ghosts.isEmpty) return null;
+    final active = _activeGhostKey;
+    final chosen = active ?? _pendingKey;
+    if (chosen != null) {
+      for (final ghost in _ghosts) {
+        if (ghost.key == chosen) return ghost;
+      }
+    }
+    if (_cursorChoosesKind) {
+      final byCursor = _kindKeyForCursor(_ghosts.first);
+      for (final ghost in _ghosts) {
+        if (ghost.key == byCursor) return ghost;
+      }
+    }
+    return _ghosts.first;
+  }
+
+  /// The [GhostKind] of [pendingDimensionGhost]: the drawer's choice, else the default or the cursor's rule.
+  GhostKind? get pendingDimensionKind => pendingDimensionGhost?.kind;
+
+  /// The [DimensionGhost.key] of [pendingDimensionGhost] (it tells apart e.g. an ellipse's major and minor radius, which share a kind).
+  String? get pendingDimensionKey => pendingDimensionGhost?.key;
+
+  /// Whether the user has chosen the kind in the drawer (it then stays, whatever the cursor does).
+  bool get pendingKindChosenInDrawer => _pendingKey != null;
+
+  /// For two points: 'h' when the cursor is above or below [ghost]'s pair's bounding box, 'v' when left or right of it, else 'linear'.
+  String _kindKeyForCursor(DimensionGhost ghost) {
+    final a = points[ghost.pointAId];
+    final b = points[ghost.pointBId];
+    if (a == null || b == null) return 'linear';
+    final inX = cursorX >= math.min(a.x, b.x) && cursorX <= math.max(a.x, b.x);
+    final inY = cursorY >= math.min(a.y, b.y) && cursorY <= math.max(a.y, b.y);
+    if (inX && !inY) return 'h';
+    if (inY && !inX) return 'v';
+    return 'linear';
+  }
+
+  /// A drawer click: previews [key]'s kind from now on, wherever the cursor goes. Closes an open value editor (the kind is changing, so
+  /// the dropped placement no longer applies). False when [key] is not among [pendingDimensionOptions].
+  bool selectPendingDimensionKind(String key) {
+    if (!_ghosts.any((g) => g.key == key)) return false;
+    _activeGhostKey = null;
+    _frozenPlacement = null;
+    _tappedAngleGhost = null;
+    _pendingKey = key;
+    notifyListeners();
+    return true;
+  }
+
+  /// Where the previewed dimension's label goes if the user clicks at the cursor now - the same rules a label drag uses
+  /// ([LabelDragResolver]), so a dropped dimension and a dragged one agree. Null when nothing is previewed or its geometry is degenerate.
+  DimensionLabelPlacement? pendingPlacementFromCursor() {
+    final ghost = pendingDimensionGhost;
+    return ghost == null ? null : _placementForGhostAt(ghost, (cursorX, cursorY));
+  }
+
+  /// [ghost]'s label placement as it is drawn now: frozen while its editor is open, else following the cursor. Null draws the default.
+  DimensionLabelPlacement? ghostPlacement(DimensionGhost ghost) {
+    if (_activeGhostKey == ghost.key) {
+      final frozen = _frozenPlacement;
+      return frozen != null && frozen.key == ghost.key ? frozen.placement : null;
+    }
+    return _placementForGhostAt(ghost, (cursorX, cursorY));
+  }
+
+  /// The dimension [ghost] stands for, as the constraint DTO the flat canvas's own dimension painters draw (id = the ghost's key, value =
+  /// the geometry's current value), so the preview is drawn exactly like the dimension it will become. Null for a ghost whose geometry is
+  /// missing.
+  ConstraintDto? ghostAsConstraint(DimensionGhost ghost) {
+    switch (ghost.kind) {
+      case GhostKind.length:
+      case GhostKind.linear:
+      case GhostKind.vertical:
+      case GhostKind.horizontal:
+      case GhostKind.radius:
+      case GhostKind.diameter:
+        final value = currentGhostValue(ghost);
+        if (ghost.pointAId == null || ghost.pointBId == null || value == null) return null;
+        return DistanceConstraintDto(
+          id: ghost.key,
+          pointAId: ghost.pointAId!,
+          pointBId: ghost.pointBId!,
+          distance: ghost.kind == GhostKind.diameter ? value / 2 : value,
+          orientation: switch (ghost.kind) {
+            GhostKind.vertical => 'vertical',
+            GhostKind.horizontal => 'horizontal',
+            _ => 'linear',
+          },
+        );
+      case GhostKind.pointLine:
+        final value = currentGhostValue(ghost);
+        if (ghost.pointAId == null || ghost.lineAId == null || value == null) return null;
+        return PointLineDistanceConstraintDto(id: ghost.key, pointId: ghost.pointAId!, lineId: ghost.lineAId!, distance: value);
+      case GhostKind.lineDistance:
+        final value = currentGhostValue(ghost);
+        if (ghost.lineAId == null || ghost.lineBId == null || value == null) return null;
+        return LineDistanceConstraintDto(id: ghost.key, line1Id: ghost.lineAId!, line2Id: ghost.lineBId!, distance: value);
+      case GhostKind.angle:
+        final value = currentGhostValue(ghost);
+        if (ghost.lineAId == null || ghost.lineBId == null || value == null) return null;
+        return AngleConstraintDto(
+          id: ghost.key,
+          line1Id: ghost.lineAId!,
+          line2Id: ghost.lineBId!,
+          angleDegrees: value,
+          quadrant: angleGhostQuadrant(ghost),
+        );
+    }
+  }
+
+  /// The tip-to-tip Point pair an Ellipse axis ghost is drawn between once confirmed (an Ellipse has no single radius, so its axes read as
+  /// ordinary length dimensions), or null for any other radius / diameter ghost.
+  (String, String)? _ellipseAxisForGhost(DimensionGhost ghost) {
+    final a = ghost.pointAId;
+    final b = ghost.pointBId;
+    if (a == null || b == null) return null;
+    return ellipseAxisForDistanceConstraint(DistanceConstraintDto(id: ghost.key, pointAId: a, pointBId: b, distance: 0));
+  }
+
+  /// [LabelDragResolver]'s placement for [ghost] with the pointer at [p] (sketch units).
+  DimensionLabelPlacement? _placementForGhostAt(DimensionGhost ghost, (double, double) p) {
+    switch (ghost.kind) {
+      case GhostKind.length:
+      case GhostKind.linear:
+      case GhostKind.vertical:
+      case GhostKind.horizontal:
+        final a = points[ghost.pointAId];
+        final b = points[ghost.pointBId];
+        if (a == null || b == null) return null;
+        return LabelDragResolver.linear(
+          a: (a.x, a.y),
+          b: (b.x, b.y),
+          orientation: switch (ghost.kind) {
+            GhostKind.vertical => 'vertical',
+            GhostKind.horizontal => 'horizontal',
+            _ => null,
+          },
+          p: p,
+        );
+      case GhostKind.pointLine:
+        final point = points[ghost.pointAId];
+        final foot = _footOnLine(ghost.pointAId, ghost.lineAId);
+        if (point == null || foot == null) return null;
+        return LabelDragResolver.linear(a: (point.x, point.y), b: foot, p: p);
+      case GhostKind.radius:
+      case GhostKind.diameter:
+        final axis = _ellipseAxisForGhost(ghost);
+        if (axis != null) {
+          final tipA = points[axis.$1];
+          final tipB = points[axis.$2];
+          if (tipA == null || tipB == null) return null;
+          return LabelDragResolver.linear(a: (tipA.x, tipA.y), b: (tipB.x, tipB.y), p: p);
+        }
+        final center = points[ghost.pointAId];
+        final rim = points[ghost.pointBId];
+        if (center == null || rim == null) return null;
+        return LabelDragResolver.radial(
+          center: (center.x, center.y),
+          rim: (rim.x, rim.y),
+          radius: _sketchPointDistanceXY(center, rim),
+          p: p,
+        );
+      case GhostKind.lineDistance:
+        final lineA = lines[ghost.lineAId];
+        final lineB = lines[ghost.lineBId];
+        if (lineA == null || lineB == null) return null;
+        final line1Start = points[lineA.startPointId];
+        final line1End = points[lineA.endPointId];
+        final line2Start = points[lineB.startPointId];
+        if (line1Start == null || line1End == null || line2Start == null) return null;
+        return LabelDragResolver.lineDistance(
+          line1Start: (line1Start.x, line1Start.y),
+          line1End: (line1End.x, line1End.y),
+          line2Start: (line2Start.x, line2Start.y),
+          p: p,
+        );
+      case GhostKind.angle:
+        final lineA = lines[ghost.lineAId];
+        final lineB = lines[ghost.lineBId];
+        if (lineA == null || lineB == null) return null;
+        final a1 = points[lineA.startPointId], a2 = points[lineA.endPointId];
+        final b1 = points[lineB.startPointId], b2 = points[lineB.endPointId];
+        if (a1 == null || a2 == null || b1 == null || b2 == null) return null;
+        return LabelDragResolver.angle(
+          line1Start: (a1.x, a1.y),
+          line1End: (a2.x, a2.y),
+          line2Start: (b1.x, b1.y),
+          line2End: (b2.x, b2.y),
+          p: p,
+          valueDegrees: currentGhostValue(ghost),
+          quadrant: angleGhostQuadrant(ghost),
+        );
+    }
+  }
+
+  /// The foot of the perpendicular from [pointId] onto [lineId]'s infinite extension.
+  (double, double)? _footOnLine(String? pointId, String? lineId) {
+    final point = points[pointId];
+    final line = lines[lineId];
+    if (point == null || line == null) return null;
+    final start = points[line.startPointId];
+    final end = points[line.endPointId];
+    if (start == null || end == null) return null;
+    final dx = end.x - start.x;
+    final dy = end.y - start.y;
+    final lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared < 1e-18) return (start.x, start.y);
+    final t = ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared;
+    return (start.x + t * dx, start.y + t * dy);
+  }
+
+  /// A click on empty canvas while a dimension is previewed: freezes its kind, placement and (angle) sector at the cursor and opens the
+  /// value editor there. False (nothing done) when nothing is previewed or an editor is already open.
+  bool dropPendingDimension() {
+    if (_activeGhostKey != null) return false;
+    final ghost = pendingDimensionGhost;
+    if (ghost == null) return false;
+    final placement = _placementForGhostAt(ghost, (cursorX, cursorY));
+    _tappedAngleGhost = ghost.kind == GhostKind.angle ? (key: ghost.key, quadrant: _angleQuadrantUnderCursor(ghost)) : null;
+    _frozenPlacement = (key: ghost.key, placement: placement);
+    _activeGhostKey = ghost.key;
+    notifyListeners();
+    return true;
+  }
+
+  /// Esc, right-click or back while a dimension is being placed: an open value editor goes back to the live preview; else the preview is
+  /// dropped and the pick starts again (step 1). False when there was nothing to cancel.
+  bool cancelDimensionStep() {
+    if (_mode != SketchMode.dimension) return false;
+    if (_activeGhostKey != null) {
+      cancelGhostEdit();
+      return true;
+    }
+    if (_dimensionSelection.isEmpty && _ghosts.isEmpty) return false;
+    _dimensionSelection.clear();
+    _ghosts = [];
+    _pendingKey = null;
+    _frozenPlacement = null;
+    _cursorChoosesKind = false;
+    notifyListeners();
+    return true;
+  }
+
+  /// Saves [placement] (the dimension's frozen drop position) for the just-made constraint [constraintId], as a label drag would.
+  void _keepDroppedPlacement(String constraintId, DimensionGhost ghost, DimensionLabelPlacement? placement) {
+    if (placement == null || placement.isEmpty) return;
+    if (!constraints.containsKey(constraintId)) return;
+    _labelPlacements[constraintId] = placement;
+    unawaited(_saveLabelPlacement(constraintId));
+  }
+
   /// [SketchMode.dimension]'s tap handling (revamped per the new work
   /// package): resolves the tap (including line-midpoint materialization,
   /// same as [_handleSelectTap]) and hands it to [_applyDimensionHit].
   Future<void> _handleDimensionTap(double hitRadius) async {
     if (_busy) return;
+    // The value editor is open: the views handle a tap that is not on it (they cancel the edit); nothing is picked meanwhile.
+    if (_activeGhostKey != null) return;
     SketchSelection? hit;
     await _runGuarded(() async {
       hit = await _resolveSelectableAt(hitRadius);
     });
+    // A click that is not on an entity drops the previewed dimension where the cursor is (part A of docs/bug-report-2026-11-18-plan.md);
+    // a click on another entity still changes the pick.
+    if (hit == null && dropPendingDimension()) return;
     _applyDimensionHit(hit);
   }
 
@@ -14830,6 +15133,10 @@ class SketchController extends ChangeNotifier {
   /// alone, or anything with more than two entities) shows no ghosts.
   void _rebuildDimensionGhosts() {
     final sel = _dimensionSelection;
+    // A new pick restarts the choice: the drawer's kind, a placement frozen by an earlier drop, and the cursor rule all start again.
+    _pendingKey = null;
+    _frozenPlacement = null;
+    _cursorChoosesKind = false;
 
     // Reference-identity overhaul (the DIDSA-VR design table's rule): nothing is offered between two pinned things. A driving dimension on geometry
     // whose every Point is already pinned (a body corner or edge reference, the origin, a Fix) could only over-constrain the sketch.
@@ -14848,7 +15155,8 @@ class SketchController extends ChangeNotifier {
           if (circle == null) {
             _ghosts = [];
           } else {
-            _buildRadiusGhosts(circle.centerPointId, circle.radiusPointId);
+            // A circle is dimensioned by its diameter first, as in SolidWorks; the radius is one click away in the drawer.
+            _ghosts = _radiusGhosts(circle.centerPointId, circle.radiusPointId, diameterFirst: true);
           }
           return;
         case SelectionKind.arc:
@@ -14932,6 +15240,28 @@ class SketchController extends ChangeNotifier {
         _buildPointLineGhosts(pointSel.id, lineSel.id);
         return;
       }
+      // A Circle or Arc against a Point, a Line or another Circle/Arc: the Circle's or Arc's centre stands in for it (a point-pair
+      // dimension on the centre Point, or a point-to-line one), the way the table in docs/bug-report-2026-11-18-plan.md lists them.
+      final aCentre = _curveCentrePointId(a);
+      final bCentre = _curveCentrePointId(b);
+      if (aCentre != null || bCentre != null) {
+        final aAnchor = aCentre ?? (a.kind == SelectionKind.point ? a.id : null);
+        final bAnchor = bCentre ?? (b.kind == SelectionKind.point ? b.id : null);
+        if (aAnchor != null && bAnchor != null) {
+          if (aAnchor == bAnchor) {
+            _ghosts = [];
+          } else {
+            _buildPointDistanceGhosts(aAnchor, bAnchor);
+          }
+          return;
+        }
+        final centreId = aAnchor ?? bAnchor;
+        final lineSel = a.kind == SelectionKind.line ? a : (b.kind == SelectionKind.line ? b : null);
+        if (centreId != null && lineSel != null) {
+          _buildPointPerpendicularGhosts(centreId, lineSel.id, centreOfCurve: true);
+          return;
+        }
+      }
       _ghosts = [];
       return;
     }
@@ -14939,6 +15269,15 @@ class SketchController extends ChangeNotifier {
     _ghosts = [];
   }
 
+  /// The centre Point of a Circle or Arc selection, else null.
+  String? _curveCentrePointId(SketchSelection selection) => switch (selection.kind) {
+        SelectionKind.circle => circles[selection.id]?.centerPointId,
+        SelectionKind.arc => arcs[selection.id]?.centerPointId,
+        _ => null,
+      };
+
+  /// One Line: its length (the default), or just its horizontal or vertical extent - the latter two are the same `DistanceConstraint` with
+  /// an orientation, between the Line's two end Points.
   void _buildLineLengthGhost(String lineId) {
     final line = lines[lineId];
     _ghosts = line == null
@@ -14950,25 +15289,37 @@ class SketchController extends ChangeNotifier {
               pointAId: line.startPointId,
               pointBId: line.endPointId,
             ),
+            DimensionGhost(
+              key: 'h',
+              kind: GhostKind.horizontal,
+              pointAId: line.startPointId,
+              pointBId: line.endPointId,
+              label: 'Horizontal length',
+            ),
+            DimensionGhost(
+              key: 'v',
+              kind: GhostKind.vertical,
+              pointAId: line.startPointId,
+              pointBId: line.endPointId,
+              label: 'Vertical length',
+            ),
           ];
   }
 
-  /// Two Points: vertical/horizontal components plus the direct
-  /// point-to-point ("linear") distance - new work package item 6's
-  /// "distance (vertical, horizontal and linear)".
+  /// Two Points: the direct point-to-point ("linear", shown as Aligned) distance plus its vertical/horizontal components - new work
+  /// package item 6's "distance (vertical, horizontal and linear)". Which one the preview shows follows the cursor until the drawer
+  /// picks one ([_cursorChoosesKind]).
   void _buildPointDistanceGhosts(String pointAId, String pointBId) {
+    _cursorChoosesKind = true;
     _ghosts = [
-      DimensionGhost(key: 'v', kind: GhostKind.vertical, pointAId: pointAId, pointBId: pointBId),
-      DimensionGhost(key: 'h', kind: GhostKind.horizontal, pointAId: pointAId, pointBId: pointBId),
       DimensionGhost(key: 'linear', kind: GhostKind.linear, pointAId: pointAId, pointBId: pointBId),
+      DimensionGhost(key: 'h', kind: GhostKind.horizontal, pointAId: pointAId, pointBId: pointBId),
+      DimensionGhost(key: 'v', kind: GhostKind.vertical, pointAId: pointAId, pointBId: pointBId),
     ];
   }
 
-  /// A Point + a Line: the backend's `DistanceConstraint` only ever
-  /// connects two Points, so this substitutes the Line's nearer endpoint
-  /// for the Line itself and reuses the two-Point ghost set - a documented
-  /// scoping tradeoff (true point-to-line distance isn't representable as
-  /// a live constraint in this backend), not point-to-line distance.
+  /// A Point + a Line: the perpendicular distance to the Line's infinite extension (the default, as in SolidWorks), or the horizontal,
+  /// vertical or aligned distance to the Line's nearer end Point.
   void _buildPointLineGhosts(String pointId, String lineId) {
     final line = lines[lineId];
     final point = points[pointId];
@@ -14982,10 +15333,39 @@ class SketchController extends ChangeNotifier {
       _ghosts = [];
       return;
     }
+    // A Point that is itself one of the Line's ends has no distance to it.
+    if (pointId == line.startPointId || pointId == line.endPointId) {
+      _ghosts = [];
+      return;
+    }
     final distToStart = math.pow(point.x - start.x, 2) + math.pow(point.y - start.y, 2);
     final distToEnd = math.pow(point.x - end.x, 2) + math.pow(point.y - end.y, 2);
     final nearestEndpointId = distToStart <= distToEnd ? line.startPointId : line.endPointId;
-    _buildPointDistanceGhosts(pointId, nearestEndpointId);
+    _ghosts = [
+      DimensionGhost(key: 'perpendicular', kind: GhostKind.pointLine, pointAId: pointId, lineAId: lineId),
+      DimensionGhost(key: 'h', kind: GhostKind.horizontal, pointAId: pointId, pointBId: nearestEndpointId),
+      DimensionGhost(key: 'v', kind: GhostKind.vertical, pointAId: pointId, pointBId: nearestEndpointId),
+      DimensionGhost(key: 'linear', kind: GhostKind.linear, pointAId: pointId, pointBId: nearestEndpointId),
+    ];
+  }
+
+  /// A Circle's or Arc's centre against a Line: only the perpendicular distance from the centre (the tangent and far-side distances need
+  /// the backend's new constraint types).
+  void _buildPointPerpendicularGhosts(String pointId, String lineId, {bool centreOfCurve = false}) {
+    final line = lines[lineId];
+    if (line == null || pointId == line.startPointId || pointId == line.endPointId) {
+      _ghosts = [];
+      return;
+    }
+    _ghosts = [
+      DimensionGhost(
+        key: 'perpendicular',
+        kind: GhostKind.pointLine,
+        pointAId: pointId,
+        lineAId: lineId,
+        label: centreOfCurve ? 'Perpendicular from centre' : null,
+      ),
+    ];
   }
 
   /// How close to parallel (in radians, via the cross product of the two
@@ -15036,20 +15416,29 @@ class SketchController extends ChangeNotifier {
   /// each pair's ghost keys unique when more than one radius ghost pair
   /// coexists in the same selection (an Ellipse's major and minor axes -
   /// see [_rebuildDimensionGhosts]'s `SelectionKind.ellipse` case).
-  List<DimensionGhost> _radiusGhosts(String centerPointId, String edgePointId, {String keyPrefix = ''}) => [
-        DimensionGhost(
-          key: '${keyPrefix}radius',
-          kind: GhostKind.radius,
-          pointAId: centerPointId,
-          pointBId: edgePointId,
-        ),
-        DimensionGhost(
-          key: '${keyPrefix}diameter',
-          kind: GhostKind.diameter,
-          pointAId: centerPointId,
-          pointBId: edgePointId,
-        ),
-      ];
+  List<DimensionGhost> _radiusGhosts(
+    String centerPointId,
+    String edgePointId, {
+    String keyPrefix = '',
+    bool diameterFirst = false,
+  }) {
+    final axisName = keyPrefix.isEmpty ? '' : '${keyPrefix[0].toUpperCase()}${keyPrefix.substring(1)} ';
+    final radius = DimensionGhost(
+      key: '${keyPrefix}radius',
+      kind: GhostKind.radius,
+      pointAId: centerPointId,
+      pointBId: edgePointId,
+      label: keyPrefix.isEmpty ? null : '${axisName}radius',
+    );
+    final diameter = DimensionGhost(
+      key: '${keyPrefix}diameter',
+      kind: GhostKind.diameter,
+      pointAId: centerPointId,
+      pointBId: edgePointId,
+      label: keyPrefix.isEmpty ? null : '${axisName}diameter',
+    );
+    return diameterFirst ? [diameter, radius] : [radius, diameter];
+  }
 
   void _buildRadiusGhosts(String centerPointId, String edgePointId) {
     _ghosts = _radiusGhosts(centerPointId, edgePointId);
@@ -15177,6 +15566,12 @@ class SketchController extends ChangeNotifier {
       final cross = (startB.x - startA.x) * dy - (startB.y - startA.y) * dx;
       return (cross / length).abs();
     }
+    if (ghost.kind == GhostKind.pointLine) {
+      final point = points[ghost.pointAId];
+      final foot = _footOnLine(ghost.pointAId, ghost.lineAId);
+      if (point == null || foot == null) return null;
+      return math.sqrt(math.pow(point.x - foot.$1, 2) + math.pow(point.y - foot.$2, 2));
+    }
     if (ghost.kind == GhostKind.angle) {
       final lineA = lines[ghost.lineAId];
       final lineB = lines[ghost.lineBId];
@@ -15216,6 +15611,7 @@ class SketchController extends ChangeNotifier {
         return (b.x - a.x).abs();
       case GhostKind.lineDistance:
       case GhostKind.angle:
+      case GhostKind.pointLine:
         return null; // handled above.
     }
   }
@@ -15223,18 +15619,24 @@ class SketchController extends ChangeNotifier {
   /// Marks [key] as the actively-edited ghost - tapping a ghost label opens
   /// its inline text input (Stage 13 item 5) and dims the other ghost, if
   /// any (item 6's visual spec).
+  ///
+  /// Opens the editor with no dropped placement (the dimension keeps its default place, which the ribbon's Length / Radius / Diameter
+  /// chips rely on); a click on empty canvas uses [dropPendingDimension] instead.
   void tapGhost(String key) {
     if (!_ghosts.any((g) => g.key == key)) return;
     final ghost = _ghosts.firstWhere((g) => g.key == key);
     _tappedAngleGhost = ghost.kind == GhostKind.angle ? (key: key, quadrant: _angleQuadrantUnderCursor(ghost)) : null;
+    _pendingKey = key;
+    _frozenPlacement = null;
     _activeGhostKey = key;
     notifyListeners();
   }
 
-  /// Tap-away/keyboard-cancel from the inline text input - returns to
-  /// showing both ghosts at their default (non-active) colour.
+  /// Tap-away/keyboard-cancel from the inline text input - back to the live
+  /// preview at the cursor (the dropped placement is forgotten).
   void cancelGhostEdit() {
     _activeGhostKey = null;
+    _frozenPlacement = null;
     notifyListeners();
   }
 
@@ -15265,6 +15667,16 @@ class SketchController extends ChangeNotifier {
       if (constraint is LineDistanceConstraintDto &&
           ((constraint.line1Id == lineAId && constraint.line2Id == lineBId) ||
               (constraint.line1Id == lineBId && constraint.line2Id == lineAId))) {
+        return constraint;
+      }
+    }
+    return null;
+  }
+
+  /// The `PointLineDistanceConstraint` (if any) between [pointId] and [lineId].
+  PointLineDistanceConstraintDto? _findPointLineDistanceConstraint(String pointId, String lineId) {
+    for (final constraint in constraints.values) {
+      if (constraint is PointLineDistanceConstraintDto && constraint.pointId == pointId && constraint.lineId == lineId) {
         return constraint;
       }
     }
@@ -15306,12 +15718,41 @@ class SketchController extends ChangeNotifier {
     }
     if (ghost == null) return;
     final target = ghost;
+    // Where the user dropped it (null when it went straight to the editor): saved with the constraint, as a label drag would.
+    final frozen = _frozenPlacement;
+    final droppedPlacement = frozen != null && frozen.key == key ? frozen.placement : null;
+
+    if (target.kind == GhostKind.pointLine) {
+      await _runGuarded(() async {
+        final existing = _findPointLineDistanceConstraint(target.pointAId!, target.lineAId!);
+        final String constraintId;
+        if (existing != null) {
+          constraintId = existing.id;
+          final oldValue = existing.distance;
+          await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue));
+          _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
+        } else {
+          final constraint = await _api.createPointLineDistanceConstraint(_sketchId!, target.pointAId!, target.lineAId!, value);
+          constraintId = constraint.id;
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+        }
+        await _solveAndTrackDof();
+        _keepDroppedPlacement(constraintId, target, droppedPlacement);
+        _ghosts = [];
+        _dimensionSelection.clear();
+        _activeGhostKey = null;
+        _frozenPlacement = null;
+      });
+      return;
+    }
 
     if (target.kind == GhostKind.angle) {
       final pickedQuadrant = angleGhostQuadrant(target);
       await _runGuarded(() async {
         final existing = _findAngleConstraint(target.lineAId!, target.lineBId!);
+        final String constraintId;
         if (existing != null) {
+          constraintId = existing.id;
           final oldValue = existing.angleDegrees;
           final oldQuadrant = existing.quadrant;
           // The quadrant is relative to the constraint's own line order, which may be the other way round from the ghost's: swapping
@@ -15329,12 +15770,17 @@ class SketchController extends ChangeNotifier {
             value,
             quadrant: pickedQuadrant,
           );
+          constraintId = constraint.id;
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
         await _solveAndTrackDof();
+        // The placement is laid out for the ghost's line order; an existing constraint with the lines the other way round keeps its own.
+        final sameOrder = existing == null || existing.line1Id == target.lineAId;
+        if (sameOrder) _keepDroppedPlacement(constraintId, target, droppedPlacement);
         _ghosts = [];
         _dimensionSelection.clear();
         _activeGhostKey = null;
+        _frozenPlacement = null;
       });
       return;
     }
@@ -15347,7 +15793,9 @@ class SketchController extends ChangeNotifier {
       // line-to-line constraint (Parallel, Perpendicular, ...).
       await _runGuarded(() async {
         final existing = _findLineDistanceConstraint(target.lineAId!, target.lineBId!);
+        final String constraintId;
         if (existing != null) {
+          constraintId = existing.id;
           final oldValue = existing.distance;
           await _api.updateConstraintValue(_sketchId!, existing.id, resolveDimensionSign(value, oldValue));
           _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
@@ -15358,6 +15806,7 @@ class SketchController extends ChangeNotifier {
             target.lineBId!,
             value,
           );
+          constraintId = constraint.id;
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
 
           // On-device feedback ("the user should get the feeling that the
@@ -15402,9 +15851,11 @@ class SketchController extends ChangeNotifier {
           }
         }
         await _solveAndTrackDof();
+        _keepDroppedPlacement(constraintId, target, droppedPlacement);
         _ghosts = [];
         _dimensionSelection.clear();
         _activeGhostKey = null;
+        _frozenPlacement = null;
       });
       return;
     }
@@ -15488,9 +15939,11 @@ class SketchController extends ChangeNotifier {
       // fixes describe.
       await _solveAndTrackDof();
       if (isFirstDimension) autoFitRequestToken++;
+      _keepDroppedPlacement(constraintId, target, droppedPlacement);
       _ghosts = [];
       _dimensionSelection.clear();
       _activeGhostKey = null;
+      _frozenPlacement = null;
     });
   }
 
@@ -18543,9 +18996,11 @@ class SketchController extends ChangeNotifier {
   /// the same emphasis-color meaning, different trigger.
   List<ConstraintOverlayItem> dimensionGhostOverlayItems() {
     final items = <ConstraintOverlayItem>[];
-    for (final ghost in _ghosts) {
+    for (final ghost in ghosts) {
       final isActive = ghost.key == _activeGhostKey;
       final labelOffset = labelOffsetFor(ghost.key);
+      // Part A: the preview sits where the cursor is until a click drops it, then where it was dropped.
+      final placement = ghostPlacement(ghost);
       switch (ghost.kind) {
         case GhostKind.length:
         case GhostKind.linear:
@@ -18566,11 +19021,45 @@ class SketchController extends ChangeNotifier {
             },
             text: '?',
             labelOffset: labelOffset,
-            sketchLocalOffsetDistance: labelPlacementFor(ghost.key)?.offset,
-            sketchLocalAlongOffset: labelPlacementFor(ghost.key)?.along,
+            sketchLocalOffsetDistance: placement?.offset,
+            sketchLocalAlongOffset: placement?.along,
+          ));
+        case GhostKind.pointLine:
+          final point = points[ghost.pointAId];
+          final foot = _footOnLine(ghost.pointAId, ghost.lineAId);
+          if (point == null || foot == null) continue;
+          items.add(ConstraintLinearDimensionItem(
+            constraintId: ghost.key,
+            selected: isActive,
+            pointA: (point.x, point.y),
+            pointB: foot,
+            orientation: null,
+            text: '?',
+            labelOffset: labelOffset,
+            sketchLocalOffsetDistance: placement?.offset,
+            sketchLocalAlongOffset: placement?.along,
           ));
         case GhostKind.radius:
         case GhostKind.diameter:
+          final axis = _ellipseAxisForGhost(ghost);
+          if (axis != null) {
+            // An Ellipse axis is a tip-to-tip length dimension once confirmed, so it is previewed as one.
+            final tipA = points[axis.$1];
+            final tipB = points[axis.$2];
+            if (tipA == null || tipB == null) continue;
+            items.add(ConstraintLinearDimensionItem(
+              constraintId: ghost.key,
+              selected: isActive,
+              pointA: (tipA.x, tipA.y),
+              pointB: (tipB.x, tipB.y),
+              orientation: null,
+              text: '?',
+              labelOffset: labelOffset,
+              sketchLocalOffsetDistance: placement?.offset,
+              sketchLocalAlongOffset: placement?.along,
+            ));
+            continue;
+          }
           final center = points[ghost.pointAId];
           final rim = points[ghost.pointBId];
           if (center == null || rim == null) continue;
@@ -18598,7 +19087,7 @@ class SketchController extends ChangeNotifier {
           // "has this been dragged yet" for every other dimension kind -
           // `labelOffset` itself stays zero here now; it no longer carries
           // any of the leader's own direction for a radial item.
-          final defaultAngleOffsetDegrees = labelPlacementFor(ghost.key)?.angle ?? (isDiameter ? 50.0 : 0.0);
+          final defaultAngleOffsetDegrees = placement?.angle ?? (isDiameter ? 50.0 : 0.0);
           items.add(ConstraintRadialDimensionItem(
             constraintId: ghost.key,
             selected: isActive,
@@ -18612,7 +19101,7 @@ class SketchController extends ChangeNotifier {
             text: isDiameter ? '⌀?' : 'R?',
             labelOffset: Offset.zero,
             defaultAngleOffsetDegrees: defaultAngleOffsetDegrees,
-            sketchLocalLegLength: labelPlacementFor(ghost.key)?.leg,
+            sketchLocalLegLength: placement?.leg,
           ));
         case GhostKind.lineDistance:
           final lineA = lines[ghost.lineAId];
@@ -18632,8 +19121,8 @@ class SketchController extends ChangeNotifier {
             line2End: (line2End.x, line2End.y),
             text: '?',
             labelOffset: labelOffset,
-            sketchLocalOffsetDistance: labelPlacementFor(ghost.key)?.offset,
-            sketchLocalAlongOffset: labelPlacementFor(ghost.key)?.along,
+            sketchLocalOffsetDistance: placement?.offset,
+            sketchLocalAlongOffset: placement?.along,
           ));
         case GhostKind.angle:
           final angleLineA = lines[ghost.lineAId];
@@ -18655,8 +19144,8 @@ class SketchController extends ChangeNotifier {
             line2End: (angleLine2End.x, angleLine2End.y),
             text: '?',
             labelOffset: labelOffset,
-            sketchLocalArcRadius: labelPlacementFor(ghost.key)?.radius,
-            sketchLocalAlongOffset: labelPlacementFor(ghost.key)?.along,
+            sketchLocalArcRadius: placement?.radius,
+            sketchLocalAlongOffset: placement?.along,
             quadrant: angleGhostQuadrant(ghost),
           ));
       }

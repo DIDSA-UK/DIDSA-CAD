@@ -664,8 +664,8 @@ class _SketchScreenState extends State<SketchScreen> {
       return;
     }
     final controller = _controller;
-    if (controller.activeGhostKey != null) {
-      controller.cancelGhostEdit();
+    if (controller.cancelDimensionStep()) {
+      // An open dimension editor goes back to the live preview; a preview goes back to picking.
     } else if (controller.mode != SketchMode.select) {
       controller.exitToSelectMode();
     } else if (controller.selectionSet.isNotEmpty) {
@@ -1610,8 +1610,10 @@ class _SketchScreenState extends State<SketchScreen> {
         profileFillOutlines: _embeddedProfileFillOutlines,
         profileBranchMarkers: _embeddedProfileBranchMarkers,
         constraintOverlayItems: _embeddedConstraintOverlayItems,
+        // Dimension mode only needs the overlay hit while a dropped dimension's value editor is open (a click away from it cancels the
+        // edit); before that the dimension's "?" label sits at the cursor and must not catch the click that drops it.
         preferConstraintOverlayHitOnCommit:
-            _controller.mode == SketchMode.dimension || _dragModeActiveInOrbitView,
+            (_controller.mode == SketchMode.dimension && _controller.activeGhostKey != null) || _dragModeActiveInOrbitView,
         onConstraintOverlayItemTap: _handleEmbeddedConstraintOverlayTap,
         isDraggingConstraintLabel:
             _controller.draggingLabelId != null && !_controller.labelUsesPlacement(_controller.draggingLabelId!),
@@ -1697,11 +1699,15 @@ class _SketchScreenState extends State<SketchScreen> {
       constraintLabelsVisible: _constraintLabelsVisible,
       canvasColor: _canvasColor,
       // Desktop input D4: a right click opens the entity or canvas menu.
-      onContextMenuRequested: (hit, at) => unawaited(
-        hit == null
-            ? showSketchBackgroundContextMenu(context, _controller, at: at, onZoomToFit: _canvasKey.currentState?.zoomToFit)
-            : showSketchEntityContextMenu(context, _controller, at: at),
-      ),
+      onContextMenuRequested: (hit, at) {
+        // A right click while a dimension is being placed cancels it (back one step) instead of opening a menu.
+        if (_controller.cancelDimensionStep()) return;
+        unawaited(
+          hit == null
+              ? showSketchBackgroundContextMenu(context, _controller, at: at, onZoomToFit: _canvasKey.currentState?.zoomToFit)
+              : showSketchEntityContextMenu(context, _controller, at: at),
+        );
+      },
     );
   }
 
@@ -1710,6 +1716,8 @@ class _SketchScreenState extends State<SketchScreen> {
   /// click replaces unless it is already selected) and gets the entity menu;
   /// anything else gets the empty-canvas menu with the 3D view's own fit.
   Future<void> _onOrbitContextMenu(HoverHit? hit, Offset at) async {
+    // A right click while a dimension is being placed cancels it (back one step) instead of opening a menu.
+    if (_controller.cancelDimensionStep()) return;
     final entity = hit?.entity;
     if (entity != null && _isSketchEntityKind(entity.kind)) {
       if (!_embeddedSelectedEntities.contains(entity)) {
@@ -2288,7 +2296,6 @@ class _SketchScreenState extends State<SketchScreen> {
   /// gated one level up from this.
   bool _handleEmbeddedConstraintOverlayTap(String? hitId, vm.Vector3? labelPoint, vm.Vector3? cursorPoint) {
     if (_controller.mode == SketchMode.dimension) {
-      final isGhost = hitId != null && _controller.ghosts.any((g) => g.key == hitId);
       if (_controller.activeGhostKey != null) {
         // Mirrors _dispatchTap exactly: any tap while an edit is open
         // either confirms staying on the same ghost (no-op, handled by the
@@ -2298,10 +2305,8 @@ class _SketchScreenState extends State<SketchScreen> {
         if (hitId != _controller.activeGhostKey) _controller.cancelGhostEdit();
         return true;
       }
-      if (isGhost) {
-        _controller.tapGhost(hitId);
-        return true;
-      }
+      // No editor open: the previewed dimension is dropped by an ordinary commit (SketchController.handleCanvasTap), which also lets a
+      // click on another entity change the pick.
       return false;
     }
     if (_dragModeActiveInOrbitView) {
