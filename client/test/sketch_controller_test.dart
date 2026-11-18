@@ -57,6 +57,9 @@ void _blockLocalClamp(SketchController controller, String pointId) {
 /// creation, constraints, get, solve) good enough to exercise the
 /// controller's chaining and dimension-ghost-confirmation logic without any
 /// real network call.
+/// Bug report 2026-11-18 part D: the value field of each new dimension type, for the fake's value PATCH.
+const _valueFieldOfType = {'arc_length': 'length'};
+
 class _FakeBackend {
   int _nextId = 1;
 
@@ -651,6 +654,8 @@ class _FakeBackend {
       if (constraint['type'] == 'angle') {
         constraint['angle_degrees'] = value;
         if (body['quadrant'] != null) constraint['quadrant'] = body['quadrant'];
+      } else if (_valueFieldOfType.containsKey(constraint['type'])) {
+        constraint[_valueFieldOfType[constraint['type']]!] = value;
       } else {
         constraint['distance'] = value;
         // Mirrors the real backend: any explicit value PATCH confirms the
@@ -2470,6 +2475,20 @@ class _FakeBackend {
             'id': id,
             'type': 'fixed',
             'point_ids': fixedPointIds,
+          };
+          break;
+        case 'arc_length':
+          // Bug report 2026-11-18 part D: echoes the body with the Arc's own Point ids, as the backend's response carries them.
+          final arc = arcs[body['arc_id']];
+          if (arc == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'arc_length',
+            'arc_id': body['arc_id'],
+            'center_point_id': arc['center_point_id'],
+            'start_point_id': arc['start_point_id'],
+            'end_point_id': arc['end_point_id'],
+            'length': (body['length'] as num).toDouble(),
           };
           break;
         default:
@@ -16124,4 +16143,84 @@ void main() {
     });
   });
 
+
+  // Bug report 2026-11-18 part D: the new dimension types through the dimension tool (offered for the pick, previewed, dropped,
+  // confirmed into the constraint, label placed and drawn).
+  group('part D dimension types', () {
+    Future<String> drawQuarterArc() async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      await controller.handleCanvasTap(0, 5);
+      return controller.arcs.keys.single;
+    }
+
+    test('an arc offers Arc length after Radius and Diameter; confirming makes an arc_length constraint where it was dropped', () async {
+      final arcId = await drawQuarterArc();
+      controller.enterDimensionMode();
+      final onRim = 5 * math.sqrt(0.5);
+      await controller.handleCanvasTap(onRim, onRim);
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Radius', 'Diameter', 'Arc length']);
+      expect(controller.selectPendingDimensionKind('arcLength'), isTrue);
+      final ghost = controller.pendingDimensionGhost!;
+      expect(ghost.kind, GhostKind.typed);
+      // The preview's value is the arc's length now: a quarter of a radius-5 circle.
+      expect(controller.currentGhostValue(ghost), closeTo(5 * math.pi / 2, 1e-9));
+      final preview = controller.ghostAsConstraint(ghost);
+      expect(preview, isA<ArcLengthConstraintDto>());
+      // The preview is laid out in the 3D overlay as well (the flat canvas paints the same layout).
+      expect(controller.dimensionGhostOverlayItems().whereType<ConstraintLaidOutDimensionItem>(), hasLength(1));
+
+      // Drop it outside the arc, then confirm.
+      controller.cursorX = 6;
+      controller.cursorY = 6;
+      expect(controller.dropPendingDimension(), isTrue);
+      final dropped = controller.ghostPlacement(controller.pendingDimensionGhost!);
+      expect(dropped?.leg, closeTo(6 * math.sqrt(2) - 5, 1e-9));
+      await controller.confirmGhostValue('arcLength', 6.0);
+
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<ArcLengthConstraintDto>().single;
+      expect(made.arcId, arcId);
+      expect(made.length, 6.0);
+      expect(controller.labelPlacementFor(made.id)?.leg, closeTo(dropped!.leg!, 1e-9));
+      final posted = backend.requestLog.where((r) => r.startsWith('POST') && r.endsWith('/constraints'));
+      expect(posted, isNotEmpty);
+      // Drawn as a laid-out dimension with its value, and its value is editable from the ribbon.
+      final item = controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single;
+      expect(item.text, '⌒6.00');
+      controller.selectConstraint(made.id);
+      expect(controller.selectedConstraintValue, 6.0);
+      expect(controller.selectedConstraintIsAngle, isFalse);
+    });
+
+    test('a second Arc length on the same arc edits the first instead of adding one', () async {
+      await drawQuarterArc();
+      controller.enterDimensionMode();
+      final onRim = 5 * math.sqrt(0.5);
+      await controller.handleCanvasTap(onRim, onRim);
+      controller.selectPendingDimensionKind('arcLength');
+      await controller.confirmGhostValue('arcLength', 6.0);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(onRim, onRim);
+      controller.selectPendingDimensionKind('arcLength');
+      await controller.confirmGhostValue('arcLength', 7.0);
+      final all = controller.constraints.values.whereType<ArcLengthConstraintDto>();
+      expect(all, hasLength(1));
+      expect(all.single.length, 7.0);
+    });
+
+    test('deleting the arc takes its arc length with it', () async {
+      final arcId = await drawQuarterArc();
+      controller.enterDimensionMode();
+      final onRim = 5 * math.sqrt(0.5);
+      await controller.handleCanvasTap(onRim, onRim);
+      controller.selectPendingDimensionKind('arcLength');
+      await controller.confirmGhostValue('arcLength', 6.0);
+      final made = controller.constraints.values.whereType<ArcLengthConstraintDto>().single;
+      final arc = controller.arcs[arcId]!;
+      final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: arc.endPointId)]);
+      expect(cascade.constraints, contains(made.id));
+    });
+  });
 }

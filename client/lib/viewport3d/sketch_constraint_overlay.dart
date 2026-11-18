@@ -13,6 +13,7 @@ import '../sketch/sketch_controller.dart'
         ConstraintOverlayItem,
         ConstraintAngleDimensionItem,
         ConstraintLabelItem,
+        ConstraintLaidOutDimensionItem,
         ConstraintLineDistanceDimensionItem,
         ConstraintLinearDimensionItem,
         ConstraintRadialDimensionItem,
@@ -333,8 +334,40 @@ class _ConstraintOverlayPainter extends CustomPainter {
           _paintAngleDimension(canvas, it, color);
         case ReferenceDimensionItem it:
           _paintReferenceDimension(canvas, it);
+        case ConstraintLaidOutDimensionItem it:
+          _paintLaidOutDimension(canvas, it, color);
       }
     }
+  }
+
+  /// A part D dimension (bug report 2026-11-18): its sketch-unit layout (`dimension_types.dart`) projected point by point, so arcs stay
+  /// on their circle under perspective. The flat canvas draws the same layout.
+  void _paintLaidOutDimension(Canvas canvas, ConstraintLaidOutDimensionItem item, Color color) {
+    final layout = item.layout;
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth;
+    for (final stroke in layout.strokes) {
+      Offset? previous;
+      for (final point in stroke) {
+        final screen = _project(point);
+        if (screen != null && previous != null) canvas.drawLine(previous, screen, dimPaint);
+        previous = screen;
+      }
+    }
+    for (final (from, to) in layout.extensions) {
+      final a = _project(from), b = _project(to);
+      if (a != null && b != null) _drawExtensionLine(canvas, a, b, dimPaint);
+    }
+    for (final (tip, from) in layout.arrows) {
+      final a = _project(tip), b = _project(from);
+      if (a == null || b == null) continue;
+      final d = a - b;
+      if (d.distance < 1e-6) continue;
+      _drawArrowhead(canvas, a, d / d.distance, color);
+    }
+    final label = _project(layout.label);
+    if (label != null) _drawDimensionLabel(canvas, label, item.text, color, plainBlackText: true);
   }
 
   /// DIDSA-VR plan, phase 3: a reference (driven) dimension: a thin quiet leader between what it measures and the bracketed value at its middle (`(12.5)`).
@@ -1161,6 +1194,9 @@ Offset? constraintOverlayItemLabelCenter(
   switch (item) {
     case ReferenceDimensionItem():
       return null; // a reference dimension is not picked on the canvas: it is removed from the Dimension bar, so it takes no taps
+
+    case ConstraintLaidOutDimensionItem it:
+      return project(it.layout.label);
 
     case ConstraintLabelItem it:
       final a = project(it.anchorA);

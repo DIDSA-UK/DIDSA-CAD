@@ -236,6 +236,7 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
   if (c is PointOnCircleConstraintDto) return ids([c.pointId, c.centerPointId, c.radiusPointId]);
   if (c is PointOnEllipseConstraintDto) return ids([c.pointId, c.centerPointId, c.majorPointId, c.minorPointId]);
   if (c is FixedConstraintDto) return const <String>[];
+  if (c is ArcLengthConstraintDto) return ids([c.centerPointId, c.startPointId, c.endPointId]);
   return null;
 }
 
@@ -356,7 +357,27 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
     return [f.sqrtMinusOne().scale((aa.v + bb.v) / 2)];
   }
   if (c is FixedConstraintDto) return const <_D>[];
+  if (c is ArcLengthConstraintDto) {
+    // radius (at the start) times the counter-clockwise sweep from start to end, minus the value. The sweep is atan2(cross, dot) of
+    // the two radii, moved into (0, 2 pi] - a constant shift, so the derivative is atan2's.
+    final center = a(c.centerPointId);
+    final u = _sub(a(c.startPointId), center), w = _sub(a(c.endPointId), center);
+    return [(_len(u) * _ccwSweep(u, w)).plus(-c.length)];
+  }
   return null;
+}
+
+/// The counter-clockwise angle from [u] to [w], in (0, 2 pi], with its derivative (that of atan2(u x w, u . w)).
+_D _ccwSweep(_P u, _P w) {
+  final y = _cross(u, w), x = _dot(u, w);
+  var angle = math.atan2(y.v, x.v);
+  if (angle <= 1e-12) angle += 2 * math.pi;
+  final r2 = math.max(x.v * x.v + y.v * y.v, _eps);
+  final out = Float64List(y.g.length);
+  for (var i = 0; i < out.length; i++) {
+    out[i] = (x.v * y.g[i] - y.v * x.g[i]) / r2;
+  }
+  return _D(angle, out);
 }
 
 extension on _D {

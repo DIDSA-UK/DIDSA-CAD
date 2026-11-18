@@ -16,7 +16,9 @@ from py_slvs import slvs
 
 from app.sketch.constraints import (
     AngleConstraint,
+    ArcLengthConstraint,
     AtMidpointConstraint,
+    MeasuredDimension,
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
@@ -37,7 +39,7 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Ellipse, EllipseArc, Point, Sketch
+from app.sketch.models import Arc, Ellipse, EllipseArc, Point, Sketch
 
 # Constraint types empirically confirmed to never need py-slvs's own
 # redundancy detection to distrust a converged solve - see `converged`'s
@@ -81,6 +83,11 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     PointOnCircleConstraint,
     FixedConstraint,
     PointOnEllipseConstraint,
+    # Bug report 2026-11-18 part D: trusted here only together with `_measured_dimensions_hold`, which re-measures each of them on the
+    # solved Points whenever a solve is reported converged - a type trust that is checked afterwards, not a blind one. Needed for the
+    # ordinary arc redundancy (an Arc whose centre and end are both fixed, with its radius dimensioned, is result 5 with or without an
+    # arc length on it).
+    ArcLengthConstraint,
 )
 
 # CurveTangentConstraint is deliberately NOT in the allowlist above -
@@ -199,6 +206,9 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     PerpendicularConstraint,
     PointOnLineConstraint,
     CollinearConstraint,
+    # Bug report 2026-11-18 part D: the residual is the dimension's own value measured on the solved Points (the exact condition the
+    # solver enforced, not a weaker proxy), so a stacked-redundancy solve with one of these can be verified like the rest.
+    ArcLengthConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -514,8 +524,67 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
                 return False
             if _point_line_distance(points[constraint.line2_end_id], line1_start, line1_end) > tolerance:
                 return False
+        elif isinstance(constraint, MeasuredDimension):
+            if not _dimension_holds(constraint, points, tolerance):
+                return False
 
     return True
+
+
+def _dimension_holds(constraint: MeasuredDimension, points: dict[str, Point], tolerance: float) -> bool:
+    measured = constraint.measured_value(points)
+    if measured is None:
+        return False
+    if constraint.angular():
+        return abs(measured - constraint.value()) <= 1e-2
+    return abs(measured - constraint.value()) <= tolerance
+
+
+def _measured_dimensions_hold(sketch: Sketch) -> bool:
+    """Every part D dimension measures its own value on the solved Points (see `MeasuredDimension`). False also when the solve put a
+    helper point on the other side (a minimum distance solved as the maximum measures wrong here)."""
+    dimensions = [c for c in sketch.constraints.values() if isinstance(c, MeasuredDimension)]
+    if not dimensions:
+        return True
+    xs = [p.x for p in sketch.points.values()]
+    ys = [p.y for p in sketch.points.values()]
+    tolerance = max(math.hypot(max(xs) - min(xs), max(ys) - min(ys)) * _RESIDUAL_TOLERANCE, 1e-6)
+    return all(_dimension_holds(c, sketch.points, tolerance) for c in dimensions)
+
+
+def arc_entity_replaced_constraint_ids(sketch: Sketch) -> frozenset[str]:
+    """The constraints the solver leaves out because a py-slvs ArcOfCircle entity already states them: for each Arc carrying an
+    ArcLengthConstraint, the Arc's own end-radius EqualRadiusConstraint (end on the start's circle). Sending both makes the system
+    redundant (py-slvs result 5). Only an EqualRadius that ties exactly this Arc's end to its start about its centre is left out."""
+    arc_points = {
+        (c.center_point_id, c.start_point_id, c.end_point_id) for c in sketch.constraints.values() if isinstance(c, ArcLengthConstraint)
+    }
+    if not arc_points:
+        return frozenset()
+    replaced: set[str] = set()
+    for entity in sketch.entities.values():
+        if not isinstance(entity, Arc) or (entity.center_point_id, entity.start_point_id, entity.end_point_id) not in arc_points:
+            continue
+        own = sketch.constraints.get(entity.end_radius_constraint_id)
+        if (
+            isinstance(own, EqualRadiusConstraint)
+            and own.center1_point_id == own.center2_point_id == entity.center_point_id
+            and {own.radius1_point_id, own.radius2_point_id} == {entity.start_point_id, entity.end_point_id}
+        ):
+            replaced.add(own.id)
+    return frozenset(replaced)
+
+
+def _solver_constraints(sketch: Sketch):
+    """The constraints sent to py-slvs: all but the provisional dimensions (see `DistanceConstraint.provisional`) and those a solver
+    entity already states (`arc_entity_replaced_constraint_ids`)."""
+    replaced = arc_entity_replaced_constraint_ids(sketch)
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
+            continue
+        if constraint.id in replaced:
+            continue
+        yield constraint
 
 
 def _ellipse_owned_at_midpoint_constraint_ids(sketch: Sketch) -> frozenset[str]:
@@ -610,6 +679,7 @@ class _PySlvsBuilder:
         self._line_handles: dict[tuple[int, int], int] = {}
         self._cubic_handles: dict[tuple[int, int, int, int], int] = {}
         self._horizontal_ref_line: int | None = None
+        self._arc_handles: dict[tuple[int, int, int], int] = {}
         self._vertical_ref_line: int | None = None
         # The Sketch's origin Point (see Sketch.origin_point) is real,
         # addressable geometry - snappable and referenceable like any other
@@ -907,6 +977,20 @@ class _PySlvsBuilder:
             point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def arc_of_circle(self, center_handle: int, start_handle: int, end_handle: int) -> int:
+        key = (center_handle, start_handle, end_handle)
+        if key not in self._arc_handles:
+            self._arc_handles[key] = self._system.addArcOfCircle(
+                self._workplane, center_handle, start_handle, end_handle, group=_SOLVE_GROUP
+            )
+        return self._arc_handles[key]
+
+    def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
+        helper = self._system.addLineSegment(
+            self._fixed_ref_point(0.0, 0.0), self._fixed_ref_point(length, 0.0), group=_FIXED_GROUP
+        )
+        return self._system.addEqualLineArcLength(helper, arc_handle, wrkpln=self._workplane, group=_SOLVE_GROUP)
+
     def where_dragged(self, point_handle: int) -> int:
         return self._system.addWhereDragged(point_handle, wrkpln=self._workplane, group=_SOLVE_GROUP)
 
@@ -1072,9 +1156,7 @@ def _has_free_motion(sketch: Sketch, anchor_point_ids: frozenset[str]) -> bool:
         origin_point_id=sketch.origin_point_id,
         anchor_point_ids=anchor_point_ids,
     )
-    for constraint in sketch.constraints.values():
-        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
-            continue
+    for constraint in _solver_constraints(sketch):
         constraint.add_to_solver(builder)
     for point_id in sketch.points:
         builder.point2d(point_id)
@@ -1125,12 +1207,9 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
     )
 
     constraint_id_by_handle: dict[int, str] = {}
-    for constraint in sketch.constraints.values():
-        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
-            # Not yet confirmed by the user - contributes zero DOF-removal,
-            # exactly as if it didn't exist, until confirmed (see
-            # DistanceConstraint.provisional's own doc comment).
-            continue
+    # A provisional dimension is not yet confirmed by the user and contributes zero DOF-removal, exactly as if it didn't exist, until
+    # confirmed (see DistanceConstraint.provisional's own doc comment); see `_solver_constraints` for the other ones left out.
+    for constraint in _solver_constraints(sketch):
         handle = constraint.add_to_solver(builder)
         constraint_id_by_handle[handle] = constraint.id
 
@@ -1285,6 +1364,9 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         # own doc comment for why only *these* are safe to trust, unlike an
         # arbitrary user-created AtMidpointConstraint elsewhere).
         converged = True
+
+    if converged and not _measured_dimensions_hold(sketch):
+        converged = False
 
     # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via
     # Tangent/EqualRadius, arc1's own radius DistanceConstraint still

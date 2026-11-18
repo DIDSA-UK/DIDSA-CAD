@@ -33,6 +33,7 @@ Set<String> constraintPointIds(ConstraintDto constraint, Map<String, (String, St
     CurveTangentConstraintDto c => {c.center1PointId, c.center2PointId, c.sharedPointId},
     EqualRadiusConstraintDto c => {c.center1PointId, c.radius1PointId, c.center2PointId, c.radius2PointId},
     FixedConstraintDto c => c.pointIds.toSet(),
+    ArcLengthConstraintDto c => {c.centerPointId, c.startPointId, c.endPointId},
     SplineTangentConstraintDto c => {
         c.segmentAP0,
         c.segmentAP1,

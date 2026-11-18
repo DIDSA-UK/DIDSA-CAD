@@ -12,6 +12,7 @@ from app.sketch.constraints import (
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
+    ArcLengthConstraint,
     Constraint,
     CurveTangentConstraint,
     DistanceConstraint,
@@ -99,7 +100,8 @@ class ExternalVertexReference:
     kind: str = "vertex"
 
 
-REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle")
+# Bug report 2026-11-18 part D adds "arc_length" (one arc).
+REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length")
 
 
 @dataclass(frozen=True)
@@ -1088,6 +1090,14 @@ class NoIntersectionFoundError(ValueError):
     trim/extend target exists - a real, expected outcome the router surfaces
     as 422, distinct from every other `ValueError` this method raises
     (invalid endpoint, Polygon-owned edge), which stay ordinary 400s."""
+
+
+def check_arc_length_value(length: float, radius: float) -> None:
+    """Raises ValueError unless `length` can be an arc length at `radius`: more than 0, less than a full turn (2 pi r)."""
+    if not math.isfinite(length) or length <= 0:
+        raise ValueError("An arc length must be more than 0")
+    if radius > 0 and length >= 2.0 * math.pi * radius:
+        raise ValueError(f"An arc of radius {radius:g} is shorter than {2.0 * math.pi * radius:g} (a full circle)")
 
 
 def _signed_point_line_distance(point: Point, line_start: Point, line_end: Point) -> float:
@@ -4654,6 +4664,24 @@ class Sketch:
                 return entity.center_point_id, radius_point_id
             return entity.center_point_id, entity.start_point_id
         raise KeyError(entity_id)
+
+    def add_arc_length_constraint(self, arc_id: str, length: float) -> ArcLengthConstraint:
+        """Bug report 2026-11-18 part D: pins an Arc's length (see `ArcLengthConstraint`). The value must be more than 0 and less than a
+        full turn at the Arc's current radius."""
+        arc = self.entities.get(arc_id)
+        if not isinstance(arc, Arc):
+            raise KeyError(arc_id)
+        check_arc_length_value(length, arc.radius(self.points))
+        constraint = ArcLengthConstraint(
+            id=str(uuid.uuid4()),
+            arc_id=arc_id,
+            center_point_id=arc.center_point_id,
+            start_point_id=arc.start_point_id,
+            end_point_id=arc.end_point_id,
+            length=length,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
 
     def add_tangent_constraint(self, circle_or_arc_id: str, line_id: str) -> TangentConstraint:
         center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)

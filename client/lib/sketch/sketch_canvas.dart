@@ -13,6 +13,7 @@ import '../viewport3d/mouse_navigation.dart';
 import '../viewport3d/keyboard_shortcuts.dart' show CadShortcut, withShortcut;
 import 'angle_rays.dart';
 import 'dimension_text.dart';
+import 'dimension_types.dart';
 import 'label_drag_resolver.dart';
 import 'marquee_selection.dart';
 import 'pattern_mirror_expansion.dart';
@@ -1880,6 +1881,31 @@ const double _dimensionLeaderThreshold = 4.0;
   return (labelCenter: anchor + resolvedTangent * along, leaderFrom: anchor);
 }
 
+/// [controller]'s Point positions, for `dimension_types.dart`.
+PointAt _pointAtFor(SketchController controller) => (id) {
+      final point = controller.points[id];
+      return point == null ? null : (point.x, point.y);
+    };
+
+/// A part D dimension (bug report 2026-11-18) laid out with its label moved [labelOffset] pixels from its default place - the same
+/// pixel-offset convention the older painters use (see [dimensionLabelPixelOffset]), turned back into a placement so the layout is the
+/// one the 3D view draws.
+DimensionLayout? _laidOutDimensionForOffset(
+  SketchController controller,
+  ViewTransform transform,
+  ConstraintDto constraint,
+  Offset labelOffset,
+) {
+  final at = _pointAtFor(controller);
+  final standard = dimensionLayout(constraint, at, null);
+  if (standard == null) return null;
+  if (labelOffset == Offset.zero) return standard;
+  final screen = transform.sketchToScreen(standard.label.$1, standard.label.$2) + labelOffset;
+  final sketch = transform.screenToSketch(screen.dx, screen.dy);
+  final placement = dimensionPlacementAt(constraint, at, (sketch.x, sketch.y));
+  return placement == null ? standard : dimensionLayout(constraint, at, placement);
+}
+
 /// [constraint]'s actual on-screen label center (with [labelOffset] already
 /// applied), for hit-testing a [SketchMode.select] tap against it (new work
 /// package item 4) - mirrors each of [_SketchPainter._paintDimensionOverlays]'s
@@ -1891,6 +1917,10 @@ Offset? _constraintLabelCenter(
   ConstraintDto constraint,
   Offset labelOffset,
 ) {
+  if (isLaidOutDimension(constraint)) {
+    final layout = _laidOutDimensionForOffset(controller, transform, constraint, labelOffset);
+    return layout == null ? null : transform.sketchToScreen(layout.label.$1, layout.label.$2);
+  }
   switch (constraint) {
     case DistanceConstraintDto c:
       // Cardinal-point axis constraints (see SketchController.
@@ -2151,6 +2181,13 @@ Offset _placedLabelPixelOffset(
   DimensionLabelPlacement? placement,
 ) {
   if (placement == null) return Offset.zero;
+  if (isLaidOutDimension(constraint)) {
+    final at = _pointAtFor(controller);
+    final placed = dimensionLayout(constraint, at, placement);
+    final standard = dimensionLayout(constraint, at, null);
+    if (placed == null || standard == null) return Offset.zero;
+    return transform.sketchToScreen(placed.label.$1, placed.label.$2) - transform.sketchToScreen(standard.label.$1, standard.label.$2);
+  }
   final ppu = transform.pixelsPerUnit;
   // Sketch (y up) to screen (y down) for a direction.
   Offset screenDir((double, double) d) => Offset(d.$1, -d.$2);
@@ -2429,7 +2466,9 @@ class _GhostValueEditorState extends State<GhostValueEditor> {
 
   @override
   Widget build(BuildContext context) {
-    final suffix = widget.ghost.kind == GhostKind.angle ? '°' : 'mm';
+    final template = widget.ghost.template;
+    final angular = widget.ghost.kind == GhostKind.angle || (template != null && isAngularDimension(template));
+    final suffix = angular ? '°' : 'mm';
     return Positioned(
       left: widget.anchor.dx - 70,
       top: widget.anchor.dy + 14,
@@ -2875,6 +2914,8 @@ class _SketchPainter extends CustomPainter {
           _paintAngleDimension(canvas, c, dimensionColor, labelOffset);
         case LineDistanceConstraintDto c:
           _paintLineDistanceDimension(canvas, c, dimensionColor, labelOffset);
+        case final ConstraintDto c when isLaidOutDimension(c):
+          _paintLaidOutDimension(canvas, c, dimensionColor, labelOffset, dimensionLabelText(c));
         // Stage 23e: every remaining constraint type gets a small label too
         // (AtMidpointConstraintDto stays excluded - see _constraintLabelCenter).
         case CoincidentConstraintDto c:
@@ -3685,9 +3726,36 @@ class _SketchPainter extends CustomPainter {
         _paintLineDistanceDimension(canvas, c, color, offset, labelText: '?');
       case AngleConstraintDto c:
         _paintAngleDimension(canvas, c, color, offset, labelText: '?');
+      case final ConstraintDto c when isLaidOutDimension(c):
+        _paintLaidOutDimension(canvas, c, color, offset, dimensionPreviewText(c));
       default:
         break;
     }
+  }
+
+  /// A part D dimension (bug report 2026-11-18): the sketch-unit layout of `dimension_types.dart` (the one the 3D view projects too),
+  /// with its label moved [labelOffset] from its default place.
+  void _paintLaidOutDimension(Canvas canvas, ConstraintDto constraint, Color color, Offset labelOffset, String text) {
+    final layout = _laidOutDimensionForOffset(controller, transform, constraint, labelOffset);
+    if (layout == null) return;
+    Offset screen((double, double) p) => transform.sketchToScreen(p.$1, p.$2);
+    final dimPaint = Paint()
+      ..color = color
+      ..strokeWidth = _dimensionStrokeWidth;
+    for (final stroke in layout.strokes) {
+      for (var i = 1; i < stroke.length; i++) {
+        canvas.drawLine(screen(stroke[i - 1]), screen(stroke[i]), dimPaint);
+      }
+    }
+    for (final (from, to) in layout.extensions) {
+      _drawExtensionLine(canvas, screen(from), screen(to), dimPaint);
+    }
+    for (final (tip, from) in layout.arrows) {
+      final d = screen(tip) - screen(from);
+      if (d.distance < 1e-6) continue;
+      _drawArrowhead(canvas, screen(tip), d / d.distance, color);
+    }
+    _drawDimensionLabel(canvas, screen(layout.label), text, color, plainBlackText: true);
   }
 
   /// Marks taps already picked under [LineConstructionMethod.midpoint] or

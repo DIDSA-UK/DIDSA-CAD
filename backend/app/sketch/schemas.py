@@ -55,14 +55,14 @@ class ReferenceDimensionRef(BaseModel):
 class ReferenceDimensionCreate(BaseModel):
     """DIDSA-VR plan, phase 3: `POST .../reference-dimensions`. See `app.sketch.models.ReferenceDimension` for which kinds take which entities."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"]
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length"]
     refs: list[ReferenceDimensionRef]
 
 
 class ReferenceDimensionUpdate(BaseModel):
     """`PATCH .../reference-dimensions/{id}`: a new kind and / or new entities (what is not sent stays)."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"] | None = None
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length"] | None = None
     refs: list[ReferenceDimensionRef] | None = None
 
 
@@ -1085,6 +1085,14 @@ class PointOnEllipseConstraintCreate(BaseModel):
     ellipse_id: str
 
 
+class ArcLengthConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: an Arc's length (see `ArcLengthConstraint`)."""
+
+    type: Literal["arc_length"]
+    arc_id: str
+    length: float
+
+
 class FixedConstraintCreate(BaseModel):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
@@ -1116,6 +1124,7 @@ ConstraintCreate = Union[
     PointOnCircleConstraintCreate,
     PointOnEllipseConstraintCreate,
     FixedConstraintCreate,
+    ArcLengthConstraintCreate,
 ]
 
 
@@ -1334,6 +1343,17 @@ class FixedConstraintResponse(_ConstraintResponseBase):
     point_ids: list[str]
 
 
+class ArcLengthConstraintResponse(_ConstraintResponseBase):
+    type: Literal["arc_length"] = "arc_length"
+    id: str
+    arc_id: str
+    # Captured at creation, so a client can draw and model it without looking the Arc up.
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str
+    length: float
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -1356,6 +1376,7 @@ ConstraintResponse = Union[
     PointOnCircleConstraintResponse,
     PointOnEllipseConstraintResponse,
     FixedConstraintResponse,
+    ArcLengthConstraintResponse,
 ]
 
 

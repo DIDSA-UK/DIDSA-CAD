@@ -9,6 +9,7 @@ import '../api/dimension_label_placement.dart';
 import '../api/sketch_api_client.dart';
 import '../viewport3d/mouse_navigation.dart' show SelectClick;
 import 'dimension_text.dart';
+import 'dimension_types.dart';
 import 'dof_analysis.dart';
 import 'angle_rays.dart';
 import 'label_drag_resolver.dart';
@@ -720,6 +721,20 @@ class ConstraintRadialDimensionItem extends ConstraintOverlayItem {
 /// the implied vertex (where their own infinite extensions intersect) is
 /// solved fresh by `angleDimensionVertexAndRays`
 /// (sketch_constraint_overlay.dart) rather than cached here.
+/// A dimension of bug report 2026-11-18 part D, already laid out in sketch units by `dimension_types.dart` ([layout]): the 3D overlay
+/// projects its strokes, extension lines, arrows and label, exactly as the flat canvas draws the same layout.
+class ConstraintLaidOutDimensionItem extends ConstraintOverlayItem {
+  final DimensionLayout layout;
+  final String text;
+
+  const ConstraintLaidOutDimensionItem({
+    required super.constraintId,
+    required super.selected,
+    required this.layout,
+    required this.text,
+  });
+}
+
 class ConstraintAngleDimensionItem extends ConstraintOverlayItem {
   final (double, double) line1Start;
   final (double, double) line1End;
@@ -1546,7 +1561,9 @@ class ConstraintOption {
 ///
 /// [pointLine] is the perpendicular distance from a Point to a Line's infinite extension (a Circle's or Arc's centre stands in for the
 /// Point when a Circle/Arc is dimensioned against a Line) - backed by a `PointLineDistanceConstraint`.
-enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDistance, angle, pointLine }
+/// [typed]: a dimension type of bug report 2026-11-18 part D (see `dimension_types.dart`); the ghost carries the constraint it would make
+/// as [DimensionGhost.template] and everything about it (value, placement, drawing, the create body) comes from there.
+enum GhostKind { length, linear, vertical, horizontal, radius, diameter, lineDistance, angle, pointLine, typed }
 
 /// Bug fix (on-device feedback: dragging a Circle with an already-confirmed
 /// driving dimension used to silently overwrite that dimension's value
@@ -1587,6 +1604,9 @@ class DimensionGhost {
   /// The text the dimension drawer ([SketchDimensionBar]) shows for this kind; null falls back to [displayLabel]'s default for [kind].
   final String? label;
 
+  /// [GhostKind.typed] only: the constraint this ghost makes (its value is filled in from the geometry or the editor).
+  final ConstraintDto? template;
+
   const DimensionGhost({
     required this.key,
     required this.kind,
@@ -1595,6 +1615,7 @@ class DimensionGhost {
     this.lineAId,
     this.lineBId,
     this.label,
+    this.template,
   });
 
   /// What the dimension drawer calls this kind.
@@ -1610,6 +1631,7 @@ class DimensionGhost {
         GhostKind.lineDistance => 'Distance',
         GhostKind.angle => 'Angle',
         GhostKind.pointLine => 'Perpendicular',
+        GhostKind.typed => 'Dimension',
       };
 }
 
@@ -8975,6 +8997,9 @@ class SketchController extends ChangeNotifier {
               valueDegrees: c.angleDegrees,
               quadrant: c.quadrant,
             );
+      case final ConstraintDto c when isLaidOutDimension(c):
+        if (dimensionLayout(c, _pointAt, null) == null) return null;
+        return (p) => dimensionPlacementAt(c, _pointAt, p);
       default:
         return null;
     }
@@ -9500,6 +9525,8 @@ class SketchController extends ChangeNotifier {
           pointIds: {d.centerPointId, d.radiusPointId},
           lineIds: {d.lineId},
         ),
+      // Bug report 2026-11-18 part D: every Point the dimension stands on, so deleting any of them (or the Arc) takes it along.
+      ArcLengthConstraintDto d => (pointIds: {d.centerPointId, d.startPointId, d.endPointId}, lineIds: <String>{}),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
   }
@@ -11208,6 +11235,7 @@ class SketchController extends ChangeNotifier {
     if (constraint is AngleConstraintDto) return constraint.angleDegrees;
     if (constraint is LineDistanceConstraintDto) return constraint.distance;
     if (constraint is PointLineDistanceConstraintDto) return constraint.distance;
+    if (constraint != null && isLaidOutDimension(constraint)) return storedDimensionValue(constraint);
     return null;
   }
 
@@ -11222,7 +11250,8 @@ class SketchController extends ChangeNotifier {
     if (_selectionSet.length != 1 || _selectionSet.first.kind != SelectionKind.constraint) {
       return false;
     }
-    return constraints[_selectionSet.first.id] is AngleConstraintDto;
+    final constraint = constraints[_selectionSet.first.id];
+    return constraint is AngleConstraintDto || (constraint != null && isAngularDimension(constraint));
   }
 
   /// The selected single Constraint's id, if it's a circle radius/diameter
@@ -12271,7 +12300,18 @@ class SketchController extends ChangeNotifier {
           angleDegrees: value,
           quadrant: angleGhostQuadrant(ghost),
         );
+      case GhostKind.typed:
+        final template = ghost.template;
+        final value = currentGhostValue(ghost);
+        if (template == null || value == null) return null;
+        return dimensionWithValue(template, value);
     }
+  }
+
+  /// A Sketch Point's position, for `dimension_types.dart`.
+  (double, double)? _pointAt(String id) {
+    final point = points[id];
+    return point == null ? null : (point.x, point.y);
   }
 
   /// The tip-to-tip Point pair an Ellipse axis ghost is drawn between once confirmed (an Ellipse has no single radius, so its axes read as
@@ -12356,6 +12396,9 @@ class SketchController extends ChangeNotifier {
           valueDegrees: currentGhostValue(ghost),
           quadrant: angleGhostQuadrant(ghost),
         );
+      case GhostKind.typed:
+        final constraint = ghostAsConstraint(ghost);
+        return constraint == null ? null : dimensionPlacementAt(constraint, _pointAt, p);
     }
   }
 
@@ -15165,6 +15208,23 @@ class SketchController extends ChangeNotifier {
             _ghosts = [];
           } else {
             _buildRadiusGhosts(arc.centerPointId, arc.startPointId);
+            // Bug report 2026-11-18 part D: the arc's length, after its radius and diameter.
+            _ghosts = [
+              ..._ghosts,
+              DimensionGhost(
+                key: 'arcLength',
+                kind: GhostKind.typed,
+                label: 'Arc length',
+                template: ArcLengthConstraintDto(
+                  id: 'arcLength',
+                  arcId: arc.id,
+                  centerPointId: arc.centerPointId,
+                  startPointId: arc.startPointId,
+                  endPointId: arc.endPointId,
+                  length: 0,
+                ),
+              ),
+            ];
           }
           return;
         case SelectionKind.ellipse:
@@ -15532,6 +15592,10 @@ class SketchController extends ChangeNotifier {
   /// with - the ghost's own ? label (Stage 13 item 5/6's visual spec) is
   /// unaffected by this; it's still always "?" until a value is confirmed.
   double? currentGhostValue(DimensionGhost ghost) {
+    if (ghost.kind == GhostKind.typed) {
+      final template = ghost.template;
+      return template == null ? null : measureDimension(template, _pointAt);
+    }
     if (ghost.kind == GhostKind.lineDistance) {
       final lineA = lines[ghost.lineAId];
       final lineB = lines[ghost.lineBId];
@@ -15612,6 +15676,7 @@ class SketchController extends ChangeNotifier {
       case GhostKind.lineDistance:
       case GhostKind.angle:
       case GhostKind.pointLine:
+      case GhostKind.typed:
         return null; // handled above.
     }
   }
@@ -15721,6 +15786,39 @@ class SketchController extends ChangeNotifier {
     // Where the user dropped it (null when it went straight to the editor): saved with the constraint, as a label drag would.
     final frozen = _frozenPlacement;
     final droppedPlacement = frozen != null && frozen.key == key ? frozen.placement : null;
+
+    if (target.kind == GhostKind.typed) {
+      final template = target.template;
+      if (template == null) return;
+      await _runGuarded(() async {
+        ConstraintDto? existing;
+        for (final constraint in constraints.values) {
+          if (sameDimensionTarget(constraint, template)) {
+            existing = constraint;
+            break;
+          }
+        }
+        final String constraintId;
+        if (existing != null) {
+          final existingId = existing.id;
+          constraintId = existingId;
+          final oldValue = storedDimensionValue(existing);
+          await _api.updateConstraintValue(_sketchId!, existingId, value);
+          if (oldValue != null) _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existingId, oldValue));
+        } else {
+          final constraint = await _api.createDimension(_sketchId!, dimensionCreateJson(template, value));
+          constraintId = constraint.id;
+          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+        }
+        await _solveAndTrackDof();
+        _keepDroppedPlacement(constraintId, target, droppedPlacement);
+        _ghosts = [];
+        _dimensionSelection.clear();
+        _activeGhostKey = null;
+        _frozenPlacement = null;
+      });
+      return;
+    }
 
     if (target.kind == GhostKind.pointLine) {
       await _runGuarded(() async {
@@ -18913,6 +19011,15 @@ class SketchController extends ChangeNotifier {
           // anchor at instead).
           final labelItem = _pointGlyphLabel(c.centerPointId, 'Tan.', entry.key, isSelected, labelOffset);
           if (labelItem != null) items.add(labelItem);
+        case final ConstraintDto c when isLaidOutDimension(c):
+          final layout = dimensionLayout(c, _pointAt, labelPlacementFor(entry.key));
+          if (layout == null) break;
+          items.add(ConstraintLaidOutDimensionItem(
+            constraintId: entry.key,
+            selected: isSelected,
+            layout: layout,
+            text: dimensionLabelText(c),
+          ));
         case PointLineDistanceConstraintDto c:
           final point = points[c.pointId];
           final line = lines[c.lineId];
@@ -19147,6 +19254,17 @@ class SketchController extends ChangeNotifier {
             sketchLocalArcRadius: placement?.radius,
             sketchLocalAlongOffset: placement?.along,
             quadrant: angleGhostQuadrant(ghost),
+          ));
+        case GhostKind.typed:
+          final constraint = ghostAsConstraint(ghost);
+          if (constraint == null) continue;
+          final layout = dimensionLayout(constraint, _pointAt, placement);
+          if (layout == null) continue;
+          items.add(ConstraintLaidOutDimensionItem(
+            constraintId: ghost.key,
+            selected: isActive,
+            layout: layout,
+            text: dimensionPreviewText(constraint),
           ));
       }
     }

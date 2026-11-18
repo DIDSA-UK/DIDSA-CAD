@@ -940,6 +940,8 @@ abstract class ConstraintDto {
         return PointOnEllipseConstraintDto.fromJson(json);
       case 'fixed':
         return FixedConstraintDto.fromJson(json);
+      case 'arc_length':
+        return ArcLengthConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1505,6 +1507,36 @@ class FixedConstraintDto extends ConstraintDto {
         id: json['id'] as String,
         label: DimensionLabelPlacement.fromJson(json['label']),
         pointIds: (json['point_ids'] as List<dynamic>).cast<String>(),
+      );
+}
+
+/// Bug report 2026-11-18 part D: an Arc's length (the backend's `ArcLengthConstraint`): the radius times the counter-clockwise sweep
+/// from [startPointId] to [endPointId] about [centerPointId]. The Point ids are the Arc's own, captured when it was made.
+class ArcLengthConstraintDto extends ConstraintDto {
+  final String arcId;
+  final String centerPointId;
+  final String startPointId;
+  final String endPointId;
+  final double length;
+
+  const ArcLengthConstraintDto({
+    required super.id,
+    super.label,
+    required this.arcId,
+    required this.centerPointId,
+    required this.startPointId,
+    required this.endPointId,
+    required this.length,
+  });
+
+  factory ArcLengthConstraintDto.fromJson(Map<String, dynamic> json) => ArcLengthConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        arcId: json['arc_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        startPointId: json['start_point_id'] as String,
+        endPointId: json['end_point_id'] as String,
+        length: (json['length'] as num).toDouble(),
       );
 }
 
@@ -3415,6 +3447,24 @@ class SketchApiClient {
                 'entity_id': entityId,
               }),
             ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Bug report 2026-11-18 part D: pins an Arc's length (see [ArcLengthConstraintDto]). The backend refuses (400) a value that is not
+  /// more than 0 and less than a full turn at the Arc's current radius.
+  Future<ConstraintDto> createArcLengthConstraint(String sketchId, String arcId, double length) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({'type': 'arc_length', 'arc_id': arcId, 'length': length}),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Bug report 2026-11-18 part D: makes any of the new dimension types from its `POST .../constraints` body (see
+  /// `dimension_types.dart`'s `dimensionCreateJson`).
+  Future<ConstraintDto> createDimension(String sketchId, Map<String, Object?> body) => _send(
+        () => _httpClient.post(_uri('/sketch/sketches/$sketchId/constraints'), headers: _headers, body: jsonEncode(body)),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );
 

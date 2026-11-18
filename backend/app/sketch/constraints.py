@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+from app.sketch.dimension_geometry import arc_length
+
 
 class SolverBuilder(Protocol):
     """What a Constraint needs from the solver-integration layer (solver.py)
@@ -207,6 +209,17 @@ class SolverBuilder(Protocol):
         always calls this with the earlier segment as curve1 (at its own
         end) and the later segment as curve2 (at its own start), matching
         that verified combination."""
+        ...
+
+    def arc_of_circle(self, center_handle: int, start_handle: int, end_handle: int) -> int:
+        """A py-slvs ArcOfCircle entity (counter-clockwise from start to end, the sketch Arc's own convention) on three point handles,
+        cached per point triple. The entity itself carries the equation "end on start's circle", so an Arc given one must not also send
+        its own end-radius EqualRadiusConstraint (the solver leaves that out, see `solver.arc_entity_replaced_constraint_ids`)."""
+        ...
+
+    def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
+        """Pins an ArcOfCircle's length to `length` (py-slvs addEqualLineArcLength against a helper line between two points of the
+        fixed group, which is never solved, so the helper adds no unknowns)."""
         ...
 
     def where_dragged(self, point_handle: int) -> int:
@@ -1225,3 +1238,66 @@ class PointOnEllipseConstraint(Constraint):
         trammel_line = builder.line_segment(trammel_major, trammel_minor)
         builder.point_on_line(target, trammel_line)
         return handle
+
+
+class MeasuredDimension(Constraint):
+    """A part D dimension (bug report 2026-11-18): its value can be measured on the solved Points. The solver checks every one after a
+    solve it would call converged (`solver._measured_dimensions_hold`): a helper point that settled on the wrong side, or a redundancy
+    override that trusted a result code, still has to produce the asked value on the sketch's own Points."""
+
+    @abstractmethod
+    def value(self) -> float:
+        ...
+
+    @abstractmethod
+    def measured_value(self, points) -> float | None:
+        """The value on `points` (id -> object with x, y); None where the geometry has none."""
+        ...
+
+    def angular(self) -> bool:
+        return False
+
+
+@dataclass
+class ArcLengthConstraint(MeasuredDimension):
+    """Pins the length of an Arc (bug report 2026-11-18, part D): radius times the counter-clockwise sweep from start to end.
+
+    Solved with py-slvs's own ArcOfCircle entity on the Arc's three Points and `addEqualLineArcLength` against a helper line whose two
+    points are in the fixed group (so the helper has no unknowns). The ArcOfCircle entity already keeps the end on the start's circle,
+    which is exactly the equation the Arc's own end-radius EqualRadiusConstraint states, so the solver leaves that one out for an Arc
+    carrying an arc length (`solver.arc_entity_replaced_constraint_ids`): the net change is the one equation of the length. Probed against
+    the installed py-slvs: a fixed-centre Arc with a confirmed radius goes from 2 DOF to 1 and meets the length exactly; keeping the
+    EqualRadius as well gives result 5 (redundant).
+
+    `point_ids` are the Arc's centre, start and end (the delete cascade and Point Merge find it by them); the helper line is not a Sketch
+    Point. The Arc's id is kept for display and API purposes, the Point ids are captured at creation, as for TangentConstraint."""
+
+    id: str
+    arc_id: str
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str
+    length: float
+
+    @property
+    def type(self) -> str:
+        return "arc_length"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.center_point_id, self.start_point_id, self.end_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        arc = builder.arc_of_circle(
+            builder.point2d(self.center_point_id),
+            builder.point2d(self.start_point_id),
+            builder.point2d(self.end_point_id),
+        )
+        return builder.equal_line_arc_length(arc, self.length)
+
+    def value(self) -> float:
+        return self.length
+
+    def measured_value(self, points) -> float | None:
+        c, a, b = points[self.center_point_id], points[self.start_point_id], points[self.end_point_id]
+        return arc_length((c.x, c.y), (a.x, a.y), (b.x, b.y))
+

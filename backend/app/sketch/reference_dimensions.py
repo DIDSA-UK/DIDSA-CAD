@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import uuid
 
+from app.sketch.dimension_geometry import arc_length
 from app.sketch.models import REFERENCE_DIMENSION_KINDS, Arc, Circle, Line, ReferenceDimension, Sketch
 
 _ENTITY_TYPES = ("point", "line", "circle", "arc")
@@ -57,6 +58,7 @@ def check_refs(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> None:
         "radius": [["circle"], ["arc"]],
         "diameter": [["circle"], ["arc"]],
         "angle": [["line", "line"]],
+        "arc_length": [["arc"]],
     }[kind]
     if types not in allowed:
         raise ReferenceDimensionError(f"A {kind} dimension measures {' or '.join(' + '.join(a) for a in allowed)}, not {' + '.join(types) or 'nothing'}")
@@ -75,6 +77,10 @@ def measure(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> float | N
         far = shape.radius_point_id if isinstance(shape, Circle) else shape.start_point_id
         radius = math.dist((_point(sketch, shape.center_point_id).x, _point(sketch, shape.center_point_id).y), (_point(sketch, far).x, _point(sketch, far).y))
         return radius if kind == "radius" else 2.0 * radius
+    if kind == "arc_length":
+        arc = _round(sketch, "arc", ids[0])
+        center, start, end = (_point(sketch, arc.center_point_id), _point(sketch, arc.start_point_id), _point(sketch, arc.end_point_id))
+        return arc_length((center.x, center.y), (start.x, start.y), (end.x, end.y))
     if kind == "angle":
         a1, b1 = _ends(sketch, _line(sketch, ids[0]))
         a2, b2 = _ends(sketch, _line(sketch, ids[1]))
