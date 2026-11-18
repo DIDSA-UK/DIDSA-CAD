@@ -22,47 +22,71 @@ button column and panel position on phone and desktop, the extension lines on re
 
 ## To do (plan)
 
-### A. Dimension tool: place by click (SolidWorks / Onshape style)
+### A. Dimension tool: preview at the cursor, choose in a drawer, click to drop
 
-**Recommendation: do it, for every dimension type, as one change.** Fix 2a removes the reported blocker, but the underlying flow
-still asks the user to chase a small target whose position depends on the pointer. Today: pick entities, one or more "?" ghosts
-appear (a point pair offers aligned, horizontal and vertical at once; a circle offers radius and diameter), the angle ghost moves
-between sectors with the pointer, then the user must **tap the ghost's label** to open the value editor. The proposed flow:
+Agreed with the owner (2026-11-18). Every dimension type, as one change, and all of it with the cursor: the mouse on desktop,
+the cursor crosshair on touch (Orbit View's cursor mode, `_orbitCursorActive`; the flat canvas's own cursor), so there is no
+separate touch gesture to design.
 
-1. Pick the entities (unchanged: `SketchController.handleDimensionTap`, `_dimensionSelection`, `_rebuildDimensionGhosts`).
-2. **One** ghost follows the pointer. Its type and layout come from where the pointer is, using the same rules the label drag
-   already uses, so a placed dimension and a dropped one agree:
-   * angle: sector = `_angleQuadrantUnderCursor` (sticky, as now), arc radius and label position = `LabelDragResolver.angle*`
-     from the pointer;
-   * point pair / point-line: horizontal when the pointer is above or below the pair's bounding box, vertical when left or right of
-     it, aligned when roughly perpendicular to the pair (SolidWorks' rule); offset from `LabelDragResolver.linear`;
-   * parallel lines: distance, offset from `LabelDragResolver.lineDistance`;
-   * circle / arc: diameter by default for a circle, radius for an arc (Shift or a ribbon toggle swaps); label angle and leg from
-     `LabelDragResolver.radial`.
-3. **A click anywhere drops it**: the placement (`DimensionLabelPlacement`) and, for an angle, the quadrant are frozen, and the
-   value editor opens at the label, as `tapGhost` does now. Esc / right-click / back cancels to step 1.
-4. Confirm writes the constraint with that placement (`confirmGhostValue` already saves quadrant; it must also store the
-   placement under the new constraint's id, the way a label drag does via `_labelPlacements`).
+**Flow**
 
-Work items:
+1. **Pick** the entities (unchanged: `SketchController.handleDimensionTap`, `_dimensionSelection`, `_rebuildDimensionGhosts`).
+2. **Preview at the cursor**: one dimension of the current kind is drawn live, with its dimension and extension lines, and
+   its "?" label sits at the cursor. Its layout comes from the cursor through the rules the label drag already uses, so a
+   dropped dimension and a dragged one agree: `LabelDragResolver.linear` (offset), `.lineDistance`, `.radial` (angle, leg),
+   the angle's sector from `_angleQuadrantUnderCursor` (sticky, fix 2a) and its radius / along from the angle resolver.
+3. **Drawer**: at the same time the dimension bar (`SketchDimensionBar`, the existing non-modal fly-up, which already does not
+   block canvas taps) lists the kinds that fit the selection (table below), the current one highlighted. Clicking another kind
+   switches the preview; the cursor keeps placing it. Until one is clicked, the default in the table is used. For a point pair
+   the default follows the cursor (SolidWorks' rule): horizontal when the cursor is above or below the pair's bounding box,
+   vertical when left or right of it, aligned otherwise. Once a kind is clicked in the drawer it stays.
+4. **Drop**: a click anywhere that is not another entity freezes kind, placement and (angle) quadrant, and opens the value
+   editor at the label. `GhostValueEditor` (`sketch_canvas.dart`) already opens with the whole value selected, so typing
+   replaces it; check it also takes keyboard focus at once in both views. A click on another entity still changes the
+   selection (step 1) instead of dropping. Esc / right-click / back cancels the preview back to step 1.
+5. **Confirm** writes the constraint with the frozen kind, quadrant **and placement**: `confirmGhostValue` already saves the
+   quadrant; it must also put the placement into `_labelPlacements` under the new constraint's id (as a label drag does), so
+   the dimension stays where it was dropped.
 
-* `sketch_controller.dart`: replace the multi-ghost list with a single "pending dimension" whose kind is derived from the cursor
-  (`currentPendingKind()`), and a `placePendingDimension()` that freezes kind, quadrant and placement, then opens the editor.
-  Keep `_ghosts` as a one-element list at first so the painters and `dimensionGhostOverlayItems` change little.
-* Both views route their commit tap in dimension mode to `placePendingDimension()` when a pending dimension exists and the tap
-  is not on another entity: 2D `sketch_canvas.dart` tap handler; 3D `sketch_screen.dart` `_handleEmbeddedSketchTap` /
-  `_handleEmbeddedConstraintOverlayTap` (with `preferConstraintOverlayHitOnCommit` no longer needed for ghosts).
-* Touch: a tap is both "move the pointer" and "click", so on touch place on **release** after the drag cursor has moved, or keep
-  a tap on the ghost label as the drop. Decide with the owner (question below).
-* The ribbon's Radius / Diameter / Length chips (`addRadiusDimensionFor` and friends) keep jumping straight to the editor.
-* Tests: controller tests per kind (cursor position → kind, click → placement saved with the constraint), a widget test per view.
+The ribbon's Length / Radius / Diameter chips (`addRadiusDimensionFor` and friends) keep jumping straight to the editor.
 
-Size: medium-large (controller state machine plus both views). Suitable for a Sonnet session with this section as the brief.
+**Options per selection** (worked out from the code: `_rebuildDimensionGhosts`, the backend constraint types in
+`backend/app/sketch/constraints.py` and the reference-dimension kinds in `reference_dimensions.py`). Default first. "Now"
+means the sketcher offers it today; "client only" means the backend constraint already exists and only the sketcher needs to
+offer it; "backend" needs a new constraint type, so it is left out of this part.
 
-Questions for the owner before starting:
-1. Touch: drop on finger release, or keep tap-the-label on touch and use click-to-drop only with a mouse?
-2. Circle: diameter or radius by default?
-3. Point pair: should the aligned / horizontal / vertical choice follow the pointer (SolidWorks), or stay as separate ghosts?
+| Selection | Options | Status |
+|---|---|---|
+| 1 line | **Length**, Horizontal length, Vertical length | Length now; H / V client only (`DistanceConstraint.orientation` on the line's endpoints) |
+| 1 circle | **Diameter**, Radius | now (default changes to diameter) |
+| 1 arc | **Radius**, Diameter | now; arc length is backend, later |
+| 1 ellipse / elliptical arc | **Major radius**, Minor radius (and their diameters) | now |
+| 2 points | **by cursor**: Horizontal / Vertical / Aligned | now |
+| point + line | **Perpendicular distance**, Horizontal, Vertical (to the line's nearer end) | H / V / aligned to the nearer end now; perpendicular is client only (`PointLineDistanceConstraint`) and should be the default, as in SolidWorks |
+| 2 parallel lines | **Distance** | now |
+| 2 non-parallel lines | **Angle** (sector by cursor) | now |
+| point + circle / arc | **Centre distance** by cursor: Horizontal / Vertical / Aligned | client only (a point-pair dimension on the centre point) |
+| line + circle / arc | **Perpendicular distance** from the centre | client only (`PointLineDistanceConstraint` on the centre) |
+| 2 circles / arcs | **Centre distance** by cursor: Horizontal / Vertical / Aligned | client only; min / max (tangent) distance is backend, later |
+
+Spline, text, a lone point and constraint selections have no dimension (as now). The owner may add to this table before the
+work starts; anything marked backend is a separate task.
+
+**Work items**
+
+* `sketch_controller.dart`: a single pending dimension: `pendingDimensionOptions` (the table, from the selection),
+  `pendingDimensionKind` (chosen in the drawer, else the default / cursor rule), `pendingPlacementFromCursor()`, and
+  `dropPendingDimension()` (freeze, open the editor as `tapGhost` does). Keep `_ghosts` as a one-element list at first so
+  `dimensionGhostOverlayItems` and both painters change little. New `GhostKind`s for perpendicular point-line and the
+  centre-based options; `confirmGhostValue` creates the matching constraint.
+* Both views send the dimension-mode commit click to `dropPendingDimension()` when a preview exists and the click is not on an
+  entity: 2D, the `sketch_canvas.dart` tap handler; 3D, `sketch_screen.dart` `_handleEmbeddedSketchTap` (the ghost no longer
+  needs `preferConstraintOverlayHitOnCommit`, since the label is at the cursor and must not catch the click).
+* `SketchDimensionBar`: the option chips; the selected one highlighted; tooltip text when nothing is picked (as now).
+* Tests: controller tests per row of the table (selection → options and default; cursor → kind and placement; drop → editor
+  open with the frozen values; confirm → constraint and placement saved); one widget test per view for click-to-drop.
+
+Size: medium-large. Suitable for a Sonnet session with this section as the brief.
 
 ### B. Feature tree available inside the sketcher
 
@@ -80,13 +104,42 @@ screen while sketching. The top-left corner is free since fix 1.
    "Exit the sketch first".
 3. Tests: the FAB shows only when a builder is passed; tapping it shows the tree; an editing action is disabled.
 
-Size: medium. Needs one decision: **which tree actions should work from inside the sketcher?** (Visibility only, or also
-selecting a body edge / sketch to project or convert, which would be the most useful.)
+Size: medium.
+
+### C. Convert Entities from another sketch (picking a whole sketch in the tree)
+
+Asked by the owner: would picking a whole sketch in the tree work for Convert? **Yes, it fits, and it is how SolidWorks
+does it** (select a sketch in the FeatureManager tree, then Convert Entities takes all of its entities). But it is new work
+on both sides, not just a tree pick, because today Convert only reads **Bodies**:
+
+* Backend: the three routes `convert-entities/vertex|edge|face` (`document/router.py`) resolve a Body vertex or edge against
+  `compute_part_bodies(part, excluded)` and store an `ExternalVertexReference` (`sketch/models.py`) that
+  `refresh_external_references` (`document/create_plane.py`) re-finds by topology signature on every rebuild. There is no
+  reference kind for "entity E of sketch S", and nothing that projects sketch geometry from one plane onto another.
+* Client: `stageConvertVertex / Edge / FaceEdges` take `(bodyId, index)` only. Other sketches are already **drawn** in the
+  sketcher (`SketchScreen.otherSketchGeometries`), but only as pictures: they cannot be picked.
+
+What it would take:
+
+1. Backend: a reference kind `sketch_entity` (source sketch feature id + entity id, or the whole sketch), resolved from the
+   source sketch's solved geometry on every rebuild, so the copy follows when the source changes (associative, like the
+   Body references), and reported lost when the source entity is deleted (the existing lost-reference indicator).
+2. Only sketches **earlier in the tree** than the one being edited (`excluded_feature_ids_after` already defines that), or the
+   rebuild order could loop.
+3. Geometry: when the two sketch planes are parallel, lines, arcs and circles map one to one (shift and in-plane rotation);
+   that covers the usual case (an offset plane, the same plane). Non-parallel planes turn circles into ellipses and need a real
+   projection: refuse with a message in the first version.
+4. Route `convert-entities/sketch` (whole sketch, optional entity id list); client: a tree pick in Convert mode (needs B) and,
+   later, picking the drawn entities of another sketch in the viewport.
+
+Size: medium-large, mostly backend. Do it after B. Open question for the owner: is "parallel planes only" acceptable for the
+first version?
 
 ### Progress
 
 | Part | Summary | Status | Commit |
 |---|---|---|---|
 | 1, 2a, 2b, 4 | Fixes above | Done | (this branch) |
-| A | Place dimensions by click | To do (questions open) | |
-| B | Feature tree in the sketcher | To do (question open) | |
+| A | Dimension preview at the cursor, drawer, click to drop | To do (agreed 2026-11-18) | |
+| B | Feature tree in the sketcher | To do | |
+| C | Convert Entities from another sketch | To do after B (question open) | |
