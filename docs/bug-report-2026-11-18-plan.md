@@ -206,8 +206,12 @@ Ground rules found in the code:
   has no model for clamps the drag, `_clampDragFrame`), `dof_analysis.dart`, the API DTOs and both painters. A new type needs
   at least the DTO, both painters and the dimension drawer; projector support can follow (until then a drag that touches it
   is clamped, which is safe).
-* There is also an FFI build of the solver (`tools/solvespace-reference/slvs_ffi_shim.*`, "one function per System method
-  solver.py calls"): any new py-slvs call must be added there too, or the desktop parity harness falls behind.
+* The app does **not** contain the solver (`LICENSING.md`: AGPL / GPL decoupling). Solving happens only in the backend; the
+  client's drag projector (`client/lib/sketch/projector/`) and `dof_analysis.dart` (a per-constraint-type DOF table) are the
+  project's own pure-Dart models and need an entry for each new type. Write those from the maths in this plan and the HTTP data
+  shapes, never by copying backend or SolveSpace code (`LICENSING.md` rule 1). `tools/solvespace-reference/` (GPL, test only)
+  is where the SolveSpace API was checked; adding the new calls to its FFI shim is optional, only if the projector
+  cross-check tests should cover the new types.
 
 | Type | Entities | How it is solved | Notes |
 |---|---|---|---|
@@ -220,9 +224,10 @@ Ground rules found in the code:
 
 Per type, the full set of changes: `constraints.py` (dataclass, `add_to_solver`, value update), `schemas.py` and the sketch
 router (create / patch / response), `native_format.py` (saved and loaded; a file without the new types is written exactly as
-before), `reference_dimensions.py` (driven kind and `measure`), the FFI shim if a new py-slvs call is used, the client DTO and
+before), `reference_dimensions.py` (driven kind and `measure`), the client DTO and
 `sketch_api_client.dart`, the controller's ghost kinds and `confirmGhostValue`, both painters (canvas and 3D overlay), the
-`LabelDragResolver` layout and the drawer rows of part A. The VR client ignores constraint types it does not know
+`LabelDragResolver` layout, `dof_analysis.dart`, the projector model (or the safe clamp until it has one) and the drawer rows of
+part A. The VR client ignores constraint types it does not know
 (`sketch_session.gd` `dimension_value` returns not-ok), so nothing breaks there; showing them in VR is a separate task.
 
 **Tests**: per type, backend solve tests (value met, DOF count before and after, conflicting value refused, file round trip,
