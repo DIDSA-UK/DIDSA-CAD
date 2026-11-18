@@ -89,7 +89,7 @@ types of part D: the drawer offers them once D has landed (A can ship first with
   needs `preferConstraintOverlayHitOnCommit`, since the label is at the cursor and must not catch the click).
 * `SketchDimensionBar`: the option chips; the selected one highlighted; tooltip text when nothing is picked (as now). It is
   the same bar on phone and desktop (it is not gated by the layout), so one change serves both.
-* Existing dimensions are untouched: dragging a placed label, double-clicking to edit a value, and the driven (reference)
+* Existing dimensions are untouched: dragging a placed label, editing an existing value, and the driven (reference)
   dimensions keep their current behaviour.
 * Tests: controller tests per row of the table (selection → options and default; cursor → kind and placement; drop → editor
   open with the frozen values; confirm → constraint and placement saved); one widget test per view for click-to-drop.
