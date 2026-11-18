@@ -10,6 +10,7 @@ import '../assembly/assembly_lens_theme.dart';
 import 'action_sheet.dart';
 import 'edit_alone_row.dart';
 import 'mate_panel.dart' show mateValueSummary;
+import 'mate_reference_state.dart';
 import 'view_preferences.dart' show colorFromHex;
 import 'width_pick.dart' show isSymmetricMate, isWidthMate;
 
@@ -1058,8 +1059,25 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
     final nearColour = AiPalette.of(context).warning;
     final summary = mateValueSummary(mate);
     final pulse = widget.flashMateIds.contains(mate.id) ? _flashPulse : 0.0;
-    final accent = broken ? errorColour : (near ? nearColour : null);
+    // N1d: what the backend says about the mate's references (lost: the reason; held: amber "check this mate"; followed: an info line).
+    final refNote = mateReferenceNote(mate);
+    final lost = refNote.kind == MateReferenceKind.lost;
+    final held = refNote.kind == MateReferenceKind.held;
+    final followed = refNote.kind == MateReferenceKind.followed;
+    final infoColour = Theme.of(context).colorScheme.primary;
+    final accent = (broken || lost) ? errorColour : (held || near ? nearColour : null);
     final nearText = near ? nearMateText(mate) : null;
+    final subtitleText = lost
+        ? (summary == null ? refNote.text : '${refNote.text} · $summary')
+        : held
+            ? (summary == null ? refNote.text : '${refNote.text} · $summary')
+            : broken
+                ? (summary == null ? kBrokenMateText : '$kBrokenMateText · $summary')
+                : near
+                    ? (summary == null ? nearText! : '$nearText · $summary')
+                    : followed
+                        ? (summary == null ? refNote.text : '${refNote.text} · $summary')
+                        : summary;
     return Opacity(
       opacity: mate.suppressed ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
@@ -1069,29 +1087,32 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
           visualDensity: VisualDensity.compact,
           selected: mate.id == widget.selectedMateId,
           tileColor: pulse > 0 ? errorColour.withValues(alpha: 0.35 * pulse) : null,
-          leading: near
-              ? Tooltip(
-                  message: kNearMateTooltip,
-                  child: Icon(Icons.warning_amber_rounded, size: 24, color: accent),
-                )
-              : Icon(broken ? Icons.warning_amber_rounded : Icons.link, size: 24, color: accent),
+          leading: lost || held
+              ? Icon(Icons.warning_amber_rounded, key: ValueKey('mate-reference-icon-${mate.id}'), size: 24, color: accent)
+              : near
+                  ? Tooltip(
+                      message: kNearMateTooltip,
+                      child: Icon(Icons.warning_amber_rounded, size: 24, color: accent),
+                    )
+                  : followed && !broken
+                      ? Icon(Icons.info_outline, key: ValueKey('mate-reference-icon-${mate.id}'), size: 24, color: infoColour)
+                      : Icon(broken ? Icons.warning_amber_rounded : Icons.link, size: 24, color: accent),
           title: Text(
             mateDisplayName(widget.mates, index),
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: accent != null ? _rowTitleStyle.copyWith(color: accent) : _rowTitleStyle,
           ),
-          subtitle: !broken && !near && summary == null
+          subtitle: subtitleText == null
               ? null
               : Text(
-                  broken
-                      ? (summary == null ? kBrokenMateText : '$kBrokenMateText · $summary')
-                      : near
-                          ? (summary == null ? nearText! : '$nearText · $summary')
-                          : summary!,
+                  subtitleText,
+                  key: refNote.kind == MateReferenceKind.none ? null : ValueKey('mate-reference-note-${mate.id}'),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: accent != null ? TextStyle(color: accent) : null,
+                  style: accent != null
+                      ? TextStyle(color: accent)
+                      : (followed && !broken ? TextStyle(color: infoColour) : null),
                 ),
           trailing: mate.suppressed ? const Icon(Icons.visibility_off, size: 18) : null,
           onTap: widget.onMateTap == null || widget.isMultiSelectMode ? null : () => widget.onMateTap!(mate),
