@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays, point_circle_distance, circle_circle_distance
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays, point_circle_distance, circle_circle_distance, line_circle_distance
 
 
 class SolverBuilder(Protocol):
@@ -241,6 +241,15 @@ class SolverBuilder(Protocol):
         """Pins the gap ("min") or the overall size ("max") of two circles along their centre line: a helper point on each circle on
         that line (as `point_circle_distance`'s, seeded facing the other circle for "min", facing away for "max"), then
         `distance(H1, H2) = value`. Each helper's two unknowns are taken by its two equations."""
+        ...
+
+    def line_circle_distance(
+        self, line_start_id: str, line_end_id: str, center_id: str, radius_point_id: str, value: float, side: str
+    ) -> int:
+        """Pins the distance from a Line to a circle's tangent side ("min") or far side ("max"), square to the line. One helper point
+        H on the circle where its radius is square to the line (`perpendicular` of centre-to-H with the line, `equal_length` with the
+        centre-to-rim segment: two equations for H's two unknowns), seeded towards the line for "min" and away for "max"; then the
+        signed `point_line_distance(H, line)` = value on the centre's side of the line."""
         ...
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
@@ -1498,3 +1507,46 @@ class CircleCircleDistanceConstraint(MeasuredDimension):
     def measured_value(self, points) -> float | None:
         c1, r1, c2, r2 = (points[i] for i in self.point_ids())
         return circle_circle_distance((c1.x, c1.y), (r1.x, r1.y), (c2.x, c2.y), (r2.x, r2.y), self.side)
+
+
+
+@dataclass
+class LineCircleDistanceConstraint(MeasuredDimension):
+    """The distance from a Line to a Circle / Arc, square to the line (bug report 2026-11-18, part D): "min" to the tangent side (the
+    circle's nearest point), "max" to the far side. The Line is measured as its infinite extension, an Arc as its circle.
+
+    One solver-only helper point (see `SolverBuilder.line_circle_distance`): zero net DOF from it, one equation for the value. The plan
+    sketched a foot point on the line as well; one point on the circle with its radius square to the line says the same with one helper
+    fewer, and it has no zero-length segment when the centre lies on the line. The re-measure after a solve (`MeasuredDimension`)
+    catches the helper on the wrong side and a line that has come to cut the circle where the tangent side was asked for.
+
+    `point_ids` are the Line's two Points, the centre and the rim Point carrying the radius."""
+
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+    @property
+    def type(self) -> str:
+        return "line_circle_distance"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line_start_id, self.line_end_id, self.center_point_id, self.radius_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.line_circle_distance(
+            self.line_start_id, self.line_end_id, self.center_point_id, self.radius_point_id, self.distance, self.side
+        )
+
+    def value(self) -> float:
+        return self.distance
+
+    def measured_value(self, points) -> float | None:
+        a, b, c, r = (points[i] for i in self.point_ids())
+        return line_circle_distance((a.x, a.y), (b.x, b.y), (c.x, c.y), (r.x, r.y), self.side)

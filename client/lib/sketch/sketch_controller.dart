@@ -9530,6 +9530,10 @@ class SketchController extends ChangeNotifier {
       HorizontalAngleConstraintDto d => (pointIds: {d.lineStartId, d.lineEndId}, lineIds: {d.lineId}),
       PointAngleConstraintDto d => (pointIds: {d.vertexPointId, d.point1Id, d.point2Id}, lineIds: <String>{}),
       PointCircleDistanceConstraintDto d => (pointIds: {d.pointId, d.centerPointId, d.radiusPointId}, lineIds: <String>{}),
+      LineCircleDistanceConstraintDto d => (
+          pointIds: {d.lineStartId, d.lineEndId, d.centerPointId, d.radiusPointId},
+          lineIds: {d.lineId},
+        ),
       CircleCircleDistanceConstraintDto d => (
           pointIds: {d.center1PointId, d.radius1PointId, d.center2PointId, d.radius2PointId},
           lineIds: <String>{},
@@ -15348,6 +15352,8 @@ class SketchController extends ChangeNotifier {
         final lineSel = a.kind == SelectionKind.line ? a : (b.kind == SelectionKind.line ? b : null);
         if (centreId != null && lineSel != null) {
           _buildPointPerpendicularGhosts(centreId, lineSel.id, centreOfCurve: true);
+          final curve = aCentre != null ? a : b;
+          _ghosts = [..._ghosts, ..._lineCurveDistanceGhosts(lineSel.id, curve)];
           return;
         }
       }
@@ -15442,6 +15448,40 @@ class SketchController extends ChangeNotifier {
           ),
         );
     return [ghost('min', 'Minimum distance'), ghost('max', 'Maximum distance')];
+  }
+
+  /// Bug report 2026-11-18 part D: a Line and a Circle / Arc picked together - the tangent-side distance (only while the line does not
+  /// cut the circle) and the far-side distance, after the perpendicular distance from the centre.
+  List<DimensionGhost> _lineCurveDistanceGhosts(String lineId, SketchSelection curve) {
+    final line = lines[lineId];
+    if (line == null) return const [];
+    final (String centre, String rim) = switch (curve.kind) {
+      SelectionKind.circle => (circles[curve.id]!.centerPointId, circles[curve.id]!.radiusPointId),
+      _ => (arcs[curve.id]!.centerPointId, arcs[curve.id]!.startPointId),
+    };
+    if (centre == line.startPointId || centre == line.endPointId) return const [];
+    DimensionGhost ghost(String side, String key, String label) => DimensionGhost(
+          key: key,
+          kind: GhostKind.typed,
+          label: label,
+          template: LineCircleDistanceConstraintDto(
+            id: key,
+            lineId: lineId,
+            lineStartId: line.startPointId,
+            lineEndId: line.endPointId,
+            circleOrArcId: curve.id,
+            centerPointId: centre,
+            radiusPointId: rim,
+            distance: 0,
+            side: side,
+          ),
+        );
+    final tangent = ghost('min', 'tangentDistance', 'Tangent distance');
+    final tangentGap = measureDimension(tangent.template!, _pointAt);
+    return [
+      if (tangentGap != null && tangentGap > 0) tangent,
+      ghost('max', 'farDistance', 'Far-side distance'),
+    ];
   }
 
   /// The centre Point of a Circle or Arc selection, else null.

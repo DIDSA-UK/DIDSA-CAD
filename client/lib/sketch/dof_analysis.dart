@@ -185,6 +185,7 @@ const Map<String, int> dofCostByConstraintType = {
   'horizontal_angle': 1, // angle(line, fixed horizontal) = value
   'point_angle': 1, // angle(vertex->p1, vertex->p2) = value, on the existing points
   'circle_distance': 1, // gap / overall size along the centre line = value (two helper points, each 2 unknowns and 2 equations)
+  'line_circle_distance': 1, // line to the tangent / far side, square to it = value (one helper point: 2 unknowns, 2 equations)
   'point_circle_distance': 1, // |point - nearest/farthest point of the circle| = value (the backend's helper point: 2 unknowns, 2 equations)
 };
 
@@ -337,6 +338,12 @@ const Map<String, int> dofCostByConstraintType = {
   }
   if (constraint is PointAngleConstraintDto) {
     return (type: 'point_angle', pointIds: [constraint.vertexPointId, constraint.point1Id, constraint.point2Id]);
+  }
+  if (constraint is LineCircleDistanceConstraintDto) {
+    return (
+      type: 'line_circle_distance',
+      pointIds: [constraint.lineStartId, constraint.lineEndId, constraint.centerPointId, constraint.radiusPointId],
+    );
   }
   if (constraint is CircleCircleDistanceConstraintDto) {
     return (

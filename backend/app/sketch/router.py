@@ -12,6 +12,7 @@ from app.sketch.constraints import (
     PointAngleConstraint,
     PointCircleDistanceConstraint,
     CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
@@ -71,6 +72,8 @@ from app.sketch.schemas import (
     PointCircleDistanceConstraintResponse,
     CircleCircleDistanceConstraintCreate,
     CircleCircleDistanceConstraintResponse,
+    LineCircleDistanceConstraintCreate,
+    LineCircleDistanceConstraintResponse,
     MergePointsRequest,
     MergePointsResponse,
     ReferenceDimensionCreate,
@@ -672,6 +675,7 @@ _FIELD_COPY_RESPONSES: dict[type, type] = {
     PointAngleConstraint: PointAngleConstraintResponse,
     PointCircleDistanceConstraint: PointCircleDistanceConstraintResponse,
     CircleCircleDistanceConstraint: CircleCircleDistanceConstraintResponse,
+    LineCircleDistanceConstraint: LineCircleDistanceConstraintResponse,
 }
 
 
@@ -1744,6 +1748,10 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_arc_length_constraint(payload.arc_id, payload.length)
         elif isinstance(payload, HorizontalAngleConstraintCreate):
             constraint = sketch.add_horizontal_angle_constraint(payload.line_id, payload.angle_degrees, payload.quadrant)
+        elif isinstance(payload, LineCircleDistanceConstraintCreate):
+            constraint = sketch.add_line_circle_distance_constraint(
+                payload.line_id, payload.circle_or_arc_id, payload.distance, payload.side
+            )
         elif isinstance(payload, CircleCircleDistanceConstraintCreate):
             constraint = sketch.add_circle_circle_distance_constraint(
                 payload.entity1_id, payload.entity2_id, payload.distance, payload.side
@@ -1809,7 +1817,7 @@ def _is_length_dimension(constraint: Constraint) -> bool:
     not a user-confirmed dimension)."""
     if isinstance(constraint, DistanceConstraint):
         return not constraint.provisional
-    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint, ArcLengthConstraint, PointCircleDistanceConstraint, CircleCircleDistanceConstraint))
+    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint, ArcLengthConstraint, PointCircleDistanceConstraint, CircleCircleDistanceConstraint, LineCircleDistanceConstraint))
 
 
 def _scale_sketch_for_first_dimension(
@@ -2066,7 +2074,7 @@ def update_constraint_value(
             constraint.quadrant = payload.quadrant
     elif isinstance(constraint, ArcLengthConstraint):
         _update_arc_length(sketch, constraint, payload.value)
-    elif isinstance(constraint, (PointCircleDistanceConstraint, CircleCircleDistanceConstraint)):
+    elif isinstance(constraint, (PointCircleDistanceConstraint, CircleCircleDistanceConstraint, LineCircleDistanceConstraint)):
         try:
             check_length_value(payload.value)
         except ValueError as exc:

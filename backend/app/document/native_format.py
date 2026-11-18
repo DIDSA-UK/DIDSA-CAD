@@ -126,6 +126,7 @@ from app.sketch.constraints import (
     PointAngleConstraint,
     PointCircleDistanceConstraint,
     CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
@@ -222,6 +223,7 @@ _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "point_angle": PointAngleConstraint,
     "point_circle_distance": PointCircleDistanceConstraint,
     "circle_distance": CircleCircleDistanceConstraint,
+    "line_circle_distance": LineCircleDistanceConstraint,
 }
 
 

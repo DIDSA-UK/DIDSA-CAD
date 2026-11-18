@@ -950,6 +950,8 @@ abstract class ConstraintDto {
         return PointCircleDistanceConstraintDto.fromJson(json);
       case 'circle_distance':
         return CircleCircleDistanceConstraintDto.fromJson(json);
+      case 'line_circle_distance':
+        return LineCircleDistanceConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1677,6 +1679,45 @@ class CircleCircleDistanceConstraintDto extends ConstraintDto {
         entity2Id: json['entity2_id'] as String,
         center2PointId: json['center2_point_id'] as String,
         radius2PointId: json['radius2_point_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+        side: json['side'] as String? ?? 'min',
+      );
+}
+
+/// Bug report 2026-11-18 part D: from a Line (its infinite extension) to a Circle's / Arc's tangent side ([side] "min") or far side
+/// ("max"), square to the line (the backend's `LineCircleDistanceConstraint`).
+class LineCircleDistanceConstraintDto extends ConstraintDto {
+  final String lineId;
+  final String lineStartId;
+  final String lineEndId;
+  final String circleOrArcId;
+  final String centerPointId;
+  final String radiusPointId;
+  final double distance;
+  final String side;
+
+  const LineCircleDistanceConstraintDto({
+    required super.id,
+    super.label,
+    required this.lineId,
+    required this.lineStartId,
+    required this.lineEndId,
+    required this.circleOrArcId,
+    required this.centerPointId,
+    required this.radiusPointId,
+    required this.distance,
+    this.side = 'min',
+  });
+
+  factory LineCircleDistanceConstraintDto.fromJson(Map<String, dynamic> json) => LineCircleDistanceConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        lineId: json['line_id'] as String,
+        lineStartId: json['line_start_id'] as String,
+        lineEndId: json['line_end_id'] as String,
+        circleOrArcId: json['circle_or_arc_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
         distance: (json['distance'] as num).toDouble(),
         side: json['side'] as String? ?? 'min',
       );

@@ -18,6 +18,7 @@ from app.sketch.constraints import (
     PointAngleConstraint,
     PointCircleDistanceConstraint,
     CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -106,7 +107,7 @@ class ExternalVertexReference:
 
 # Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180),
 # "point_angle" (three points, the vertex first: the angle at it, 0-180), "min_distance" / "max_distance" (a point and a circle or arc, either
-# order, or two circles / arcs: the nearest / farthest distance).
+# order, two circles / arcs, or a line and a circle / arc: the nearest / farthest distance; for a line, the tangent and far sides).
 REFERENCE_DIMENSION_KINDS = (
     "distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle", "min_distance", "max_distance"
 )
@@ -4806,6 +4807,43 @@ class Sketch:
             entity2_id=entity2_id,
             center2_point_id=center2_id,
             radius2_point_id=radius2_id,
+            distance=distance,
+            side=side,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_line_circle_distance_constraint(
+        self, line_id: str, circle_or_arc_id: str, distance: float, side: str = "min"
+    ) -> LineCircleDistanceConstraint:
+        """Bug report 2026-11-18 part D: from a Line to a Circle's / Arc's tangent side ("min") or far side ("max") (see
+        `LineCircleDistanceConstraint`). Refused for a Line that cuts the circle now (tangent side only), a Line of no length, and a value
+        not above 0."""
+        if side not in ("min", "max"):
+            raise ValueError(f"side must be 'min' or 'max', got {side!r}")
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
+        a, b = self.points[line.start_point_id], self.points[line.end_point_id]
+        c, r = self.points[center_point_id], self.points[radius_point_id]
+        length = math.hypot(b.x - a.x, b.y - a.y)
+        if length < 1e-9:
+            raise ValueError("The line has no length")
+        if center_point_id in (line.start_point_id, line.end_point_id):
+            raise ValueError("The line ends on the circle's centre")
+        centre_distance = abs((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / length
+        if side == "min" and centre_distance <= math.hypot(r.x - c.x, r.y - c.y):
+            raise ValueError("The line cuts the circle, so there is no tangent-side distance to dimension")
+        check_length_value(distance)
+        constraint = LineCircleDistanceConstraint(
+            id=str(uuid.uuid4()),
+            line_id=line_id,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
+            circle_or_arc_id=circle_or_arc_id,
+            center_point_id=center_point_id,
+            radius_point_id=radius_point_id,
             distance=distance,
             side=side,
         )

@@ -26,7 +26,8 @@ bool isLaidOutDimension(ConstraintDto c) =>
     c is HorizontalAngleConstraintDto ||
     c is PointAngleConstraintDto ||
     c is PointCircleDistanceConstraintDto ||
-    c is CircleCircleDistanceConstraintDto;
+    c is CircleCircleDistanceConstraintDto ||
+    c is LineCircleDistanceConstraintDto;
 
 /// Whether [c]'s value is an angle (degrees) rather than a length.
 bool isAngularDimension(ConstraintDto c) => c is HorizontalAngleConstraintDto || c is PointAngleConstraintDto;
@@ -38,6 +39,7 @@ double? storedDimensionValue(ConstraintDto c) => switch (c) {
       PointAngleConstraintDto d => d.angleDegrees,
       PointCircleDistanceConstraintDto d => d.distance,
       CircleCircleDistanceConstraintDto d => d.distance,
+      LineCircleDistanceConstraintDto d => d.distance,
       _ => null,
     };
 
@@ -91,6 +93,18 @@ ConstraintDto dimensionWithValue(ConstraintDto c, double value) => switch (c) {
           entity2Id: d.entity2Id,
           center2PointId: d.center2PointId,
           radius2PointId: d.radius2PointId,
+          distance: value,
+          side: d.side,
+        ),
+      LineCircleDistanceConstraintDto d => LineCircleDistanceConstraintDto(
+          id: d.id,
+          label: d.label,
+          lineId: d.lineId,
+          lineStartId: d.lineStartId,
+          lineEndId: d.lineEndId,
+          circleOrArcId: d.circleOrArcId,
+          centerPointId: d.centerPointId,
+          radiusPointId: d.radiusPointId,
           distance: value,
           side: d.side,
         ),
@@ -160,6 +174,8 @@ bool sameDimensionTarget(ConstraintDto a, ConstraintDto b) => switch ((a, b)) {
         x.pointId == y.pointId && x.circleOrArcId == y.circleOrArcId && x.side == y.side,
       (CircleCircleDistanceConstraintDto x, CircleCircleDistanceConstraintDto y) =>
         x.side == y.side && {x.entity1Id, x.entity2Id}.containsAll({y.entity1Id, y.entity2Id}),
+      (LineCircleDistanceConstraintDto x, LineCircleDistanceConstraintDto y) =>
+        x.lineId == y.lineId && x.circleOrArcId == y.circleOrArcId && x.side == y.side,
       (PointAngleConstraintDto x, PointAngleConstraintDto y) =>
         x.vertexPointId == y.vertexPointId && {x.point1Id, x.point2Id}.containsAll({y.point1Id, y.point2Id}),
       _ => false,
@@ -185,6 +201,13 @@ Map<String, Object?> dimensionCreateJson(ConstraintDto c, double value) => switc
           'type': 'circle_distance',
           'entity1_id': d.entity1Id,
           'entity2_id': d.entity2Id,
+          'distance': value,
+          'side': d.side,
+        },
+      LineCircleDistanceConstraintDto d => {
+          'type': 'line_circle_distance',
+          'line_id': d.lineId,
+          'circle_or_arc_id': d.circleOrArcId,
           'distance': value,
           'side': d.side,
         },
@@ -255,6 +278,16 @@ double? measureDimension(ConstraintDto c, PointAt at) {
       if (gap < 1e-12) return null;
       final radii = _len(_sub(r1, c1)) + _len(_sub(r2, c2));
       return d.side == 'min' ? gap - radii : gap + radii;
+    case LineCircleDistanceConstraintDto d:
+      // Signed for the tangent side: negative where the line cuts the circle.
+      final s = at(d.lineStartId), e = at(d.lineEndId), center = at(d.centerPointId), rim = at(d.radiusPointId);
+      if (s == null || e == null || center == null || rim == null) return null;
+      final along = _sub(e, s);
+      final length = _len(along);
+      if (length < 1e-12) return null;
+      final off = ((center.$1 - s.$1) * along.$2 - (center.$2 - s.$2) * along.$1).abs() / length;
+      final r = _len(_sub(rim, center));
+      return d.side == 'min' ? off - r : off + r;
     default:
       return null;
   }
@@ -311,6 +344,23 @@ _AngleRays? _horizontalAngleRays(HorizontalAngleConstraintDto d, PointAt at) {
       final s = d.side == 'min' ? 1.0 : -1.0;
       final a1 = _len(_sub(r1, c1)) * s, a2 = _len(_sub(r2, c2)) * s;
       return ((c1.$1 + u.$1 * a1, c1.$2 + u.$2 * a1), (c2.$1 - u.$1 * a2, c2.$2 - u.$2 * a2));
+    case LineCircleDistanceConstraintDto d:
+      // From the foot of the centre on the line to the circle's point square to the line: towards the line for the tangent side,
+      // away from it for the far side. A centre on the line takes the line's left normal.
+      final s = at(d.lineStartId), e = at(d.lineEndId), center = at(d.centerPointId), rim = at(d.radiusPointId);
+      if (s == null || e == null || center == null || rim == null) return null;
+      final along = _sub(e, s);
+      final length = _len(along);
+      if (length < 1e-12) return null;
+      final t = (along.$1 / length, along.$2 / length);
+      final fromStart = _sub(center, s);
+      final k = fromStart.$1 * t.$1 + fromStart.$2 * t.$2;
+      final foot = (s.$1 + t.$1 * k, s.$2 + t.$2 * k);
+      final toFoot = _sub(foot, center);
+      final off = _len(toFoot);
+      final n = off > 1e-12 ? (toFoot.$1 / off, toFoot.$2 / off) : (-t.$2, t.$1);
+      final r = _len(_sub(rim, center)) * (d.side == 'min' ? 1 : -1);
+      return (foot, (center.$1 + n.$1 * r, center.$2 + n.$2 * r));
     default:
       return null;
   }
@@ -497,7 +547,7 @@ DimensionLabelPlacement? dimensionPlacementAt(ConstraintDto c, PointAt at, XY p)
     case PointAngleConstraintDto d:
       final rays = _pointAngleRays(d, at);
       return rays == null ? null : _anglePlacementAt(rays, p);
-    case PointCircleDistanceConstraintDto() || CircleCircleDistanceConstraintDto():
+    case PointCircleDistanceConstraintDto() || CircleCircleDistanceConstraintDto() || LineCircleDistanceConstraintDto():
       final ends = _measuredEnds(c, at);
       return ends == null ? null : _linearPlacementAt(ends.$1, ends.$2, p);
     default:
@@ -549,7 +599,7 @@ DimensionLayout? dimensionLayout(ConstraintDto c, PointAt at, DimensionLabelPlac
     case PointAngleConstraintDto d:
       final rays = _pointAngleRays(d, at);
       return rays == null ? null : _angleLayout(rays, placement);
-    case PointCircleDistanceConstraintDto() || CircleCircleDistanceConstraintDto():
+    case PointCircleDistanceConstraintDto() || CircleCircleDistanceConstraintDto() || LineCircleDistanceConstraintDto():
       final ends = _measuredEnds(c, at);
       return ends == null ? null : _linearLayout(ends.$1, ends.$2, placement);
     default:

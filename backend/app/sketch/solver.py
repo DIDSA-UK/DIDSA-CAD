@@ -23,6 +23,7 @@ from app.sketch.constraints import (
     PointAngleConstraint,
     PointCircleDistanceConstraint,
     CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
@@ -96,6 +97,7 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     PointAngleConstraint,
     PointCircleDistanceConstraint,
     CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
 )
 
 # CurveTangentConstraint is deliberately NOT in the allowlist above -
@@ -221,6 +223,7 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     PointAngleConstraint,
     PointCircleDistanceConstraint,
     CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -1057,6 +1060,30 @@ class _PySlvsBuilder:
         helper1 = self._point_on_circle_helper(center1_id, radius1_id, center2_id, toward)
         helper2 = self._point_on_circle_helper(center2_id, radius2_id, center1_id, toward)
         return self.distance(helper1, helper2, value)
+
+    def line_circle_distance(
+        self, line_start_id: str, line_end_id: str, center_id: str, radius_point_id: str, value: float, side: str
+    ) -> int:
+        sx, sy = self.seed_xy(line_start_id)
+        ex, ey = self.seed_xy(line_end_id)
+        cx, cy = self.seed_xy(center_id)
+        rx, ry = self.seed_xy(radius_point_id)
+        dx, dy = ex - sx, ey - sy
+        length = math.hypot(dx, dy) or 1.0
+        # The centre's signed distance from the line, in `point_line_distance`'s own convention ((p - s) x (e - s) / |e - s|).
+        signed = ((cx - sx) * dy - (cy - sy) * dx) / length
+        side_sign = -1.0 if signed < 0 else 1.0
+        # Unit normal from the centre towards the line: the signed distance falls along (dy, -dx) / length.
+        nx, ny = -side_sign * dy / length, side_sign * dx / length
+        toward = 1.0 if side == "min" else -1.0
+        radius = math.hypot(rx - cx, ry - cy)
+        helper = self.ephemeral_point2d_at(cx + toward * radius * nx, cy + toward * radius * ny)
+        center = self.point2d(center_id)
+        line = self.line_segment(self.point2d(line_start_id), self.point2d(line_end_id))
+        self.perpendicular(self.line_segment(center, helper), line)
+        self.equal_length(self.line_segment(center, helper), self.line_segment(center, self.point2d(radius_point_id)))
+        # Both sides of the circle are on the centre's side of the line while the line does not cut it: the value is signed alike.
+        return self.point_line_distance(helper, line, side_sign * abs(value))
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
         helper = self._system.addLineSegment(

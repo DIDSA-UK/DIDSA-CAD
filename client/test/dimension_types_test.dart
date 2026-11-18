@@ -446,4 +446,64 @@ void main() {
       _expectDraggedLabelLandsWhereDropped(controller, 'cc', [(7, 3), (20, -2), (8, 0.5)]);
     });
   });
+
+  group('tangent-side / far-side distance, line and circle', () {
+    LineCircleDistanceConstraintDto dim(String side, [double value = 6]) => LineCircleDistanceConstraintDto(
+          id: 'lc',
+          lineId: 'l',
+          lineStartId: 'a',
+          lineEndId: 'b',
+          circleOrArcId: 'circle',
+          centerPointId: 'c',
+          radiusPointId: 'r',
+          distance: value,
+          side: side,
+        );
+    final above = <String, Pt>{'a': (-20, 0), 'b': (20, 0), 'c': (2, 10), 'r': (6, 10)};
+
+    test('measures the centre distance minus / plus the radius (tangent side negative when the line cuts)', () {
+      expect(measureDimension(dim('min'), _at(above)), closeTo(6, 1e-12));
+      expect(measureDimension(dim('max'), _at(above)), closeTo(14, 1e-12));
+      expect(measureDimension(dim('min'), _at({...above, 'c': (2, 2), 'r': (6, 2)})), closeTo(-2, 1e-12));
+    });
+
+    test('laid out from the foot on the line to the circle square to it; placement round trip', () {
+      expect(dimensionLayout(dim('min'), _at(above), null)!.arrows.map((a) => a.$1).toSet(), {(2.0, 0.0), (2.0, 6.0)});
+      expect(dimensionLayout(dim('max'), _at(above), null)!.arrows.map((a) => a.$1).toSet(), {(2.0, 0.0), (2.0, 14.0)});
+      for (final p in [(5.0, 3.0), (-4.0, 12.0)]) {
+        final placement = dimensionPlacementAt(dim('max'), _at(above), p)!;
+        expect(_dist(dimensionLayout(dim('max'), _at(above), placement)!.label, p), closeTo(0, 1e-9));
+      }
+    });
+
+    test('create body, identity by side, DOF and points', () {
+      expect(dimensionCreateJson(dim('min'), 4),
+          {'type': 'line_circle_distance', 'line_id': 'l', 'circle_or_arc_id': 'circle', 'distance': 4.0, 'side': 'min'});
+      expect(sameDimensionTarget(dim('min'), dim('min', 1)), isTrue);
+      expect(sameDimensionTarget(dim('min'), dim('max')), isFalse);
+      expect(dofCostByConstraintType['line_circle_distance'], 1);
+      expect(constraintPointIds(dim('min'), const {}), {'a', 'b', 'c', 'r'});
+      expect(describeConstraint(dim('min'), const {}, const {}).pointIds.toSet(), {'a', 'b', 'c', 'r'});
+    });
+
+    test('the drag projector holds the tangent-side distance while the circle is dragged, on its side of the line', () {
+      final projection = projectSketch(
+        points: {...above, 'c': (8, 15), 'r': (12, 15)},
+        constraints: [dim('min'), const DistanceConstraintDto(id: 'rad', pointAId: 'c', pointBId: 'r', distance: 4)],
+        lineEndpoints: (id) => ('a', 'b'),
+        anchorPointIds: {'c'},
+        pinnedPointIds: {'a', 'b'},
+        reference: above,
+      );
+      expect(projection.converged, isTrue);
+      expect(projection.points['c']!.$2, closeTo(10, 1e-5));
+    });
+
+    test('flat canvas: a dragged label is drawn where it was dropped', () {
+      final controller = SketchController(api: SketchApiClient(httpClient: null));
+      above.forEach((id, p) => controller.points[id] = SketchPointView(id: id, x: p.$1, y: p.$2));
+      controller.constraints['lc'] = dim('min');
+      _expectDraggedLabelLandsWhereDropped(controller, 'lc', [(5, 3), (-4, 12), (2.5, 1)]);
+    });
+  });
 }

@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import uuid
 
-from app.sketch.dimension_geometry import angle_between_degrees, arc_length, circle_circle_distance, point_circle_distance
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, circle_circle_distance, line_circle_distance, point_circle_distance
 from app.sketch.models import REFERENCE_DIMENSION_KINDS, Arc, Circle, Line, ReferenceDimension, Sketch
 
 _ENTITY_TYPES = ("point", "line", "circle", "arc")
@@ -50,6 +50,7 @@ def _center_and_rim(sketch: Sketch, shape):
 _CURVE_DISTANCE_REFS = [
     ["point", "circle"], ["circle", "point"], ["point", "arc"], ["arc", "point"],
     ["circle", "circle"], ["circle", "arc"], ["arc", "circle"], ["arc", "arc"],
+    ["line", "circle"], ["circle", "line"], ["line", "arc"], ["arc", "line"],
 ]
 
 
@@ -111,6 +112,12 @@ def measure(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> float | N
             other = 1 - types.index("point")
             center, rim = _center_and_rim(sketch, _round(sketch, types[other], ids[other]))
             return point_circle_distance((point.x, point.y), center, rim, side)
+        if "line" in types:
+            start, end = _ends(sketch, _line(sketch, ids[types.index("line")]))
+            other = 1 - types.index("line")
+            center, rim = _center_and_rim(sketch, _round(sketch, types[other], ids[other]))
+            value = line_circle_distance((start.x, start.y), (end.x, end.y), center, rim, side)
+            return None if value is None or value < 0 else value
         if all(t in ("circle", "arc") for t in types):
             if ids[0] == ids[1]:
                 return None

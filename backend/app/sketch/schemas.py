@@ -1133,6 +1133,16 @@ class CircleCircleDistanceConstraintCreate(BaseModel):
     side: Literal["min", "max"] = "min"
 
 
+class LineCircleDistanceConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: from a Line to a Circle's / Arc's tangent side ("min") or far side ("max")."""
+
+    type: Literal["line_circle_distance"]
+    line_id: str
+    circle_or_arc_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
 class FixedConstraintCreate(BaseModel):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
@@ -1169,6 +1179,7 @@ ConstraintCreate = Union[
     PointAngleConstraintCreate,
     PointCircleDistanceConstraintCreate,
     CircleCircleDistanceConstraintCreate,
+    LineCircleDistanceConstraintCreate,
 ]
 
 
@@ -1442,6 +1453,19 @@ class CircleCircleDistanceConstraintResponse(_ConstraintResponseBase):
     side: Literal["min", "max"] = "min"
 
 
+class LineCircleDistanceConstraintResponse(_ConstraintResponseBase):
+    type: Literal["line_circle_distance"] = "line_circle_distance"
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -1469,6 +1493,7 @@ ConstraintResponse = Union[
     PointAngleConstraintResponse,
     PointCircleDistanceConstraintResponse,
     CircleCircleDistanceConstraintResponse,
+    LineCircleDistanceConstraintResponse,
 ]
 
 

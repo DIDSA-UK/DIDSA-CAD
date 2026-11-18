@@ -69,3 +69,15 @@ def circle_circle_distance(center1: XY, rim1: XY, center2: XY, rim2: XY, side: s
         return None
     r1, r2 = math.dist(center1, rim1), math.dist(center2, rim2)
     return d - r1 - r2 if side == "min" else d + r1 + r2
+
+
+def line_circle_distance(line_start: XY, line_end: XY, center: XY, rim: XY, side: str) -> float | None:
+    """From a Line (its infinite extension) to a circle, square to the line: "min" the tangent side (centre distance minus radius,
+    negative where the line cuts the circle), "max" the far side (centre distance plus radius). None for a Line with no length."""
+    dx, dy = line_end[0] - line_start[0], line_end[1] - line_start[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-12:
+        return None
+    d = abs((center[0] - line_start[0]) * dy - (center[1] - line_start[1]) * dx) / length
+    r = math.dist(center, rim)
+    return d - r if side == "min" else d + r

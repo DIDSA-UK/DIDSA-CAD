@@ -240,6 +240,7 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
   if (c is HorizontalAngleConstraintDto) return ids([c.lineStartId, c.lineEndId]);
   if (c is PointAngleConstraintDto) return ids([c.vertexPointId, c.point1Id, c.point2Id]);
   if (c is PointCircleDistanceConstraintDto) return ids([c.pointId, c.centerPointId, c.radiusPointId]);
+  if (c is LineCircleDistanceConstraintDto) return ids([c.lineStartId, c.lineEndId, c.centerPointId, c.radiusPointId]);
   if (c is CircleCircleDistanceConstraintDto) {
     return ids([c.center1PointId, c.radius1PointId, c.center2PointId, c.radius2PointId]);
   }
@@ -259,7 +260,17 @@ class _Branches {
 
   /// A minimum distance from a Point to a circle: +1 when the Point was outside the circle in the reference frame, -1 inside.
   final double Function(PointCircleDistanceConstraintDto) pointOutside;
-  const _Branches(this.supplement, this.axisSign, this.horizontalSupplement, this.pointAngleSupplement, this.pointOutside);
+
+  /// A line-to-circle distance: which side of the line the centre was on in the reference frame (+1 / -1).
+  final double Function(LineCircleDistanceConstraintDto) lineCircleSide;
+  const _Branches(
+    this.supplement,
+    this.axisSign,
+    this.horizontalSupplement,
+    this.pointAngleSupplement,
+    this.pointOutside,
+    this.lineCircleSide,
+  );
 }
 
 /// Residuals of [c] over the local points [p] (id -> position with derivatives).
@@ -385,6 +396,13 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
     final supplement = q == null ? br.horizontalSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
     final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
     return [u.x - _len(u).scale(math.cos(target * math.pi / 180))];
+  }
+  if (c is LineCircleDistanceConstraintDto) {
+    // The centre's distance from the line (signed, kept on the side the reference frame had it), minus or plus the radius.
+    final center = a(c.centerPointId);
+    final off = _signedPointLine(center, a(c.lineStartId), a(c.lineEndId)).scale(br.lineCircleSide(c));
+    final r = _len(_sub(a(c.radiusPointId), center));
+    return [(c.side == 'max' ? off + r : off - r).plus(-c.distance)];
   }
   if (c is CircleCircleDistanceConstraintDto) {
     // Along the centre line: the gap d - r1 - r2, or the overall size d + r1 + r2.
@@ -589,6 +607,12 @@ class _System {
         if (p == null || center == null || rim == null) return 1.0;
         double dist((double, double) u, (double, double) v) => math.sqrt(math.pow(u.$1 - v.$1, 2) + math.pow(u.$2 - v.$2, 2));
         return dist(p, center) >= dist(rim, center) ? 1.0 : -1.0;
+      },
+      (c) {
+        final s = ref[c.lineStartId], e = ref[c.lineEndId], center = ref[c.centerPointId];
+        if (s == null || e == null || center == null) return 1.0;
+        final cross = (center.$1 - s.$1) * (e.$2 - s.$2) - (center.$2 - s.$2) * (e.$1 - s.$1);
+        return cross < 0 ? -1.0 : 1.0;
       },
     );
 

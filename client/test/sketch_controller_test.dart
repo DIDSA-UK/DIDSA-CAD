@@ -64,6 +64,7 @@ const _valueFieldOfType = {
   'point_angle': 'angle_degrees',
   'point_circle_distance': 'distance',
   'circle_distance': 'distance',
+  'line_circle_distance': 'distance',
 };
 
 class _FakeBackend {
@@ -2482,6 +2483,24 @@ class _FakeBackend {
             'id': id,
             'type': 'fixed',
             'point_ids': fixedPointIds,
+          };
+          break;
+        case 'line_circle_distance':
+          final line = lines[body['line_id']];
+          final circle = circles[body['circle_or_arc_id']];
+          final arc = arcs[body['circle_or_arc_id']];
+          if (line == null || (circle == null && arc == null)) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'line_circle_distance',
+            'line_id': body['line_id'],
+            'line_start_id': line['start_point_id'],
+            'line_end_id': line['end_point_id'],
+            'circle_or_arc_id': body['circle_or_arc_id'],
+            'center_point_id': (circle ?? arc)!['center_point_id'],
+            'radius_point_id': circle != null ? circle['radius_point_id'] : arc!['start_point_id'],
+            'distance': (body['distance'] as num).toDouble(),
+            'side': body['side'] ?? 'min',
           };
           break;
         case 'circle_distance':
@@ -16179,8 +16198,10 @@ void main() {
       await controller.handleCanvasTap(5, 0.05);
       await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 15 + 4 * math.sin(math.pi / 4));
 
-      expect(optionKeys(), ['perpendicular']);
-      expect(controller.pendingDimensionOptions.single.displayLabel, 'Perpendicular from centre');
+      // Part D added the tangent-side and far-side distances.
+      expect(optionKeys(), ['perpendicular', 'tangentDistance', 'farDistance']);
+      expect(controller.pendingDimensionOptions.first.displayLabel, 'Perpendicular from centre');
+      expect(controller.pendingDimensionKey, 'perpendicular'); // still the default
       expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(15.0, 1e-9));
       controller.moveCursorToSketchPoint(30, 8);
       await controller.handleCanvasTap(30, 8);
@@ -16459,6 +16480,34 @@ void main() {
       expect({made.entity1Id, made.entity2Id}, ids.toSet());
       expect((made.side, made.distance), ('max', 40.0));
       expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>(), hasLength(1));
+    });
+
+    test('a line and a circle offer the tangent-side and far-side distances (tangent only while the line misses the circle)', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(40, 0);
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 15);
+      await controller.handleCanvasTap(24, 15);
+      controller.exitToSelectMode();
+      final lineId = controller.lines.keys.single;
+      final circle = controller.circles.values.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(5, 0.05);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 15 + 4 * math.sin(math.pi / 4));
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel),
+          ['Perpendicular from centre', 'Tangent distance', 'Far-side distance']);
+      controller.selectPendingDimensionKind('tangentDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(11, 1e-9));
+      controller.selectPendingDimensionKind('farDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(19, 1e-9));
+      await controller.confirmGhostValue('farDistance', 25.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<LineCircleDistanceConstraintDto>().single;
+      expect((made.lineId, made.circleOrArcId, made.side, made.distance), (lineId, circle.id, 'max', 25.0));
+      // Deleting the line takes the dimension with it.
+      final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.line, id: lineId)]);
+      expect(cascade.constraints, contains(made.id));
     });
   });
 }
