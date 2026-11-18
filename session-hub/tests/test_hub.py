@@ -30,8 +30,9 @@ class FakeConn:
     def send_voice(self, frame, at):
         self.voice.append(frame)
 
-    def close(self, code=1000):
+    def close(self, code=1000, reason=""):
         self.closed = code
+        self.close_reason = reason
 
     def of(self, kind):
         return [m for m in self.sent if m.get("t") == kind]
@@ -347,3 +348,11 @@ def test_the_hub_has_room_for_sixteen_sessions(clock):
     hub.on_open(conn, has_key=True)
     say(hub, conn, t="host", proto=1, model=MODEL, backend_url="u", view_token="t")
     assert conn.last("error")["code"] == "hub_full"
+
+
+def test_every_close_says_why(hub):
+    """The close frame's reason repeats the error code or end reason (a client may lose the message itself)."""
+    bad = FakeConn()
+    hub.on_open(bad, has_key=False)
+    hub.on_text(bad, json.dumps({"t": "join", "proto": 1, "code": "ZZZZZZ"}))
+    assert bad.closed == 4000 and bad.close_reason == "bad_code"
