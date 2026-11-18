@@ -238,6 +238,7 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
   if (c is FixedConstraintDto) return const <String>[];
   if (c is ArcLengthConstraintDto) return ids([c.centerPointId, c.startPointId, c.endPointId]);
   if (c is HorizontalAngleConstraintDto) return ids([c.lineStartId, c.lineEndId]);
+  if (c is PointAngleConstraintDto) return ids([c.vertexPointId, c.point1Id, c.point2Id]);
   return null;
 }
 
@@ -250,7 +251,8 @@ class _Branches {
 
   /// A part D angle with no quadrant: whether the solve is holding the value's supplement (the nearer of the two in the reference).
   final bool Function(HorizontalAngleConstraintDto) horizontalSupplement;
-  const _Branches(this.supplement, this.axisSign, this.horizontalSupplement);
+  final bool Function(PointAngleConstraintDto) pointAngleSupplement;
+  const _Branches(this.supplement, this.axisSign, this.horizontalSupplement, this.pointAngleSupplement);
 }
 
 /// Residuals of [c] over the local points [p] (id -> position with derivatives).
@@ -376,6 +378,15 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
     final supplement = q == null ? br.horizontalSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
     final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
     return [u.x - _len(u).scale(math.cos(target * math.pi / 180))];
+  }
+  if (c is PointAngleConstraintDto) {
+    // The two rays from the vertex; one flipped ray makes it the supplement (the two-line angle's residual, without a division).
+    final v = a(c.vertexPointId);
+    final u = _sub(a(c.point1Id), v), w = _sub(a(c.point2Id), v);
+    final q = c.quadrant;
+    final supplement = q == null ? br.pointAngleSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
+    final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
+    return [_dot(u, w) - (_len(u) * _len(w)).scale(math.cos(target * math.pi / 180))];
   }
   return null;
 }
@@ -540,6 +551,15 @@ class _System {
         final length = math.sqrt(dx * dx + dy * dy);
         if (length == 0) return false;
         final current = math.acos((dx / length).clamp(-1.0, 1.0)) * 180 / math.pi;
+        return ((180.0 - c.angleDegrees) - current).abs() < (c.angleDegrees - current).abs();
+      },
+      (c) {
+        final v = ref[c.vertexPointId], p1 = ref[c.point1Id], p2 = ref[c.point2Id];
+        if (v == null || p1 == null || p2 == null) return false;
+        final ax = p1.$1 - v.$1, ay = p1.$2 - v.$2, bx = p2.$1 - v.$1, by = p2.$2 - v.$2;
+        final la = math.sqrt(ax * ax + ay * ay), lb = math.sqrt(bx * bx + by * by);
+        if (la == 0 || lb == 0) return false;
+        final current = math.acos(((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0)) * 180 / math.pi;
         return ((180.0 - c.angleDegrees) - current).abs() < (c.angleDegrees - current).abs();
       },
     );

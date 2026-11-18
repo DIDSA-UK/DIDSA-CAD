@@ -9,6 +9,7 @@ from app.sketch.constraints import (
     AngleConstraint,
     ArcLengthConstraint,
     HorizontalAngleConstraint,
+    PointAngleConstraint,
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
@@ -61,6 +62,8 @@ from app.sketch.schemas import (
     ArcLengthConstraintResponse,
     HorizontalAngleConstraintCreate,
     HorizontalAngleConstraintResponse,
+    PointAngleConstraintCreate,
+    PointAngleConstraintResponse,
     MergePointsRequest,
     MergePointsResponse,
     ReferenceDimensionCreate,
@@ -659,6 +662,7 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
 _FIELD_COPY_RESPONSES: dict[type, type] = {
     ArcLengthConstraint: ArcLengthConstraintResponse,
     HorizontalAngleConstraint: HorizontalAngleConstraintResponse,
+    PointAngleConstraint: PointAngleConstraintResponse,
 }
 
 
@@ -1731,6 +1735,10 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_arc_length_constraint(payload.arc_id, payload.length)
         elif isinstance(payload, HorizontalAngleConstraintCreate):
             constraint = sketch.add_horizontal_angle_constraint(payload.line_id, payload.angle_degrees, payload.quadrant)
+        elif isinstance(payload, PointAngleConstraintCreate):
+            constraint = sketch.add_point_angle_constraint(
+                payload.vertex_point_id, payload.point1_id, payload.point2_id, payload.angle_degrees, payload.quadrant
+            )
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
@@ -2041,7 +2049,7 @@ def update_constraint_value(
             constraint.quadrant = payload.quadrant
     elif isinstance(constraint, ArcLengthConstraint):
         _update_arc_length(sketch, constraint, payload.value)
-    elif isinstance(constraint, HorizontalAngleConstraint):
+    elif isinstance(constraint, (HorizontalAngleConstraint, PointAngleConstraint)):
         try:
             check_angle_value(payload.value)
         except ValueError as exc:

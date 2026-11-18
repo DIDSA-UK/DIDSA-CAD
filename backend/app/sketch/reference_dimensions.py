@@ -60,12 +60,15 @@ def check_refs(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> None:
         "angle": [["line", "line"]],
         "arc_length": [["arc"]],
         "horizontal_angle": [["line"]],
+        "point_angle": [["point", "point", "point"]],
     }[kind]
     if types not in allowed:
         raise ReferenceDimensionError(f"A {kind} dimension measures {' or '.join(' + '.join(a) for a in allowed)}, not {' + '.join(types) or 'nothing'}")
     value = measure(sketch, kind, refs)
     if value is None:
-        raise ReferenceDimensionError("Those two lines are not parallel, so there is no distance between them")
+        if kind == "distance":
+            raise ReferenceDimensionError("Those two lines are not parallel, so there is no distance between them")
+        raise ReferenceDimensionError(f"That geometry has no {kind.replace('_', ' ')} as it is now")
 
 
 def measure(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> float | None:
@@ -85,6 +88,9 @@ def measure(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> float | N
     if kind == "horizontal_angle":
         start, end = _ends(sketch, _line(sketch, ids[0]))
         return angle_between_degrees((end.x - start.x, end.y - start.y), (1.0, 0.0))
+    if kind == "point_angle":
+        v, a, b = (_point(sketch, i) for i in ids)
+        return angle_between_degrees((a.x - v.x, a.y - v.y), (b.x - v.x, b.y - v.y))
     if kind == "angle":
         a1, b1 = _ends(sketch, _line(sketch, ids[0]))
         a2, b2 = _ends(sketch, _line(sketch, ids[1]))

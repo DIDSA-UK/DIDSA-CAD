@@ -27,6 +27,7 @@ from app.sketch.constraints import (
     EqualRadiusConstraint,
     FixedConstraint,
     HorizontalConstraint,
+    PointAngleConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
@@ -190,6 +191,11 @@ def _collapse(constraint: Constraint) -> str:
     if isinstance(constraint, (HorizontalConstraint, VerticalConstraint)):
         if constraint.point_a_id == constraint.point_b_id:
             raise MergeRefused("degenerate_constraint", f"This would break the {constraint.type} on them.", [constraint.id])
+        return _KEEP
+    if isinstance(constraint, PointAngleConstraint):
+        # Bug report 2026-11-18 part D: a ray from the vertex to itself, or both rays to one Point, has no angle.
+        if len({constraint.vertex_point_id, constraint.point1_id, constraint.point2_id}) != 3:
+            raise MergeRefused("degenerate_constraint", "This would break the three-point angle on them.", [constraint.id])
         return _KEEP
     if isinstance(constraint, FixedConstraint):
         constraint.fixed_point_ids = list(dict.fromkeys(constraint.fixed_point_ids))

@@ -223,6 +223,11 @@ class SolverBuilder(Protocol):
         none, by whichever is nearer the current shape - the two-line angle's rules."""
         ...
 
+    def point_angle(self, vertex_id: str, point1_id: str, point2_id: str, degrees: float, quadrant: int | None) -> int:
+        """Pins the angle at `vertex_id` between the rays to `point1_id` and `point2_id` (`addAngle` between two solver-only line
+        segments on those existing Points: no new unknowns), value or supplement by the quadrant or, with none, the nearer one."""
+        ...
+
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
         """Pins an ArcOfCircle's length to `length` (py-slvs addEqualLineArcLength against a helper line between two points of the
         fixed group, which is never solved, so the helper adds no unknowns)."""
@@ -1352,3 +1357,50 @@ class HorizontalAngleConstraint(MeasuredDimension):
             return measured
         # No quadrant: either side is the dimension (the nearer one was solved for).
         return measured if abs(measured - self.angle_degrees) <= abs(180.0 - measured - self.angle_degrees) else 180.0 - measured
+
+
+
+@dataclass
+class PointAngleConstraint(MeasuredDimension):
+    """The angle at a vertex Point between the rays to two other Points (bug report 2026-11-18, part D, "three-point angle").
+
+    Solved as py-slvs `addAngle` between two solver-only line segments, vertex to each Point, on the existing Points: no helper Points,
+    one equation. `quadrant` as for the two-line angle, with the rays given: bit 0 flips the ray to `point1_id`, bit 1 the ray to
+    `point2_id`, and the value is the angle between the resulting rays (0 and 3 the angle itself, 1 and 2 its supplement). No quadrant:
+    the value or its supplement, whichever is nearer the current shape.
+
+    `point_ids` are the three Points."""
+
+    id: str
+    vertex_point_id: str
+    point1_id: str
+    point2_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+    @property
+    def type(self) -> str:
+        return "point_angle"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.vertex_point_id, self.point1_id, self.point2_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.point_angle(self.vertex_point_id, self.point1_id, self.point2_id, self.angle_degrees, self.quadrant)
+
+    def value(self) -> float:
+        return self.angle_degrees
+
+    def angular(self) -> bool:
+        return True
+
+    def measured_value(self, points) -> float | None:
+        v, a, b = points[self.vertex_point_id], points[self.point1_id], points[self.point2_id]
+        q = self.quadrant or 0
+        s1 = -1.0 if q & 1 else 1.0
+        s2 = -1.0 if q & 2 else 1.0
+        measured = angle_between_degrees((s1 * (a.x - v.x), s1 * (a.y - v.y)), (s2 * (b.x - v.x), s2 * (b.y - v.y)))
+        if measured is None or self.quadrant is not None:
+            return measured
+        return measured if abs(measured - self.angle_degrees) <= abs(180.0 - measured - self.angle_degrees) else 180.0 - measured
+

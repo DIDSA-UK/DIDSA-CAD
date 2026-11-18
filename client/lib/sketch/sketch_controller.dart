@@ -9528,6 +9528,7 @@ class SketchController extends ChangeNotifier {
       // Bug report 2026-11-18 part D: every Point the dimension stands on, so deleting any of them (or the Arc) takes it along.
       ArcLengthConstraintDto d => (pointIds: {d.centerPointId, d.startPointId, d.endPointId}, lineIds: <String>{}),
       HorizontalAngleConstraintDto d => (pointIds: {d.lineStartId, d.lineEndId}, lineIds: {d.lineId}),
+      PointAngleConstraintDto d => (pointIds: {d.vertexPointId, d.point1Id, d.point2Id}, lineIds: <String>{}),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
   }
@@ -14334,6 +14335,11 @@ class SketchController extends ChangeNotifier {
 
     if (_dimensionSelection.any((s) => s.sameAs(hit))) {
       _dimensionSelection.removeWhere((s) => s.sameAs(hit));
+    } else if (_dimensionSelection.length == 2 &&
+        hit.kind == SelectionKind.point &&
+        _dimensionSelection.every((s) => s.kind == SelectionKind.point)) {
+      // Bug report 2026-11-18 part D: a third Point after two makes a three-point angle (the first pick is the vertex).
+      _dimensionSelection.add(hit);
     } else if (_dimensionSelection.length >= 2) {
       _dimensionSelection
         ..clear()
@@ -15340,6 +15346,25 @@ class SketchController extends ChangeNotifier {
         }
       }
       _ghosts = [];
+      return;
+    }
+
+    if (sel.length == 3 && sel.every((s) => s.kind == SelectionKind.point)) {
+      // Bug report 2026-11-18 part D: the angle at the first-picked Point; the pointer picks the sector.
+      _ghosts = [
+        DimensionGhost(
+          key: 'pointAngle',
+          kind: GhostKind.typed,
+          label: 'Angle',
+          template: PointAngleConstraintDto(
+            id: 'pointAngle',
+            vertexPointId: sel[0].id,
+            point1Id: sel[1].id,
+            point2Id: sel[2].id,
+            angleDegrees: 0,
+          ),
+        ),
+      ];
       return;
     }
 

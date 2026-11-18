@@ -58,7 +58,7 @@ void _blockLocalClamp(SketchController controller, String pointId) {
 /// controller's chaining and dimension-ghost-confirmation logic without any
 /// real network call.
 /// Bug report 2026-11-18 part D: the value field of each new dimension type, for the fake's value PATCH.
-const _valueFieldOfType = {'arc_length': 'length', 'horizontal_angle': 'angle_degrees'};
+const _valueFieldOfType = {'arc_length': 'length', 'horizontal_angle': 'angle_degrees', 'point_angle': 'angle_degrees'};
 
 class _FakeBackend {
   int _nextId = 1;
@@ -2476,6 +2476,17 @@ class _FakeBackend {
             'id': id,
             'type': 'fixed',
             'point_ids': fixedPointIds,
+          };
+          break;
+        case 'point_angle':
+          constraint = {
+            'id': id,
+            'type': 'point_angle',
+            'vertex_point_id': body['vertex_point_id'],
+            'point1_id': body['point1_id'],
+            'point2_id': body['point2_id'],
+            'angle_degrees': (body['angle_degrees'] as num).toDouble(),
+            if (body['quadrant'] != null) 'quadrant': body['quadrant'],
           };
           break;
         case 'horizontal_angle':
@@ -15823,12 +15834,16 @@ void main() {
       controller.enterDimensionMode();
       await controller.handleCanvasTap(10, 6); // on the line, away from its midpoint
 
-      expect(optionKeys(), ['length', 'h', 'v']);
+      // Part D added the angle to horizontal.
+      expect(optionKeys(), ['length', 'h', 'v', 'horizontalAngle']);
       expect(controller.pendingDimensionKind, GhostKind.length);
       expect(controller.ghosts.length, 1);
       controller.moveCursorToSketchPoint(7, 30); // above the line's box: a point pair would go horizontal, a line does not
       expect(controller.pendingDimensionKey, 'length');
-      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Length', 'Horizontal length', 'Vertical length']);
+      expect(
+        controller.pendingDimensionOptions.map((g) => g.displayLabel),
+        ['Length', 'Horizontal length', 'Vertical length', 'Angle to horizontal'],
+      );
     });
 
     test('the preview is laid out from the cursor by the label-drag rules, and follows it', () async {
@@ -15905,7 +15920,7 @@ void main() {
       controller.enterDimensionMode();
       await controller.handleCanvasTap(5 * math.sqrt(0.5), 5 * math.sqrt(0.5));
 
-      expect(optionKeys(), ['radius', 'diameter']);
+      expect(optionKeys(), ['radius', 'diameter', 'arcLength']); // part D added the arc length
       expect(controller.pendingDimensionKind, GhostKind.radius);
     });
 
@@ -15969,9 +15984,11 @@ void main() {
       await controller.handleCanvasTap(12, 7);
       expect(controller.pendingDimensionGhost, isNotNull);
 
-      await controller.handleCanvasTap(20, 3); // a third point: a new pick, not a drop
+      // A third point changes the pick (part D: three Points make a three-point angle), it does not drop.
+      await controller.handleCanvasTap(20, 3);
       expect(controller.activeGhostKey, isNull);
-      expect(controller.dimensionSelection.single.kind, SelectionKind.point);
+      expect(controller.dimensionSelection, hasLength(3));
+      expect(controller.pendingDimensionKey, 'pointAngle');
       expect(controller.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
     });
 
@@ -16288,6 +16305,65 @@ void main() {
       expect(edited.id, made.id);
       expect(edited.angleDegrees, 40.0);
       expect(edited.quadrant, 0);
+    });
+
+    test('three Points picked (vertex first) make a three-point angle; the pointer picks the sector', () async {
+      controller.selectDrawTool(SketchTool.point);
+      for (final (x, y) in [(2.0, 2.0), (12.0, 2.0), (8.0, 10.0)]) {
+        await controller.handleCanvasTap(x, y);
+      }
+      final ids = controller.points.keys.where((id) => id != controller.originPointId).toList();
+      expect(ids, hasLength(3));
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 2);
+      expect(controller.dimensionSelection, hasLength(2)); // two Points: the point-pair dimensions
+      await controller.handleCanvasTap(8, 10);
+      expect(controller.dimensionSelection, hasLength(3));
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Angle']);
+      final ghost = controller.pendingDimensionGhost!;
+      // Inside the angle: quadrant 0, the angle itself (atan2(8, 6), about 53.1 degrees).
+      controller.cursorX = 6;
+      controller.cursorY = 4;
+      expect((controller.ghostAsConstraint(ghost) as PointAngleConstraintDto).quadrant, 0);
+      expect(controller.currentGhostValue(ghost), closeTo(math.atan2(8, 6) * 180 / math.pi, 1e-9));
+      // Behind the first ray: its supplement.
+      controller.cursorX = -2;
+      controller.cursorY = 5;
+      expect((controller.ghostAsConstraint(ghost) as PointAngleConstraintDto).quadrant, 1);
+      expect(controller.currentGhostValue(ghost), closeTo(180 - math.atan2(8, 6) * 180 / math.pi, 1e-9));
+      expect(controller.dropPendingDimension(), isTrue);
+      await controller.confirmGhostValue('pointAngle', 120.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<PointAngleConstraintDto>().single;
+      expect((made.vertexPointId, made.quadrant, made.angleDegrees), (ids[0], 1, 120.0));
+      expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single.text, '120.0°');
+    });
+
+    test('a third pick that is not a Point (or a fourth) starts the pick again', () async {
+      controller.selectDrawTool(SketchTool.point);
+      for (final (x, y) in [(2.0, 2.0), (12.0, 2.0), (8.0, 10.0), (20.0, 20.0)]) {
+        await controller.handleCanvasTap(x, y);
+      }
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(30, 0);
+      await controller.handleCanvasTap(40, 0);
+      controller.exitToSelectMode();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 2);
+      await controller.handleCanvasTap(32, 0); // a line
+      expect(controller.dimensionSelection.single.kind, SelectionKind.line);
+      await controller.handleCanvasTap(2, 2);
+      expect(controller.dimensionSelection, hasLength(2)); // a line and a Point
+      await controller.handleCanvasTap(12, 2);
+      expect(controller.dimensionSelection.single.kind, SelectionKind.point); // not three Points: the pick starts again
+      controller.exitToSelectMode();
+      controller.enterDimensionMode();
+      for (final (x, y) in [(2.0, 2.0), (12.0, 2.0), (8.0, 10.0), (20.0, 20.0)]) {
+        await controller.handleCanvasTap(x, y);
+      }
+      expect(controller.dimensionSelection, hasLength(1));
     });
   });
 }

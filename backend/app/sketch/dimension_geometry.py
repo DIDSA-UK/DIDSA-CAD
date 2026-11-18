@@ -49,3 +49,4 @@ def horizontal_angle_rays(start: XY, end: XY, quadrant: int | None) -> tuple[XY,
     else:
         vertex, ray = start, (end[0] - start[0], end[1] - start[1])
     return vertex, ray, (-1.0 if q & 2 else 1.0, 0.0)
+

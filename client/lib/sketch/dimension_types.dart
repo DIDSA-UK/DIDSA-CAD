@@ -21,15 +21,17 @@ typedef XY = (double, double);
 typedef PointAt = XY? Function(String pointId);
 
 /// The dimension types this file draws and lays out.
-bool isLaidOutDimension(ConstraintDto c) => c is ArcLengthConstraintDto || c is HorizontalAngleConstraintDto;
+bool isLaidOutDimension(ConstraintDto c) =>
+    c is ArcLengthConstraintDto || c is HorizontalAngleConstraintDto || c is PointAngleConstraintDto;
 
 /// Whether [c]'s value is an angle (degrees) rather than a length.
-bool isAngularDimension(ConstraintDto c) => c is HorizontalAngleConstraintDto;
+bool isAngularDimension(ConstraintDto c) => c is HorizontalAngleConstraintDto || c is PointAngleConstraintDto;
 
 /// [c]'s stored value (the dimension the user asked for).
 double? storedDimensionValue(ConstraintDto c) => switch (c) {
       ArcLengthConstraintDto d => d.length,
       HorizontalAngleConstraintDto d => d.angleDegrees,
+      PointAngleConstraintDto d => d.angleDegrees,
       _ => null,
     };
 
@@ -39,7 +41,7 @@ String dimensionLabelText(ConstraintDto c, {double? value, int decimals = 2}) {
   final number = v.abs().toStringAsFixed(isAngularDimension(c) ? 1 : decimals);
   return switch (c) {
     ArcLengthConstraintDto() => '⌒$number',
-    HorizontalAngleConstraintDto() => '$number°',
+    HorizontalAngleConstraintDto() || PointAngleConstraintDto() => '$number°',
     _ => number,
   };
 }
@@ -47,7 +49,7 @@ String dimensionLabelText(ConstraintDto c, {double? value, int decimals = 2}) {
 /// The preview's label for [c] (no value yet).
 String dimensionPreviewText(ConstraintDto c) => switch (c) {
       ArcLengthConstraintDto() => '⌒?',
-      HorizontalAngleConstraintDto() => '?°',
+      HorizontalAngleConstraintDto() || PointAngleConstraintDto() => '?°',
       _ => '?',
     };
 
@@ -63,8 +65,19 @@ ConstraintDto dimensionWithValue(ConstraintDto c, double value) => switch (c) {
           length: value,
         ),
       HorizontalAngleConstraintDto d => _horizontalAngle(d, value: value),
+      PointAngleConstraintDto d => _pointAngle(d, value: value),
       _ => c,
     };
+
+PointAngleConstraintDto _pointAngle(PointAngleConstraintDto d, {double? value, int? quadrant}) => PointAngleConstraintDto(
+      id: d.id,
+      label: d.label,
+      vertexPointId: d.vertexPointId,
+      point1Id: d.point1Id,
+      point2Id: d.point2Id,
+      angleDegrees: value ?? d.angleDegrees,
+      quadrant: quadrant ?? d.quadrant,
+    );
 
 HorizontalAngleConstraintDto _horizontalAngle(HorizontalAngleConstraintDto d, {double? value, int? quadrant}) =>
     HorizontalAngleConstraintDto(
@@ -88,6 +101,17 @@ ConstraintDto dimensionFollowingPointer(ConstraintDto c, PointAt at, XY p) {
       final atEnd = _len(_sub(p, end)) < _len(_sub(p, start));
       final vertex = atEnd ? end : start;
       return _horizontalAngle(d, quadrant: (atEnd ? 1 : 0) | (p.$1 < vertex.$1 ? 2 : 0));
+    case PointAngleConstraintDto d:
+      // The sector the pointer is in: write its direction from the vertex as a r1 + b r2 over the two rays; a negative a flips ray 1,
+      // a negative b ray 2.
+      final v = at(d.vertexPointId), p1 = at(d.point1Id), p2 = at(d.point2Id);
+      if (v == null || p1 == null || p2 == null) return c;
+      final r1 = _sub(p1, v), r2 = _sub(p2, v), w = _sub(p, v);
+      final det = r1.$1 * r2.$2 - r1.$2 * r2.$1;
+      if (det.abs() < 1e-12 * (_len(r1) * _len(r2) + 1e-300) || _len(w) < 1e-12) return c;
+      final a = (w.$1 * r2.$2 - w.$2 * r2.$1) / det;
+      final b = (r1.$1 * w.$2 - r1.$2 * w.$1) / det;
+      return _pointAngle(d, quadrant: (a < 0 ? 1 : 0) | (b < 0 ? 2 : 0));
     default:
       return c;
   }
@@ -96,6 +120,7 @@ ConstraintDto dimensionFollowingPointer(ConstraintDto c, PointAt at, XY p) {
 /// [c]'s quadrant (which of the angles it is), for a value update; null for a type without one.
 int? dimensionQuadrant(ConstraintDto c) => switch (c) {
       HorizontalAngleConstraintDto d => d.quadrant,
+      PointAngleConstraintDto d => d.quadrant,
       _ => null,
     };
 
@@ -103,6 +128,8 @@ int? dimensionQuadrant(ConstraintDto c) => switch (c) {
 bool sameDimensionTarget(ConstraintDto a, ConstraintDto b) => switch ((a, b)) {
       (ArcLengthConstraintDto x, ArcLengthConstraintDto y) => x.arcId == y.arcId,
       (HorizontalAngleConstraintDto x, HorizontalAngleConstraintDto y) => x.lineId == y.lineId,
+      (PointAngleConstraintDto x, PointAngleConstraintDto y) =>
+        x.vertexPointId == y.vertexPointId && {x.point1Id, x.point2Id}.containsAll({y.point1Id, y.point2Id}),
       _ => false,
     };
 
@@ -112,6 +139,14 @@ Map<String, Object?> dimensionCreateJson(ConstraintDto c, double value) => switc
       HorizontalAngleConstraintDto d => {
           'type': 'horizontal_angle',
           'line_id': d.lineId,
+          'angle_degrees': value,
+          if (d.quadrant != null) 'quadrant': d.quadrant,
+        },
+      PointAngleConstraintDto d => {
+          'type': 'point_angle',
+          'vertex_point_id': d.vertexPointId,
+          'point1_id': d.point1Id,
+          'point2_id': d.point2Id,
           'angle_degrees': value,
           if (d.quadrant != null) 'quadrant': d.quadrant,
         },
@@ -160,6 +195,9 @@ double? measureDimension(ConstraintDto c, PointAt at) {
     case HorizontalAngleConstraintDto d:
       final rays = _horizontalAngleRays(d, at);
       return rays == null ? null : _angleBetween(rays.ray1, rays.ray2);
+    case PointAngleConstraintDto d:
+      final rays = _pointAngleRays(d, at);
+      return rays == null ? null : _angleBetween(rays.ray1, rays.ray2);
     default:
       return null;
   }
@@ -190,6 +228,25 @@ _AngleRays? _horizontalAngleRays(HorizontalAngleConstraintDto d, PointAt at) {
     ray2: (q & 2 != 0 ? -1.0 : 1.0, 0.0),
     reach1: length,
     reach2: 0.0,
+  );
+}
+
+/// See [PointAngleConstraintDto.quadrant]: each ray from the vertex towards its Point, or away from it when flipped (then there is no
+/// geometry along it and the dimension draws the ray).
+_AngleRays? _pointAngleRays(PointAngleConstraintDto d, PointAt at) {
+  final v = at(d.vertexPointId), p1 = at(d.point1Id), p2 = at(d.point2Id);
+  if (v == null || p1 == null || p2 == null) return null;
+  final u1 = _sub(p1, v), u2 = _sub(p2, v);
+  final l1 = _len(u1), l2 = _len(u2);
+  if (l1 < 1e-9 || l2 < 1e-9) return null;
+  final q = d.quadrant ?? 0;
+  final s1 = q & 1 != 0 ? -1.0 : 1.0, s2 = q & 2 != 0 ? -1.0 : 1.0;
+  return (
+    vertex: v,
+    ray1: (s1 * u1.$1 / l1, s1 * u1.$2 / l1),
+    ray2: (s2 * u2.$1 / l2, s2 * u2.$2 / l2),
+    reach1: s1 > 0 ? l1 : 0.0,
+    reach2: s2 > 0 ? l2 : 0.0,
   );
 }
 
@@ -310,6 +367,9 @@ DimensionLabelPlacement? dimensionPlacementAt(ConstraintDto c, PointAt at, XY p)
     case HorizontalAngleConstraintDto d:
       final rays = _horizontalAngleRays(d, at);
       return rays == null ? null : _anglePlacementAt(rays, p);
+    case PointAngleConstraintDto d:
+      final rays = _pointAngleRays(d, at);
+      return rays == null ? null : _anglePlacementAt(rays, p);
     default:
       return null;
   }
@@ -355,6 +415,9 @@ DimensionLayout? dimensionLayout(ConstraintDto c, PointAt at, DimensionLabelPlac
       );
     case HorizontalAngleConstraintDto d:
       final rays = _horizontalAngleRays(d, at);
+      return rays == null ? null : _angleLayout(rays, placement);
+    case PointAngleConstraintDto d:
+      final rays = _pointAngleRays(d, at);
       return rays == null ? null : _angleLayout(rays, placement);
     default:
       return null;

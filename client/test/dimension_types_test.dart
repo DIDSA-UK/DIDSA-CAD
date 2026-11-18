@@ -232,4 +232,82 @@ void main() {
       _expectDraggedLabelLandsWhereDropped(controller, 'ha', [(4, 0.5), (6, -3), (-2, 2)]);
     });
   });
+
+  group('three-point angle', () {
+    PointAngleConstraintDto dim([int? q = 0]) =>
+        PointAngleConstraintDto(id: 'pa', vertexPointId: 'v', point1Id: 'a', point2Id: 'b', angleDegrees: 40, quadrant: q);
+    final pts = <String, Pt>{'v': (0, 0), 'a': (10, 0), 'b': (6, 8)};
+    final open = math.atan2(8, 6) * 180 / math.pi;
+
+    test('each quadrant measures its own angle; the pointer picks the sector it is in', () {
+      expect(measureDimension(dim(0), _at(pts)), closeTo(open, 1e-9));
+      expect(measureDimension(dim(1), _at(pts)), closeTo(180 - open, 1e-9));
+      expect(measureDimension(dim(2), _at(pts)), closeTo(180 - open, 1e-9));
+      expect(measureDimension(dim(3), _at(pts)), closeTo(open, 1e-9));
+      int? q(Pt p) => dimensionQuadrant(dimensionFollowingPointer(dim(null), _at(pts), p));
+      expect(q((5, 2)), 0);
+      expect(q((-3, 3)), 1);
+      expect(q((5, -3)), 2);
+      expect(q((-3, -3)), 3);
+    });
+
+    test('placement round trip and layout: an arc between the rays, the flipped ray drawn by the dimension', () {
+      for (final quadrant in [0, 1, 2, 3]) {
+        for (final p in [(5.0, 2.0), (-3.0, 3.0), (2.0, -6.0)]) {
+          final placement = dimensionPlacementAt(dim(quadrant), _at(pts), p)!;
+          expect(_dist(dimensionLayout(dim(quadrant), _at(pts), placement)!.label, p), closeTo(0, 1e-9));
+        }
+      }
+      final flipped = dimensionLayout(dim(1), _at(pts), null)!;
+      expect(flipped.strokes.any((s) => s.length == 2 && s.first == (0.0, 0.0) && s.last.$1 < 0), isTrue);
+    });
+
+    test('text, create body, identity (either order of the two rays), DOF and points', () {
+      expect(dimensionLabelText(dim()), '40.0°');
+      expect(dimensionCreateJson(dim(), 50), {
+        'type': 'point_angle',
+        'vertex_point_id': 'v',
+        'point1_id': 'a',
+        'point2_id': 'b',
+        'angle_degrees': 50.0,
+        'quadrant': 0,
+      });
+      const swapped = PointAngleConstraintDto(id: 'x', vertexPointId: 'v', point1Id: 'b', point2Id: 'a', angleDegrees: 1);
+      expect(sameDimensionTarget(dim(), swapped), isTrue);
+      expect(dofCostByConstraintType['point_angle'], 1);
+      expect(describeConstraint(dim(), const {}, const {}).pointIds, ['v', 'a', 'b']);
+      expect(constraintPointIds(dim(), const {}), {'v', 'a', 'b'});
+      expect(
+        ConstraintDto.fromJson({
+          'type': 'point_angle',
+          'id': 'k',
+          'vertex_point_id': 'v',
+          'point1_id': 'a',
+          'point2_id': 'b',
+          'angle_degrees': 30,
+        }),
+        isA<PointAngleConstraintDto>(),
+      );
+    });
+
+    test('the drag projector holds the angle while the second point is dragged', () {
+      final projection = projectSketch(
+        points: {'v': (0, 0), 'a': (10, 0), 'b': (6, 9)},
+        constraints: [dim(0)],
+        lineEndpoints: (id) => throw StateError('no lines'),
+        anchorPointIds: {'b'},
+        pinnedPointIds: {'v', 'a'},
+      );
+      expect(projection.converged, isTrue);
+      final b = projection.points['b']!;
+      expect(math.atan2(b.$2, b.$1) * 180 / math.pi, closeTo(40, 1e-4));
+    });
+
+    test('flat canvas: a dragged label is drawn where it was dropped', () {
+      final controller = SketchController(api: SketchApiClient(httpClient: null));
+      pts.forEach((id, p) => controller.points[id] = SketchPointView(id: id, x: p.$1, y: p.$2));
+      controller.constraints['pa'] = dim();
+      _expectDraggedLabelLandsWhereDropped(controller, 'pa', [(5, 2), (-3, 3), (1, 6)]);
+    });
+  });
 }

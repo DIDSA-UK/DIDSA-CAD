@@ -55,14 +55,14 @@ class ReferenceDimensionRef(BaseModel):
 class ReferenceDimensionCreate(BaseModel):
     """DIDSA-VR plan, phase 3: `POST .../reference-dimensions`. See `app.sketch.models.ReferenceDimension` for which kinds take which entities."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle"]
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle"]
     refs: list[ReferenceDimensionRef]
 
 
 class ReferenceDimensionUpdate(BaseModel):
     """`PATCH .../reference-dimensions/{id}`: a new kind and / or new entities (what is not sent stays)."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle"] | None = None
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle"] | None = None
     refs: list[ReferenceDimensionRef] | None = None
 
 
@@ -1102,6 +1102,17 @@ class HorizontalAngleConstraintCreate(BaseModel):
     quadrant: int | None = Field(default=None, ge=0, le=3)
 
 
+class PointAngleConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: the angle at a vertex Point between the rays to two others (see `PointAngleConstraint`)."""
+
+    type: Literal["point_angle"]
+    vertex_point_id: str
+    point1_id: str
+    point2_id: str
+    angle_degrees: float
+    quadrant: int | None = Field(default=None, ge=0, le=3)
+
+
 class FixedConstraintCreate(BaseModel):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
@@ -1135,6 +1146,7 @@ ConstraintCreate = Union[
     FixedConstraintCreate,
     ArcLengthConstraintCreate,
     HorizontalAngleConstraintCreate,
+    PointAngleConstraintCreate,
 ]
 
 
@@ -1374,6 +1386,16 @@ class HorizontalAngleConstraintResponse(_ConstraintResponseBase):
     quadrant: int | None = None
 
 
+class PointAngleConstraintResponse(_ConstraintResponseBase):
+    type: Literal["point_angle"] = "point_angle"
+    id: str
+    vertex_point_id: str
+    point1_id: str
+    point2_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -1398,6 +1420,7 @@ ConstraintResponse = Union[
     FixedConstraintResponse,
     ArcLengthConstraintResponse,
     HorizontalAngleConstraintResponse,
+    PointAngleConstraintResponse,
 ]
 
 

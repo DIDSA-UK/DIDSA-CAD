@@ -944,6 +944,8 @@ abstract class ConstraintDto {
         return ArcLengthConstraintDto.fromJson(json);
       case 'horizontal_angle':
         return HorizontalAngleConstraintDto.fromJson(json);
+      case 'point_angle':
+        return PointAngleConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1568,6 +1570,36 @@ class HorizontalAngleConstraintDto extends ConstraintDto {
         lineId: json['line_id'] as String,
         lineStartId: json['line_start_id'] as String,
         lineEndId: json['line_end_id'] as String,
+        angleDegrees: (json['angle_degrees'] as num).toDouble(),
+        quadrant: json['quadrant'] as int?,
+      );
+}
+
+/// Bug report 2026-11-18 part D: the angle at [vertexPointId] between the rays to [point1Id] and [point2Id] (the backend's
+/// `PointAngleConstraint`). [quadrant] bit 0 flips the ray to [point1Id], bit 1 the ray to [point2Id]; null: the nearest-side rule.
+class PointAngleConstraintDto extends ConstraintDto {
+  final String vertexPointId;
+  final String point1Id;
+  final String point2Id;
+  final double angleDegrees;
+  final int? quadrant;
+
+  const PointAngleConstraintDto({
+    required super.id,
+    super.label,
+    required this.vertexPointId,
+    required this.point1Id,
+    required this.point2Id,
+    required this.angleDegrees,
+    this.quadrant,
+  });
+
+  factory PointAngleConstraintDto.fromJson(Map<String, dynamic> json) => PointAngleConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        vertexPointId: json['vertex_point_id'] as String,
+        point1Id: json['point1_id'] as String,
+        point2Id: json['point2_id'] as String,
         angleDegrees: (json['angle_degrees'] as num).toDouble(),
         quadrant: json['quadrant'] as int?,
       );

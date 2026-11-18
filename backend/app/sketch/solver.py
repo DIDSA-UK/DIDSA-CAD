@@ -20,6 +20,7 @@ from app.sketch.constraints import (
     AtMidpointConstraint,
     HorizontalAngleConstraint,
     MeasuredDimension,
+    PointAngleConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
@@ -90,6 +91,7 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     # arc length on it).
     ArcLengthConstraint,
     HorizontalAngleConstraint,
+    PointAngleConstraint,
 )
 
 # CurveTangentConstraint is deliberately NOT in the allowlist above -
@@ -212,6 +214,7 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     # solver enforced, not a weaker proxy), so a stacked-redundancy solve with one of these can be verified like the rest.
     ArcLengthConstraint,
     HorizontalAngleConstraint,
+    PointAngleConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -1002,6 +1005,24 @@ class _PySlvsBuilder:
         return self._system.addAngle(
             degrees, supplement, self._horizontal_ref_line_handle(), line, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
+
+    def point_angle(self, vertex_id: str, point1_id: str, point2_id: str, degrees: float, quadrant: int | None) -> int:
+        v, a, b = self._points[vertex_id], self._points[point1_id], self._points[point2_id]
+        if quadrant is not None:
+            # The segments run from the vertex, so they are the rays themselves: one flipped ray makes it the supplement.
+            supplement = bool(quadrant & 1) != bool(quadrant & 2)
+        else:
+            ax, ay, bx, by = a.x - v.x, a.y - v.y, b.x - v.x, b.y - v.y
+            na, nb = math.hypot(ax, ay), math.hypot(bx, by)
+            if na > 0 and nb > 0:
+                current = math.degrees(math.acos(max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))))
+                supplement = abs((180.0 - degrees) - current) < abs(degrees - current)
+            else:
+                supplement = False
+        vertex = self.point2d(vertex_id)
+        line1 = self.line_segment(vertex, self.point2d(point1_id))
+        line2 = self.line_segment(vertex, self.point2d(point2_id))
+        return self._system.addAngle(degrees, supplement, line1, line2, wrkpln=self._workplane, group=_SOLVE_GROUP)
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
         helper = self._system.addLineSegment(

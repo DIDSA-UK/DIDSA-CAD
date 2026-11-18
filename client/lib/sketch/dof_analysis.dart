@@ -183,6 +183,7 @@ const Map<String, int> dofCostByConstraintType = {
   // unknowns; this table counts the dimension's own equation only.
   'arc_length': 1, // radius * counter-clockwise sweep = value (the arc's own end-radius tie is counted by its equal_radius entry)
   'horizontal_angle': 1, // angle(line, fixed horizontal) = value
+  'point_angle': 1, // angle(vertex->p1, vertex->p2) = value, on the existing points
 };
 
 /// Resolves a Constraint to its backend `type` discriminator string (the
@@ -331,6 +332,9 @@ const Map<String, int> dofCostByConstraintType = {
   }
   if (constraint is HorizontalAngleConstraintDto) {
     return (type: 'horizontal_angle', pointIds: [constraint.lineStartId, constraint.lineEndId]);
+  }
+  if (constraint is PointAngleConstraintDto) {
+    return (type: 'point_angle', pointIds: [constraint.vertexPointId, constraint.point1Id, constraint.point2Id]);
   }
   if (constraint is PointOnLineConstraintDto) {
     return (type: 'point_on_line', pointIds: ofLine(constraint.lineId, constraint.pointId));

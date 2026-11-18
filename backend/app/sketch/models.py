@@ -15,6 +15,7 @@ from app.sketch.constraints import (
     ArcLengthConstraint,
     Constraint,
     HorizontalAngleConstraint,
+    PointAngleConstraint,
     CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -101,8 +102,9 @@ class ExternalVertexReference:
     kind: str = "vertex"
 
 
-# Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180).
-REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle")
+# Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180),
+# "point_angle" (three points, the vertex first: the angle at it, 0-180).
+REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle")
 
 
 @dataclass(frozen=True)
@@ -4705,6 +4707,29 @@ class Sketch:
             line_id=line_id,
             line_start_id=line.start_point_id,
             line_end_id=line.end_point_id,
+            angle_degrees=angle_degrees,
+            quadrant=quadrant,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_point_angle_constraint(
+        self, vertex_point_id: str, point1_id: str, point2_id: str, angle_degrees: float, quadrant: int | None = None
+    ) -> PointAngleConstraint:
+        """Bug report 2026-11-18 part D: the angle at `vertex_point_id` between the rays to the other two (see `PointAngleConstraint`)."""
+        if quadrant is not None and quadrant not in (0, 1, 2, 3):
+            raise ValueError(f"quadrant must be 0-3, got {quadrant!r}")
+        for point_id in (vertex_point_id, point1_id, point2_id):
+            if point_id not in self.points:
+                raise KeyError(point_id)
+        if len({vertex_point_id, point1_id, point2_id}) != 3:
+            raise ValueError("A three-point angle needs three different points")
+        check_angle_value(angle_degrees)
+        constraint = PointAngleConstraint(
+            id=str(uuid.uuid4()),
+            vertex_point_id=vertex_point_id,
+            point1_id=point1_id,
+            point2_id=point2_id,
             angle_degrees=angle_degrees,
             quadrant=quadrant,
         )
