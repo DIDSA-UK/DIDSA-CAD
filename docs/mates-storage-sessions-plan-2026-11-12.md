@@ -1782,7 +1782,9 @@ joiner's snapshot; end; the token revoked).
 **One existing test changed, as intended:** `test_assembly_mesh_glb_node_extras_name_the_real_occurrence` pinned each node's
 extras exactly; it now includes the new `name`. Additive: DIDSA-VR's `mesh_identity.gd` reads only the keys it knows.
 
-**Not verified:** the rest of the gear and bevel-pair suites (`-m gears`) was not run; the two job test files, whose runner changed, were (`test_planetary_gear_jobs.py`, `test_bevel_pair_jobs.py`: 17 passed);
+**CI on the P1 PR (#378):** every backend job green (core, gears, bevel_pair, on amd64 and arm64) and the session hub job green. Locally the two job test files, whose runner changed, also passed (17).
+
+**Not verified:**
 anything over a Cloudflare tunnel (WebSockets through it are expected to work, as the browser relay's do, but were not tried
 here); the Pi's memory and CPU with several observers; that the race test fails without the lock (it shows reads and edits never
 fail together, not that they would without it); the flat app's pairing keys `h` / `hk` (LS-11's flat-app half is not built).
