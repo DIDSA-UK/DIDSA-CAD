@@ -170,6 +170,14 @@ void main() {
       await tester.pumpWidget(_panel([_held(status: 'broken')]));
       expect(find.textContaining(kMateHeldText), findsOneWidget);
       expect(find.text(kBrokenMateText), findsNothing);
+      // The real backend reports a held mate as `broken` while the part sits on the old face (found driving the Linux app against it):
+      // the row must still be amber, not the error red of a lost face.
+      final amber = AiPalette.of(tester.element(find.text('Mates'))).warning;
+      final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
+      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
+      expect((tile.leading as Icon).color, amber);
+      expect((tile.title as Text).style?.color, amber);
+      expect((tile.leading as Icon).color, isNot(error));
     });
 
     testWidgets('lost: the error colour and the reason', (tester) async {
