@@ -58,7 +58,7 @@ void _blockLocalClamp(SketchController controller, String pointId) {
 /// controller's chaining and dimension-ghost-confirmation logic without any
 /// real network call.
 /// Bug report 2026-11-18 part D: the value field of each new dimension type, for the fake's value PATCH.
-const _valueFieldOfType = {'arc_length': 'length'};
+const _valueFieldOfType = {'arc_length': 'length', 'horizontal_angle': 'angle_degrees'};
 
 class _FakeBackend {
   int _nextId = 1;
@@ -656,6 +656,7 @@ class _FakeBackend {
         if (body['quadrant'] != null) constraint['quadrant'] = body['quadrant'];
       } else if (_valueFieldOfType.containsKey(constraint['type'])) {
         constraint[_valueFieldOfType[constraint['type']]!] = value;
+        if (body['quadrant'] != null) constraint['quadrant'] = body['quadrant'];
       } else {
         constraint['distance'] = value;
         // Mirrors the real backend: any explicit value PATCH confirms the
@@ -2475,6 +2476,19 @@ class _FakeBackend {
             'id': id,
             'type': 'fixed',
             'point_ids': fixedPointIds,
+          };
+          break;
+        case 'horizontal_angle':
+          final line = lines[body['line_id']];
+          if (line == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'horizontal_angle',
+            'line_id': body['line_id'],
+            'line_start_id': line['start_point_id'],
+            'line_end_id': line['end_point_id'],
+            'angle_degrees': (body['angle_degrees'] as num).toDouble(),
+            if (body['quadrant'] != null) 'quadrant': body['quadrant'],
           };
           break;
         case 'arc_length':
@@ -16221,6 +16235,59 @@ void main() {
       final arc = controller.arcs[arcId]!;
       final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: arc.endPointId)]);
       expect(cascade.constraints, contains(made.id));
+    });
+
+    test('a line offers Angle to horizontal; the pointer picks the end and the side, the drop freezes them, confirm sends them', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 3);
+      controller.exitToSelectMode();
+      final lineId = controller.lines.keys.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 0.6); // on the line, away from its midpoint snap
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), contains('Angle to horizontal'));
+      expect(controller.selectPendingDimensionKind('horizontalAngle'), isTrue);
+      final ghost = controller.pendingDimensionGhost!;
+      // Near the start, right of it: the angle at the start against +x, about 16.7 degrees.
+      controller.cursorX = 3;
+      controller.cursorY = -1;
+      var preview = controller.ghostAsConstraint(ghost) as HorizontalAngleConstraintDto;
+      expect(preview.quadrant, 0);
+      expect(controller.currentGhostValue(ghost), closeTo(math.atan2(3, 10) * 180 / math.pi, 1e-9));
+      // Near the end, left of it: the angle at the end against -x - the same 16.7, drawn at the other end.
+      controller.cursorX = 8;
+      controller.cursorY = 5;
+      preview = controller.ghostAsConstraint(ghost) as HorizontalAngleConstraintDto;
+      expect(preview.quadrant, 3);
+      expect(controller.dropPendingDimension(), isTrue);
+      // The pointer going elsewhere no longer changes which angle it is.
+      controller.cursorX = 12;
+      controller.cursorY = 5;
+      expect((controller.ghostAsConstraint(ghost) as HorizontalAngleConstraintDto).quadrant, 3);
+      await controller.confirmGhostValue('horizontalAngle', 30.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<HorizontalAngleConstraintDto>().single;
+      expect(made.lineId, lineId);
+      expect(made.quadrant, 3);
+      expect(made.angleDegrees, 30.0);
+      final item = controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single;
+      expect(item.text, '30.0°');
+      controller.selectConstraint(made.id);
+      expect(controller.selectedConstraintIsAngle, isTrue);
+      expect(controller.selectedConstraintValue, 30.0);
+
+      // Dimensioning it again on the other side edits the same constraint, value and quadrant.
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 0.6); // on the line, away from its midpoint snap
+      controller.selectPendingDimensionKind('horizontalAngle');
+      controller.cursorX = 3;
+      controller.cursorY = -1;
+      controller.dropPendingDimension();
+      await controller.confirmGhostValue('horizontalAngle', 40.0);
+      final edited = controller.constraints.values.whereType<HorizontalAngleConstraintDto>().single;
+      expect(edited.id, made.id);
+      expect(edited.angleDegrees, 40.0);
+      expect(edited.quadrant, 0);
     });
   });
 }

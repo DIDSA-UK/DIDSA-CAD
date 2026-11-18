@@ -182,6 +182,7 @@ const Map<String, int> dofCostByConstraintType = {
   // Bug report 2026-11-18 part D. Each is one equation net. The backend's helper points or entities add exactly as many equations as
   // unknowns; this table counts the dimension's own equation only.
   'arc_length': 1, // radius * counter-clockwise sweep = value (the arc's own end-radius tie is counted by its equal_radius entry)
+  'horizontal_angle': 1, // angle(line, fixed horizontal) = value
 };
 
 /// Resolves a Constraint to its backend `type` discriminator string (the
@@ -327,6 +328,9 @@ const Map<String, int> dofCostByConstraintType = {
   }
   if (constraint is ArcLengthConstraintDto) {
     return (type: 'arc_length', pointIds: [constraint.centerPointId, constraint.startPointId, constraint.endPointId]);
+  }
+  if (constraint is HorizontalAngleConstraintDto) {
+    return (type: 'horizontal_angle', pointIds: [constraint.lineStartId, constraint.lineEndId]);
   }
   if (constraint is PointOnLineConstraintDto) {
     return (type: 'point_on_line', pointIds: ofLine(constraint.lineId, constraint.pointId));

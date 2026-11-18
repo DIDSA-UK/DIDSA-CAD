@@ -122,6 +122,7 @@ from app.document.models import (
 from app.sketch.constraints import (
     AngleConstraint,
     ArcLengthConstraint,
+    HorizontalAngleConstraint,
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
@@ -214,6 +215,7 @@ _CONSTRAINT_CLASSES: dict[str, type[Constraint]] = {
     "fixed": FixedConstraint,
     # Bug report 2026-11-18 part D. New types only add entries: a file without them is written and read exactly as before.
     "arc_length": ArcLengthConstraint,
+    "horizontal_angle": HorizontalAngleConstraint,
 }
 
 

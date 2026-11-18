@@ -21,14 +21,15 @@ typedef XY = (double, double);
 typedef PointAt = XY? Function(String pointId);
 
 /// The dimension types this file draws and lays out.
-bool isLaidOutDimension(ConstraintDto c) => c is ArcLengthConstraintDto;
+bool isLaidOutDimension(ConstraintDto c) => c is ArcLengthConstraintDto || c is HorizontalAngleConstraintDto;
 
 /// Whether [c]'s value is an angle (degrees) rather than a length.
-bool isAngularDimension(ConstraintDto c) => false;
+bool isAngularDimension(ConstraintDto c) => c is HorizontalAngleConstraintDto;
 
 /// [c]'s stored value (the dimension the user asked for).
 double? storedDimensionValue(ConstraintDto c) => switch (c) {
       ArcLengthConstraintDto d => d.length,
+      HorizontalAngleConstraintDto d => d.angleDegrees,
       _ => null,
     };
 
@@ -38,6 +39,7 @@ String dimensionLabelText(ConstraintDto c, {double? value, int decimals = 2}) {
   final number = v.abs().toStringAsFixed(isAngularDimension(c) ? 1 : decimals);
   return switch (c) {
     ArcLengthConstraintDto() => '⌒$number',
+    HorizontalAngleConstraintDto() => '$number°',
     _ => number,
   };
 }
@@ -45,6 +47,7 @@ String dimensionLabelText(ConstraintDto c, {double? value, int decimals = 2}) {
 /// The preview's label for [c] (no value yet).
 String dimensionPreviewText(ConstraintDto c) => switch (c) {
       ArcLengthConstraintDto() => '⌒?',
+      HorizontalAngleConstraintDto() => '?°',
       _ => '?',
     };
 
@@ -59,18 +62,59 @@ ConstraintDto dimensionWithValue(ConstraintDto c, double value) => switch (c) {
           endPointId: d.endPointId,
           length: value,
         ),
+      HorizontalAngleConstraintDto d => _horizontalAngle(d, value: value),
       _ => c,
+    };
+
+HorizontalAngleConstraintDto _horizontalAngle(HorizontalAngleConstraintDto d, {double? value, int? quadrant}) =>
+    HorizontalAngleConstraintDto(
+      id: d.id,
+      label: d.label,
+      lineId: d.lineId,
+      lineStartId: d.lineStartId,
+      lineEndId: d.lineEndId,
+      angleDegrees: value ?? d.angleDegrees,
+      quadrant: quadrant ?? d.quadrant,
+    );
+
+/// Which of the angles of [c] the user means is the one the pointer [p] is in (a preview follows it): the angle to horizontal is drawn
+/// at the end of the line nearer the pointer, towards the side of the vertical through that end the pointer is on. [c] unchanged for
+/// a type with no such choice.
+ConstraintDto dimensionFollowingPointer(ConstraintDto c, PointAt at, XY p) {
+  switch (c) {
+    case HorizontalAngleConstraintDto d:
+      final start = at(d.lineStartId), end = at(d.lineEndId);
+      if (start == null || end == null) return c;
+      final atEnd = _len(_sub(p, end)) < _len(_sub(p, start));
+      final vertex = atEnd ? end : start;
+      return _horizontalAngle(d, quadrant: (atEnd ? 1 : 0) | (p.$1 < vertex.$1 ? 2 : 0));
+    default:
+      return c;
+  }
+}
+
+/// [c]'s quadrant (which of the angles it is), for a value update; null for a type without one.
+int? dimensionQuadrant(ConstraintDto c) => switch (c) {
+      HorizontalAngleConstraintDto d => d.quadrant,
+      _ => null,
     };
 
 /// Two dimensions of the same type on the same things (an edit of one, not a second one); ignores the id and the value.
 bool sameDimensionTarget(ConstraintDto a, ConstraintDto b) => switch ((a, b)) {
       (ArcLengthConstraintDto x, ArcLengthConstraintDto y) => x.arcId == y.arcId,
+      (HorizontalAngleConstraintDto x, HorizontalAngleConstraintDto y) => x.lineId == y.lineId,
       _ => false,
     };
 
 /// The `POST .../constraints` body that makes [c] with [value].
 Map<String, Object?> dimensionCreateJson(ConstraintDto c, double value) => switch (c) {
       ArcLengthConstraintDto d => {'type': 'arc_length', 'arc_id': d.arcId, 'length': value},
+      HorizontalAngleConstraintDto d => {
+          'type': 'horizontal_angle',
+          'line_id': d.lineId,
+          'angle_degrees': value,
+          if (d.quadrant != null) 'quadrant': d.quadrant,
+        },
       _ => throw ArgumentError('Not a laid-out dimension: $c'),
     };
 
@@ -113,9 +157,103 @@ double? measureDimension(ConstraintDto c, PointAt at) {
       final center = at(d.centerPointId), start = at(d.startPointId), end = at(d.endPointId);
       if (center == null || start == null || end == null) return null;
       return _len(_sub(start, center)) * ccwSweep(center, start, end);
+    case HorizontalAngleConstraintDto d:
+      final rays = _horizontalAngleRays(d, at);
+      return rays == null ? null : _angleBetween(rays.ray1, rays.ray2);
     default:
       return null;
   }
+}
+
+double _angleBetween(XY u, XY v) {
+  final cosine = ((u.$1 * v.$1 + u.$2 * v.$2) / (_len(u) * _len(v))).clamp(-1.0, 1.0);
+  return math.acos(cosine) * 180 / math.pi;
+}
+
+/// An angle dimension's vertex and its two rays (unit), with how long the measured geometry runs along each ray from the vertex (0: no
+/// geometry there, so the dimension draws its own reference line).
+typedef _AngleRays = ({XY vertex, XY ray1, XY ray2, double reach1, double reach2});
+
+/// See [HorizontalAngleConstraintDto.quadrant]: ray 1 along the line from the chosen end, ray 2 the horizontal.
+_AngleRays? _horizontalAngleRays(HorizontalAngleConstraintDto d, PointAt at) {
+  final start = at(d.lineStartId), end = at(d.lineEndId);
+  if (start == null || end == null) return null;
+  final q = d.quadrant ?? 0;
+  final vertex = q & 1 != 0 ? end : start;
+  final other = q & 1 != 0 ? start : end;
+  final along = _sub(other, vertex);
+  final length = _len(along);
+  if (length < 1e-9) return null;
+  return (
+    vertex: vertex,
+    ray1: (along.$1 / length, along.$2 / length),
+    ray2: (q & 2 != 0 ? -1.0 : 1.0, 0.0),
+    reach1: length,
+    reach2: 0.0,
+  );
+}
+
+/// How far from the vertex an angle dimension's arc sits when nobody has placed it: half the shorter measured ray (or of the one there
+/// is).
+double _defaultAngleRadius(_AngleRays rays) {
+  final reaches = [rays.reach1, rays.reach2].where((r) => r > 1e-9);
+  return reaches.isEmpty ? 1.0 : reaches.reduce(math.min) * 0.5;
+}
+
+/// The counter-clockwise angle of [v].
+double _angleOf(XY v) => math.atan2(v.$2, v.$1);
+
+/// The arc of an angle dimension: from ray 1 the short way round to ray 2 (start angle, signed sweep, middle).
+({double a1, double sweep, double middle}) _angleArc(_AngleRays rays) {
+  final a1 = _angleOf(rays.ray1);
+  final sweep = _wrapPi(_angleOf(rays.ray2) - a1);
+  return (a1: a1, sweep: sweep, middle: a1 + sweep / 2);
+}
+
+/// An angle dimension's placement: [DimensionLabelPlacement.radius] the arc's radius, [DimensionLabelPlacement.angle] the label's
+/// position along it, degrees counter-clockwise from the arc's middle.
+DimensionLabelPlacement? _anglePlacementAt(_AngleRays rays, XY p) {
+  final v = _sub(p, rays.vertex);
+  final distance = _len(v);
+  if (distance < 1e-9) return null;
+  return DimensionLabelPlacement(radius: distance, angle: _wrapPi(_angleOf(v) - _angleArc(rays).middle) * 180 / math.pi);
+}
+
+DimensionLayout _angleLayout(_AngleRays rays, DimensionLabelPlacement? placement) {
+  final arc = _angleArc(rays);
+  final r = placement?.radius ?? _defaultAngleRadius(rays);
+  final labelAngle = arc.middle + (placement?.angle ?? 0.0) * math.pi / 180;
+  final strokes = <List<XY>>[_arcPolyline(rays.vertex, r, arc.a1, arc.sweep)];
+  final beyond = _wrapPi(labelAngle - arc.middle);
+  if (beyond.abs() > arc.sweep.abs() / 2) {
+    // Carry the arc on to a label placed past either end.
+    final half = arc.sweep.abs() / 2 * (beyond > 0 ? 1 : -1);
+    strokes.add(_arcPolyline(rays.vertex, r, arc.middle + half, beyond - half));
+  }
+  final p1 = _polar(rays.vertex, r, arc.a1);
+  final p2 = _polar(rays.vertex, r, arc.a1 + arc.sweep);
+  final extensions = <(XY, XY)>[];
+  void ray(XY dir, double reach, XY onArc) {
+    if (reach <= 1e-9) {
+      // No geometry along this ray (the horizontal): the dimension draws it, from the vertex to a little past the arc.
+      strokes.add([rays.vertex, (rays.vertex.$1 + dir.$1 * r * 1.15, rays.vertex.$2 + dir.$2 * r * 1.15)]);
+    } else if (r > reach) {
+      extensions.add(((rays.vertex.$1 + dir.$1 * reach, rays.vertex.$2 + dir.$2 * reach), onArc));
+    }
+  }
+
+  ray(rays.ray1, rays.reach1, p1);
+  ray(rays.ray2, rays.reach2, p2);
+  final step = math.min(arc.sweep.abs() / 4, 0.2) * (arc.sweep < 0 ? -1 : 1);
+  return DimensionLayout(
+    strokes: strokes,
+    extensions: extensions,
+    arrows: [
+      (p1, _polar(rays.vertex, r, arc.a1 + step)),
+      (p2, _polar(rays.vertex, r, arc.a1 + arc.sweep - step)),
+    ],
+    label: _polar(rays.vertex, r, labelAngle),
+  );
 }
 
 /// A dimension laid out in sketch units: what both views draw.
@@ -169,6 +307,9 @@ DimensionLabelPlacement? dimensionPlacementAt(ConstraintDto c, PointAt at, XY p)
         leg: distance - arc.radius,
         angle: _wrapPi(math.atan2(v.$2, v.$1) - middle) * 180 / math.pi,
       );
+    case HorizontalAngleConstraintDto d:
+      final rays = _horizontalAngleRays(d, at);
+      return rays == null ? null : _anglePlacementAt(rays, p);
     default:
       return null;
   }
@@ -212,6 +353,9 @@ DimensionLayout? dimensionLayout(ConstraintDto c, PointAt at, DimensionLabelPlac
         ],
         label: _polar(arc.center, r, labelAngle),
       );
+    case HorizontalAngleConstraintDto d:
+      final rays = _horizontalAngleRays(d, at);
+      return rays == null ? null : _angleLayout(rays, placement);
     default:
       return null;
   }

@@ -942,6 +942,8 @@ abstract class ConstraintDto {
         return FixedConstraintDto.fromJson(json);
       case 'arc_length':
         return ArcLengthConstraintDto.fromJson(json);
+      case 'horizontal_angle':
+        return HorizontalAngleConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1537,6 +1539,37 @@ class ArcLengthConstraintDto extends ConstraintDto {
         startPointId: json['start_point_id'] as String,
         endPointId: json['end_point_id'] as String,
         length: (json['length'] as num).toDouble(),
+      );
+}
+
+/// Bug report 2026-11-18 part D: a Line's angle to the horizontal (the backend's `HorizontalAngleConstraint`). [quadrant] bit 0 picks
+/// the end it is drawn at (clear: the start, the ray running to the end; set: the end, running back to the start), bit 1 the horizontal
+/// ray (+x or -x); the value is the angle between those two rays. Null: the backend's nearest-side rule.
+class HorizontalAngleConstraintDto extends ConstraintDto {
+  final String lineId;
+  final String lineStartId;
+  final String lineEndId;
+  final double angleDegrees;
+  final int? quadrant;
+
+  const HorizontalAngleConstraintDto({
+    required super.id,
+    super.label,
+    required this.lineId,
+    required this.lineStartId,
+    required this.lineEndId,
+    required this.angleDegrees,
+    this.quadrant,
+  });
+
+  factory HorizontalAngleConstraintDto.fromJson(Map<String, dynamic> json) => HorizontalAngleConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        lineId: json['line_id'] as String,
+        lineStartId: json['line_start_id'] as String,
+        lineEndId: json['line_end_id'] as String,
+        angleDegrees: (json['angle_degrees'] as num).toDouble(),
+        quadrant: json['quadrant'] as int?,
       );
 }
 

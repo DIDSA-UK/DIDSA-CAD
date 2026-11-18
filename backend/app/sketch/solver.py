@@ -18,6 +18,7 @@ from app.sketch.constraints import (
     AngleConstraint,
     ArcLengthConstraint,
     AtMidpointConstraint,
+    HorizontalAngleConstraint,
     MeasuredDimension,
     CoincidentConstraint,
     CollinearConstraint,
@@ -88,6 +89,7 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     # ordinary arc redundancy (an Arc whose centre and end are both fixed, with its radius dimensioned, is result 5 with or without an
     # arc length on it).
     ArcLengthConstraint,
+    HorizontalAngleConstraint,
 )
 
 # CurveTangentConstraint is deliberately NOT in the allowlist above -
@@ -209,6 +211,7 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     # Bug report 2026-11-18 part D: the residual is the dimension's own value measured on the solved Points (the exact condition the
     # solver enforced, not a weaker proxy), so a stacked-redundancy solve with one of these can be verified like the rest.
     ArcLengthConstraint,
+    HorizontalAngleConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -984,6 +987,21 @@ class _PySlvsBuilder:
                 self._workplane, center_handle, start_handle, end_handle, group=_SOLVE_GROUP
             )
         return self._arc_handles[key]
+
+    def horizontal_angle(self, line_start_id: str, line_end_id: str, degrees: float, quadrant: int | None) -> int:
+        start, end = self._points[line_start_id], self._points[line_end_id]
+        dx, dy = end.x - start.x, end.y - start.y
+        if quadrant is not None:
+            # The Line's own direction is start to end and the reference runs +x; each flipped ray turns the angle into its supplement.
+            supplement = bool(quadrant & 1) != bool(quadrant & 2)
+        else:
+            length = math.hypot(dx, dy)
+            current = math.degrees(math.acos(max(-1.0, min(1.0, dx / length)))) if length > 0 else degrees
+            supplement = abs((180.0 - degrees) - current) < abs(degrees - current)
+        line = self.line_segment(self.point2d(line_start_id), self.point2d(line_end_id))
+        return self._system.addAngle(
+            degrees, supplement, self._horizontal_ref_line_handle(), line, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
         helper = self._system.addLineSegment(

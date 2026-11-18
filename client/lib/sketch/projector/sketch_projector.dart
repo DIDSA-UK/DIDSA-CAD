@@ -237,6 +237,7 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
   if (c is PointOnEllipseConstraintDto) return ids([c.pointId, c.centerPointId, c.majorPointId, c.minorPointId]);
   if (c is FixedConstraintDto) return const <String>[];
   if (c is ArcLengthConstraintDto) return ids([c.centerPointId, c.startPointId, c.endPointId]);
+  if (c is HorizontalAngleConstraintDto) return ids([c.lineStartId, c.lineEndId]);
   return null;
 }
 
@@ -246,7 +247,10 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
 class _Branches {
   final bool Function(AngleConstraintDto) supplement;
   final double Function(DistanceConstraintDto) axisSign;
-  const _Branches(this.supplement, this.axisSign);
+
+  /// A part D angle with no quadrant: whether the solve is holding the value's supplement (the nearer of the two in the reference).
+  final bool Function(HorizontalAngleConstraintDto) horizontalSupplement;
+  const _Branches(this.supplement, this.axisSign, this.horizontalSupplement);
 }
 
 /// Residuals of [c] over the local points [p] (id -> position with derivatives).
@@ -363,6 +367,15 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
     final center = a(c.centerPointId);
     final u = _sub(a(c.startPointId), center), w = _sub(a(c.endPointId), center);
     return [(_len(u) * _ccwSweep(u, w)).plus(-c.length)];
+  }
+  if (c is HorizontalAngleConstraintDto) {
+    // The line's direction (start to end) against +x. A quadrant flips the line's ray (bit 0) or the horizontal one (bit 1); one flip
+    // makes the start-to-end angle the value's supplement. With none, the side the reference frame was nearer to is kept.
+    final u = _sub(a(c.lineEndId), a(c.lineStartId));
+    final q = c.quadrant;
+    final supplement = q == null ? br.horizontalSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
+    final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
+    return [u.x - _len(u).scale(math.cos(target * math.pi / 180))];
   }
   return null;
 }
@@ -519,6 +532,15 @@ class _System {
         if (pa == null || pb == null) return 1.0;
         final d = c.orientation == 'horizontal' ? pb.$1 - pa.$1 : pb.$2 - pa.$2;
         return d < 0 ? -1.0 : 1.0;
+      },
+      (c) {
+        final a = ref[c.lineStartId], b = ref[c.lineEndId];
+        if (a == null || b == null) return false;
+        final dx = b.$1 - a.$1, dy = b.$2 - a.$2;
+        final length = math.sqrt(dx * dx + dy * dy);
+        if (length == 0) return false;
+        final current = math.acos((dx / length).clamp(-1.0, 1.0)) * 180 / math.pi;
+        return ((180.0 - c.angleDegrees) - current).abs() < (c.angleDegrees - current).abs();
       },
     );
 

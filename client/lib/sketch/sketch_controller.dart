@@ -9527,6 +9527,7 @@ class SketchController extends ChangeNotifier {
         ),
       // Bug report 2026-11-18 part D: every Point the dimension stands on, so deleting any of them (or the Arc) takes it along.
       ArcLengthConstraintDto d => (pointIds: {d.centerPointId, d.startPointId, d.endPointId}, lineIds: <String>{}),
+      HorizontalAngleConstraintDto d => (pointIds: {d.lineStartId, d.lineEndId}, lineIds: {d.lineId}),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
   }
@@ -12301,12 +12302,26 @@ class SketchController extends ChangeNotifier {
           quadrant: angleGhostQuadrant(ghost),
         );
       case GhostKind.typed:
-        final template = ghost.template;
-        final value = currentGhostValue(ghost);
-        if (template == null || value == null) return null;
+        final template = _typedGhostTemplate(ghost);
+        if (template == null) return null;
+        final value = measureDimension(template, _pointAt);
+        if (value == null) return null;
         return dimensionWithValue(template, value);
     }
   }
+
+  /// A part D ghost's constraint as it stands: the pointer chooses which angle it is (`dimensionFollowingPointer`) until a drop freezes
+  /// that choice for the open editor.
+  ConstraintDto? _typedGhostTemplate(DimensionGhost ghost) {
+    final template = ghost.template;
+    if (template == null) return null;
+    final frozen = _frozenTypedTemplate;
+    if (frozen != null && frozen.key == ghost.key && _activeGhostKey == ghost.key) return frozen.template;
+    return dimensionFollowingPointer(template, _pointAt, (cursorX, cursorY));
+  }
+
+  /// [_typedGhostTemplate] as it was at the drop (key, constraint).
+  ({String key, ConstraintDto template})? _frozenTypedTemplate;
 
   /// A Sketch Point's position, for `dimension_types.dart`.
   (double, double)? _pointAt(String id) {
@@ -12426,6 +12441,8 @@ class SketchController extends ChangeNotifier {
     if (ghost == null) return false;
     final placement = _placementForGhostAt(ghost, (cursorX, cursorY));
     _tappedAngleGhost = ghost.kind == GhostKind.angle ? (key: ghost.key, quadrant: _angleQuadrantUnderCursor(ghost)) : null;
+    final typed = ghost.kind == GhostKind.typed ? _typedGhostTemplate(ghost) : null;
+    _frozenTypedTemplate = typed == null ? null : (key: ghost.key, template: typed);
     _frozenPlacement = (key: ghost.key, placement: placement);
     _activeGhostKey = ghost.key;
     notifyListeners();
@@ -15363,6 +15380,19 @@ class SketchController extends ChangeNotifier {
               pointBId: line.endPointId,
               label: 'Vertical length',
             ),
+            // Bug report 2026-11-18 part D. The pointer picks the end and the side (see `dimensionFollowingPointer`).
+            DimensionGhost(
+              key: 'horizontalAngle',
+              kind: GhostKind.typed,
+              label: 'Angle to horizontal',
+              template: HorizontalAngleConstraintDto(
+                id: 'horizontalAngle',
+                lineId: lineId,
+                lineStartId: line.startPointId,
+                lineEndId: line.endPointId,
+                angleDegrees: 0,
+              ),
+            ),
           ];
   }
 
@@ -15593,7 +15623,7 @@ class SketchController extends ChangeNotifier {
   /// unaffected by this; it's still always "?" until a value is confirmed.
   double? currentGhostValue(DimensionGhost ghost) {
     if (ghost.kind == GhostKind.typed) {
-      final template = ghost.template;
+      final template = _typedGhostTemplate(ghost);
       return template == null ? null : measureDimension(template, _pointAt);
     }
     if (ghost.kind == GhostKind.lineDistance) {
@@ -15691,6 +15721,8 @@ class SketchController extends ChangeNotifier {
     if (!_ghosts.any((g) => g.key == key)) return;
     final ghost = _ghosts.firstWhere((g) => g.key == key);
     _tappedAngleGhost = ghost.kind == GhostKind.angle ? (key: key, quadrant: _angleQuadrantUnderCursor(ghost)) : null;
+    final typed = ghost.kind == GhostKind.typed ? _typedGhostTemplate(ghost) : null;
+    _frozenTypedTemplate = typed == null ? null : (key: key, template: typed);
     _pendingKey = key;
     _frozenPlacement = null;
     _activeGhostKey = key;
@@ -15788,8 +15820,9 @@ class SketchController extends ChangeNotifier {
     final droppedPlacement = frozen != null && frozen.key == key ? frozen.placement : null;
 
     if (target.kind == GhostKind.typed) {
-      final template = target.template;
+      final template = _typedGhostTemplate(target);
       if (template == null) return;
+      final quadrant = dimensionQuadrant(template);
       await _runGuarded(() async {
         ConstraintDto? existing;
         for (final constraint in constraints.values) {
@@ -15803,8 +15836,11 @@ class SketchController extends ChangeNotifier {
           final existingId = existing.id;
           constraintId = existingId;
           final oldValue = storedDimensionValue(existing);
-          await _api.updateConstraintValue(_sketchId!, existingId, value);
-          if (oldValue != null) _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existingId, oldValue));
+          final oldQuadrant = dimensionQuadrant(existing);
+          await _api.updateConstraintValue(_sketchId!, existingId, value, quadrant: quadrant);
+          if (oldValue != null) {
+            _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existingId, oldValue, quadrant: oldQuadrant));
+          }
         } else {
           final constraint = await _api.createDimension(_sketchId!, dimensionCreateJson(template, value));
           constraintId = constraint.id;

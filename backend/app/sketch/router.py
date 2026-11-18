@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.sketch.constraints import (
     AngleConstraint,
     ArcLengthConstraint,
+    HorizontalAngleConstraint,
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
@@ -49,6 +50,7 @@ from app.sketch.models import (
     Spline,
     TextEntity,
     _signed_point_line_distance,
+    check_angle_value,
     check_arc_length_value,
 )
 from app.sketch.point_merge import MergeRefused, merge_points
@@ -57,6 +59,8 @@ from app.sketch.dimension_geometry import ccw_sweep, rotate_about
 from app.sketch.schemas import (
     ArcLengthConstraintCreate,
     ArcLengthConstraintResponse,
+    HorizontalAngleConstraintCreate,
+    HorizontalAngleConstraintResponse,
     MergePointsRequest,
     MergePointsResponse,
     ReferenceDimensionCreate,
@@ -654,6 +658,7 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
 # can draw and model one without looking its entities up).
 _FIELD_COPY_RESPONSES: dict[type, type] = {
     ArcLengthConstraint: ArcLengthConstraintResponse,
+    HorizontalAngleConstraint: HorizontalAngleConstraintResponse,
 }
 
 
@@ -1724,6 +1729,8 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_fixed_constraint(payload.entity_id)
         elif isinstance(payload, ArcLengthConstraintCreate):
             constraint = sketch.add_arc_length_constraint(payload.arc_id, payload.length)
+        elif isinstance(payload, HorizontalAngleConstraintCreate):
+            constraint = sketch.add_horizontal_angle_constraint(payload.line_id, payload.angle_degrees, payload.quadrant)
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
@@ -2034,6 +2041,14 @@ def update_constraint_value(
             constraint.quadrant = payload.quadrant
     elif isinstance(constraint, ArcLengthConstraint):
         _update_arc_length(sketch, constraint, payload.value)
+    elif isinstance(constraint, HorizontalAngleConstraint):
+        try:
+            check_angle_value(payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        constraint.angle_degrees = payload.value
+        if payload.quadrant is not None:
+            constraint.quadrant = payload.quadrant
     else:
         raise HTTPException(
             status_code=422,

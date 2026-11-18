@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from app.sketch.dimension_geometry import arc_length
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays
 
 
 class SolverBuilder(Protocol):
@@ -215,6 +215,12 @@ class SolverBuilder(Protocol):
         """A py-slvs ArcOfCircle entity (counter-clockwise from start to end, the sketch Arc's own convention) on three point handles,
         cached per point triple. The entity itself carries the equation "end on start's circle", so an Arc given one must not also send
         its own end-radius EqualRadiusConstraint (the solver leaves that out, see `solver.arc_entity_replaced_constraint_ids`)."""
+        ...
+
+    def horizontal_angle(self, line_start_id: str, line_end_id: str, degrees: float, quadrant: int | None) -> int:
+        """Pins the angle between a Line (start to end) and the fixed horizontal reference line of the workplane (`addAngle` against
+        `_horizontal_ref_line_handle`), choosing the value or its supplement by the quadrant (see `HorizontalAngleConstraint`) or, with
+        none, by whichever is nearer the current shape - the two-line angle's rules."""
         ...
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
@@ -1301,3 +1307,48 @@ class ArcLengthConstraint(MeasuredDimension):
         c, a, b = points[self.center_point_id], points[self.start_point_id], points[self.end_point_id]
         return arc_length((c.x, c.y), (a.x, a.y), (b.x, b.y))
 
+
+
+@dataclass
+class HorizontalAngleConstraint(MeasuredDimension):
+    """The angle between one Line and the sketch's horizontal (bug report 2026-11-18, part D, "angle to horizontal").
+
+    Solved as py-slvs `addAngle` between the Line and the fixed horizontal reference line the horizontal distances already use (never
+    solved, so it adds no unknowns): one equation. Which of the four angles it is follows the two-line angle's quadrant idea, with the
+    vertex on the Line itself (`dimension_geometry.horizontal_angle_rays`): bit 0 picks the end the angle is drawn at (clear: the start,
+    the ray running to the end; set: the end, the ray running back to the start), bit 1 the horizontal ray (+x or -x). The value is the
+    angle between those two rays, 0-180. No quadrant: the value or its supplement, whichever is nearer the current shape.
+
+    `point_ids` are the Line's two Points."""
+
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+    @property
+    def type(self) -> str:
+        return "horizontal_angle"
+
+    def point_ids(self) -> tuple[str, str]:
+        return (self.line_start_id, self.line_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.horizontal_angle(self.line_start_id, self.line_end_id, self.angle_degrees, self.quadrant)
+
+    def value(self) -> float:
+        return self.angle_degrees
+
+    def angular(self) -> bool:
+        return True
+
+    def measured_value(self, points) -> float | None:
+        a, b = points[self.line_start_id], points[self.line_end_id]
+        _, ray, horizontal = horizontal_angle_rays((a.x, a.y), (b.x, b.y), self.quadrant)
+        measured = angle_between_degrees(ray, horizontal)
+        if measured is None or self.quadrant is not None:
+            return measured
+        # No quadrant: either side is the dimension (the nearer one was solved for).
+        return measured if abs(measured - self.angle_degrees) <= abs(180.0 - measured - self.angle_degrees) else 180.0 - measured

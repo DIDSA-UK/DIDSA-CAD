@@ -14,6 +14,7 @@ from app.sketch.constraints import (
     ConcentricConstraint,
     ArcLengthConstraint,
     Constraint,
+    HorizontalAngleConstraint,
     CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -100,8 +101,8 @@ class ExternalVertexReference:
     kind: str = "vertex"
 
 
-# Bug report 2026-11-18 part D adds "arc_length" (one arc).
-REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length")
+# Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180).
+REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle")
 
 
 @dataclass(frozen=True)
@@ -1090,6 +1091,12 @@ class NoIntersectionFoundError(ValueError):
     trim/extend target exists - a real, expected outcome the router surfaces
     as 422, distinct from every other `ValueError` this method raises
     (invalid endpoint, Polygon-owned edge), which stay ordinary 400s."""
+
+
+def check_angle_value(degrees: float) -> None:
+    """Raises ValueError unless `degrees` is an angle a part D angle dimension can hold: 0 to 180."""
+    if not math.isfinite(degrees) or degrees < 0 or degrees > 180:
+        raise ValueError("An angle must be from 0 to 180 degrees")
 
 
 def check_arc_length_value(length: float, radius: float) -> None:
@@ -4679,6 +4686,27 @@ class Sketch:
             start_point_id=arc.start_point_id,
             end_point_id=arc.end_point_id,
             length=length,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_horizontal_angle_constraint(
+        self, line_id: str, angle_degrees: float, quadrant: int | None = None
+    ) -> HorizontalAngleConstraint:
+        """Bug report 2026-11-18 part D: a Line's angle to the horizontal (see `HorizontalAngleConstraint` for `quadrant`)."""
+        if quadrant is not None and quadrant not in (0, 1, 2, 3):
+            raise ValueError(f"quadrant must be 0-3, got {quadrant!r}")
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        check_angle_value(angle_degrees)
+        constraint = HorizontalAngleConstraint(
+            id=str(uuid.uuid4()),
+            line_id=line_id,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
+            angle_degrees=angle_degrees,
+            quadrant=quadrant,
         )
         self.constraints[constraint.id] = constraint
         return constraint

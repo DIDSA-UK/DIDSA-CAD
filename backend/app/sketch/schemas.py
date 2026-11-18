@@ -55,14 +55,14 @@ class ReferenceDimensionRef(BaseModel):
 class ReferenceDimensionCreate(BaseModel):
     """DIDSA-VR plan, phase 3: `POST .../reference-dimensions`. See `app.sketch.models.ReferenceDimension` for which kinds take which entities."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length"]
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle"]
     refs: list[ReferenceDimensionRef]
 
 
 class ReferenceDimensionUpdate(BaseModel):
     """`PATCH .../reference-dimensions/{id}`: a new kind and / or new entities (what is not sent stays)."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length"] | None = None
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle"] | None = None
     refs: list[ReferenceDimensionRef] | None = None
 
 
@@ -1093,6 +1093,15 @@ class ArcLengthConstraintCreate(BaseModel):
     length: float
 
 
+class HorizontalAngleConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: a Line's angle to the horizontal (see `HorizontalAngleConstraint`)."""
+
+    type: Literal["horizontal_angle"]
+    line_id: str
+    angle_degrees: float
+    quadrant: int | None = Field(default=None, ge=0, le=3)
+
+
 class FixedConstraintCreate(BaseModel):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
@@ -1125,6 +1134,7 @@ ConstraintCreate = Union[
     PointOnEllipseConstraintCreate,
     FixedConstraintCreate,
     ArcLengthConstraintCreate,
+    HorizontalAngleConstraintCreate,
 ]
 
 
@@ -1354,6 +1364,16 @@ class ArcLengthConstraintResponse(_ConstraintResponseBase):
     length: float
 
 
+class HorizontalAngleConstraintResponse(_ConstraintResponseBase):
+    type: Literal["horizontal_angle"] = "horizontal_angle"
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -1377,6 +1397,7 @@ ConstraintResponse = Union[
     PointOnEllipseConstraintResponse,
     FixedConstraintResponse,
     ArcLengthConstraintResponse,
+    HorizontalAngleConstraintResponse,
 ]
 
 
