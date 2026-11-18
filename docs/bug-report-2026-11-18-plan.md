@@ -87,7 +87,10 @@ types of part D: the drawer offers them once D has landed (A can ship first with
 * Both views send the dimension-mode commit click to `dropPendingDimension()` when a preview exists and the click is not on an
   entity: 2D, the `sketch_canvas.dart` tap handler; 3D, `sketch_screen.dart` `_handleEmbeddedSketchTap` (the ghost no longer
   needs `preferConstraintOverlayHitOnCommit`, since the label is at the cursor and must not catch the click).
-* `SketchDimensionBar`: the option chips; the selected one highlighted; tooltip text when nothing is picked (as now).
+* `SketchDimensionBar`: the option chips; the selected one highlighted; tooltip text when nothing is picked (as now). It is
+  the same bar on phone and desktop (it is not gated by the layout), so one change serves both.
+* Existing dimensions are untouched: dragging a placed label, double-clicking to edit a value, and the driven (reference)
+  dimensions keep their current behaviour.
 * Tests: controller tests per row of the table (selection → options and default; cursor → kind and placement; drop → editor
   open with the frozen values; confirm → constraint and placement saved); one widget test per view for click-to-drop.
 
@@ -173,7 +176,14 @@ FeatureManager tree converts all of its entities.
    filter) → those entities. Both stage into the convert bar like body picks and convert on Tick
    (`confirmConvertSelection`). `SketchApiClient` gets `convertSketchEntities`, and the edge response parser learns
    `ellipse_arc` and `spline`.
-7. **VR client (DIDSA-VR)**: it calls `convert-entities/edge` for references (`part_references.gd`,
+7. **Source content**: pattern and mirror instances are expanded first (`Sketch.expand_pattern_and_mirror_instances`, as the
+   curve code does); Text entities are skipped with a note in the response (their outlines are not sketch geometry); points
+   that belong to no entity are projected as Points; construction geometry is included only when asked (a flag on the route).
+8. **Saved files**: the new reference kinds (`projected_curve`, `sketch_entity`) are written by `native_format.py`; a file
+   without them is written exactly as before, and an older app opening a newer file is not a goal (as for earlier additions).
+9. **Undo**: one convert can now make many entities. The client's undo for it is one step that deletes everything the call
+   made (today each converted point pushes its own undo entry).
+10. **VR client (DIDSA-VR)**: it calls `convert-entities/edge` for references (`part_references.gd`,
    `sketch_session.gd` ~1069). Today a non-coplanar curve comes back as a Line; afterwards it may come back as an ellipse,
    ellipse arc or spline. Check the VR handles those response shapes (or ignores them cleanly) before merging; no VR feature
    work is needed.
@@ -182,7 +192,8 @@ FeatureManager tree converts all of its entities.
 ellipse with minor = r·cos 30°; an edge-on circle a line; a helix segment a spline within tolerance; a reversed view swaps
 arc ends); route tests for a body edge at an angle (before: chord; after: ellipse arc), a whole sketch on a parallel plane,
 on a tilted plane, a later sketch refused, the source sketch edited then the target rebuilt (follows), a source entity deleted
-(lost); the Intersection curve's existing tests still pass; client tests for staging a sketch / sketch entities.
+(lost), a source with a pattern (instances converted) and with text (skipped), save and reopen (references still live); the
+Intersection curve's existing tests still pass; client tests for staging a sketch / sketch entities and for one-step undo.
 
 Size: large, mostly backend. Do it after B (the tree pick). Can be split: C1 projection module + body-edge chord replacement;
 C2 sketch sources and route; C3 client picks.
@@ -203,9 +214,12 @@ Ground rules found in the code:
 * Redundancy makes py-slvs distrust convergence (see the 2026-11-17 DOF fix): a new construction must not duplicate an
   equation the sketch already has.
 * The client has its own constraint models: the drag projector (`sketch/projector/sketch_projector.dart`; a constraint it
-  has no model for clamps the drag, `_clampDragFrame`), `dof_analysis.dart`, the API DTOs and both painters. A new type needs
-  at least the DTO, both painters and the dimension drawer; projector support can follow (until then a drag that touches it
-  is clamped, which is safe).
+  has no model for clamps the drag, `_clampDragFrame`, which is safe, so projector support can follow), `dof_analysis.dart`,
+  the API DTOs and both painters.
+* Constraints are found by the points they use: each type's `point_ids()` (`constraints.py`) drives the delete cascade (delete
+  a point or entity → its constraints go) and the point merge (`sketch/point_merge.py`, client `point_merge_rule.dart`). A
+  new type must list **every** sketch point it depends on (an arc length: centre, start, end; a circle distance: the centre and
+  the radius point), never the solver-only helpers.
 * The app does **not** contain the solver (`LICENSING.md`: AGPL / GPL decoupling). Solving happens only in the backend; the
   client's drag projector (`client/lib/sketch/projector/`) and `dof_analysis.dart` (a per-constraint-type DOF table) are the
   project's own pure-Dart models and need an entry for each new type. Write those from the maths in this plan and the HTTP data
@@ -222,7 +236,13 @@ Ground rules found in the code:
 | **Minimum / maximum distance, circle–circle** | 2 circles / arcs | H1 on the centre line at r1 from c1, H2 on it at r2 from c2 (each as above), then `distance(H1, H2) = value`. Seeds pick min (both inside the gap) or max (both outside). | 0 net DOF. Same side check. Overlapping circles: minimum is refused with a message. |
 | **Tangent / far-side distance, line–circle** | line + circle / arc | Foot F of the centre on the line (`point_on_line` + `perpendicular` of segment centre→F with the line), H on segment centre→F at the radius (`point_on_line` + `equal_length`), then `distance(H, F) = value`. Tangent side: H between centre and line; far side: beyond the centre. | F and H: 4 params, 4 equations → 0 net DOF. |
 
-Per type, the full set of changes: `constraints.py` (dataclass, `add_to_solver`, value update), `schemas.py` and the sketch
+Selection: the dimension tool keeps at most two picks today (`handleDimensionTap`: a third pick restarts the selection).
+The three-point angle needs it to keep three when all three are points; any other third pick still restarts.
+
+Out of scope: the AI modelling plan (`client/lib/ai/`, `backend/app/document/ai_plan*.py`) keeps its current constraint set;
+it neither creates nor needs to read the new types (a sketch it edits that holds one is passed through unchanged; add a test).
+
+Per type, the full set of changes: `constraints.py` (dataclass, `point_ids()`, `add_to_solver`, value update), `schemas.py` and the sketch
 router (create / patch / response), `native_format.py` (saved and loaded; a file without the new types is written exactly as
 before), `reference_dimensions.py` (driven kind and `measure`), the client DTO and
 `sketch_api_client.dart`, the controller's ghost kinds and `confirmGhostValue`, both painters (canvas and 3D overlay), the
