@@ -568,7 +568,8 @@ tried on a real Quest. Items marked **backend** land in this repo.
    grouping, size and contrast of targets, colour meaning and accessibility including colour-blind safety). It replaces the deck's single options row of six buttons plus More. Scope: audit
    the current deck against a headset session, propose a layout, then rebuild. Not scoped yet; needs its own scoping doc.
 9. **Dimensions and constraints at parity with the flat app (design table).** Scoped, decisions recorded (2026-11-18):
-   `DIDSA-VR/docs/dimension-constraint-parity-scope.md`. Every dimension type and option the flat app has (including the six part D types of
+   `DIDSA-VR/docs/dimension-constraint-parity-scope.md`; **sessions S0-S10 in `DIDSA-VR/docs/dimension-constraint-parity-plan.md`, to start once
+   `docs/bug-report-2026-11-18-plan.md` is complete and merged** (its gate). Every dimension type and option the flat app has (including the six part D types of
    `docs/bug-report-2026-11-18-plan.md`), the flat app's preview / choose / drop workflow on the controllers, saved label placement and angle sides,
    constraint-state colours, one rule for conflicting constraints in both apps, and a shared option catalogue (`docs/sketch-dimension-catalogue.json`)
    with a test in each client so the two move together. Constrained sketch drag in VR by a GDScript port of the projector. Pieces P0-P6; small flat-app
