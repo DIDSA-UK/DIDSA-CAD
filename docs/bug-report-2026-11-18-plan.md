@@ -3,8 +3,12 @@
 Source: tester report on the flat Flutter client (sketcher in the 3D viewport, desktop and touch). Four items: the sketcher's
 hamburger menu, the angle dimension's "?" flag, the angle dimension's extension lines, and the clipped Visibility panel.
 
-Written for a **follow-up implementation session**. Line numbers drift, so search for the named symbol. Nothing here touches
-the backend. The VR client (DIDSA-VR) was checked: it has no angle-quadrant UI and no Visibility panel, so it needs no change.
+Written for a **follow-up implementation session**. Line numbers drift, so search for the named symbol. The fixes already made
+are client only; the VR client (DIDSA-VR) has no angle-quadrant UI and no Visibility panel, so they need no VR change. The
+planned parts C and D change the backend; their VR impact is noted in each.
+
+Suggested order: A (dimension flow), B (tree in the sketcher), then D (one type per commit) and C (C1, C2, C3). A and B are
+client only; C and D are mostly backend.
 
 ## Already fixed on branch `ccr-5fd5d437-1l26qn`
 
@@ -51,26 +55,27 @@ separate touch gesture to design.
 The ribbon's Length / Radius / Diameter chips (`addRadiusDimensionFor` and friends) keep jumping straight to the editor.
 
 **Options per selection** (worked out from the code: `_rebuildDimensionGhosts`, the backend constraint types in
-`backend/app/sketch/constraints.py` and the reference-dimension kinds in `reference_dimensions.py`). Default first. "Now"
-means the sketcher offers it today; "client only" means the backend constraint already exists and only the sketcher needs to
-offer it; "backend" needs a new constraint type, so it is left out of this part.
+`backend/app/sketch/constraints.py` and the reference-dimension kinds in `reference_dimensions.py`), compared with
+SolidWorks' Smart Dimension. Default first. "Now" means the sketcher offers it today; "client only" means the backend
+constraint already exists and only the sketcher needs to offer it; **D** means a new constraint type from part D.
 
 | Selection | Options | Status |
 |---|---|---|
-| 1 line | **Length**, Horizontal length, Vertical length | Length now; H / V client only (`DistanceConstraint.orientation` on the line's endpoints) |
+| 1 line | **Length**, Horizontal length, Vertical length, Angle to horizontal | Length now; H / V client only (`DistanceConstraint.orientation` on the line's endpoints); angle to horizontal **D** |
 | 1 circle | **Diameter**, Radius | now (default changes to diameter) |
-| 1 arc | **Radius**, Diameter | now; arc length is backend, later |
+| 1 arc | **Radius**, Diameter, Arc length | radius / diameter now; arc length **D** |
 | 1 ellipse / elliptical arc | **Major radius**, Minor radius (and their diameters) | now |
 | 2 points | **by cursor**: Horizontal / Vertical / Aligned | now |
-| point + line | **Perpendicular distance**, Horizontal, Vertical (to the line's nearer end) | H / V / aligned to the nearer end now; perpendicular is client only (`PointLineDistanceConstraint`) and should be the default, as in SolidWorks |
+| 3 points (pick the vertex first) | **Angle** at the first point (sector by cursor) | **D** |
+| point + line | **Perpendicular distance**, Horizontal, Vertical (to the line's nearer end) | H / V / aligned to the nearer end now; perpendicular is client only (`PointLineDistanceConstraint`) and becomes the default, as in SolidWorks |
 | 2 parallel lines | **Distance** | now |
 | 2 non-parallel lines | **Angle** (sector by cursor) | now |
-| point + circle / arc | **Centre distance** by cursor: Horizontal / Vertical / Aligned | client only (a point-pair dimension on the centre point) |
-| line + circle / arc | **Perpendicular distance** from the centre | client only (`PointLineDistanceConstraint` on the centre) |
-| 2 circles / arcs | **Centre distance** by cursor: Horizontal / Vertical / Aligned | client only; min / max (tangent) distance is backend, later |
+| point + circle / arc | **Centre distance** by cursor (H / V / Aligned), Minimum distance, Maximum distance | centre: client only (a point-pair dimension on the centre point); min / max **D** |
+| line + circle / arc | **Perpendicular distance from the centre**, Tangent distance (nearest side), Far-side distance | centre: client only (`PointLineDistanceConstraint` on the centre); tangent / far side **D** |
+| 2 circles / arcs | **Centre distance** by cursor (H / V / Aligned), Minimum distance, Maximum distance | centre: client only; min / max **D** |
 
-Spline, text, a lone point and constraint selections have no dimension (as now). The owner may add to this table before the
-work starts; anything marked backend is a separate task.
+Spline, text, a lone point and constraint selections have no dimension (as now). Rows marked **D** need the new constraint
+types of part D: the drawer offers them once D has landed (A can ship first without them).
 
 **Work items**
 
@@ -106,34 +111,126 @@ screen while sketching. The top-left corner is free since fix 1.
 
 Size: medium.
 
-### C. Convert Entities from another sketch (picking a whole sketch in the tree)
+### C. Convert Entities: real projection, from bodies and from other sketches
 
-Asked by the owner: would picking a whole sketch in the tree work for Convert? **Yes, it fits, and it is how SolidWorks
-does it** (select a sketch in the FeatureManager tree, then Convert Entities takes all of its entities). But it is new work
-on both sides, not just a tree pick, because today Convert only reads **Bodies**:
+Owner, 2026-11-18: project properly onto the sketch plane, from any angle, and allow a whole sketch (picked in the tree) as the
+source. SolidWorks does both: Convert Entities projects edges normal to the sketch plane, and a sketch picked in the
+FeatureManager tree converts all of its entities.
 
-* Backend: the three routes `convert-entities/vertex|edge|face` (`document/router.py`) resolve a Body vertex or edge against
-  `compute_part_bodies(part, excluded)` and store an `ExternalVertexReference` (`sketch/models.py`) that
-  `refresh_external_references` (`document/create_plane.py`) re-finds by topology signature on every rebuild. There is no
-  reference kind for "entity E of sketch S", and nothing that projects sketch geometry from one plane onto another.
-* Client: `stageConvertVertex / Edge / FaceEdges` take `(bodyId, index)` only. Other sketches are already **drawn** in the
-  sketcher (`SketchScreen.otherSketchGeometries`), but only as pictures: they cannot be picked.
+**What is there today**
 
-What it would take:
+* Backend: `convert-entities/vertex|edge|face` (`document/router.py`, `_convert_body_vertex` / `_convert_body_edge` /
+  `convert_body_face`) resolve a Body vertex or edge against `compute_part_bodies(part, excluded)` and keep it live through
+  `ExternalVertexReference` (`sketch/models.py`), which `refresh_external_references` (`document/create_plane.py`) re-finds
+  by topology signature on every rebuild. A curved edge is only handled when it lies **in** the sketch plane
+  (`resolve_circular_edge_arc`, `resolve_full_circular_edge`, `resolve_full_elliptical_edge`); any other curved edge falls back
+  to a straight **chord** between its end points. So body-edge convert is already "half done" in the same way: fixing
+  projection fixes both sources at once.
+* There is no reference kind for "entity E of sketch S".
+* Client: `stageConvertVertex / Edge / FaceEdges` take `(bodyId, index)` only. Other sketches are drawn in the sketcher
+  (`SketchScreen.otherSketchGeometries`) but cannot be picked.
+* Reusable code: the Intersection curve (`document/curve.py`) already turns a sketch into real 3D OCCT edges in its own plane:
+  `_profile_or_open_chain_wire` → `wire_for_profile` (`extrude.py`) / `wire_for_open_chain` (`loft.py`) with
+  `resolve_sketch_basis`. That is exactly the "sketch → 3D edges" half. It is the part to reuse, but generalised: it needs
+  **every** entity of the sketch (not one profile or one chain), keyed by entity id so each result can be traced back.
+  The section / prism half (`_prism_shell`, `BRepAlgoAPI_Section`) is not needed. As the owner says it is lightly tested, so
+  the new module gets its own tests and the curve feature's tests are run too.
 
-1. Backend: a reference kind `sketch_entity` (source sketch feature id + entity id, or the whole sketch), resolved from the
-   source sketch's solved geometry on every rebuild, so the copy follows when the source changes (associative, like the
-   Body references), and reported lost when the source entity is deleted (the existing lost-reference indicator).
-2. Only sketches **earlier in the tree** than the one being edited (`excluded_feature_ids_after` already defines that), or the
-   rebuild order could loop.
-3. Geometry: when the two sketch planes are parallel, lines, arcs and circles map one to one (shift and in-plane rotation);
-   that covers the usual case (an offset plane, the same plane). Non-parallel planes turn circles into ellipses and need a real
-   projection: refuse with a message in the first version.
-4. Route `convert-entities/sketch` (whole sketch, optional entity id list); client: a tree pick in Convert mode (needs B) and,
-   later, picking the drawn entities of another sketch in the viewport.
+**Design**
 
-Size: medium-large, mostly backend. Do it after B. Open question for the owner: is "parallel planes only" acceptable for the
-first version?
+1. **`app/sketch/projection.py` (new), one function for both sources:** `project_edge_onto_sketch(edge: TopoDS_Edge, basis)
+   -> list[ProjectedEntity]`. Takes the edge's 3D curve (`BRep_Tool.Curve` + its parameter range) and projects it along the
+   sketch plane's normal with `GeomProjLib.ProjectOnPlane(curve, plane, normal, True)`, which is exact for conics. Then
+   classify with `GeomAdaptor_Curve(...).GetType()` and convert into sketch-plane coordinates (`basis`):
+   * line → Line; a line along the normal → a single Point;
+   * circle → Circle / Arc (planes parallel);
+   * circle seen at an angle → **Ellipse / EllipseArc** (the sketch has both entity types, `add_ellipse` / `add_ellipse_arc`);
+     a circle seen edge-on → a Line (its extreme points);
+   * ellipse → Ellipse / EllipseArc (or a Circle when the projection happens to be round);
+   * B-spline, Bézier or anything else → a **Spline** through sampled points (`add_spline`, through-point interpolation;
+     sample count from the curve's length and curvature, with a test that the max deviation stays under 1e-3 mm);
+   * arc direction: the sketch's Arc / EllipseArc run counter-clockwise about the sketch normal (`Arc` docstring); a
+     projection that reverses orientation (seen from behind) swaps start and end.
+2. **Body edges** (`_convert_body_edge`): keep the existing exact in-plane paths (they carry live centre references), and
+   replace the **chord fallback** with `project_edge_onto_sketch`. End points stay live vertex references as now. The
+   projected curve's shape (an ellipse centre, spline through-points) is pinned like today's converted ellipse (Fixed), and
+   is recomputed in `refresh_external_references` from the same edge reference so it follows the body (new
+   `ExternalVertexReference.kind = "projected_curve"`, or a sibling `ExternalCurveReference`, holding the edge's sub-shape ref
+   and signature and the ids of the entities it made).
+3. **Sketch sources**: new reference kind `sketch_entity` (source sketch feature id + source entity id). `sketch_edges(part,
+   sketch_feature) -> dict[entity_id, TopoDS_Edge]` (new, generalising the curve code's wire builders to every entity,
+   construction geometry included or not by a flag) gives the 3D edges; each goes through `project_edge_onto_sketch`. Points
+   of the source (sketch points, a circle's centre) project as Points. On rebuild, `refresh_external_references` re-projects
+   from the source sketch's solved geometry, so the copy follows; a deleted source entity is reported **lost** through the
+   existing lost-reference path.
+4. **Order**: only sketches earlier in the tree than the one being edited (`excluded_feature_ids_after`), or a rebuild could
+   loop. The route refuses a later sketch with a message.
+5. **Routes**: `POST .../convert-entities/sketch` with `{source_sketch_feature_id, entity_ids?: [...], construction,
+   reference}` (all entities when `entity_ids` is absent); the response lists everything made, in the same shapes as
+   `ConvertEdgeResponse` plus `ellipse_arc` and `spline`, which the edge route can now also return.
+6. **Client**: Convert mode accepts (a) a sketch picked in the sketcher's tree (needs B) → whole sketch, and (b) picking the
+   drawn entities of another sketch in the viewport (`otherSketchGeometries` made pickable in `PartViewport`'s convert
+   filter) → those entities. Both stage into the convert bar like body picks and convert on Tick
+   (`confirmConvertSelection`). `SketchApiClient` gets `convertSketchEntities`, and the edge response parser learns
+   `ellipse_arc` and `spline`.
+7. **VR client (DIDSA-VR)**: it calls `convert-entities/edge` for references (`part_references.gd`,
+   `sketch_session.gd` ~1069). Today a non-coplanar curve comes back as a Line; afterwards it may come back as an ellipse,
+   ellipse arc or spline. Check the VR handles those response shapes (or ignores them cleanly) before merging; no VR feature
+   work is needed.
+
+**Tests**: `projection.py` unit tests on real OCCT for every row of the classification list (a circle tilted 30° gives an
+ellipse with minor = r·cos 30°; an edge-on circle a line; a helix segment a spline within tolerance; a reversed view swaps
+arc ends); route tests for a body edge at an angle (before: chord; after: ellipse arc), a whole sketch on a parallel plane,
+on a tilted plane, a later sketch refused, the source sketch edited then the target rebuilt (follows), a source entity deleted
+(lost); the Intersection curve's existing tests still pass; client tests for staging a sketch / sketch entities.
+
+Size: large, mostly backend. Do it after B (the tree pick). Can be split: C1 projection module + body-edge chord replacement;
+C2 sketch sources and route; C3 client picks.
+
+### D. New dimension types (arc length, minimum / maximum and tangent distances, three-point angle, angle to horizontal)
+
+Owner, 2026-11-18: add the missing ones. Each is a new backend constraint (and reference-dimension kind, for the driven
+version), solved with what py-slvs 1.0.6 offers. Checked against the vendored SolveSpace fork's `src/swig/slvs_swig.hpp`
+(submodule `tools/solvespace-reference/vendor`, commit 73a181b): it has `addArcOfCircle`, `addEqualLineArcLength`,
+`addLengthDifference`, `addPointOnCircle`, `addDiameter`, besides what `solver.py` already uses.
+
+Ground rules found in the code:
+* The solver has **no arc or circle entities**: an Arc is three points plus a radius `DistanceConstraint` and an
+  `EqualRadiusConstraint` (`models.py` `Arc`). New constraints must fit that model.
+* Helper points are allowed: `solver.py` already makes solver-only points (`_fixed_ref_point`, the fresh-point path in the
+  point adapter). Any helper must add **zero net DOF** (each helper point's 2 parameters are taken by exactly 2 equations),
+  or the sketch's under / fully constrained colour breaks. Every new type gets a DOF test.
+* Redundancy makes py-slvs distrust convergence (see the 2026-11-17 DOF fix): a new construction must not duplicate an
+  equation the sketch already has.
+* The client has its own constraint models: the drag projector (`sketch/projector/sketch_projector.dart`; a constraint it
+  has no model for clamps the drag, `_clampDragFrame`), `dof_analysis.dart`, the API DTOs and both painters. A new type needs
+  at least the DTO, both painters and the dimension drawer; projector support can follow (until then a drag that touches it
+  is clamped, which is safe).
+* There is also an FFI build of the solver (`tools/solvespace-reference/slvs_ffi_shim.*`, "one function per System method
+  solver.py calls"): any new py-slvs call must be added there too, or the desktop parity harness falls behind.
+
+| Type | Entities | How it is solved | Notes |
+|---|---|---|---|
+| **Arc length** | 1 arc | For an arc carrying one: add a py-slvs `ArcOfCircle` (centre, start, end; counter-clockwise, which matches the sketch's Arc convention) and a helper Line between two **constant** points (a group that is never solved) whose length is the value, then `addEqualLineArcLength(helper, arc)`. | The `ArcOfCircle` entity itself keeps the end on the start's circle, so the arc's own `EqualRadiusConstraint` must be left out of the solve for that arc (else redundant). Value > 0 and < 2πr; a value the radius cannot meet fails as any conflicting dimension does. |
+| **Angle to horizontal** | 1 line | `addAngle` between the line and the existing fixed horizontal reference line (`_horizontal_ref_line_handle`), with the same quadrant handling as the two-line angle (`angle_rays.dart` / `_angle_needs_supplement`). | Cheap; reuses everything from the angle work. |
+| **Three-point angle** | vertex point + 2 points | Two solver-only line segments (vertex→p1, vertex→p2) on existing points (no new points, no DOF), then `addAngle` with the quadrant rule. | Drawn like the two-line angle with the vertex given. |
+| **Minimum / maximum distance, point–circle** | point + circle / arc | Helper H on the line through the point and the centre (`point_on_line` on a solver-only segment), at the circle's radius from the centre (`equal_length` with the radius segment), then `distance(P, H) = value`. Minimum: H seeded on the point's side; maximum: the far side. | H: 2 params, 2 equations → 0 net DOF. After the solve, check H is still on the chosen side; if the solve flipped it, report not converged (as any wrong branch). |
+| **Minimum / maximum distance, circle–circle** | 2 circles / arcs | H1 on the centre line at r1 from c1, H2 on it at r2 from c2 (each as above), then `distance(H1, H2) = value`. Seeds pick min (both inside the gap) or max (both outside). | 0 net DOF. Same side check. Overlapping circles: minimum is refused with a message. |
+| **Tangent / far-side distance, line–circle** | line + circle / arc | Foot F of the centre on the line (`point_on_line` + `perpendicular` of segment centre→F with the line), H on segment centre→F at the radius (`point_on_line` + `equal_length`), then `distance(H, F) = value`. Tangent side: H between centre and line; far side: beyond the centre. | F and H: 4 params, 4 equations → 0 net DOF. |
+
+Per type, the full set of changes: `constraints.py` (dataclass, `add_to_solver`, value update), `schemas.py` and the sketch
+router (create / patch / response), `native_format.py` (saved and loaded; a file without the new types is written exactly as
+before), `reference_dimensions.py` (driven kind and `measure`), the FFI shim if a new py-slvs call is used, the client DTO and
+`sketch_api_client.dart`, the controller's ghost kinds and `confirmGhostValue`, both painters (canvas and 3D overlay), the
+`LabelDragResolver` layout and the drawer rows of part A. The VR client ignores constraint types it does not know
+(`sketch_session.gd` `dimension_value` returns not-ok), so nothing breaks there; showing them in VR is a separate task.
+
+**Tests**: per type, backend solve tests (value met, DOF count before and after, conflicting value refused, file round trip,
+driven measure), the branch / side check for the helper-point types, and client tests (option offered for the selection,
+create, label drawn in both views).
+
+Size: large but regular; best done one type per commit, in the table's order (arc length first, as the owner named it). Can
+run in parallel with A once A's drawer exists, or after it.
 
 ### Progress
 
@@ -142,4 +239,5 @@ first version?
 | 1, 2a, 2b, 4 | Fixes above | Done | (this branch) |
 | A | Dimension preview at the cursor, drawer, click to drop | To do (agreed 2026-11-18) | |
 | B | Feature tree in the sketcher | To do | |
-| C | Convert Entities from another sketch | To do after B (question open) | |
+| C | Convert Entities: real projection, bodies and other sketches (C1 projection + body edges, C2 sketch sources, C3 client picks) | To do after B | |
+| D | New dimension types (arc length, angle to horizontal, three-point angle, min / max / tangent distances) | To do; drawer rows after A | |
