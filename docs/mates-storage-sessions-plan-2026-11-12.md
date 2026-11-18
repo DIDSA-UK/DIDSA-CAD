@@ -46,8 +46,8 @@ The implementation session updates this table in its PR.
 | S4 | Sync hardening and set-up polish | all | Done (CAD #366 / VR #87, merged 2026-11-14; headless, Xvfb and a real store killed and restarted, not run on a headset; results: "S4 results" below) |
 | N0 | Why VR's gear-train e2e tests are red; are mate references stable? (investigation) | CAD, VR | Done 2026-11-14: stale bevel face indices in the VR demo (fix: DIDSA-VR PR #86); mate references are the one kind with no signature ("Part 2b" below) |
 | N1 | Signed mate references: stamp, persist and re-find a mate's faces | CAD backend, then both clients | Planned 2026-11-17 ("N1 plan" below: findings, design, phases N1a to N1e); owner accepted the recommendations for N-2 to N-7 (2026-11-17). **N1a built** (2026-11-17, coaxial tie-break by radius / cone half-angle; CAD #372, merged). **N1b built** (2026-11-17, mate reference identity: stamp, refresh, held mates, `confirm_references`, held and lost mates left out of the group solve; CAD #373, merged; "N1b results" below). **N1c built** (2026-11-17, VR shows followed / held / lost with Confirm, `mate_health` defers to the server; DIDSA-VR PR #88, merged; "N1c results" below). **N1d built** (2026-11-17, flat app shows followed / held / lost with Confirm and Got it; CAD #375 and #376, merged; "N1d results" below). N1e not started |
-| P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | **Scope and audit written, spikes written as plans and not run** (2026-11-18, docs only): `docs/live-sessions-scope.md` (decisions LS-1 to LS-13 accepted by the owner, 2026-11-18), DIDSA-VR `docs/main-gd-split-audit.md`, DIDSA-VR `docs/live-sessions-spikes.md` (the owner runs both spikes on a Quest and a phone); CAD #377 / VR #89, merged 2026-11-18 ("P0 results" below) |
-| P1 | Session hub service and read-only document sharing | CAD | Not started |
+| P0 | Session protocol scope; voice, Cardboard and `main.gd` split spikes | CAD, VR | **Scope and audit written; spike apps built (DIDSA-VR #90, merged; headless only) and waiting for the owner's devices** (2026-11-18; the voice spike is needed before P3, the Cardboard spike before P5): `docs/live-sessions-scope.md` (decisions LS-1 to LS-13 accepted by the owner, 2026-11-18), DIDSA-VR `docs/main-gd-split-audit.md`, DIDSA-VR `docs/live-sessions-spikes.md` (the owner runs both spikes on a Quest and a phone); CAD #377 / VR #89, merged 2026-11-18 ("P0 results" below) |
+| P1 | Session hub service and read-only document sharing | CAD | **Built and merged** (2026-11-18, CAD #378): `session-hub/` (rooms, codes, roles, relay, snapshot, resume, limits) and the backend's view tokens, `X-Document-Revision`, observers' glb cache, the per-session lock and display names in the glb; tested headless and end to end against a real backend and hub, no headset ("P1 results" below) |
 | P2 | VR Host / Join Session, roles, avatars, live model state | VR | Not started |
 | P3 | Voice | CAD hub, VR | Not started |
 | P4 | Observer tools: drone cursor, own-view edits, Share marks | VR | Not started |
@@ -1739,6 +1739,61 @@ in memory); `/health` advertises it from `SESSION_HUB_URL`, pairing gets `h` / `
 - Backend: a read-only token that lets another client `GET` the presenter's assembly mesh / glb and tree, and a document
   change counter so observers know when to refetch. No write route accepts the token.
 - Tests: a scripted presenter and two scripted observers; late join; presenter drops and returns.
+
+**Spike apps (2026-11-18, later the same day; DIDSA-VR):** both spikes are built and ready to run, **not run on a device**. Voice:
+`spikes/voice/` (its own Godot project) with TwoVoip v6.6.2 from `tools/install_voip_plugin.sh` (SHA-256 pinned; the release has
+Android arm64, Linux and Windows libraries, checked by listing the zip; **loading it was not tried**, since running the downloaded
+library was not allowed in that environment) and `echo_relay.py`. Cardboard: `scenes/spikes/cardboard_spike.tscn` in the app's project
+(Godot's built-in `MobileVRInterface`; the app's viewing core; guided steps with results on screen), `.phone` overrides in
+`project.godot`, a phone export preset example, and `tools/save_assembly_glb.gd`. TwoVoip's speaker defaults to a 0.6 s jitter buffer;
+the spike measures 0.2 s. Steps and pass / fail: DIDSA-VR `docs/live-sessions-spikes.md`.
+
+### P1 results (2026-11-18)
+
+Built to `docs/live-sessions-scope.md` with all thirteen decisions as accepted. **Nothing was run on a headset or a phone; no VR
+or flat-app code changed** (P2 is the headset side).
+
+**What was built:**
+- **`session-hub/`** (new service, own container and key `SESSION_HUB_API_KEY`, one worker, rooms in memory): `app/hub.py` holds
+  every rule with no sockets in it (host / join / resume, 6-character codes, roles and who may send what, the relay, the snapshot,
+  presenter drop with a 10-minute resume, remove / lock / end, marks, Mute all, voice frames relayed with the hub's sender id,
+  size and rate limits, wrong-code blocking, keep-alive); `app/api.py` is the WebSocket transport with a latest-wins queue per
+  receiver (presence, presenter state, merged pose deltas; stale voice dropped). `docker-compose.example.yml` gains the service;
+  CI `.github/workflows/session-hub-verify.yml`; `README.md`; `tools/scripted_session.py` (an end-to-end script, also a stand-in
+  presenter or observer for P2).
+- **Backend:** `app/view_tokens.py` and `app/document/view_routes.py` (`POST` / `DELETE /document/view-tokens`, `GET
+  /document/view-state`); `app.auth.verify_access` replaces the app-level key check (key, or a token on the two allowlisted GETs,
+  binding the token's session); `bind_session_id` keeps a token-bound session; `app/session_hooks.py` (an ASGI middleware:
+  `X-Document-Revision` on every `/document` and `/sketch` response, the bump on changes, the per-session lock);
+  `app/document/revision.py`; a background job bumps the revision when it adds its Feature; `app/document/view_glb_cache.py`
+  (token requests only, with `ETag` / 304); `extras.name` on every glb node; `/health` advertises `session_hub` from
+  `SESSION_HUB_URL` and lists `view_tokens`, `document_revision`, `glb.node_names`.
+
+**What was run** (one Linux machine): backend core suite (`-m "not gears"`, as CI's core job) **3,219 passed, 1 skipped, 1 failed**
+before the fix below, then the two glb test files again (31 passed); the new `tests/test_view_tokens.py` (12: the token reads only the
+glb and view-state, binds the presenter's session whatever header is sent, expiry / revoke / four per session, the revision on a
+change and not on a read or preview, 304 until a change, six observers one encode, eight edits racing eight observer reads all 200
+and every edit counted once, `/health`). Hub: `tests/test_hub.py` 17 and `tests/test_ws.py` 5, all pass on Python 3.11 and 3.13.
+**End to end:** a real backend (`uvicorn`) and a real hub on localhost, `tools/scripted_session.py`: 14 checks, 0 failures
+(presenter mints and hosts; two observers join and fetch the glb with only the token, 200 then 304; refused `/parts/{id}`,
+`/export/native` and a `PATCH`; poses reach both; an edit bumps the revision and the observers' refetch gets the new glb; a late
+joiner's snapshot; end; the token revoked).
+
+**One existing test changed, as intended:** `test_assembly_mesh_glb_node_extras_name_the_real_occurrence` pinned each node's
+extras exactly; it now includes the new `name`. Additive: DIDSA-VR's `mesh_identity.gd` reads only the keys it knows.
+
+**CI on the P1 PR (#378):** every backend job green (core, gears, bevel_pair, on amd64 and arm64) and the session hub job green. Locally the two job test files, whose runner changed, also passed (17).
+
+**Not verified:**
+anything over a Cloudflare tunnel (WebSockets through it are expected to work, as the browser relay's do, but were not tried
+here); the Pi's memory and CPU with several observers; that the race test fails without the lock (it shows reads and edits never
+fail together, not that they would without it); the flat app's pairing keys `h` / `hk` (LS-11's flat-app half is not built).
+
+**What P2 needs to know:** the hub's messages are exactly the scope's section 4 (`session-hub/README.md` lists the limits).
+`welcome.room.join_uri` carries `h` only when the hub is given `SESSION_HUB_PUBLIC_URL`. An observer's glb fetch must not send
+`X-API-Key`; send `X-View-Token` and, on a refetch, `If-None-Match` with the last `ETag`. A 401 `view_token_invalid` means ask the
+presenter (via the hub's `token`) for a fresh one. Read the revision from `X-Document-Revision` on the presenter's own responses to
+fill `doc_changed.rev`. Use `tools/scripted_session.py` as the other end while testing on one headset.
 
 ### P2. VR Host and Join (VR; large; standard agent, owner testing with two devices)
 

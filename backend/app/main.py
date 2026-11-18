@@ -6,8 +6,9 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.gzip import GZipMiddleware
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 
-from app.auth import verify_api_key
+from app.auth import verify_access
 from app.document.router import router as document_router
+from app.session_hooks import SessionHooks
 from app.sketch.router import router as sketch_router
 
 # Applied at the app level (not per-router) so every route - including
@@ -19,10 +20,15 @@ from app.sketch.router import router as sketch_router
 # server is alive. Note this doesn't cover the auto-generated /docs and
 # /openapi.json routes - FastAPI wires those up outside the normal
 # dependency system, so they stay reachable (schema only, no data).
-app = FastAPI(dependencies=[Depends(verify_api_key)])
+# `verify_access` is the API key check, or a live-session view token on an allowlisted GET (app/view_tokens.py,
+# docs/live-sessions-scope.md section 5). It has to be HERE, app-wide: a router-level token check would run after a key check
+# that had already refused the token request.
+app = FastAPI(dependencies=[Depends(verify_access)])
 # A part's mesh is plain JSON with full-precision floats (12.6 MB for a 33,000-triangle imported part, 2.1 MB gzipped, 0.25 s): compress anything over 1 KB
 # for a client that asks (dart:io's HttpClient does by default and decodes it itself). Nothing here streams.
 app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=5)
+# The document revision header and the per-session lock that keeps an observer's read off a half-made edit (app/session_hooks.py).
+app.add_middleware(SessionHooks)
 app.include_router(sketch_router)
 app.include_router(document_router)
 
@@ -64,6 +70,9 @@ API_FEATURES = [
     "ai_plan.face_selector.nearest_body",  # face_selector without body_id picks the Body by `near` on a multi-body component
     "mate.status_near",  # a mate's status may be `near` (solved within tolerance), with `status_residual_mm` / `_deg`
     "boss.split_targets",  # a Boss target id also names the pieces its body was split into
+    "view_tokens",  # live sessions: POST/DELETE /document/view-tokens, GET /document/view-state, X-View-Token on the glb
+    "document_revision",  # every /document and /sketch response carries X-Document-Revision
+    "glb.node_names",  # assembly-mesh.glb node extras carry `name` (the occurrence's display name)
 ]
 
 
@@ -76,5 +85,10 @@ def health() -> dict:
     store_url = os.environ.get("PROJECT_STORE_URL", "").strip()
     if store_url:
         body["project_store"] = store_url
-        body["api_features"] = [*API_FEATURES, "project_store"]
+        body["api_features"] = [*body["api_features"], "project_store"]
+    # The live-session hub (`session-hub/`, docs/live-sessions-scope.md section 6), the same way: its public wss:// address, never its key.
+    hub_url = os.environ.get("SESSION_HUB_URL", "").strip()
+    if hub_url:
+        body["session_hub"] = hub_url
+        body["api_features"] = [*body["api_features"], "session_hub"]
     return body

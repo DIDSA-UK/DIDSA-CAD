@@ -13,8 +13,10 @@ app at startup rather than letting it come up unauthenticated.
 import os
 import secrets
 
-from fastapi import HTTPException, Security, status
+from fastapi import HTTPException, Request, Security, status
 from fastapi.security import APIKeyHeader
+
+from app import view_tokens
 
 _API_KEY_ENV_VAR = "CAD_API_KEY"
 
@@ -41,3 +43,30 @@ def verify_api_key(provided_key: str | None = Security(_api_key_header)) -> None
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid API key.",
         )
+
+
+def key_is_valid(provided_key: str | None) -> bool:
+    return provided_key is not None and secrets.compare_digest(provided_key, _EXPECTED_API_KEY)
+
+
+def verify_access(request: Request) -> None:
+    """The app-level gate (`app.main`): the API key, as `verify_api_key`, OR a live-session view token
+    (`app.view_tokens`, docs/live-sessions-scope.md section 5) on an allowlisted GET.
+
+    A request with a valid key is the key's: any token on it is ignored. A token request binds the token's document session in
+    `request.state.view_token_session` (read by `app.session_context.bind_session_id`, which would otherwise take the session from
+    `X-Document-Session`), so an observer reads only the presenter's document and never learns its session id. Anything else is
+    401: an invalid or expired token says `view_token_invalid` so the observer knows to ask the session hub for a fresh one; a valid
+    token on a route outside the allowlist says `view_token_not_allowed`."""
+    if key_is_valid(request.headers.get("X-API-Key")):
+        return
+    token = request.headers.get(view_tokens.HEADER)
+    if token is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid API key.")
+    record = view_tokens.lookup(token)
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="view_token_invalid")
+    if not view_tokens.path_allowed(request.method, request.url.path):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="view_token_not_allowed")
+    request.state.view_token_session = record.session_id
+    request.state.view_token = record

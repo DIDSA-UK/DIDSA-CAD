@@ -180,6 +180,10 @@ class AssemblyGlbInstance:
     # The full occurrence path from the root (`/`-joined, `#pattern:` segments included; "" = the root's own content),
     # so a client can tell pattern copies apart (their `occurrence_id` is empty) - `docs/scenes-scope.md` section 5.
     instance_path: str = ""
+    # Live sessions (docs/live-sessions-scope.md, LS-12): the instance's display name (the Occurrence's name_override, else the
+    # placed Part's name; the root's own content: the root Part's name), so an observer can name what it points at without a
+    # route that would also hand it file paths or the parametric model. "" = not written.
+    name: str = ""
 
 
 def _srgb_to_linear(channel: float) -> float:
@@ -433,6 +437,8 @@ def encode_assembly_glb(
             "occurrence_id": instance.occurrence_id,
             "instance_path": instance.instance_path,
         }
+        if instance.name:
+            node_extras["name"] = instance.name
         if instance.part_id not in part_accessor_indices:
             nodes.append({"translation": list(instance.translation), "rotation": [qx, qy, qz, qw], "extras": node_extras})
             continue
