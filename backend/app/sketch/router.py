@@ -10,6 +10,7 @@ from app.sketch.constraints import (
     ArcLengthConstraint,
     HorizontalAngleConstraint,
     PointAngleConstraint,
+    PointCircleDistanceConstraint,
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
@@ -52,6 +53,7 @@ from app.sketch.models import (
     TextEntity,
     _signed_point_line_distance,
     check_angle_value,
+    check_length_value,
     check_arc_length_value,
 )
 from app.sketch.point_merge import MergeRefused, merge_points
@@ -64,6 +66,8 @@ from app.sketch.schemas import (
     HorizontalAngleConstraintResponse,
     PointAngleConstraintCreate,
     PointAngleConstraintResponse,
+    PointCircleDistanceConstraintCreate,
+    PointCircleDistanceConstraintResponse,
     MergePointsRequest,
     MergePointsResponse,
     ReferenceDimensionCreate,
@@ -663,6 +667,7 @@ _FIELD_COPY_RESPONSES: dict[type, type] = {
     ArcLengthConstraint: ArcLengthConstraintResponse,
     HorizontalAngleConstraint: HorizontalAngleConstraintResponse,
     PointAngleConstraint: PointAngleConstraintResponse,
+    PointCircleDistanceConstraint: PointCircleDistanceConstraintResponse,
 }
 
 
@@ -1735,6 +1740,10 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_arc_length_constraint(payload.arc_id, payload.length)
         elif isinstance(payload, HorizontalAngleConstraintCreate):
             constraint = sketch.add_horizontal_angle_constraint(payload.line_id, payload.angle_degrees, payload.quadrant)
+        elif isinstance(payload, PointCircleDistanceConstraintCreate):
+            constraint = sketch.add_point_circle_distance_constraint(
+                payload.point_id, payload.circle_or_arc_id, payload.distance, payload.side
+            )
         elif isinstance(payload, PointAngleConstraintCreate):
             constraint = sketch.add_point_angle_constraint(
                 payload.vertex_point_id, payload.point1_id, payload.point2_id, payload.angle_degrees, payload.quadrant
@@ -1792,7 +1801,7 @@ def _is_length_dimension(constraint: Constraint) -> bool:
     not a user-confirmed dimension)."""
     if isinstance(constraint, DistanceConstraint):
         return not constraint.provisional
-    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint, ArcLengthConstraint))
+    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint, ArcLengthConstraint, PointCircleDistanceConstraint))
 
 
 def _scale_sketch_for_first_dimension(
@@ -2049,6 +2058,12 @@ def update_constraint_value(
             constraint.quadrant = payload.quadrant
     elif isinstance(constraint, ArcLengthConstraint):
         _update_arc_length(sketch, constraint, payload.value)
+    elif isinstance(constraint, PointCircleDistanceConstraint):
+        try:
+            check_length_value(payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        constraint.distance = payload.value
     elif isinstance(constraint, (HorizontalAngleConstraint, PointAngleConstraint)):
         try:
             check_angle_value(payload.value)

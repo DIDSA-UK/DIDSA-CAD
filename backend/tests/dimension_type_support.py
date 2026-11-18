@@ -40,3 +40,13 @@ def round_trip(sketch: Sketch) -> Sketch:
 def blockers(sketch: Sketch, point_ids) -> dict[str, str | None]:
     """What stops each Point from being deleted (None: nothing)."""
     return {point_id: sketch._point_deletion_blocker(point_id) for point_id in point_ids}
+
+
+def fixed_circle(sketch: Sketch, x: float = 0.0, y: float = 0.0, radius: float = 5.0):
+    """A Circle about (x, y) with a confirmed radius and its centre fixed: only what a test adds can move."""
+    center = sketch.add_point(x, y)
+    circle = sketch.add_circle(center.id, radius=radius, angle=0.0)
+    sketch.constraints[circle.radius_constraint_id].provisional = False
+    sketch.constraints[circle.radius_constraint_id].distance = radius
+    sketch.add_fixed_constraint(center.id)
+    return circle

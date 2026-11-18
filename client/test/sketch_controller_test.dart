@@ -58,7 +58,12 @@ void _blockLocalClamp(SketchController controller, String pointId) {
 /// controller's chaining and dimension-ghost-confirmation logic without any
 /// real network call.
 /// Bug report 2026-11-18 part D: the value field of each new dimension type, for the fake's value PATCH.
-const _valueFieldOfType = {'arc_length': 'length', 'horizontal_angle': 'angle_degrees', 'point_angle': 'angle_degrees'};
+const _valueFieldOfType = {
+  'arc_length': 'length',
+  'horizontal_angle': 'angle_degrees',
+  'point_angle': 'angle_degrees',
+  'point_circle_distance': 'distance',
+};
 
 class _FakeBackend {
   int _nextId = 1;
@@ -2476,6 +2481,22 @@ class _FakeBackend {
             'id': id,
             'type': 'fixed',
             'point_ids': fixedPointIds,
+          };
+          break;
+        case 'point_circle_distance':
+          final curveId = body['circle_or_arc_id'];
+          final circle = circles[curveId];
+          final arc = arcs[curveId];
+          if (circle == null && arc == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'point_circle_distance',
+            'point_id': body['point_id'],
+            'circle_or_arc_id': curveId,
+            'center_point_id': (circle ?? arc)!['center_point_id'],
+            'radius_point_id': circle != null ? circle['radius_point_id'] : arc!['start_point_id'],
+            'distance': (body['distance'] as num).toDouble(),
+            'side': body['side'] ?? 'min',
           };
           break;
         case 'point_angle':
@@ -16099,7 +16120,8 @@ void main() {
       await controller.handleCanvasTap(2, 2);
       await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 20 + 4 * math.sin(math.pi / 4)); // on the rim, off the cardinals
 
-      expect(optionKeys().toSet(), {'linear', 'h', 'v'});
+      // Part D added the minimum and maximum distances (offered after the centre distances, chosen in the drawer).
+      expect(optionKeys().toSet(), {'linear', 'h', 'v', 'minDistance', 'maxDistance'});
       expect(controller.pendingDimensionGhost!.pointBId, circle.centerPointId);
       controller.moveCursorToSketchPoint(10, 40); // above the box of the point and the centre
       expect(controller.pendingDimensionKind, GhostKind.horizontal);
@@ -16364,6 +16386,32 @@ void main() {
         await controller.handleCanvasTap(x, y);
       }
       expect(controller.dimensionSelection, hasLength(1));
+    });
+
+    test('a Point and a circle offer the minimum and maximum distances; confirming makes one with its side', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(24, 20);
+      controller.selectDrawTool(SketchTool.point);
+      await controller.handleCanvasTap(2, 2);
+      final circle = controller.circles.values.single;
+      final pointId = controller.points.values.firstWhere((p) => p.x == 2 && p.y == 2).id;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 20 + 4 * math.sin(math.pi / 4));
+      final labels = controller.pendingDimensionOptions.map((g) => g.displayLabel).toList();
+      expect(labels.sublist(labels.length - 2), ['Minimum distance', 'Maximum distance']);
+      expect(controller.selectPendingDimensionKind('maxDistance'), isTrue);
+      final ghost = controller.pendingDimensionGhost!;
+      final centreGap = math.sqrt(18 * 18 * 2);
+      expect(controller.currentGhostValue(ghost), closeTo(centreGap + 4, 1e-9));
+      controller.selectPendingDimensionKind('minDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(centreGap - 4, 1e-9));
+      await controller.confirmGhostValue('minDistance', 10.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<PointCircleDistanceConstraintDto>().single;
+      expect((made.pointId, made.circleOrArcId, made.side, made.distance), (pointId, circle.id, 'min', 10.0));
+      expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single.text, '10.00');
     });
   });
 }

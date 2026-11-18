@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays, point_circle_distance
 
 
 class SolverBuilder(Protocol):
@@ -226,6 +226,13 @@ class SolverBuilder(Protocol):
     def point_angle(self, vertex_id: str, point1_id: str, point2_id: str, degrees: float, quadrant: int | None) -> int:
         """Pins the angle at `vertex_id` between the rays to `point1_id` and `point2_id` (`addAngle` between two solver-only line
         segments on those existing Points: no new unknowns), value or supplement by the quadrant or, with none, the nearer one."""
+        ...
+
+    def point_circle_distance(self, point_id: str, center_id: str, radius_point_id: str, value: float, side: str) -> int:
+        """Pins the nearest ("min") or farthest ("max") distance from a Point to a circle. One solver-only helper point H on the line
+        through the Point and the centre (`point_on_line`) at the radius from the centre (`equal_length` with the centre-to-rim
+        segment), seeded on the Point's side for "min" and the far side for "max"; then `distance(Point, H) = value`. H's two unknowns
+        are taken by its two equations, so the net is the one equation of the value."""
         ...
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
@@ -1404,3 +1411,40 @@ class PointAngleConstraint(MeasuredDimension):
             return measured
         return measured if abs(measured - self.angle_degrees) <= abs(180.0 - measured - self.angle_degrees) else 180.0 - measured
 
+
+
+@dataclass
+class PointCircleDistanceConstraint(MeasuredDimension):
+    """The minimum or maximum distance from a Point to a Circle or Arc (bug report 2026-11-18, part D).
+
+    `side` is "min" (to the nearest point of the circle) or "max" (to the farthest). Solved with one solver-only helper point (see
+    `SolverBuilder.point_circle_distance`): zero net DOF from the helper, one equation for the value. An Arc is measured as its whole
+    circle. After a solve the value is measured on the sketch's own Points (`MeasuredDimension`), so a helper that settled on the other
+    side reads as not converged.
+
+    `point_ids` are the Point, the centre and the rim Point that carries the radius (a Circle's radius Point, an Arc's start)."""
+
+    id: str
+    point_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+    @property
+    def type(self) -> str:
+        return "point_circle_distance"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.point_id, self.center_point_id, self.radius_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.point_circle_distance(self.point_id, self.center_point_id, self.radius_point_id, self.distance, self.side)
+
+    def value(self) -> float:
+        return self.distance
+
+    def measured_value(self, points) -> float | None:
+        p, c, r = points[self.point_id], points[self.center_point_id], points[self.radius_point_id]
+        return point_circle_distance((p.x, p.y), (c.x, c.y), (r.x, r.y), self.side)

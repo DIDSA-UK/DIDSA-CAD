@@ -184,6 +184,7 @@ const Map<String, int> dofCostByConstraintType = {
   'arc_length': 1, // radius * counter-clockwise sweep = value (the arc's own end-radius tie is counted by its equal_radius entry)
   'horizontal_angle': 1, // angle(line, fixed horizontal) = value
   'point_angle': 1, // angle(vertex->p1, vertex->p2) = value, on the existing points
+  'point_circle_distance': 1, // |point - nearest/farthest point of the circle| = value (the backend's helper point: 2 unknowns, 2 equations)
 };
 
 /// Resolves a Constraint to its backend `type` discriminator string (the
@@ -335,6 +336,9 @@ const Map<String, int> dofCostByConstraintType = {
   }
   if (constraint is PointAngleConstraintDto) {
     return (type: 'point_angle', pointIds: [constraint.vertexPointId, constraint.point1Id, constraint.point2Id]);
+  }
+  if (constraint is PointCircleDistanceConstraintDto) {
+    return (type: 'point_circle_distance', pointIds: [constraint.pointId, constraint.centerPointId, constraint.radiusPointId]);
   }
   if (constraint is PointOnLineConstraintDto) {
     return (type: 'point_on_line', pointIds: ofLine(constraint.lineId, constraint.pointId));

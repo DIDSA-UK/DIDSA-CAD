@@ -21,6 +21,7 @@ from app.sketch.constraints import (
     HorizontalAngleConstraint,
     MeasuredDimension,
     PointAngleConstraint,
+    PointCircleDistanceConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
@@ -92,6 +93,7 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     ArcLengthConstraint,
     HorizontalAngleConstraint,
     PointAngleConstraint,
+    PointCircleDistanceConstraint,
 )
 
 # CurveTangentConstraint is deliberately NOT in the allowlist above -
@@ -215,6 +217,7 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     ArcLengthConstraint,
     HorizontalAngleConstraint,
     PointAngleConstraint,
+    PointCircleDistanceConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -1023,6 +1026,26 @@ class _PySlvsBuilder:
         line1 = self.line_segment(vertex, self.point2d(point1_id))
         line2 = self.line_segment(vertex, self.point2d(point2_id))
         return self._system.addAngle(degrees, supplement, line1, line2, wrkpln=self._workplane, group=_SOLVE_GROUP)
+
+    def _point_on_circle_helper(self, center_id: str, radius_point_id: str, through_id: str, toward: float) -> int:
+        """A solver-only point H on the line through `center_id` and `through_id`, at the circle's radius from the centre: two
+        equations for its two unknowns. Seeded at centre + toward * radius along centre-to-`through` (toward +1: on `through`'s side,
+        -1: the far side), which is the solution on that side when the shape is already right."""
+        cx, cy = self.seed_xy(center_id)
+        tx, ty = self.seed_xy(through_id)
+        rx, ry = self.seed_xy(radius_point_id)
+        radius = math.hypot(rx - cx, ry - cy)
+        d = math.hypot(tx - cx, ty - cy)
+        ux, uy = ((tx - cx) / d, (ty - cy) / d) if d > 1e-12 else (1.0, 0.0)
+        helper = self.ephemeral_point2d_at(cx + toward * radius * ux, cy + toward * radius * uy)
+        center = self.point2d(center_id)
+        self.point_on_line(helper, self.line_segment(center, self.point2d(through_id)))
+        self.equal_length(self.line_segment(center, helper), self.line_segment(center, self.point2d(radius_point_id)))
+        return helper
+
+    def point_circle_distance(self, point_id: str, center_id: str, radius_point_id: str, value: float, side: str) -> int:
+        helper = self._point_on_circle_helper(center_id, radius_point_id, point_id, 1.0 if side == "min" else -1.0)
+        return self.distance(self.point2d(point_id), helper, value)
 
     def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
         helper = self._system.addLineSegment(

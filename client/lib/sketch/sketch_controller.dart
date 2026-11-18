@@ -9529,6 +9529,7 @@ class SketchController extends ChangeNotifier {
       ArcLengthConstraintDto d => (pointIds: {d.centerPointId, d.startPointId, d.endPointId}, lineIds: <String>{}),
       HorizontalAngleConstraintDto d => (pointIds: {d.lineStartId, d.lineEndId}, lineIds: {d.lineId}),
       PointAngleConstraintDto d => (pointIds: {d.vertexPointId, d.point1Id, d.point2Id}, lineIds: <String>{}),
+      PointCircleDistanceConstraintDto d => (pointIds: {d.pointId, d.centerPointId, d.radiusPointId}, lineIds: <String>{}),
       _ => (pointIds: <String>{}, lineIds: <String>{}),
     };
   }
@@ -15335,6 +15336,7 @@ class SketchController extends ChangeNotifier {
             _ghosts = [];
           } else {
             _buildPointDistanceGhosts(aAnchor, bAnchor);
+            _ghosts = [..._ghosts, ..._curveDistanceGhosts(a, b)];
           }
           return;
         }
@@ -15369,6 +15371,42 @@ class SketchController extends ChangeNotifier {
     }
 
     _ghosts = [];
+  }
+
+  /// Bug report 2026-11-18 part D: the minimum and maximum distances for a Point and a Circle or Arc picked together (after the centre
+  /// distances); none for a Point of the curve itself.
+  List<DimensionGhost> _curveDistanceGhosts(SketchSelection a, SketchSelection b) {
+    final point = a.kind == SelectionKind.point ? a : (b.kind == SelectionKind.point ? b : null);
+    final curve = _curveCentrePointId(a) != null ? a : (_curveCentrePointId(b) != null ? b : null);
+    if (point == null || curve == null) return const [];
+    final (String centre, String rim, Set<String> own) = switch (curve.kind) {
+      SelectionKind.circle => (
+          circles[curve.id]!.centerPointId,
+          circles[curve.id]!.radiusPointId,
+          {circles[curve.id]!.centerPointId, circles[curve.id]!.radiusPointId},
+        ),
+      _ => (
+          arcs[curve.id]!.centerPointId,
+          arcs[curve.id]!.startPointId,
+          {arcs[curve.id]!.centerPointId, arcs[curve.id]!.startPointId, arcs[curve.id]!.endPointId},
+        ),
+    };
+    if (own.contains(point.id)) return const [];
+    DimensionGhost ghost(String side, String label) => DimensionGhost(
+          key: '${side}Distance',
+          kind: GhostKind.typed,
+          label: label,
+          template: PointCircleDistanceConstraintDto(
+            id: '${side}Distance',
+            pointId: point.id,
+            circleOrArcId: curve.id,
+            centerPointId: centre,
+            radiusPointId: rim,
+            distance: 0,
+            side: side,
+          ),
+        );
+    return [ghost('min', 'Minimum distance'), ghost('max', 'Maximum distance')];
   }
 
   /// The centre Point of a Circle or Arc selection, else null.

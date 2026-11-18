@@ -22,7 +22,10 @@ typedef PointAt = XY? Function(String pointId);
 
 /// The dimension types this file draws and lays out.
 bool isLaidOutDimension(ConstraintDto c) =>
-    c is ArcLengthConstraintDto || c is HorizontalAngleConstraintDto || c is PointAngleConstraintDto;
+    c is ArcLengthConstraintDto ||
+    c is HorizontalAngleConstraintDto ||
+    c is PointAngleConstraintDto ||
+    c is PointCircleDistanceConstraintDto;
 
 /// Whether [c]'s value is an angle (degrees) rather than a length.
 bool isAngularDimension(ConstraintDto c) => c is HorizontalAngleConstraintDto || c is PointAngleConstraintDto;
@@ -32,6 +35,7 @@ double? storedDimensionValue(ConstraintDto c) => switch (c) {
       ArcLengthConstraintDto d => d.length,
       HorizontalAngleConstraintDto d => d.angleDegrees,
       PointAngleConstraintDto d => d.angleDegrees,
+      PointCircleDistanceConstraintDto d => d.distance,
       _ => null,
     };
 
@@ -66,6 +70,16 @@ ConstraintDto dimensionWithValue(ConstraintDto c, double value) => switch (c) {
         ),
       HorizontalAngleConstraintDto d => _horizontalAngle(d, value: value),
       PointAngleConstraintDto d => _pointAngle(d, value: value),
+      PointCircleDistanceConstraintDto d => PointCircleDistanceConstraintDto(
+          id: d.id,
+          label: d.label,
+          pointId: d.pointId,
+          circleOrArcId: d.circleOrArcId,
+          centerPointId: d.centerPointId,
+          radiusPointId: d.radiusPointId,
+          distance: value,
+          side: d.side,
+        ),
       _ => c,
     };
 
@@ -128,6 +142,8 @@ int? dimensionQuadrant(ConstraintDto c) => switch (c) {
 bool sameDimensionTarget(ConstraintDto a, ConstraintDto b) => switch ((a, b)) {
       (ArcLengthConstraintDto x, ArcLengthConstraintDto y) => x.arcId == y.arcId,
       (HorizontalAngleConstraintDto x, HorizontalAngleConstraintDto y) => x.lineId == y.lineId,
+      (PointCircleDistanceConstraintDto x, PointCircleDistanceConstraintDto y) =>
+        x.pointId == y.pointId && x.circleOrArcId == y.circleOrArcId && x.side == y.side,
       (PointAngleConstraintDto x, PointAngleConstraintDto y) =>
         x.vertexPointId == y.vertexPointId && {x.point1Id, x.point2Id}.containsAll({y.point1Id, y.point2Id}),
       _ => false,
@@ -141,6 +157,13 @@ Map<String, Object?> dimensionCreateJson(ConstraintDto c, double value) => switc
           'line_id': d.lineId,
           'angle_degrees': value,
           if (d.quadrant != null) 'quadrant': d.quadrant,
+        },
+      PointCircleDistanceConstraintDto d => {
+          'type': 'point_circle_distance',
+          'point_id': d.pointId,
+          'circle_or_arc_id': d.circleOrArcId,
+          'distance': value,
+          'side': d.side,
         },
       PointAngleConstraintDto d => {
           'type': 'point_angle',
@@ -198,6 +221,9 @@ double? measureDimension(ConstraintDto c, PointAt at) {
     case PointAngleConstraintDto d:
       final rays = _pointAngleRays(d, at);
       return rays == null ? null : _angleBetween(rays.ray1, rays.ray2);
+    case PointCircleDistanceConstraintDto d:
+      final ends = _measuredEnds(d, at);
+      return ends == null ? null : _len(_sub(ends.$2, ends.$1));
     default:
       return null;
   }
@@ -228,6 +254,65 @@ _AngleRays? _horizontalAngleRays(HorizontalAngleConstraintDto d, PointAt at) {
     ray2: (q & 2 != 0 ? -1.0 : 1.0, 0.0),
     reach1: length,
     reach2: 0.0,
+  );
+}
+
+/// The two points a minimum / maximum distance runs between: the Point, and the nearest ("min") or farthest ("max") point of the
+/// circle, on the line through the Point and the centre. Null for the Point on the centre.
+(XY, XY)? _measuredEnds(ConstraintDto c, PointAt at) {
+  switch (c) {
+    case PointCircleDistanceConstraintDto d:
+      final p = at(d.pointId), center = at(d.centerPointId), rim = at(d.radiusPointId);
+      if (p == null || center == null || rim == null) return null;
+      final toPoint = _sub(p, center);
+      final dist = _len(toPoint);
+      if (dist < 1e-12) return null;
+      final r = _len(_sub(rim, center)) * (d.side == 'min' ? 1 : -1);
+      return (p, (center.$1 + toPoint.$1 / dist * r, center.$2 + toPoint.$2 / dist * r));
+    default:
+      return null;
+  }
+}
+
+/// A linear dimension from [a] to [b]: [DimensionLabelPlacement.offset] how far the dimension line sits to the left of a-to-b,
+/// [DimensionLabelPlacement.along] where the label sits along it from its middle (the same meanings as a plain distance's).
+DimensionLabelPlacement? _linearPlacementAt(XY a, XY b, XY p) {
+  final ab = _sub(b, a);
+  final length = _len(ab);
+  if (length < 1e-12) return null;
+  final t = (ab.$1 / length, ab.$2 / length), n = (-ab.$2 / length, ab.$1 / length);
+  final mid = ((a.$1 + b.$1) / 2, (a.$2 + b.$2) / 2);
+  final fromA = _sub(p, a), fromMid = _sub(p, mid);
+  return DimensionLabelPlacement(
+    offset: fromA.$1 * n.$1 + fromA.$2 * n.$2,
+    along: fromMid.$1 * t.$1 + fromMid.$2 * t.$2,
+  );
+}
+
+DimensionLayout? _linearLayout(XY a, XY b, DimensionLabelPlacement? placement) {
+  final ab = _sub(b, a);
+  final length = _len(ab);
+  if (length < 1e-12) return null;
+  final t = (ab.$1 / length, ab.$2 / length), n = (-ab.$2 / length, ab.$1 / length);
+  final offset = placement?.offset ?? 0.0;
+  final along = placement?.along ?? 0.0;
+  XY shift(XY p, double s) => (p.$1 + n.$1 * s, p.$2 + n.$2 * s);
+  final a2 = shift(a, offset), b2 = shift(b, offset);
+  final mid = ((a2.$1 + b2.$1) / 2, (a2.$2 + b2.$2) / 2);
+  final label = (mid.$1 + t.$1 * along, mid.$2 + t.$2 * along);
+  final strokes = <List<XY>>[
+    [a2, b2],
+  ];
+  // A label slid past either end gets the dimension line carried on to it.
+  if (along.abs() > length / 2) strokes.add([along > 0 ? b2 : a2, label]);
+  return DimensionLayout(
+    strokes: strokes,
+    extensions: [
+      if (offset.abs() > 1e-12) (a, a2),
+      if (offset.abs() > 1e-12) (b, b2),
+    ],
+    arrows: [(a2, b2), (b2, a2)],
+    label: label,
   );
 }
 
@@ -370,6 +455,9 @@ DimensionLabelPlacement? dimensionPlacementAt(ConstraintDto c, PointAt at, XY p)
     case PointAngleConstraintDto d:
       final rays = _pointAngleRays(d, at);
       return rays == null ? null : _anglePlacementAt(rays, p);
+    case PointCircleDistanceConstraintDto():
+      final ends = _measuredEnds(c, at);
+      return ends == null ? null : _linearPlacementAt(ends.$1, ends.$2, p);
     default:
       return null;
   }
@@ -419,6 +507,9 @@ DimensionLayout? dimensionLayout(ConstraintDto c, PointAt at, DimensionLabelPlac
     case PointAngleConstraintDto d:
       final rays = _pointAngleRays(d, at);
       return rays == null ? null : _angleLayout(rays, placement);
+    case PointCircleDistanceConstraintDto():
+      final ends = _measuredEnds(c, at);
+      return ends == null ? null : _linearLayout(ends.$1, ends.$2, placement);
     default:
       return null;
   }

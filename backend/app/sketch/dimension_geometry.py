@@ -50,3 +50,12 @@ def horizontal_angle_rays(start: XY, end: XY, quadrant: int | None) -> tuple[XY,
         vertex, ray = start, (end[0] - start[0], end[1] - start[1])
     return vertex, ray, (-1.0 if q & 2 else 1.0, 0.0)
 
+
+def point_circle_distance(point: XY, center: XY, rim: XY, side: str) -> float | None:
+    """The distance from `point` to the circle about `center` through `rim`: "min" the nearest (|d - r|), "max" the farthest (d + r).
+    None with the point on the centre (no direction to measure along)."""
+    d = math.dist(point, center)
+    if d < 1e-12:
+        return None
+    r = math.dist(center, rim)
+    return abs(d - r) if side == "min" else d + r

@@ -16,6 +16,7 @@ from app.sketch.constraints import (
     Constraint,
     HorizontalAngleConstraint,
     PointAngleConstraint,
+    PointCircleDistanceConstraint,
     CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -103,8 +104,11 @@ class ExternalVertexReference:
 
 
 # Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180),
-# "point_angle" (three points, the vertex first: the angle at it, 0-180).
-REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle")
+# "point_angle" (three points, the vertex first: the angle at it, 0-180), "min_distance" / "max_distance" (a point and a circle or arc, either
+# order: the nearest / farthest distance).
+REFERENCE_DIMENSION_KINDS = (
+    "distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle", "min_distance", "max_distance"
+)
 
 
 @dataclass(frozen=True)
@@ -1093,6 +1097,12 @@ class NoIntersectionFoundError(ValueError):
     trim/extend target exists - a real, expected outcome the router surfaces
     as 422, distinct from every other `ValueError` this method raises
     (invalid endpoint, Polygon-owned edge), which stay ordinary 400s."""
+
+
+def check_length_value(value: float) -> None:
+    """Raises ValueError unless `value` can be a part D distance: more than 0."""
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("A distance must be more than 0 (a point on the curve is a coincident constraint)")
 
 
 def check_angle_value(degrees: float) -> None:
@@ -4732,6 +4742,38 @@ class Sketch:
             point2_id=point2_id,
             angle_degrees=angle_degrees,
             quadrant=quadrant,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def _circle_own_point_ids(self, circle_or_arc_id: str) -> set[str]:
+        entity = self.entities.get(circle_or_arc_id)
+        return set(self._entity_defining_point_ids(entity)) if entity is not None else set()
+
+    def add_point_circle_distance_constraint(
+        self, point_id: str, circle_or_arc_id: str, distance: float, side: str = "min"
+    ) -> PointCircleDistanceConstraint:
+        """Bug report 2026-11-18 part D: the nearest ("min") or farthest ("max") distance from a Point to a Circle or Arc (see
+        `PointCircleDistanceConstraint`). Refused for a Point of the circle itself, a Point on its centre, and a value not above 0."""
+        if side not in ("min", "max"):
+            raise ValueError(f"side must be 'min' or 'max', got {side!r}")
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
+        if point_id in self._circle_own_point_ids(circle_or_arc_id):
+            raise ValueError("That point belongs to the circle itself")
+        point, center = self.points[point_id], self.points[center_point_id]
+        if math.hypot(point.x - center.x, point.y - center.y) < 1e-9:
+            raise ValueError("The point is on the centre, so the nearest and farthest points of the circle are not defined")
+        check_length_value(distance)
+        constraint = PointCircleDistanceConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            circle_or_arc_id=circle_or_arc_id,
+            center_point_id=center_point_id,
+            radius_point_id=radius_point_id,
+            distance=distance,
+            side=side,
         )
         self.constraints[constraint.id] = constraint
         return constraint

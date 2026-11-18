@@ -239,6 +239,7 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
   if (c is ArcLengthConstraintDto) return ids([c.centerPointId, c.startPointId, c.endPointId]);
   if (c is HorizontalAngleConstraintDto) return ids([c.lineStartId, c.lineEndId]);
   if (c is PointAngleConstraintDto) return ids([c.vertexPointId, c.point1Id, c.point2Id]);
+  if (c is PointCircleDistanceConstraintDto) return ids([c.pointId, c.centerPointId, c.radiusPointId]);
   return null;
 }
 
@@ -252,7 +253,10 @@ class _Branches {
   /// A part D angle with no quadrant: whether the solve is holding the value's supplement (the nearer of the two in the reference).
   final bool Function(HorizontalAngleConstraintDto) horizontalSupplement;
   final bool Function(PointAngleConstraintDto) pointAngleSupplement;
-  const _Branches(this.supplement, this.axisSign, this.horizontalSupplement, this.pointAngleSupplement);
+
+  /// A minimum distance from a Point to a circle: +1 when the Point was outside the circle in the reference frame, -1 inside.
+  final double Function(PointCircleDistanceConstraintDto) pointOutside;
+  const _Branches(this.supplement, this.axisSign, this.horizontalSupplement, this.pointAngleSupplement, this.pointOutside);
 }
 
 /// Residuals of [c] over the local points [p] (id -> position with derivatives).
@@ -378,6 +382,14 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
     final supplement = q == null ? br.horizontalSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
     final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
     return [u.x - _len(u).scale(math.cos(target * math.pi / 180))];
+  }
+  if (c is PointCircleDistanceConstraintDto) {
+    // d = |point - centre|, r = |rim - centre|. Maximum: d + r. Minimum: d - r outside the circle, r - d inside (the side the reference
+    // frame was on, so the drag cannot pass the point through the circle).
+    final center = a(c.centerPointId);
+    final d = _len(_sub(a(c.pointId), center)), r = _len(_sub(a(c.radiusPointId), center));
+    if (c.side == 'max') return [(d + r).plus(-c.distance)];
+    return [(d - r).scale(br.pointOutside(c)).plus(-c.distance)];
   }
   if (c is PointAngleConstraintDto) {
     // The two rays from the vertex; one flipped ray makes it the supplement (the two-line angle's residual, without a division).
@@ -561,6 +573,12 @@ class _System {
         if (la == 0 || lb == 0) return false;
         final current = math.acos(((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0)) * 180 / math.pi;
         return ((180.0 - c.angleDegrees) - current).abs() < (c.angleDegrees - current).abs();
+      },
+      (c) {
+        final p = ref[c.pointId], center = ref[c.centerPointId], rim = ref[c.radiusPointId];
+        if (p == null || center == null || rim == null) return 1.0;
+        double dist((double, double) u, (double, double) v) => math.sqrt(math.pow(u.$1 - v.$1, 2) + math.pow(u.$2 - v.$2, 2));
+        return dist(p, center) >= dist(rim, center) ? 1.0 : -1.0;
       },
     );
 

@@ -946,6 +946,8 @@ abstract class ConstraintDto {
         return HorizontalAngleConstraintDto.fromJson(json);
       case 'point_angle':
         return PointAngleConstraintDto.fromJson(json);
+      case 'point_circle_distance':
+        return PointCircleDistanceConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1602,6 +1604,40 @@ class PointAngleConstraintDto extends ConstraintDto {
         point2Id: json['point2_id'] as String,
         angleDegrees: (json['angle_degrees'] as num).toDouble(),
         quadrant: json['quadrant'] as int?,
+      );
+}
+
+/// Bug report 2026-11-18 part D: the nearest ([side] "min") or farthest ("max") distance from [pointId] to a Circle or Arc (the
+/// backend's `PointCircleDistanceConstraint`); [radiusPointId] is the rim Point carrying the radius (a Circle's radius Point, an Arc's
+/// start).
+class PointCircleDistanceConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String circleOrArcId;
+  final String centerPointId;
+  final String radiusPointId;
+  final double distance;
+  final String side;
+
+  const PointCircleDistanceConstraintDto({
+    required super.id,
+    super.label,
+    required this.pointId,
+    required this.circleOrArcId,
+    required this.centerPointId,
+    required this.radiusPointId,
+    required this.distance,
+    this.side = 'min',
+  });
+
+  factory PointCircleDistanceConstraintDto.fromJson(Map<String, dynamic> json) => PointCircleDistanceConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        pointId: json['point_id'] as String,
+        circleOrArcId: json['circle_or_arc_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+        side: json['side'] as String? ?? 'min',
       );
 }
 
