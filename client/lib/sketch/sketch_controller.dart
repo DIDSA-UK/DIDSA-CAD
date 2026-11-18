@@ -15022,6 +15022,7 @@ class SketchController extends ChangeNotifier {
       _ghosts = [];
       return;
     }
+    _stickyAngleQuadrant = null;
     _ghosts = _linesAreParallel(lineA, lineB)
         ? [DimensionGhost(key: 'lineDistance', kind: GhostKind.lineDistance, lineAId: lineAId, lineBId: lineBId)]
         : [DimensionGhost(key: 'angle', kind: GhostKind.angle, lineAId: lineAId, lineBId: lineBId)];
@@ -15105,14 +15106,27 @@ class SketchController extends ChangeNotifier {
     final band = pixelsPerUnit != null && pixelsPerUnit > 0 ? hitRadiusForPixelsPerUnit(pixelsPerUnit) : snapRadius;
     double offLine((double, double) ray) =>
         ((cursorX - outward.vertex.$1) * ray.$2 - (cursorY - outward.vertex.$2) * ray.$1).abs();
-    if (offLine(outward.ray1) < band || offLine(outward.ray2) < band) return null;
-    return angleQuadrantAt(
+    final sticky = _stickyAngleQuadrant;
+    final stickyHere = sticky != null && sticky.lineAId == ghost.lineAId && sticky.lineBId == ghost.lineBId ? sticky.quadrant : null;
+    // Bug report 2026-11-18: the ghost's "?" sits on its arc only 32 px from the vertex, so for most angles it is inside this band of
+    // one line or the other. Going back to "no side chosen" there sent the flag back to its default sector as the pointer reached it,
+    // so it could never be tapped. Once a sector has been chosen it stays chosen while the pointer is on a line (or the vertex); only
+    // another sector's open area changes it.
+    if (offLine(outward.ray1) < band || offLine(outward.ray2) < band) return stickyHere;
+    final quadrant = angleQuadrantAt(
       vertex: outward.vertex,
       outwardRay1: outward.ray1,
       outwardRay2: outward.ray2,
       p: (cursorX, cursorY),
     );
+    if (quadrant != null) {
+      _stickyAngleQuadrant = (lineAId: ghost.lineAId, lineBId: ghost.lineBId, quadrant: quadrant);
+    }
+    return quadrant ?? stickyHere;
   }
+
+  /// The last sector [_angleQuadrantUnderCursor] found for an angle ghost's two lines, kept while the pointer crosses a line.
+  ({String? lineAId, String? lineBId, int quadrant})? _stickyAngleQuadrant;
 
   AngleConstraintDto? _findAngleConstraint(String line1Id, String line2Id) {
     for (final constraint in constraints.values) {

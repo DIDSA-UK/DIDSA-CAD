@@ -19,12 +19,13 @@ void main() {
         onTap: enabled ? () => taps.add(id) : null,
       );
 
-  Future<void> pumpPanel(WidgetTester tester, List<VisibilityChipData> chips) {
+  Future<void> pumpPanel(WidgetTester tester, List<VisibilityChipData> chips, {bool wrap = false}) {
     return tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: StatefulBuilder(
             builder: (context, setState) => VisibilityPanel(
+              wrap: wrap,
               chips: chips,
               views: [
                 VisibilityViewData(id: 'front', label: 'Front', onTap: () => taps.add('view front')),
@@ -139,5 +140,25 @@ void main() {
       for (final id in ['a', 'b', 'c', 'd', 'e', 'f']) chip(id, VisibilityChipState.shown),
     ]);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('desktop (wrap): every button is on screen at once, no sideways scrolling (bug report 2026-11-18)', (tester) async {
+    tester.view.physicalSize = const Size(300, 600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+    await pumpPanel(tester, [for (final id in ids) chip(id, VisibilityChipState.shown)], wrap: true);
+    expect(tester.takeException(), isNull);
+    expect(find.byType(SingleChildScrollView), findsNothing);
+    final screen = Offset.zero & const Size(300, 600);
+    for (final key in [
+      for (final id in ids) 'vis-chip-$id',
+      for (final mode in ViewportRenderMode.values) 'vis-mode-${mode.name}',
+      'vis-view-front',
+      'vis-view-top',
+    ]) {
+      final rect = tester.getRect(find.byKey(ValueKey(key)));
+      expect(screen.contains(rect.topLeft) && screen.contains(rect.bottomRight - const Offset(1, 1)), isTrue, reason: key);
+    }
   });
 }

@@ -12070,6 +12070,21 @@ void main() {
         expect(controller.angleGhostQuadrant(ghost), q, reason: '$p');
       });
     });
+
+    test('bug report 2026-11-18: a chosen sector stays while the pointer crosses a line on its way to the "?" flag', () async {
+      await pickTwoLines();
+      final ghost = controller.ghosts.single;
+      controller.moveCursorToSketchPoint(-3, 4);
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      // Onto line 1's extension behind the vertex, and onto the vertex itself: the flag sits this close to the lines.
+      controller.moveCursorToSketchPoint(-3, 0.01);
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      controller.moveCursorToSketchPoint(0, 0);
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      controller.tapGhost('angle');
+      await controller.confirmGhostValue('angle', 120.0);
+      expect(controller.constraints.values.whereType<AngleConstraintDto>().single.quadrant, 1);
+    });
   });
 
   test('confirming an angle ghost creates an AngleConstraint between the two Lines', () async {

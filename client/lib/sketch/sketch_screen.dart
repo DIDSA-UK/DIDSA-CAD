@@ -448,6 +448,9 @@ class _SketchScreenState extends State<SketchScreen> {
   /// bound it - see [_buildMenuPanel]'s doc comment for why that mattered.
   bool _menuOpen = false;
 
+  /// Whether the standalone 2D Drawing's File menu (Save / Open / Exit, top left) is open.
+  bool _fileMenuOpen = false;
+
   /// Stage 23f's View submenu controls - all in-memory only/session-only
   /// per the brief, with no `shared_preferences` persistence (unlike
   /// `viewport3d`'s analogous `ViewPreferences`).
@@ -1073,6 +1076,28 @@ class _SketchScreenState extends State<SketchScreen> {
                                 ),
                               ),
                             ),
+                          // Bug report 2026-11-18: the view options (render mode, colours, grid, constraint labels) open from a
+                          // Visibility button here with the other FABs, under Reset view, as the 3D viewport's do - not from a
+                          // hamburger in the top-left corner. The panel opens beside this column.
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8),
+                            child: FloatingActionButton.small(
+                              key: const ValueKey('sketch-visibility-fab'),
+                              heroTag: 'sketch-visibility-fab',
+                              tooltip: 'Visibility',
+                              backgroundColor: _menuOpen ? Theme.of(context).colorScheme.primary : null,
+                              foregroundColor: _menuOpen ? Theme.of(context).colorScheme.onPrimary : null,
+                              onPressed: () => setState(() {
+                                _menuOpen = !_menuOpen;
+                                _fileMenuOpen = false;
+                              }),
+                              child: Badge(
+                                isLabelVisible: _referenceBodyHidden,
+                                smallSize: 8,
+                                child: const Icon(Icons.visibility_outlined),
+                              ),
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -1084,38 +1109,26 @@ class _SketchScreenState extends State<SketchScreen> {
                   // sits in front of it and covers it whenever the ribbon is
                   // showing over the same top-left corner, rather than the
                   // FAB floating on top of the ribbon's content.
-                  Positioned(
-                    top: 8,
-                    left: 8,
-                    child: SafeArea(
-                      bottom: false,
-                      child: FloatingActionButton.small(
-                        heroTag: 'sketch-menu-fab',
-                        tooltip: 'Menu',
-                        onPressed: () => setState(() => _menuOpen = !_menuOpen),
-                        child: SvgPicture.asset(
-                          'assets/icons/sketchbar/sketchbar_menu.svg',
-                          width: 30,
-                          height: 30,
-                          colorFilter: ColorFilter.mode(
-                            Theme.of(context).colorScheme.onPrimaryContainer,
-                            BlendMode.srcIn,
-                          ),
+                  // The standalone 2D Drawing's own File menu (Save / Open / Exit): it has no Part screen's File menu to use.
+                  // A Part-anchored sketch has nothing here - its view options are under the Visibility button, top right.
+                  if (widget.standalone)
+                    Positioned(
+                      top: 8,
+                      left: 8,
+                      child: SafeArea(
+                        bottom: false,
+                        child: FloatingActionButton.small(
+                          key: const ValueKey('sketch-file-fab'),
+                          heroTag: 'sketch-file-fab',
+                          tooltip: 'File',
+                          onPressed: () => setState(() {
+                            _fileMenuOpen = !_fileMenuOpen;
+                            _menuOpen = false;
+                          }),
+                          child: const Icon(Icons.folder_outlined),
                         ),
                       ),
                     ),
-                  ),
-                  // SketchRibbon aligns and sizes itself (top-left,
-                  // shrink-wrapped to its own content) - this just gives it
-                  // room to do so without forcing a particular size. Placed
-                  // after (in front of) the menu FAB above so the ribbon is
-                  // the topmost thing in that corner whenever it's visible.
-                  // Sketcher restructure Phase 2 follow-up (P14): no longer
-                  // hidden during Orbit View - now that the embedded 3D view
-                  // has its own cursor/select mode (P12/P13), the ribbon (a
-                  // plain screen-space overlay with no 2D-canvas coordinate
-                  // dependency of its own) already works against a
-                  // 3D-selected entity unmodified.
                   Positioned.fill(child: SketchRibbon(controller: _controller)),
                   // 3D-viewport Text tool round
                   // (`docs/text-tool-3d-viewport-scope.md` §2.3): the Text
@@ -1404,20 +1417,25 @@ class _SketchScreenState extends State<SketchScreen> {
                   // keeps the bottom well short of full-screen (around
                   // mid-screen at most, hugging its actually-short content
                   // in practice).
-                  if (_menuOpen)
+                  if (_menuOpen || _fileMenuOpen)
                     Positioned.fill(
                       child: Stack(
                         children: [
                           Positioned.fill(
                             child: GestureDetector(
                               behavior: HitTestBehavior.opaque,
-                              onTap: () => setState(() => _menuOpen = false),
+                              onTap: () => setState(() {
+                                _menuOpen = false;
+                                _fileMenuOpen = false;
+                              }),
                               child: Container(color: Colors.black45),
                             ),
                           ),
                           Positioned(
-                            top: 56,
-                            left: 8,
+                            // Visibility: beside the top-right FAB column. File (standalone): under its top-left button.
+                            top: _fileMenuOpen ? 56 : 8,
+                            left: _fileMenuOpen ? 8 : null,
+                            right: _fileMenuOpen ? null : 64,
                             child: ConstrainedBox(
                               constraints: BoxConstraints(
                                 maxWidth: 220,
@@ -3055,10 +3073,11 @@ class _SketchScreenState extends State<SketchScreen> {
     });
   }
 
-  /// Stage 23f: the hamburger menu's content - a View submenu for the
-  /// constraint-label-visibility toggle and the canvas colour/transparency
-  /// controls, plus (standalone only) the File section's Save/Open/Exit -
-  /// see [_buildStandaloneFileMenu]. An embedded (Part-anchored) Sketch's
+  /// Stage 23f: the menu panel's content. Opened from the Visibility button
+  /// (bug report 2026-11-18, it was a top-left hamburger): a View submenu for
+  /// the constraint-label-visibility toggle and the canvas colour/transparency
+  /// controls. Opened from the standalone 2D Drawing's File button
+  /// ([_fileMenuOpen]): Save/Open/Exit - see [_buildStandaloneFileMenu]. An embedded (Part-anchored) Sketch's
   /// Exit lives in its own dedicated FAB (top-right of the canvas) instead,
   /// so it isn't repeated here for that case.
   ///
@@ -3074,8 +3093,9 @@ class _SketchScreenState extends State<SketchScreen> {
       shrinkWrap: true,
       padding: EdgeInsets.zero,
       children: [
-        if (widget.standalone) _buildStandaloneFileMenu(context, density, titleStyle),
-        if (_orbitViewActive)
+        if (_fileMenuOpen)
+          _buildStandaloneFileMenu(context, density, titleStyle)
+        else if (_orbitViewActive)
           _build3DViewMenu(context, density, titleStyle, showBodyTransparency: true)
         else
           _build2DViewMenu(context, density, titleStyle),
@@ -3326,7 +3346,10 @@ class _SketchScreenState extends State<SketchScreen> {
   String? _lastSavedSketchFileName;
 
   Future<void> _saveStandaloneSketch() async {
-    setState(() => _menuOpen = false);
+    setState(() {
+      _menuOpen = false;
+      _fileMenuOpen = false;
+    });
     final sketchId = _controller.sketchId;
     if (sketchId == null) return;
     try {
@@ -3358,7 +3381,10 @@ class _SketchScreenState extends State<SketchScreen> {
   /// precedent for the identical reason - a clean, fully-reset State for
   /// the newly opened content, not a partially-reused one.
   Future<void> _openStandaloneSketch() async {
-    setState(() => _menuOpen = false);
+    setState(() {
+      _menuOpen = false;
+      _fileMenuOpen = false;
+    });
     final picked = await FilePicker.pickFile(type: FileType.any);
     if (picked == null || !mounted) return;
     final bytes = await picked.readAsBytes();
@@ -3394,7 +3420,10 @@ class _SketchScreenState extends State<SketchScreen> {
   /// since it's reached via `Navigator.push` from `ToolChooserScreen` and
   /// so always has a route underneath for `.pop()` to return to.
   void _exitStandaloneSketch() {
-    setState(() => _menuOpen = false);
+    setState(() {
+      _menuOpen = false;
+      _fileMenuOpen = false;
+    });
     Navigator.of(context).pop();
   }
 }

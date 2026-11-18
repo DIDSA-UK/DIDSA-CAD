@@ -3625,17 +3625,20 @@ class _SketchPainter extends CustomPainter {
       ..strokeWidth = _dimensionStrokeWidth
       ..style = PaintingStyle.stroke;
 
-    Offset farEndpoint(Offset a, Offset b, Offset dir) {
+    // No extension line where the arrowhead already lands on the drawn segment: it would only cover the sketch line.
+    Offset? extensionStart(Offset a, Offset b, Offset dir) {
       final da = (a - intersection).dx * dir.dx + (a - intersection).dy * dir.dy;
       final db = (b - intersection).dx * dir.dx + (b - intersection).dy * dir.dy;
-      return da >= db ? a : b;
+      return switch (angleExtensionLineStart(da, db, radius)) { 0 => a, 1 => b, _ => null };
     }
 
     if (endpointsA != null) {
-      _drawExtensionLine(canvas, farEndpoint(endpointsA.$1, endpointsA.$2, dir1), arcPoint1, dimPaint);
+      final from = extensionStart(endpointsA.$1, endpointsA.$2, dir1);
+      if (from != null) _drawExtensionLine(canvas, from, arcPoint1, dimPaint);
     }
     if (endpointsB != null) {
-      _drawExtensionLine(canvas, farEndpoint(endpointsB.$1, endpointsB.$2, dir2), arcPoint2, dimPaint);
+      final from = extensionStart(endpointsB.$1, endpointsB.$2, dir2);
+      if (from != null) _drawExtensionLine(canvas, from, arcPoint2, dimPaint);
     }
 
     final startAngle = math.atan2(dir1.dy, dir1.dx);

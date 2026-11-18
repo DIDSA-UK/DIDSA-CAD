@@ -87,3 +87,15 @@ int? angleQuadrantAt({
   final b = (outwardRay1.$1 * dy - outwardRay1.$2 * dx) / det;
   return (a < 0 ? 1 : 0) | (b < 0 ? 2 : 0);
 }
+
+/// Which end of a line an angle dimension's extension line starts from, or null for none (bug report 2026-11-18): [alongA] and [alongB]
+/// are the line's two endpoints' distances from the vertex along the arc's ray (negative behind the vertex), [arcRadius] the arc's radius
+/// in the same units. When the arc's arrowhead lands on the drawn segment itself the extension line would only lie over the sketch line, so
+/// there is none; beyond the segment it runs from the farther end, short of it (between the vertex and the segment) from the nearer end.
+/// 0 means the first endpoint, 1 the second.
+int? angleExtensionLineStart(double alongA, double alongB, double arcRadius) {
+  final lo = math.min(alongA, alongB), hi = math.max(alongA, alongB);
+  if (arcRadius >= lo && arcRadius <= hi) return null;
+  final fromHigh = arcRadius > hi;
+  return (alongA >= alongB) == fromHigh ? 0 : 1;
+}

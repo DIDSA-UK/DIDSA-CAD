@@ -637,7 +637,6 @@ class _ConstraintOverlayPainter extends CustomPainter {
       _drawDimensionLabel(canvas, (a + b) / 2 + item.labelOffset, item.text, color, plainBlackText: true);
       return;
     }
-    final (vertex, ray1, ray2) = vertexAndRays;
     final arcPoints = _angleArcScreenPoints(_project, item);
     if (arcPoints == null) return;
     final (vertexScreen, arcPoint1, arcPoint2) = arcPoints;
@@ -659,16 +658,22 @@ class _ConstraintOverlayPainter extends CustomPainter {
       ..strokeWidth = _dimensionStrokeWidth
       ..style = PaintingStyle.stroke;
 
-    (double, double) farEndpoint((double, double) a, (double, double) b, (double, double) ray) {
-      final da = (a.$1 - vertex.$1) * ray.$1 + (a.$2 - vertex.$2) * ray.$2;
-      final db = (b.$1 - vertex.$1) * ray.$1 + (b.$2 - vertex.$2) * ray.$2;
-      return da >= db ? a : b;
+    // Bug report 2026-11-18: no extension line where the arrowhead already lands on the drawn segment - it would only cover the sketch
+    // line. Measured in screen space along the arc's ray (a line projects to a line, so this holds under perspective too).
+    void extension((double, double) a, (double, double) b, Offset dir, Offset arcPoint) {
+      final aScreen = _project(a), bScreen = _project(b);
+      if (aScreen == null || bScreen == null) return;
+      double along(Offset p) => (p - vertexScreen).dx * dir.dx + (p - vertexScreen).dy * dir.dy;
+      final from = switch (angleExtensionLineStart(along(aScreen), along(bScreen), radiusPixels)) {
+        0 => aScreen,
+        1 => bScreen,
+        _ => null,
+      };
+      if (from != null) _drawExtensionLine(canvas, from, arcPoint, dimPaint);
     }
 
-    final far1Screen = _project(farEndpoint(item.line1Start, item.line1End, ray1));
-    final far2Screen = _project(farEndpoint(item.line2Start, item.line2End, ray2));
-    if (far1Screen != null) _drawExtensionLine(canvas, far1Screen, arcPoint1, dimPaint);
-    if (far2Screen != null) _drawExtensionLine(canvas, far2Screen, arcPoint2, dimPaint);
+    extension(item.line1Start, item.line1End, dir1, arcPoint1);
+    extension(item.line2Start, item.line2End, dir2, arcPoint2);
 
     final startAngle = math.atan2(dir1.dy, dir1.dx);
     var sweep = math.atan2(dir2.dy, dir2.dx) - startAngle;

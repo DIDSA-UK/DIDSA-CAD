@@ -53,7 +53,19 @@ class VisibilityPanel extends StatelessWidget {
     required this.onClose,
     required this.renderMode,
     required this.onRenderModeChanged,
+    this.wrap = false,
   });
+
+  /// Desktop layout (bug report 2026-11-18): each row wraps onto further lines so every button shows at once. A mouse wheel cannot
+  /// scroll a horizontal row, so a clipped row left buttons out of reach. Off (the touch layout), each row is one line that swipes
+  /// sideways, to keep the panel small on a phone.
+  final bool wrap;
+
+  /// One row's buttons: wrapped ([wrap]) or one swipeable line.
+  Widget _rowItems(List<Widget> children) {
+    if (wrap) return Wrap(spacing: 0, runSpacing: 4, children: children);
+    return SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: children));
+  }
 
   final List<VisibilityChipData> chips;
   final List<VisibilityViewData> views;
@@ -83,12 +95,7 @@ class VisibilityPanel extends StatelessWidget {
                   text: 'Show',
                   leading: const SizedBox(width: 24),
                 ),
-                Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(children: [for (final chip in chips) _Chip(chip: chip)]),
-                  ),
-                ),
+                Expanded(child: _rowItems([for (final chip in chips) _Chip(chip: chip)])),
                 IconButton(
                   key: const ValueKey('vis-close'),
                   tooltip: 'Close',
@@ -102,22 +109,17 @@ class VisibilityPanel extends StatelessWidget {
               children: [
                 _RowLabel(text: 'Style', leading: const SizedBox(width: 24)),
                 Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        for (final mode in ViewportRenderMode.values)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: _ModeButton(
-                              mode: mode,
-                              selected: mode == renderMode,
-                              onTap: () => onRenderModeChanged(mode),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                  child: _rowItems([
+                    for (final mode in ViewportRenderMode.values)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: _ModeButton(
+                          mode: mode,
+                          selected: mode == renderMode,
+                          onTap: () => onRenderModeChanged(mode),
+                        ),
+                      ),
+                  ]),
                 ),
               ],
             ),
@@ -126,27 +128,22 @@ class VisibilityPanel extends StatelessWidget {
                 // The leading 24 dp keeps the label column lined up with the rows above.
                 _RowLabel(text: 'View', leading: const SizedBox(width: 24)),
                 Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        for (final view in views)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 4),
-                            child: OutlinedButton(
-                              key: ValueKey('vis-view-${view.id}'),
-                              style: OutlinedButton.styleFrom(
-                                visualDensity: VisualDensity.compact,
-                                padding: const EdgeInsets.symmetric(horizontal: 10),
-                                minimumSize: const Size(0, 32),
-                              ),
-                              onPressed: view.onTap,
-                              child: Text(view.label, style: theme.textTheme.labelSmall),
-                            ),
+                  child: _rowItems([
+                    for (final view in views)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: OutlinedButton(
+                          key: ValueKey('vis-view-${view.id}'),
+                          style: OutlinedButton.styleFrom(
+                            visualDensity: VisualDensity.compact,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            minimumSize: const Size(0, 32),
                           ),
-                      ],
-                    ),
-                  ),
+                          onPressed: view.onTap,
+                          child: Text(view.label, style: theme.textTheme.labelSmall),
+                        ),
+                      ),
+                  ]),
                 ),
               ],
             ),

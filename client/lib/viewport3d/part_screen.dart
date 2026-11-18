@@ -29396,8 +29396,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                     child: SafeArea(
                       top: false,
                       child: SizedBox(
-                        width: math.min(MediaQuery.sizeOf(context).width - 88, 420),
+                        // Desktop (bug report 2026-11-18): wide enough for every button, its rows wrapping if the window is
+                        // narrower still - a mouse wheel cannot scroll a sideways row. The phone layout keeps the small swipeable panel.
+                        width: _desktopLayout
+                            ? math.min(MediaQuery.sizeOf(context).width - 16, 760)
+                            : math.min(MediaQuery.sizeOf(context).width - 88, 420),
                         child: VisibilityPanel(
+                          wrap: _desktopLayout,
                           chips: _visibilityChips(),
                           views: _visibilityViews(),
                           onClose: () => setState(() => _visibilityPanelOpen = false),
