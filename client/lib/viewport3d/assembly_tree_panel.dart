@@ -1065,7 +1065,9 @@ class _AssemblyTreePanelState extends State<AssemblyTreePanel> with SingleTicker
     final held = refNote.kind == MateReferenceKind.held;
     final followed = refNote.kind == MateReferenceKind.followed;
     final infoColour = Theme.of(context).colorScheme.primary;
-    final accent = (broken || lost) ? errorColour : (held || near ? nearColour : null);
+    // A held mate reads amber even when the backend also reports it `broken` (the part still sits on the old face): that is the
+    // very state "check this mate" is about, and Confirm is its way out. Only a lost face is red.
+    final accent = lost ? errorColour : held ? nearColour : broken ? errorColour : (near ? nearColour : null);
     final nearText = near ? nearMateText(mate) : null;
     final subtitleText = lost
         ? (summary == null ? refNote.text : '${refNote.text} · $summary')
