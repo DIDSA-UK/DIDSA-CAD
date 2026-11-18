@@ -735,36 +735,50 @@ def _decide_external_reference(
     bodies: dict[str, TopoDS_Shape],
     history: "ReferenceHistory | None",
 ) -> ReferenceDecision:
-    body = bodies.get(ref.body_id)
+    return _decide_subshape(ref.body_id, ref.vertex_index, ref.signature, ref.lineage, _measurer_kind(ref), bodies, history)
+
+
+def _decide_subshape(
+    body_id: str,
+    index: int,
+    signature,
+    lineage: LineageOrigin | None,
+    kind: str,
+    bodies: dict[str, TopoDS_Shape],
+    history: "ReferenceHistory | None",
+) -> ReferenceDecision:
+    """Where Body sub-shape `index` (a "vertex" or an "edge") of `body_id` that was measured as `signature` is now: the shared decision of a vertex
+    reference, a circle-centre reference and (plan part C) a projected body edge's `ExternalCurveReference`."""
+    body = bodies.get(body_id)
     if body is None:
         return ReferenceDecision(ReferenceStatus.LOST, None, reason="body_missing")
-    measurer = measurer_for(body, _measurer_kind(ref))
-    in_range = 0 <= ref.vertex_index < measurer.count
+    measurer = measurer_for(body, kind)
+    in_range = 0 <= index < measurer.count
 
-    if ref.signature is None:
+    if signature is None:
         # A reference made before signatures existed (an old file): trust the index once and adopt its signature.
         if in_range:
-            return ReferenceDecision(ReferenceStatus.OK, ref.vertex_index, reason="signature_adopted", method="index")
+            return ReferenceDecision(ReferenceStatus.OK, index, reason="signature_adopted", method="index")
         return ReferenceDecision(ReferenceStatus.LOST, None, reason="no_match")
 
     # Fast path, measuring only the one sub-shape the index names: same fingerprint and still where it was (to within the search tolerance).
     if in_range:
-        here = measurer.signature(ref.vertex_index)
-        tolerance = SEARCH_TOLERANCE_REL * (ref.signature.body_diagonal or measurer.diagonal)
-        if fingerprint_matches(ref.signature, here) and shape_distance(ref.signature, here) <= tolerance:
-            return ReferenceDecision(ReferenceStatus.OK, ref.vertex_index, method="index")
+        here = measurer.signature(index)
+        tolerance = SEARCH_TOLERANCE_REL * (signature.body_diagonal or measurer.diagonal)
+        if fingerprint_matches(signature, here) and shape_distance(signature, here) <= tolerance:
+            return ReferenceDecision(ReferenceStatus.OK, index, method="index")
 
-    signature_decision = decide_reference(ref.signature, ref.vertex_index, measurer.all())
-    if history is not None and ref.lineage is not None:
+    signature_decision = decide_reference(signature, index, measurer.all())
+    if history is not None and lineage is not None:
         return history.refine_lineage(
-            ref.lineage,
-            ref.body_id,
-            ref.vertex_index,
-            ref.signature,
+            lineage,
+            body_id,
+            index,
+            signature,
             signature_decision,
             measurer,
-            final_body_id=ref.body_id,
-            kind=_measurer_kind(ref),
+            final_body_id=body_id,
+            kind=kind,
         )
     return signature_decision
 
@@ -835,7 +849,7 @@ def refresh_external_references(
     decisions: dict[str, ReferenceDecision] = {}
     moved_centres: set[str] = set()
     try:
-        basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids) if sketch.external_references else None
+        basis = basis_for_sketch(part, sketch, bodies, excluded_feature_ids) if sketch.external_references or sketch.external_curves else None
     except HTTPException:
         basis = None
     for point_id, ref in list(sketch.external_references.items()):
@@ -867,8 +881,79 @@ def refresh_external_references(
         point.y = y
     if moved_centres:
         _sync_provisional_radius_dimensions(sketch, moved_centres)
+    if sketch.external_curves:
+        lost_point_ids.extend(_refresh_external_curves(part, sketch, basis, bodies, history, decisions))
     sketch.external_reference_decisions = decisions
     return lost_point_ids
+
+
+def _refresh_external_curves(
+    part: Part,
+    sketch: Sketch,
+    basis: ResolvedPlane | None,
+    bodies: dict[str, TopoDS_Shape],
+    history: "ReferenceHistory | None",
+    decisions: dict[str, ReferenceDecision],
+) -> list[str]:
+    """Plan part C: every projected copy (`Sketch.external_curves`) is projected again from its source and moved onto it (`apply_projection`); returns the
+    ids of the Points of the copies that cannot follow (each with a lost decision: `edge_missing`-style reasons from the body-edge decision,
+    `source_sketch_missing`, `source_after_sketch`, `source_entity_deleted`, `shape_changed`, `sketch_plane_unresolved`). A copy the user deleted takes its
+    reference with it. Runs after the vertex references, so a copy's live vertex-reference ends are already where they belong."""
+    from app.document.projected_curves import apply_projection, copy_point_ids, made_kind
+
+    lost: list[str] = []
+    sources: dict[tuple, object] = {}
+    for made_id, ref in list(sketch.external_curves.items()):
+        if made_kind(sketch, made_id) is None:
+            del sketch.external_curves[made_id]
+            continue
+        reason = None
+        projected = None
+        if basis is None:
+            reason = "sketch_plane_unresolved"
+        elif ref.source == "body_edge":
+            reason, projected = _reproject_body_edge(sketch, made_id, ref, bodies, history, basis)
+        else:
+            key = (ref.source_sketch_feature_id, ref.source_entity_id, ref.sampled_segments)
+            if key not in sources:
+                sources[key] = _reproject_sketch_entity(part, sketch, ref, basis)
+            reason, projected = sources[key]
+        if reason is None and (projected is None or ref.piece >= len(projected) or not apply_projection(sketch, made_id, projected[ref.piece])):
+            reason = "shape_changed"
+        if reason is None:
+            continue
+        points = copy_point_ids(sketch, made_id)
+        flagged = [pid for pid in points if pid not in sketch.external_references] or points
+        for pid in flagged:
+            decisions.setdefault(pid, ReferenceDecision(ReferenceStatus.LOST, None, reason=reason))
+            if pid not in lost:
+                lost.append(pid)
+    return lost
+
+
+def _reproject_body_edge(sketch: Sketch, made_id: str, ref, bodies, history, basis: ResolvedPlane):
+    """(lost reason or None, the projection) for a body-edge copy: the edge is re-found as a vertex reference is (signature, then OCCT history), and the
+    reference keeps the index and, unless the binding is only potentially right, the signature it was found by."""
+    from app.sketch.projection import project_edge_onto_sketch
+
+    decision = _decide_subshape(ref.body_id, ref.edge_index, ref.signature, ref.lineage, "edge", bodies, history)
+    if decision.status == ReferenceStatus.LOST or decision.index is None:
+        return decision.reason or "no_match", None
+    refreshed = replace(ref, edge_index=decision.index)
+    if decision.status != ReferenceStatus.POTENTIALLY_MOVED:
+        refreshed = replace(refreshed, signature=measurer_for(bodies[ref.body_id], "edge").signature(decision.index))
+    if decision.lineage is not None:
+        refreshed = replace(refreshed, lineage=decision.lineage)
+    sketch.external_curves[made_id] = refreshed
+    edge = topods.Edge(resolve_subshape_from_bodies(bodies, SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.EDGE, index=decision.index)))
+    return None, project_edge_onto_sketch(edge, basis, sampled_segments=ref.sampled_segments or None)
+
+
+def _reproject_sketch_entity(part: Part, sketch: Sketch, ref, basis: ResolvedPlane):
+    """(lost reason or None, the projection) for a copy of another Sketch's entity (plan part C2): see `app.document.projected_curves.project_source_entity`."""
+    from app.document.projected_curves import project_source_entity
+
+    return project_source_entity(part, sketch, ref.source_sketch_feature_id, ref.source_entity_id, basis, sampled_segments=ref.sampled_segments or None)
 
 
 def resolve_point_ref_position(

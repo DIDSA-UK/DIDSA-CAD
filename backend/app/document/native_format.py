@@ -154,6 +154,7 @@ from app.sketch.models import (
     Circle,
     Ellipse,
     EllipseArc,
+    ExternalCurveReference,
     ExternalVertexReference,
     Line,
     Plane,
@@ -759,6 +760,62 @@ def _external_reference_from_dict(data: dict) -> ExternalVertexReference:
     )
 
 
+def _lineage_to_dict(lineage: LineageOrigin) -> dict:
+    return {
+        "feature_id": lineage.feature_id,
+        "body_id": lineage.body_id,
+        "index": lineage.index,
+        "signature": _signature_to_dict(lineage.signature) if lineage.kind == "vertex" else _shape_signature_to_dict(lineage.signature),
+        **({"kind": lineage.kind} if lineage.kind != "vertex" else {}),
+    }
+
+
+def _lineage_from_dict(raw: dict) -> LineageOrigin:
+    lineage_kind = raw.get("kind", "vertex")
+    return LineageOrigin(
+        feature_id=raw["feature_id"],
+        body_id=raw["body_id"],
+        index=int(raw["index"]),
+        signature=_signature_from_dict(raw["signature"]) if lineage_kind == "vertex" else _shape_signature_from_dict(raw["signature"]),
+        kind=lineage_kind,
+    )
+
+
+def _external_curve_to_dict(made_id: str, ref: ExternalCurveReference) -> dict:
+    """Plan part C: one projected copy's source. Only the fields its source uses are written."""
+    data: dict = {"made_id": made_id, "source": ref.source, "made_kind": ref.made_kind}
+    if ref.source == "body_edge":
+        data["body_id"] = ref.body_id
+        data["edge_index"] = ref.edge_index
+        if ref.signature is not None:
+            data["signature"] = _shape_signature_to_dict(ref.signature)
+        if ref.lineage is not None:
+            data["lineage"] = _lineage_to_dict(ref.lineage)
+    else:
+        data["source_sketch_feature_id"] = ref.source_sketch_feature_id
+        data["source_entity_id"] = ref.source_entity_id
+    if ref.piece:
+        data["piece"] = ref.piece
+    if ref.sampled_segments:
+        data["sampled_segments"] = ref.sampled_segments
+    return data
+
+
+def _external_curve_from_dict(data: dict) -> tuple[str, ExternalCurveReference]:
+    return data["made_id"], ExternalCurveReference(
+        source=data["source"],
+        made_kind=data["made_kind"],
+        body_id=data.get("body_id", ""),
+        edge_index=int(data.get("edge_index", -1)),
+        source_sketch_feature_id=data.get("source_sketch_feature_id", ""),
+        source_entity_id=data.get("source_entity_id", ""),
+        piece=int(data.get("piece", 0)),
+        sampled_segments=int(data.get("sampled_segments", 0)),
+        signature=_shape_signature_from_dict(data["signature"]) if data.get("signature") else None,
+        lineage=_lineage_from_dict(data["lineage"]) if data.get("lineage") else None,
+    )
+
+
 def sketch_to_dict(sketch: Sketch) -> dict:
     """A `Sketch`'s full state, serialized to a plain dict - the same shape
     `export_native`'s own `"sketches"` array entries use.
@@ -783,6 +840,13 @@ def sketch_to_dict(sketch: Sketch) -> dict:
         # Sketcher-roadmap Phase 4.3 v1.
         # Reference-identity overhaul: `signature` / `lineage` are written only when present, and a file without them loads exactly as before.
         "external_references": [_external_reference_to_dict(point_id, ref) for point_id, ref in sketch.external_references.items()],
+        # Bug report 2026-11-18 part C: projected copies and what they follow. Written only when there are some (a copy deleted since is left out); a file
+        # without it loads as before.
+        **(
+            {"external_curves": [_external_curve_to_dict(made_id, ref) for made_id, ref in sketch.external_curves.items() if made_id in sketch.entities or made_id in sketch.points]}
+            if any(made_id in sketch.entities or made_id in sketch.points for made_id in sketch.external_curves)
+            else {}
+        ),
         # DIDSA-VR plan, phase 2: the Points / entities that are only reference helpers. Written only when there are some; a file without it loads as before.
         **({"reference_ids": sorted(sketch.reference_ids)} if sketch.reference_ids else {}),
         # DIDSA-VR plan, phase 3: persistent reference (driven) dimensions (the value is computed on read, not stored). Written only when there are some.
@@ -833,6 +897,9 @@ def sketch_from_dict(data: dict) -> Sketch:
     # flip/rotation_quarter_turns above.
     for ref_data in data.get("external_references", []):
         sketch.external_references[ref_data["point_id"]] = _external_reference_from_dict(ref_data)
+    for curve_data in data.get("external_curves", []):
+        made_id, curve = _external_curve_from_dict(curve_data)
+        sketch.external_curves[made_id] = curve
     sketch.reference_ids = set(data.get("reference_ids", []))
     sketch.label_placements = {
         str(cid): {str(key): float(value) for key, value in placement.items()}

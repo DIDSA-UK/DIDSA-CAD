@@ -562,6 +562,7 @@ class EllipseArcResponse(BaseModel):
     minor_radius: float
     rotation: float
     construction: bool = False
+    is_reference: bool = False  # a helper made by a reference convert (bug report 2026-11-18 part C)
 
 
 class EllipseTrimRequest(BaseModel):
@@ -779,6 +780,7 @@ class SplineResponse(BaseModel):
     through_point_ids: list[str]
     control_point_ids: list[str]
     construction: bool = False
+    is_reference: bool = False  # a helper made by a reference convert (bug report 2026-11-18 part C)
 
 
 class SplineUpdate(BaseModel):

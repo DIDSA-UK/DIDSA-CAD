@@ -105,6 +105,43 @@ class ExternalVertexReference:
     kind: str = "vertex"
 
 
+EXTERNAL_CURVE_SOURCES = ("body_edge", "sketch_entity")
+
+
+@dataclass(frozen=True)
+class ExternalCurveReference:
+    """Convert Entities, real projection (bug report 2026-11-18, plan part C): what a projected copy in this Sketch was made from, so it follows its source.
+    Kept in `Sketch.external_curves`, keyed by the id of the entity it made (for a projected Point, the Point's id).
+
+    Two sources:
+
+    * `"body_edge"`: Body edge `edge_index` of `body_id` (plus its signature and, when OCCT history could say, its lineage, as for a vertex reference), for
+      an edge that is not in the Sketch's plane (an angled circle becomes an ellipse arc, a free-form edge a spline). The copy's end Points are still
+      ordinary live vertex references; this pins and moves the rest of its shape (an ellipse's centre and axis tips, a spline's inner points and handles).
+    * `"sketch_entity"`: entity (or loose Point) `source_entity_id` of the Sketch of SketchFeature `source_sketch_feature_id`, which must come earlier in the
+      Part's feature list. A pattern / mirror instance's copy is named by its expanded id (`Sketch.expand_pattern_and_mirror_instances`).
+
+    `made_kind` is the kind of entity made (`app.sketch.projection.KINDS`): a refresh that projects the source to another kind cannot reshape the copy, so
+    it reports it lost (`shape_changed`). `piece` picks one of several entities a source made (a closed free-form curve is split into two Splines).
+    `sampled_segments` is the segment count of a Spline that was sampled (0 when its points are the projected poles), so a refresh keeps the copy's
+    Points. Every Point of the copy that is not a vertex reference is pinned by a FixedConstraint where it was put; a refresh moves them.
+
+    A sibling of `ExternalVertexReference`, not a third `kind` of it: that type is keyed by ONE Point and every reader treats a kind it does not know as a
+    vertex (the measurer, confirm and reattach routes, the status list, the dependency graph); this one names a curve and a set of Points, and a
+    sketch-entity source has no body, index or signature at all."""
+
+    source: str
+    made_kind: str
+    body_id: str = ""
+    edge_index: int = -1
+    source_sketch_feature_id: str = ""
+    source_entity_id: str = ""
+    piece: int = 0
+    sampled_segments: int = 0
+    signature: ShapeSignature | None = field(default=None, compare=False)
+    lineage: LineageOrigin | None = field(default=None, compare=False)
+
+
 # Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180),
 # "point_angle" (three points, the vertex first: the angle at it, 0-180), "min_distance" / "max_distance" (a point and a circle or arc, either
 # order, two circles / arcs, or a line and a circle / arc: the nearest / farthest distance; for a line, the tangent and far sides).
@@ -1217,6 +1254,9 @@ class Sketch:
     # Transient (never persisted, recomputed by every `refresh_external_references`): Point id -> what that refresh decided about the reference
     # (ok / followed / potentially_moved / lost, and why). Read by the feature response and the external-references status route.
     external_reference_decisions: dict[str, ReferenceDecision] = field(default_factory=dict, repr=False, compare=False)
+    # Bug report 2026-11-18 part C: made entity id (or Point id) -> the curve its projected copy follows (see `ExternalCurveReference`). Refreshed by
+    # `app.document.create_plane.refresh_external_references` with the vertex references. Persisted (additive: written only when there are some).
+    external_curves: dict[str, ExternalCurveReference] = field(default_factory=dict)
     # DIDSA-VR plan, phase 2: ids of the Points / entities a client made only so the sketch can point at the part's own geometry (a corner, an edge, a hole's
     # centre): the convert-entities routes mark what they create when asked (`reference: true`). A client draws them quietly and does not offer them for selection
     # or deletion; `prune_unused_reference_helpers` removes them once nothing else depends on them. Persisted (additive: an older file has none, an older

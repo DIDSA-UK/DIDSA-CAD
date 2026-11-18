@@ -27,7 +27,7 @@ from app.document.models import (
     ThicknessDirection,
 )
 from app.sketch.models import Plane, SketchEntityType
-from app.sketch.schemas import ArcResponse, CircleResponse, EllipseResponse, LineResponse, PointResponse
+from app.sketch.schemas import ArcResponse, CircleResponse, EllipseArcResponse, EllipseResponse, LineResponse, PointResponse, SplineResponse
 
 
 class PartCreate(BaseModel):
@@ -648,6 +648,15 @@ class ConvertEdgeResponse(BaseModel):
     arc: ArcResponse | None = None
     circle: CircleResponse | None = None
     ellipse: EllipseResponse | None = None  # reference-overhaul R-F: a full elliptical edge lying in the sketch plane
+    # Bug report 2026-11-18 part C (all optional, additive): an edge not in the sketch plane is projected square onto it (`app.sketch.projection`), so it
+    # can also come back as an elliptical arc (a circle seen at an angle), a spline (a free-form edge), a lone `point` (a straight edge along the
+    # normal; `start_point` / `end_point` are that point too) or a whole `ellipse` / `circle` / `line` it did not before. `start_point` / `end_point`
+    # are the shape's ends (a spline's first and last through points; for an ellipse, its centre, as before). A closed free-form edge makes two splines:
+    # the first is here, the rest in `more`, each in this same shape.
+    ellipse_arc: EllipseArcResponse | None = None
+    spline: SplineResponse | None = None
+    point: PointResponse | None = None
+    more: list["ConvertEdgeResponse"] | None = None
     start_point: PointResponse
     end_point: PointResponse
     center_point: PointResponse | None = None

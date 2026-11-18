@@ -11,7 +11,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from OCC.Core.BRepPrimAPI import BRepPrimAPI_MakeBox
 from OCC.Core.TopAbs import TopAbs_FACE
 from OCC.Core.TopExp import TopExp_Explorer
-from OCC.Core.TopoDS import TopoDS_Shape
+from OCC.Core.BRep import BRep_Tool
+from OCC.Core.BRepAdaptor import BRepAdaptor_Curve
+from OCC.Core.GeomAbs import GeomAbs_Circle, GeomAbs_Line
+from OCC.Core.TopoDS import TopoDS_Shape, topods
 
 from app.document.ai_plan import validate_ai_plan as validate_ai_plan_steps
 from app.document.appearance import resolve_appearance, resolve_faces, split_path
@@ -70,7 +73,9 @@ from app.document.assembly_group import GroupSolveQuality
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job
+from app.document.projected_curves import POINT_MATCH, PointPool, copy_point_ids, made_kind, make_projected_entity
 from app.document.reference_history import history_for_part
+from app.document.reference_signature import measurer_for
 from app.document.subshape_identity import (
     MateReferenceState,
     apply_bound_indices,
@@ -110,6 +115,7 @@ from app.document.extrude import (
     resolve_circular_edge_arc,
     resolve_full_circular_edge,
     resolve_full_elliptical_edge,
+    resolve_subshape_from_bodies,
     select_profiles,
 )
 from app.document.fillet import resolve_fillet
@@ -455,7 +461,20 @@ from app.document import revision as document_revision
 from app.document import view_glb_cache
 from app.document.view_routes import router as view_router
 from app.session_context import bind_session_id, get_current_session_id
-from app.sketch.models import ExternalVertexReference, Plane, SketchEntityRef, SketchEntityType
+from app.sketch.models import (
+    Arc,
+    Circle,
+    Ellipse,
+    EllipseArc,
+    ExternalCurveReference,
+    ExternalVertexReference,
+    Line,
+    Plane,
+    SketchEntityRef,
+    SketchEntityType,
+    Spline,
+)
+from app.sketch.projection import ProjectedEntity, project_edge_onto_sketch
 from app.sketch.reference_signature import ReferenceStatus
 from app.sketch.profile import OpenChainStatus, Profile, ProfileStatus, detect_open_chain, detect_profile
 from app.sketch.schemas import ArcResponse, CircleResponse, LineResponse, PointResponse
@@ -1039,7 +1058,7 @@ def _sketch_reference_state(part: Part, feature: SketchFeature) -> dict:
     Bug fix: resolves (and, via `refresh_external_references`, persists) each external reference against `excluded_feature_ids_after`'s own
     causally-consistent snapshot rather than the Part's fully-built one - see that helper's own docstring for the full "why"."""
     sketch = all_sketches().get(feature.sketch_id)
-    if sketch is None or not sketch.external_references:
+    if sketch is None or not (sketch.external_references or sketch.external_curves):
         return {"has_lost_reference": False}
     try:
         excluded = excluded_feature_ids_after(part, feature.id)
@@ -6172,18 +6191,32 @@ def convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate)
     sketch = get_sketch_or_404(_get_sketch_feature_or_404(get_part_or_404(part_id), feature_id).sketch_id)
     before_points, before_entities = set(sketch.points), set(sketch.entities)
     response = _convert_body_edge(part_id, feature_id, payload)
-    shape = response.line or response.arc or response.circle or response.ellipse
-    points = [p for p in (response.start_point, response.end_point, response.center_point) if p is not None]
-    extra_points: list[str] = []
-    if response.ellipse is not None:
-        e = response.ellipse
-        extra_points = [e.major_point_id, e.major_point_neg_id, e.minor_point_id, e.minor_point_neg_id]
-    _flag_converted(sketch, payload.reference, before_points, before_entities, [p.id for p in points] + extra_points, [shape.id] if shape is not None else [])
-    for p in points:
-        p.is_reference = sketch.is_reference(p.id)
-    if shape is not None:
-        shape.is_reference = sketch.is_reference(shape.id)
+    _flag_converted_responses(sketch, payload.reference, before_points, before_entities, [response, *(response.more or [])])
     return response
+
+
+def _converted_shape(response: ConvertEdgeResponse):
+    return response.line or response.arc or response.circle or response.ellipse or response.ellipse_arc or response.spline
+
+
+def _flag_converted_responses(sketch, reference: bool, before_points: set, before_entities: set, responses: list[ConvertEdgeResponse]) -> None:
+    """`_flag_converted` over everything some converted-edge responses carry (each shape with every Point that defines it), then their `is_reference`."""
+    point_ids: list[str] = []
+    entity_ids: list[str] = []
+    for response in responses:
+        point_ids += [p.id for p in (response.start_point, response.end_point, response.center_point, response.point) if p is not None]
+        shape = _converted_shape(response)
+        if shape is not None:
+            entity_ids.append(shape.id)
+            point_ids += copy_point_ids(sketch, shape.id)
+    _flag_converted(sketch, reference, before_points, before_entities, list(dict.fromkeys(point_ids)), entity_ids)
+    for response in responses:
+        for p in (response.start_point, response.end_point, response.center_point, response.point):
+            if p is not None:
+                p.is_reference = sketch.is_reference(p.id)
+        shape = _converted_shape(response)
+        if shape is not None:
+            shape.is_reference = sketch.is_reference(shape.id)
 
 
 def _convert_elliptical_edge(sketch, params: tuple[float, float, float, float, float], construction: bool) -> ConvertEdgeResponse:
@@ -6208,6 +6241,121 @@ def _convert_elliptical_edge(sketch, params: tuple[float, float, float, float, f
     )
     centre = PointResponse(id=centre_point.id, x=centre_point.x, y=centre_point.y, is_locked=True)
     return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, ellipse), start_point=centre, end_point=centre, center_point=centre)
+
+
+def _body_edge(bodies: dict, edge_ref: SubShapeRef):
+    return topods.Edge(resolve_subshape_from_bodies(bodies, edge_ref))
+
+
+def _is_circular_edge(bodies: dict, edge_ref: SubShapeRef) -> bool:
+    return BRepAdaptor_Curve(_body_edge(bodies, edge_ref)).GetType() == GeomAbs_Circle
+
+
+def _is_straight_edge(bodies: dict, edge_ref: SubShapeRef) -> bool:
+    return BRepAdaptor_Curve(_body_edge(bodies, edge_ref)).GetType() == GeomAbs_Line
+
+
+def _project_body_edge(bodies: dict, edge_ref: SubShapeRef, basis, payload) -> list[ProjectedEntity]:
+    """Plan part C1: the Body edge projected square onto the sketch plane (`app.sketch.projection`). A degenerate edge (no curve of its own, e.g. a cone's apex)
+    is the usual `degenerate_edge` 422."""
+    edge = _body_edge(bodies, edge_ref)
+    if BRep_Tool.Degenerated(edge):
+        raise HTTPException(status_code=422, detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index})
+    return project_edge_onto_sketch(edge, basis)
+
+
+def _converted_point_response(sketch, point_id: str) -> PointResponse:
+    point = sketch.points[point_id]
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
+
+
+def _projected_copy_response(sketch, made_id: str) -> ConvertEdgeResponse:
+    """A projected copy (plan part C) in `ConvertEdgeResponse`'s shapes: the entity under its own kind, its ends as `start_point` / `end_point` (a spline's
+    first and last through points; a circle's or an ellipse's centre, as the edge route has always answered for those), and its centre."""
+    from app.sketch.router import _arc_response, _circle_response, _ellipse_arc_response, _ellipse_response, _spline_response
+
+    entity = sketch.entities.get(made_id)
+    if entity is None:
+        point = _converted_point_response(sketch, made_id)
+        return ConvertEdgeResponse(point=point, start_point=point, end_point=point)
+    if isinstance(entity, Line):
+        return ConvertEdgeResponse(
+            line=LineResponse(
+                id=entity.id,
+                start_point_id=entity.start_point_id,
+                end_point_id=entity.end_point_id,
+                length=entity.length(sketch.points),
+                construction=entity.construction,
+            ),
+            start_point=_converted_point_response(sketch, entity.start_point_id),
+            end_point=_converted_point_response(sketch, entity.end_point_id),
+        )
+    if isinstance(entity, Circle):
+        centre = _converted_point_response(sketch, entity.center_point_id)
+        return ConvertEdgeResponse(circle=_circle_response(sketch, entity), start_point=centre, end_point=centre, center_point=centre)
+    if isinstance(entity, Arc):
+        return ConvertEdgeResponse(
+            arc=_arc_response(sketch, entity),
+            start_point=_converted_point_response(sketch, entity.start_point_id),
+            end_point=_converted_point_response(sketch, entity.end_point_id),
+            center_point=_converted_point_response(sketch, entity.center_point_id),
+        )
+    if isinstance(entity, Ellipse):
+        centre = _converted_point_response(sketch, entity.center_point_id)
+        return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, entity), start_point=centre, end_point=centre, center_point=centre)
+    if isinstance(entity, EllipseArc):
+        return ConvertEdgeResponse(
+            ellipse_arc=_ellipse_arc_response(sketch, entity),
+            start_point=_converted_point_response(sketch, entity.start_point_id),
+            end_point=_converted_point_response(sketch, entity.end_point_id),
+            center_point=_converted_point_response(sketch, entity.center_point_id),
+        )
+    assert isinstance(entity, Spline)
+    return ConvertEdgeResponse(
+        spline=_spline_response(entity),
+        start_point=_converted_point_response(sketch, entity.through_point_ids[0]),
+        end_point=_converted_point_response(sketch, entity.through_point_ids[-1]),
+    )
+
+
+def _with_more(responses: list[ConvertEdgeResponse]) -> ConvertEdgeResponse:
+    first = responses[0]
+    if len(responses) > 1:
+        first.more = responses[1:]
+    return first
+
+
+def _convert_projected_body_edge(part, sketch, bodies: dict, excluded, payload, projected: list[ProjectedEntity], vertex_ends: list) -> ConvertEdgeResponse:
+    """Plan part C1: a Body edge that is not in the sketch plane, as pinned projected copies (`app.document.projected_curves`), each with an
+    `ExternalCurveReference` (`body_edge`) so `refresh_external_references` moves it with the edge. `vertex_ends` are the edge's two (reference, x, y) ends:
+    a copy's end at one of them IS that live vertex-reference Point. Idempotent per edge: a second convert of the same edge answers with the copies made."""
+    edge_index = payload.edge_index
+    existing = {
+        ref.piece: made_id
+        for made_id, ref in sketch.external_curves.items()
+        if ref.source == "body_edge" and ref.body_id == payload.body_id and ref.edge_index == edge_index and made_kind(sketch, made_id) is not None
+    }
+    if existing and len(existing) == len(projected):
+        return _with_more([_projected_copy_response(sketch, existing[piece]) for piece in sorted(existing)])
+    ends = [sketch.add_or_reuse_external_vertex_reference(x, y, ref).id for ref, x, y in vertex_ends]
+    pool = PointPool(sketch, ends)
+    signature = measurer_for(bodies[payload.body_id], "edge").signature(edge_index)
+    lineage = history_for_part(part, excluded).lineage_for(payload.body_id, edge_index, "edge")
+    made: list[str] = []
+    for piece, entity in enumerate(projected):
+        made_id = make_projected_entity(sketch, entity, construction=payload.construction, pool=pool)
+        sketch.external_curves[made_id] = ExternalCurveReference(
+            source="body_edge",
+            made_kind=entity.kind,
+            body_id=payload.body_id,
+            edge_index=edge_index,
+            piece=piece,
+            sampled_segments=0 if entity.exact or entity.kind != "spline" else sum(len(e.controls) // 2 for e in projected),
+            signature=signature,
+            lineage=lineage,
+        )
+        made.append(made_id)
+    return _with_more([_projected_copy_response(sketch, made_id) for made_id in made])
 
 
 def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate) -> ConvertEdgeResponse:
@@ -6274,12 +6422,15 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
         circle_params = resolve_full_circular_edge(bodies, edge_ref, basis)
         if circle_params is None:
             ellipse_params = resolve_full_elliptical_edge(bodies, edge_ref, basis)
-            if ellipse_params is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail={"type": "degenerate_edge", "body_id": payload.body_id, "index": payload.edge_index},
-                )
-            return _convert_elliptical_edge(sketch, ellipse_params, payload.construction)
+            if ellipse_params is not None:
+                return _convert_elliptical_edge(sketch, ellipse_params, payload.construction)
+            # Plan part C1: a closed edge NOT in the sketch plane is projected onto it (it used to be refused as `degenerate_edge`). A circle on a parallel
+            # plane keeps the live circle-centre path below; anything else is a pinned projected copy that follows the edge.
+            projected = _project_body_edge(bodies, edge_ref, basis, payload)
+            if len(projected) == 1 and projected[0].kind == "circle" and _is_circular_edge(bodies, edge_ref):
+                circle_params = (projected[0].centre[0], projected[0].centre[1], projected[0].radius)
+            else:
+                return _convert_projected_body_edge(part, sketch, bodies, excluded, payload, projected, [])
         center_x, center_y, radius = circle_params
         # Reference-identity overhaul: the centre is a live reference to the circular edge (`kind="circle_centre"`), so the Circle follows its hole / boss when an
         # upstream edit moves it or changes its diameter - and is flagged, like any reference, when the edge is gone.
@@ -6339,17 +6490,33 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
 
     start_vertex_ref = _new_external_reference(part, sketch, bodies, excluded, start_ref.body_id, start_ref.index)
     start_x, start_y = resolve_external_vertex_position(part, sketch, start_vertex_ref, bodies, excluded)
-    start_point = sketch.add_or_reuse_external_vertex_reference(start_x, start_y, start_vertex_ref)
-
     end_vertex_ref = _new_external_reference(part, sketch, bodies, excluded, end_ref.body_id, end_ref.index)
     end_x, end_y = resolve_external_vertex_position(part, sketch, end_vertex_ref, bodies, excluded)
-    end_point = sketch.add_or_reuse_external_vertex_reference(end_x, end_y, end_vertex_ref)
 
     basis = basis_for_sketch(part, sketch, bodies, excluded)
     arc_params = resolve_circular_edge_arc(bodies, edge_ref, basis, (start_x, start_y), (end_x, end_y))
+    if arc_params is None:
+        # Plan part C1: anything that is not a circular arc in the sketch plane is projected square onto it, where the old code drew the chord. A straight
+        # edge is still a Line between its live ends, and a circular arc on a parallel plane still gets a live centre (the path below); a straight edge
+        # along the normal is one Point; anything else (an angled circle: an elliptical arc; a free-form edge: a spline) is a pinned projected copy.
+        projected = _project_body_edge(bodies, edge_ref, basis, payload)
+        only = projected[0] if len(projected) == 1 else None
+        if only is not None and only.kind == "arc" and _is_circular_edge(bodies, edge_ref):
+            arc_params = (only.centre[0], only.centre[1], only.radius, only.start, only.end)
+        elif only is not None and only.kind == "point" and _is_straight_edge(bodies, edge_ref):
+            point = sketch.add_or_reuse_external_vertex_reference(start_x, start_y, start_vertex_ref)
+            response = PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+            return ConvertEdgeResponse(point=response, start_point=response, end_point=response)
+        elif only is None or only.kind != "line" or not _is_straight_edge(bodies, edge_ref):
+            return _convert_projected_body_edge(
+                part, sketch, bodies, excluded, payload, projected, [(start_vertex_ref, start_x, start_y), (end_vertex_ref, end_x, end_y)]
+            )
+
+    start_point = sketch.add_or_reuse_external_vertex_reference(start_x, start_y, start_vertex_ref)
+    end_point = sketch.add_or_reuse_external_vertex_reference(end_x, end_y, end_vertex_ref)
     if arc_params is not None:
         center_x, center_y, _radius, resolved_start_xy, resolved_end_xy = arc_params
-        if resolved_start_xy == (start_x, start_y):
+        if math.dist(resolved_start_xy, (start_x, start_y)) <= POINT_MATCH:
             arc_start_point, arc_end_point = start_point, end_point
         else:
             arc_start_point, arc_end_point = end_point, start_point

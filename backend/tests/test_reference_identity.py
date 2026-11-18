@@ -430,8 +430,13 @@ def test_convert_entities_edge_references_both_endpoints_with_signatures_and_sta
     part_id, _, extrude, _ = _box()
     sketch = _json(client.post(f"/document/parts/{part_id}/features/sketch", json={"plane": "XY"}))
     url = f"/document/parts/{part_id}/features/sketch/{sketch['id']}/convert-entities/edge"
-    first = _json(client.post(url, json={"body_id": extrude["id"], "edge_index": 0}))
-    again = _json(client.post(url, json={"body_id": extrude["id"], "edge_index": 0}))
+    # A horizontal edge: a vertical one (edge 0) is seen end-on from the XY sketch and becomes one Point (bug report 2026-11-18 part C1).
+    from app.document.reference_signature import BodyEdgeMeasurer
+
+    body = compute_part_bodies(get_part_or_404(part_id))[extrude["id"]]
+    edge = next(i for i, sig in enumerate(BodyEdgeMeasurer(body).all()) if sig.curve_kind == "line" and abs(sig.direction[2]) < 1e-6)
+    first = _json(client.post(url, json={"body_id": extrude["id"], "edge_index": edge}))
+    again = _json(client.post(url, json={"body_id": extrude["id"], "edge_index": edge}))
     assert first["start_point"]["id"] == again["start_point"]["id"] and first["end_point"]["id"] == again["end_point"]["id"]
     refs = all_sketches()[sketch["sketch_id"]].external_references
     assert len(refs) == 2 and all(r.signature is not None and r.lineage is not None for r in refs.values())

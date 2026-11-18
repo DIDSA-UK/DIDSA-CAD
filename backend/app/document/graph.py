@@ -459,7 +459,11 @@ def _sketch_external_reference_dependencies(feature: SketchFeature) -> tuple[str
     sketch = all_sketches().get(feature.sketch_id)
     if sketch is None:
         return ()
-    return tuple({base_feature_id(ref.body_id) for ref in sketch.external_references.values()})
+    found = {base_feature_id(ref.body_id) for ref in sketch.external_references.values()}
+    # Plan part C: a projected copy depends on what it was projected from: the Body's Feature, or the source Sketch's own SketchFeature.
+    for curve in sketch.external_curves.values():
+        found.add(base_feature_id(curve.body_id) if curve.source == "body_edge" else curve.source_sketch_feature_id)
+    return tuple(found)
 
 
 def _sketch_origin_dependencies(part: Part, feature: SketchFeature) -> tuple[str, ...]:
