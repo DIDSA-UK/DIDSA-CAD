@@ -153,6 +153,8 @@ The hub does not echo a participant's own presence back. A phone sends `head` wi
 
 Marks are never written anywhere (D7). The hub keeps live `share` marks in the snapshot until cleared or their sender leaves.
 
+**As built in P4 (DIDSA-VR; no change to this protocol, the hub or the backend).** The VR client uses the ids `share` (one live share per person: a new one replaces it, here and at the hub), `look` and `ping<n>`. A target is `{path, body?, face?}` with `path` the glb's `instance_path` (the key `poses` use; a sub-assembly is its path prefix, the root's own content may have the empty path) or `{point: [x,y,z]}` in model-space millimetres; a `look_here` carries both the selection's target and the `point`. The `colour` the hub stamps is the one drawn (a client's own is ignored). A mark for a part the receiver does not have is kept and drawn when it appears. A `marks_clear` without `ids` clears every mark (shares, pings, look-heres) at the receivers; an observer's is dropped by the hub, so only the presenter's button exists. The hub forgets a participant's shares when they leave or are removed (`left` with a reason other than `dropped`) and the client drops them with the roster. A mark is relayed to everyone, including the presenter; "Look here" is not directed at the presenter alone (the presenter's client says it in words).
+
 ### 4.6 Voice (P3; framing fixed now)
 
 Binary frames: **byte 0** = format version (1), **byte 1** = participant id (the hub overwrites it with the sender's id), **bytes 2-3**
