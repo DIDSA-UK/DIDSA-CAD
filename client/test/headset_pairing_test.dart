@@ -9,18 +9,20 @@ import 'package:http/testing.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 /// A backend that answers /health for [key] and serves an OpenAPI schema listing [paths]. [relay], when given, answers every request
-/// on port 8100 (the browser relay's).
+/// on port 8100 (the browser relay's), and [hub], when given, every request on port 8300 (the session hub's).
 MockClient _server({
   String key = 'secret',
   List<String>? paths,
   bool up = true,
   List<String>? hosts,
   Future<http.Response> Function(http.Request request)? relay,
+  Future<http.Response> Function(http.Request request)? hub,
 }) {
   final listed = paths ?? [...HeadsetPairing.requiredPaths, ...HeadsetPairing.optionalPaths.keys];
   return MockClient((request) async {
     hosts?.add(request.url.host);
     if (relay != null && request.url.port == 8100) return relay(request);
+    if (hub != null && request.url.port == 8300) return hub(request);
     if (!up) throw http.ClientException('connection refused');
     if (request.url.path == '/health') {
       return request.headers['X-API-Key'] == key ? http.Response('{"status":"ok"}', 200) : http.Response('', 401);
@@ -278,6 +280,121 @@ void main() {
     });
   });
 
+  group('session hub (LS-11)', () {
+    Future<http.Response> hubAnswers(http.Request request) async =>
+        request.headers['X-API-Key'] == 'hubkey' ? http.Response('{"status":"ok"}', 200) : http.Response('', 401);
+
+    test('wss:// and a local-network ws:// are put in the code; http(s) is taken as ws(s); /ws is dropped; titled as the hub', () {
+      expect(HeadsetPairing.checkHubAddress('wss://sessions.example.net').$2, 'wss://sessions.example.net');
+      expect(HeadsetPairing.checkHubAddress('wss://sessions.example.net').$1.title, 'Session hub address');
+      expect(HeadsetPairing.checkHubAddress('wss://sessions.example.net/ws/').$2, 'wss://sessions.example.net');
+      expect(HeadsetPairing.checkHubAddress('ws://192.168.1.20:8300').$2, 'ws://192.168.1.20:8300');
+      expect(HeadsetPairing.checkHubAddress('ws://192.168.1.20:8300').$1.state, PairingCheckState.warn);
+      expect(HeadsetPairing.checkHubAddress('https://sessions.example.net').$2, 'wss://sessions.example.net');
+    });
+
+    test('an address the headset would refuse is left out of the code with a warning that names the hub, never a failure', () {
+      for (final url in ['ws://sessions.example.net', 'ws://127.0.0.1:8300', 'ftp://192.168.1.20']) {
+        final (check, wsUrl) = HeadsetPairing.checkHubAddress(url);
+        expect(wsUrl, isNull, reason: url);
+        expect(check.state, PairingCheckState.warn, reason: url);
+        expect(check.message, isNot(contains('The relay')), reason: url);
+      }
+      expect(HeadsetPairing.checkHubAddress('ws://127.0.0.1:8300').$1.message, contains('The session hub is left out'));
+    });
+
+    test('runChecks: the hub is asked at its /health with its own key, and rides along', () async {
+      final asked = <http.Request>[];
+      final result = await HeadsetPairing.runChecks(
+        client: _server(hub: (request) async {
+          asked.add(request);
+          return hubAnswers(request);
+        }),
+        baseUrl: 'https://cad.example.net',
+        apiKey: 'secret',
+        hubUrl: 'wss://sessions.example.net:8300',
+        hubApiKey: 'hubkey',
+      );
+      expect(result.compatible, isTrue);
+      expect(result.hubUrl, 'wss://sessions.example.net:8300');
+      expect(asked.single.url.toString(), 'https://sessions.example.net:8300/health');
+      expect(asked.single.headers['X-API-Key'], 'hubkey'); // the hub's key, never the CAD key
+      expect(result.checks.last.title, 'Session hub running');
+      expect(result.checks.last.state, PairingCheckState.pass);
+    });
+
+    test('runChecks: a hub that refuses its key is left out with a warning, and the rest still pairs', () async {
+      final result = await HeadsetPairing.runChecks(
+        client: _server(hub: hubAnswers),
+        baseUrl: 'https://cad.example.net',
+        apiKey: 'secret',
+        hubUrl: 'wss://sessions.example.net:8300',
+        hubApiKey: 'the-wrong-one',
+      );
+      expect(result.compatible, isTrue);
+      expect(result.hubUrl, isNull);
+      expect(result.checks.last.state, PairingCheckState.warn);
+      expect(result.checks.last.message, contains('refused the key'));
+    });
+
+    test('runChecks: an unreachable hub only warns and is still put in the code (it may be reachable from the headset)', () async {
+      final result = await HeadsetPairing.runChecks(
+        client: _server(hub: (request) async => throw http.ClientException('refused')),
+        baseUrl: 'https://cad.example.net',
+        apiKey: 'secret',
+        hubUrl: 'wss://sessions.example.net:8300',
+        hubApiKey: 'hubkey',
+      );
+      expect(result.compatible, isTrue);
+      expect(result.hubUrl, 'wss://sessions.example.net:8300');
+      expect(result.checks.last.state, PairingCheckState.warn);
+    });
+
+    test('runChecks: a hub with no key is left out; no hub set adds no hub check', () async {
+      final noKey = await HeadsetPairing.runChecks(
+        client: _server(),
+        baseUrl: 'https://cad.example.net',
+        apiKey: 'secret',
+        hubUrl: 'wss://sessions.example.net',
+      );
+      expect(noKey.compatible, isTrue);
+      expect(noKey.hubUrl, isNull);
+      expect(noKey.checks.last.title, 'Session hub key');
+      final none = await HeadsetPairing.runChecks(client: _server(), baseUrl: 'https://cad.example.net', apiKey: 'secret');
+      expect(none.hubUrl, isNull);
+      expect(none.checks.any((c) => c.title.startsWith('Session hub')), isFalse);
+    });
+
+    test('the payload carries h and hk when both are given, neither otherwise, and every other key is unchanged by them', () {
+      Map<String, String> query(String text) => Uri.splitQueryString(text.substring(text.indexOf('?') + 1));
+      final withHub = HeadsetPairing.payload(
+        name: 'Pi',
+        baseUrl: 'http://192.168.1.20:8000',
+        apiKey: 'k',
+        hubUrl: 'wss://sessions.example.net:8300/',
+        hubApiKey: 'h k&=',
+      );
+      expect(query(withHub)['h'], 'wss://sessions.example.net:8300');
+      expect(query(withHub)['hk'], 'h k&=');
+      expect(query(withHub)['u'], 'http://192.168.1.20:8000');
+      for (final text in [
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', hubUrl: 'wss://sessions.example.net'),
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', hubApiKey: 'only a key'),
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', hubUrl: '  ', hubApiKey: 'x'),
+        HeadsetPairing.payload(name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k'),
+      ]) {
+        expect(query(text).keys, isNot(contains('h')));
+        expect(query(text).keys, isNot(contains('hk')));
+      }
+      // all three services together
+      final all = HeadsetPairing.payload(
+        name: 'Pi', baseUrl: 'http://192.168.1.20:8000', apiKey: 'k', relayUrl: 'ws://192.168.1.20:8100', relayApiKey: 'rk1',
+        storeUrl: 'https://store.example.net', storeApiKey: 'pk1', hubUrl: 'wss://sessions.example.net', hubApiKey: 'hk1',
+      );
+      expect(query(all).keys, containsAll(['n', 'u', 'k', 'r', 'rk', 'p', 'pk', 'h', 'hk']));
+    });
+  });
+
   group('payload', () {
     test('is versioned and round-trips through Uri', () {
       final text = HeadsetPairing.payload(
@@ -405,6 +522,87 @@ void main() {
       final without = await qrFor(storeUrl: '', storeApiKey: '');
       expect(without, isNot(contains('pk=')));
       expect(find.byKey(const ValueKey('headset-pairing-store-note')), findsNothing);
+    });
+
+
+    testWidgets('the session hub set on this device goes into the code, with a note; a hub that refuses its key leaves it out', (tester) async {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      Future<String> qrFor({required String hubUrl, required String hubApiKey, String serverHubKey = 'hubkey'}) async {
+        await tester.pumpWidget(MaterialApp(
+          home: HeadsetPairingScreen(
+            key: UniqueKey(), // a new screen each time: the hub is read once, in initState
+            baseUrl: 'https://cad.example.net',
+            apiKey: 'secret',
+            httpClient: _server(
+              hub: (request) async => request.headers['X-API-Key'] == serverHubKey ? http.Response('{}', 200) : http.Response('', 401),
+            ),
+            relayUrl: '',
+            relayApiKey: '',
+            storeUrl: '',
+            storeApiKey: '',
+            hubUrl: hubUrl,
+            hubApiKey: hubApiKey,
+          ),
+        ));
+        await tester.pump();
+        await tester.pump();
+        return tester.widget<MetaData>(find.byKey(const ValueKey('headset-pairing-payload'))).metaData as String;
+      }
+
+      final withHub = await qrFor(hubUrl: 'wss://sessions.example.net:8300', hubApiKey: 'hubkey');
+      final query = Uri.splitQueryString(withHub.substring(withHub.indexOf('?') + 1));
+      expect(query['h'], 'wss://sessions.example.net:8300');
+      expect(query['hk'], 'hubkey');
+      expect(find.byKey(const ValueKey('headset-pairing-hub-note')), findsOneWidget);
+      final refused = await qrFor(hubUrl: 'wss://sessions.example.net:8300', hubApiKey: 'wrong');
+      expect(refused, isNot(contains('hk=')));
+      expect(find.byKey(const ValueKey('headset-pairing-hub-note')), findsNothing);
+      final without = await qrFor(hubUrl: '', hubApiKey: '');
+      expect(without, isNot(contains('hk=')));
+    });
+
+    testWidgets('a hub typed and saved goes into the code', (tester) async {
+      tester.view.physicalSize = const Size(800, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      final saved = <List<String>>[];
+      await tester.pumpWidget(MaterialApp(
+        home: HeadsetPairingScreen(
+          baseUrl: 'https://cad.example.net',
+          apiKey: 'secret',
+          httpClient: _server(hub: (request) async => http.Response('{}', 200)),
+          relayUrl: '',
+          relayApiKey: '',
+          storeUrl: '',
+          storeApiKey: '',
+          hubUrl: '',
+          hubApiKey: '',
+          saveHub: (url, key) async => saved.add([url, key]),
+        ),
+      ));
+      await tester.pump();
+      await tester.pump();
+      await tester.ensureVisible(find.text('Live sessions (optional)'));
+      await tester.pump();
+      await tester.tap(find.text('Live sessions (optional)'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('headset-pairing-hub-url')), 'wss://sessions.example.net:8300');
+      await tester.enterText(find.byKey(const ValueKey('headset-pairing-hub-key')), 'typed-key');
+      await tester.ensureVisible(find.text('Save hub and check again'));
+      await tester.pump();
+      await tester.tap(find.text('Save hub and check again'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+      expect(saved, [
+        ['wss://sessions.example.net:8300', 'typed-key']
+      ]);
+      final text = tester.widget<MetaData>(find.byKey(const ValueKey('headset-pairing-payload'))).metaData as String;
+      final query = Uri.splitQueryString(text.substring(text.indexOf('?') + 1));
+      expect(query['h'], 'wss://sessions.example.net:8300');
+      expect(query['hk'], 'typed-key');
     });
 
     testWidgets('a relay typed and saved goes into the code', (tester) async {

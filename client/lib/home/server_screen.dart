@@ -88,6 +88,7 @@ class _ServerScreenState extends State<ServerScreen> {
       }
       await ApiConfig.save(baseUrl: url, apiKey: key);
       await _offerStoreFromHealth(response.body);
+      await _offerHubFromHealth(response.body);
       TextInput.finishAutofillContext();
       if (!mounted) return;
       Navigator.of(context).pop(true);
@@ -108,6 +109,20 @@ class _ServerScreenState extends State<ServerScreen> {
       final offered = decoded is Map ? decoded['project_store'] : null;
       if (offered is String && offered.trim().isNotEmpty && ApiConfig.storeUrl.isEmpty) {
         await ApiConfig.saveStore(storeUrl: offered.trim(), storeApiKey: ApiConfig.storeApiKey);
+      }
+    } on FormatException {
+      // An older backend, or a proxy page: nothing is offered.
+    }
+  }
+
+  /// The backend's `/health` says where its session hub is (`session_hub`, never a key) when it was told `SESSION_HUB_URL`: kept as
+  /// the default hub address when none is set, for Connect a VR headset (LS-11). The key is typed once, on that screen.
+  Future<void> _offerHubFromHealth(String body) async {
+    try {
+      final decoded = jsonDecode(body);
+      final offered = decoded is Map ? decoded['session_hub'] : null;
+      if (offered is String && offered.trim().isNotEmpty && ApiConfig.hubUrl.isEmpty) {
+        await ApiConfig.saveHub(hubUrl: offered.trim(), hubApiKey: ApiConfig.hubApiKey);
       }
     } on FormatException {
       // An older backend, or a proxy page: nothing is offered.

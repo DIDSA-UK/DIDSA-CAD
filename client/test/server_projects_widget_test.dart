@@ -161,6 +161,39 @@ void main() {
       await _settle(tester);
       expect(ApiConfig.storeUrl, '');
     });
+
+    testWidgets('/health session_hub is offered as the default hub address for a VR headset (never a key; LS-11)', (tester) async {
+      final backend = MockClient((request) async {
+        return http.Response(jsonEncode({'status': 'ok', 'api_features': <String>[], 'session_hub': 'wss://sessions.example.com'}), 200);
+      });
+      await pumpScreen(tester, ServerScreen(httpClient: backend));
+      expect(ApiConfig.hubUrl, '');
+
+      await tester.tap(find.byKey(const ValueKey('server-connect')));
+      await _settle(tester);
+
+      expect(ApiConfig.hubUrl, 'wss://sessions.example.com');
+      expect(ApiConfig.hubApiKey, '', reason: 'the backend never knows the hub key: it is typed once, on Connect a VR headset');
+    });
+
+    testWidgets('a hub address already set is not replaced by what /health offers; an older backend offers none', (tester) async {
+      await ApiConfig.saveHub(hubUrl: 'wss://mine.example.com/', hubApiKey: 'k');
+      expect(ApiConfig.hubUrl, 'wss://mine.example.com', reason: 'a trailing slash is dropped');
+      final backend = MockClient((request) async => http.Response(jsonEncode({'status': 'ok', 'session_hub': 'wss://sessions.example.com'}), 200));
+      await pumpScreen(tester, ServerScreen(httpClient: backend));
+      await tester.tap(find.byKey(const ValueKey('server-connect')));
+      await _settle(tester);
+      expect(ApiConfig.hubUrl, 'wss://mine.example.com');
+      expect(ApiConfig.hubApiKey, 'k');
+    });
+
+    testWidgets('a backend with no session_hub (an older one) offers no hub', (tester) async {
+      final backend = MockClient((request) async => http.Response(jsonEncode({'status': 'ok'}), 200));
+      await pumpScreen(tester, ServerScreen(httpClient: backend));
+      await tester.tap(find.byKey(const ValueKey('server-connect')));
+      await _settle(tester);
+      expect(ApiConfig.hubUrl, '');
+    });
   });
 
   group('File > Server projects', () {

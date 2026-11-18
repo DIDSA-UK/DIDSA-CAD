@@ -38,7 +38,11 @@ class PairingResult {
   /// so the rest of the code still pairs).
   final String? relayUrl;
 
-  const PairingResult(this.checks, {this.pairUrl, this.name = '', this.relayUrl});
+  /// The session hub the code carries (normalised `ws://` / `wss://`, LS-11), or null: none set, no key, one the headset would refuse,
+  /// or one that refused the key (left out, so the rest of the code still pairs).
+  final String? hubUrl;
+
+  const PairingResult(this.checks, {this.pairUrl, this.name = '', this.relayUrl, this.hubUrl});
 
   bool get compatible => pairUrl != null && checks.every((c) => !c.failed);
 }
@@ -207,6 +211,53 @@ class HeadsetPairing {
     }
   }
 
+  /// The session hub's address (`session-hub/`, live sessions, LS-11), judged by the same rules as the relay's: `ws://` like `http://`,
+  /// `wss://` like `https://`; an `http(s)://` address is taken as the matching `ws(s)://` one, and a trailing `/ws` is dropped (the
+  /// headset adds it). Returns the check and the address to put in the code (null when the headset would refuse it).
+  static (PairingCheck, String?) checkHubAddress(String rawUrl) {
+    const title = 'Session hub address';
+    final (check, wsUrl) = checkRelayAddress(rawUrl);
+    final message = check.message
+        .replaceAll('The relay is left out of the code', 'The session hub is left out of the code')
+        .replaceAll('relay key', 'hub key');
+    return (PairingCheck(title, check.state, message), wsUrl);
+  }
+
+  /// The hub answers `GET /health` (on the `http(s)://` form of its address) for [apiKey]: the hub's `/health` needs its own key, so
+  /// this is the one place a wrong hub key is caught before it is put in a code. A refused key is a warning that leaves the hub out of
+  /// the code (the headset could not host with it); an unreachable hub is a warning too, and it is still put in (it may be reachable
+  /// from the headset when it is not from here). Returns the check and whether to keep the hub in the code.
+  static Future<(PairingCheck, bool)> checkHubHealth(http.Client client, String wsUrl, String apiKey) async {
+    const title = 'Session hub running';
+    final httpUrl = wsUrl.startsWith('wss://') ? 'https://${wsUrl.substring(6)}' : 'http://${wsUrl.substring(5)}';
+    try {
+      final response = await client.get(Uri.parse('$httpUrl/health'), headers: {'X-API-Key': apiKey}).timeout(ApiConfig.requestTimeout);
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        return (
+          const PairingCheck(
+            title,
+            PairingCheckState.warn,
+            'The hub refused the key (SESSION_HUB_API_KEY on the hub\'s machine, not the CAD key), so the hub is left out of the code.',
+          ),
+          false,
+        );
+      }
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        return (const PairingCheck(title, PairingCheckState.pass, 'The hub answers and accepted its key.'), true);
+      }
+      return (PairingCheck(title, PairingCheckState.warn, 'The hub answered ${response.statusCode}. Hosting a session may not work.'), true);
+    } catch (_) {
+      return (
+        const PairingCheck(
+          title,
+          PairingCheckState.warn,
+          'Could not reach the hub from here. Is it running (docker compose up -d session-hub)? It is still put in the code.',
+        ),
+        true,
+      );
+    }
+  }
+
   /// The server answers `GET /health` with this key.
   static Future<PairingCheck> checkHealth(http.Client client, String baseUrl, String apiKey) async {
     const title = 'Server running';
@@ -285,6 +336,8 @@ class HeadsetPairing {
     Future<List<String>> Function()? wifiAddresses,
     String relayUrl = '',
     String relayApiKey = '',
+    String hubUrl = '',
+    String hubApiKey = '',
   }) async {
     if (baseUrl.trim().isEmpty || apiKey.trim().isEmpty) {
       return const PairingResult([
@@ -359,7 +412,24 @@ class HeadsetPairing {
         relay = wsUrl;
       }
     }
-    return PairingResult(checks, pairUrl: pairUrl, name: name, relayUrl: relay);
+    // The session hub (LS-11) is optional and never stops the code either: with no key, or one the hub refuses, it is left out.
+    String? hub;
+    if (hubUrl.trim().isNotEmpty) {
+      final (addressCheck, wsUrl) = checkHubAddress(hubUrl);
+      checks.add(addressCheck);
+      if (wsUrl != null && hubApiKey.trim().isEmpty) {
+        checks.add(const PairingCheck(
+          'Session hub key',
+          PairingCheckState.warn,
+          'No hub key set (SESSION_HUB_API_KEY on the hub\'s machine), so the hub is left out of the code.',
+        ));
+      } else if (wsUrl != null) {
+        final (health, keep) = await checkHubHealth(client, wsUrl, hubApiKey.trim());
+        checks.add(health);
+        if (keep) hub = wsUrl;
+      }
+    }
+    return PairingResult(checks, pairUrl: pairUrl, name: name, relayUrl: relay, hubUrl: hub);
   }
 
   /// This phone's local-network IPv4 addresses, Wi-Fi (and hotspot) interfaces first. A mobile-data interface's address is left
@@ -389,7 +459,8 @@ class HeadsetPairing {
   /// The QR code's text: `didsa-vr:1?n=<name>&u=<url>&k=<key>`, each value percent-encoded, plus `r=<relay>&rk=<relay key>` when a
   /// browser relay is given (both, or neither: DIDSA-VR's `pairing_payload.gd` reads them), plus `p=<store address>&pk=<store key>` when
   /// the cloud storage (project store) is set up (both, or neither; S4: DIDSA-VR reads them and saves them with the server. They are not
-  /// `s` / `sk`, which are the document session's).
+  /// `s` / `sk`, which are the document session's), plus `h=<hub address>&hk=<hub key>` when the session hub is set (LS-11; both, or
+  /// neither; an older headset ignores both keys). The hub's key lets the headset HOST a session, so it is as sensitive as the others.
   static String payload({
     required String name,
     required String baseUrl,
@@ -398,6 +469,8 @@ class HeadsetPairing {
     String relayApiKey = '',
     String? storeUrl,
     String storeApiKey = '',
+    String? hubUrl,
+    String hubApiKey = '',
   }) {
     final query = [
       'n=${Uri.encodeQueryComponent(name)}',
@@ -410,6 +483,10 @@ class HeadsetPairing {
       if (storeUrl != null && storeUrl.trim().isNotEmpty && storeApiKey.trim().isNotEmpty) ...[
         'p=${Uri.encodeQueryComponent(_trimmed(storeUrl))}',
         'pk=${Uri.encodeQueryComponent(storeApiKey.trim())}',
+      ],
+      if (hubUrl != null && hubUrl.trim().isNotEmpty && hubApiKey.trim().isNotEmpty) ...[
+        'h=${Uri.encodeQueryComponent(_trimmed(hubUrl))}',
+        'hk=${Uri.encodeQueryComponent(hubApiKey.trim())}',
       ],
     ].join('&');
     return '$payloadScheme:$payloadVersion?$query';
