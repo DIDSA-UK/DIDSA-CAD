@@ -32,6 +32,9 @@ run on the projector's answer.
 
 ## The projector
 
+The port spec (every residual, the branch rules, the walk step by step) and the golden vectors for the VR port are
+`docs/motion/sketch-projector-spec.md` and `docs/motion/sketch-vectors.json` (DIDSA-VR parity plan S8).
+
 Input per frame: a **wish** (grabbed point at the cursor; for a closed-form shape the shape's proposal for all its points;
 everything else where it is), the **last accepted frame** (on the manifold) and the sketch's constraints. Output: the points of
 the dragged group placed at the weighted-nearest feasible point to the wish.

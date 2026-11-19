@@ -14,10 +14,9 @@ import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'support/slvs_reference/local_sketch_solver.dart';
 import 'package:didsa_cad_client/sketch/projector/sketch_projector.dart';
 import 'support/slvs_reference/slvs_bindings.dart';
+import 'support/sketch_projector_cases.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'support/timing.dart';
-
-typedef Pt = (double, double);
 
 String? _hostLibrary() {
   for (final relative in [
@@ -31,232 +30,9 @@ String? _hostLibrary() {
   return null;
 }
 
-double _dist(Pt a, Pt b) => math.sqrt(math.pow(a.$1 - b.$1, 2) + math.pow(a.$2 - b.$2, 2));
+double _dist(Pt a, Pt b) => pointDistance(a, b);
 
-/// Signed distance, SolveSpace's convention: `((p - s) x (e - s)) / |e - s|`.
-double _signed(Pt p, Pt s, Pt e) {
-  final dx = e.$1 - s.$1, dy = e.$2 - s.$2;
-  return ((p.$1 - s.$1) * dy - (p.$2 - s.$2) * dx) / math.sqrt(dx * dx + dy * dy);
-}
-
-class _Case {
-  final String name;
-  final Map<String, Pt> points;
-  final Map<String, (String, String)> lines;
-  final List<ConstraintDto> constraints;
-  final Pt wish;
-
-  /// Independent residuals of the constraint at the answer (all ~0).
-  final List<double> Function(Map<String, Pt>) residuals;
-
-  /// The nearest feasible point, when easy to state.
-  final Pt? expected;
-  const _Case(this.name, this.points, this.lines, this.constraints, this.wish, this.residuals, {this.expected});
-}
-
-final List<_Case> _cases = [
-  _Case(
-    'distance',
-    {'a': (0, 0), 'd': (10, 0)},
-    {},
-    [DistanceConstraintDto(id: 'c', pointAId: 'a', pointBId: 'd', distance: 10)],
-    (7, 7),
-    (p) => [_dist(p['a']!, p['d']!) - 10],
-    expected: (10 * 7 / math.sqrt(98), 10 * 7 / math.sqrt(98)),
-  ),
-  _Case(
-    'horizontal distance',
-    {'a': (0, 0), 'd': (10, 2)},
-    {},
-    [DistanceConstraintDto(id: 'c', pointAId: 'a', pointBId: 'd', distance: 10, orientation: 'horizontal')],
-    (12, 5),
-    (p) => [p['d']!.$1 - p['a']!.$1 - 10],
-    expected: (10, 5),
-  ),
-  _Case(
-    'vertical distance, negative side kept',
-    {'a': (0, 0), 'd': (3, -10)},
-    {},
-    [DistanceConstraintDto(id: 'c', pointAId: 'a', pointBId: 'd', distance: 10, orientation: 'vertical')],
-    (6, -4),
-    (p) => [p['d']!.$2 - p['a']!.$2 + 10],
-    expected: (6, -10),
-  ),
-  _Case(
-    'horizontal',
-    {'a': (0, 0), 'd': (10, 0)},
-    {'l': ('a', 'd')},
-    [HorizontalConstraintDto(id: 'c', lineId: 'l', pointAId: 'a', pointBId: 'd')],
-    (8, 5),
-    (p) => [p['d']!.$2 - p['a']!.$2],
-    expected: (8, 0),
-  ),
-  _Case(
-    'vertical',
-    {'a': (0, 0), 'd': (0, 10)},
-    {'l': ('a', 'd')},
-    [VerticalConstraintDto(id: 'c', lineId: 'l', pointAId: 'a', pointBId: 'd')],
-    (4, 8),
-    (p) => [p['d']!.$1 - p['a']!.$1],
-    expected: (0, 8),
-  ),
-  _Case(
-    'angle 60 degrees to a fixed line',
-    {'a': (0, 0), 'b': (10, 0), 'd': (5, 8.660254037844386)},
-    {'l1': ('a', 'b'), 'l2': ('a', 'd')},
-    [AngleConstraintDto(id: 'c', line1Id: 'l1', line2Id: 'l2', angleDegrees: 60)],
-    (3, 12),
-    (p) {
-      final d = p['d']!;
-      return [math.atan2(d.$2, d.$1) * 180 / math.pi - 60];
-    },
-    // projection onto the 60 degree ray
-    expected: (
-      (3 * 0.5 + 12 * math.sqrt(3) / 2) * 0.5,
-      (3 * 0.5 + 12 * math.sqrt(3) / 2) * math.sqrt(3) / 2,
-    ),
-  ),
-  _Case(
-    'coincident',
-    {'b': (5, 5), 'd': (6, 5)},
-    {},
-    [CoincidentConstraintDto(id: 'c', pointAId: 'b', pointBId: 'd')],
-    (9, 1),
-    (p) => [p['d']!.$1 - p['b']!.$1, p['d']!.$2 - p['b']!.$2],
-    expected: (5, 5),
-  ),
-  _Case(
-    'concentric',
-    {'b': (5, 5), 'd': (6, 5)},
-    {},
-    [ConcentricConstraintDto(id: 'c', entity1Id: 'e1', entity2Id: 'e2', center1PointId: 'b', center2PointId: 'd')],
-    (9, 1),
-    (p) => [p['d']!.$1 - p['b']!.$1, p['d']!.$2 - p['b']!.$2],
-    expected: (5, 5),
-  ),
-  _Case(
-    'parallel',
-    {'a': (0, 0), 'b': (10, 0), 'c': (0, 5), 'd': (10, 5)},
-    {'l1': ('a', 'b'), 'l2': ('c', 'd')},
-    [ParallelConstraintDto(id: 'k', line1Id: 'l1', line2Id: 'l2')],
-    (12, 9),
-    (p) => [p['d']!.$2 - p['c']!.$2],
-    expected: (12, 5),
-  ),
-  _Case(
-    'perpendicular',
-    {'a': (0, 0), 'b': (10, 0), 'c': (5, 0), 'd': (5, 8)},
-    {'l1': ('a', 'b'), 'l2': ('c', 'd')},
-    [PerpendicularConstraintDto(id: 'k', line1Id: 'l1', line2Id: 'l2')],
-    (9, 9),
-    (p) => [p['d']!.$1 - p['c']!.$1],
-    expected: (5, 9),
-  ),
-  _Case(
-    'equal length',
-    {'a': (0, 0), 'b': (10, 0), 'c': (0, 5), 'd': (10, 5)},
-    {'l1': ('a', 'b'), 'l2': ('c', 'd')},
-    [EqualLengthConstraintDto(id: 'k', line1Id: 'l1', line2Id: 'l2')],
-    (20, 5),
-    (p) => [_dist(p['c']!, p['d']!) - 10],
-    expected: (10, 5),
-  ),
-  _Case(
-    'line tangent to a circle (radius point moves)',
-    {'a': (-20, 0), 'b': (20, 0), 'c': (5, 4), 'd': (9, 4)},
-    {'l': ('a', 'b')},
-    [TangentConstraintDto(id: 'k', centerPointId: 'c', radiusPointId: 'd', lineId: 'l')],
-    (5, 12),
-    (p) => [_dist(p['c']!, p['d']!) - 4],
-    expected: (5, 8),
-  ),
-  _Case(
-    'two curves tangent at a shared point',
-    {'c1': (0, 0), 'c2': (10, 0), 'd': (6, 0)},
-    {},
-    [CurveTangentConstraintDto(id: 'k', entity1Id: 'e1', entity2Id: 'e2', center1PointId: 'c1', center2PointId: 'c2', sharedPointId: 'd')],
-    (4, 3),
-    (p) => [p['d']!.$2],
-    expected: (4, 0),
-  ),
-  _Case(
-    'equal radius',
-    {'c1': (0, 0), 'r1': (5, 0), 'c2': (20, 0), 'd': (25, 0)},
-    {},
-    [EqualRadiusConstraintDto(id: 'k', center1PointId: 'c1', radius1PointId: 'r1', center2PointId: 'c2', radius2PointId: 'd')],
-    (20, 9),
-    (p) => [_dist(p['c2']!, p['d']!) - 5],
-    expected: (20, 5),
-  ),
-  _Case(
-    'line distance (signed, from the second line start)',
-    {'a': (0, 0), 'b': (10, 0), 'd': (0, 5), 'e': (10, 5)},
-    {'l1': ('a', 'b'), 'l2': ('d', 'e')},
-    // ((d - a) x (b - a)) / |b - a| = -5 at the start, so the stored distance is -5
-    [LineDistanceConstraintDto(id: 'k', line1Id: 'l1', line2Id: 'l2', distance: -5)],
-    (3, 9),
-    (p) => [_signed(p['d']!, p['a']!, p['b']!) + 5],
-    expected: (3, 5),
-  ),
-  _Case(
-    'point-line distance',
-    {'a': (0, 0), 'b': (10, 0), 'd': (4, 3)},
-    {'l': ('a', 'b')},
-    [PointLineDistanceConstraintDto(id: 'k', pointId: 'd', lineId: 'l', distance: -3)],
-    (6, 8),
-    (p) => [_signed(p['d']!, p['a']!, p['b']!) + 3],
-    expected: (6, 3),
-  ),
-  _Case(
-    'collinear',
-    {'a': (0, 0), 'b': (10, 0), 'd': (3, 1), 'e': (7, 0)},
-    {'l1': ('a', 'b'), 'l2': ('d', 'e')},
-    [CollinearConstraintDto(id: 'k', line1Id: 'l1', line2Id: 'l2')],
-    (3, 4),
-    (p) => [_signed(p['d']!, p['a']!, p['b']!), _signed(p['e']!, p['a']!, p['b']!)],
-    expected: (3, 0),
-  ),
-  _Case(
-    'at midpoint',
-    {'a': (0, 0), 'b': (10, 4), 'd': (4, 2)},
-    {'l': ('a', 'b')},
-    [AtMidpointConstraintDto(id: 'k', pointId: 'd', lineId: 'l')],
-    (9, 9),
-    (p) => [p['d']!.$1 - 5, p['d']!.$2 - 2],
-    expected: (5, 2),
-  ),
-  _Case(
-    'point on line',
-    {'a': (0, 0), 'b': (10, 10), 'd': (3, 3)},
-    {'l': ('a', 'b')},
-    [PointOnLineConstraintDto(id: 'k', pointId: 'd', lineId: 'l')],
-    (6, 5),
-    (p) => [_signed(p['d']!, p['a']!, p['b']!)],
-    expected: (5.5, 5.5),
-  ),
-  _Case(
-    'point on circle',
-    {'c': (0, 0), 'r': (5, 0), 'd': (0, 5)},
-    {},
-    [PointOnCircleConstraintDto(id: 'k', pointId: 'd', circleOrArcId: 'e', centerPointId: 'c', radiusPointId: 'r')],
-    (6, 8),
-    (p) => [_dist(p['c']!, p['d']!) - 5],
-    expected: (3, 4),
-  ),
-  _Case(
-    'point on ellipse',
-    {'c': (0, 0), 'maj': (6, 0), 'min': (0, 3), 'd': (0, 3)},
-    {},
-    [PointOnEllipseConstraintDto(id: 'k', pointId: 'd', ellipseId: 'e', centerPointId: 'c', majorPointId: 'maj', minorPointId: 'min')],
-    (5, 5),
-    (p) {
-      final d = p['d']!;
-      return [math.pow(d.$1 / 6, 2) + math.pow(d.$2 / 3, 2) - 1];
-    },
-  ),
-];
-
-SketchProjection _project(_Case c, {Map<String, Pt>? points, Set<String>? pinned, Pt? wish}) {
+SketchProjection _project(ProjectorCase c, {Map<String, Pt>? points, Set<String>? pinned, Pt? wish}) {
   final pts = Map<String, Pt>.of(points ?? c.points);
   final start = Map<String, Pt>.of(pts);
   pts['d'] = wish ?? c.wish;
@@ -272,7 +48,7 @@ SketchProjection _project(_Case c, {Map<String, Pt>? points, Set<String>? pinned
 
 void main() {
   group('projector: one grabbed point, everything else pinned', () {
-    for (final c in _cases) {
+    for (final c in [...projectorGoldenCases, ...projectorPartDCases]) {
       test(c.name, () {
         final r = _project(c);
         // ignore: avoid_print
@@ -290,8 +66,8 @@ void main() {
         }
         final want = c.expected;
         if (want != null) {
-          expect(r.points['d']!.$1, closeTo(want.$1, 1e-4));
-          expect(r.points['d']!.$2, closeTo(want.$2, 1e-4));
+          expect(r.points['d']!.$1, closeTo(want.$1, c.nearestTolerance));
+          expect(r.points['d']!.$2, closeTo(want.$2, c.nearestTolerance));
         }
       });
     }
@@ -627,7 +403,7 @@ void main() {
       'two curves tangent at a shared point', 'equal radius', 'line distance (signed, from the second line start)',
       'point-line distance', 'at midpoint', 'point on line', 'point on circle',
     };
-    for (final c in _cases) {
+    for (final c in projectorGoldenCases) {
       test(c.name, () {
         final pts = Map<String, Pt>.of(c.points);
         pts['d'] = c.wish;

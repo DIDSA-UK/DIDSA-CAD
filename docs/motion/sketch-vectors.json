@@ -1,0 +1,1236 @@
+{
+ "version": 1,
+ "spec": "docs/motion/sketch-projector-spec.md",
+ "generator": "client/test/sketch_vectors_test.dart (tools/sketch_vectors/export.sh writes; --check verifies)",
+ "regenerate_tolerance": 1e-9,
+ "points_relative_tolerance": 0.00001,
+ "constants": {
+   "follower_stiffness": 0.01,
+   "nearest_max": 24,
+   "arrived": 0.00001,
+   "min_omega": 0.03125,
+   "max_boost": 8.0,
+   "correctors": 4,
+   "max_polish": 10,
+   "tolerance": 0.000001,
+   "trust": 2.0,
+   "trust_diagonal": 0.1,
+   "eps": 1e-12,
+   "lambda_relative": 1e-10,
+   "lambda_absolute": 1e-14,
+   "corrector_halvings": 8,
+   "closer_ratio": 1e-9,
+   "rho_reverse": -0.3,
+   "rho_boost_low": 0.5,
+   "rho_boost_high": 0.999,
+   "stall_limit": 5
+ },
+ "conventions": {
+   "point": "[x, y] in sketch units (mm)",
+   "constraint": "the backend wire form (type + fields), as GET .../constraints returns it",
+   "frame": "start = input.start, then every earlier frame's expected.points laid over it; call: points = start + wish (wish replaces those ids), reference = start, anchors / stiff / pinned / provisional from input",
+   "expected": "normative: unsupported, converged, the ids of points, each coordinate within the case's tolerance, variable_points, rows; informational: residual_inf (converged means <= tolerance * max(1, group diagonal)), exit, walks, rejected_steps, iterations",
+   "nearest": "golden cases only, where known: the exact nearest feasible point (informational; the projector may stop a little short)"
+ },
+ "cases": [
+  {
+   "id": "golden-distance",
+   "kind": "golden",
+   "description": "distance",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "nearest": [7.0710678119,7.0710678119],
+   "frames": [
+    {"wish":{"d":[7.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.0710672313,7.0710683929]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":7,"rejected_steps":0,"iterations":13}}
+   ]
+  },
+  {
+   "id": "golden-horizontal-distance",
+   "kind": "golden",
+   "description": "horizontal distance",
+   "tolerance": 0.0001019804,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,2.0]},"lines":{},"constraints":[{"type":"distance","id":"c","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"horizontal"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "nearest": [10.0,5.0],
+   "frames": [
+    {"wish":{"d":[12.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0000000002,5.0]},"variable_points":1,"rows":1,"residual_inf":2e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":2}}
+   ]
+  },
+  {
+   "id": "golden-vertical-distance-negative-side-kept",
+   "kind": "golden",
+   "description": "vertical distance, negative side kept",
+   "tolerance": 0.0001044031,
+   "input": {"start":{"a":[0.0,0.0],"d":[3.0,-10.0]},"lines":{},"constraints":[{"type":"distance","id":"c","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"vertical"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "nearest": [6.0,-10.0],
+   "frames": [
+    {"wish":{"d":[6.0,-4.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.0,-9.9999999994]},"variable_points":1,"rows":1,"residual_inf":6e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":2}}
+   ]
+  },
+  {
+   "id": "golden-horizontal",
+   "kind": "golden",
+   "description": "horizontal",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"horizontal","id":"c","line_id":"l","point_a_id":"a","point_b_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "nearest": [8.0,0.0],
+   "frames": [
+    {"wish":{"d":[8.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.0,5e-10]},"variable_points":1,"rows":1,"residual_inf":5e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-vertical",
+   "kind": "golden",
+   "description": "vertical",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[0.0,10.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"vertical","id":"c","line_id":"l","point_a_id":"a","point_b_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "nearest": [0.0,8.0],
+   "frames": [
+    {"wish":{"d":[4.0,8.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4e-10,8.0]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-angle-60-degrees-to-a-fixed-line",
+   "kind": "golden",
+   "description": "angle 60 degrees to a fixed line",
+   "tolerance": 0.0001322876,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[5.0,8.6602540378]},"lines":{"l1":["a","b"],"l2":["a","d"]},"constraints":[{"type":"angle","id":"c","line1_id":"l1","line2_id":"l2","angle_degrees":60.0,"quadrant":null}],"anchors":["d"],"stiff":[],"pinned":["a","b"],"provisional":{}},
+   "nearest": [5.9461524227,10.2990381057],
+   "frames": [
+    {"wish":{"d":[3.0,12.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.9461524224,10.2990381058]},"variable_points":1,"rows":1,"residual_inf":2.9e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-coincident",
+   "kind": "golden",
+   "description": "coincident",
+   "tolerance": 0.00001,
+   "input": {"start":{"b":[5.0,5.0],"d":[6.0,5.0]},"lines":{},"constraints":[{"type":"coincident","id":"c","point_a_id":"b","point_b_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["b"],"provisional":{}},
+   "nearest": [5.0,5.0],
+   "frames": [
+    {"wish":{"d":[9.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-concentric",
+   "kind": "golden",
+   "description": "concentric",
+   "tolerance": 0.00001,
+   "input": {"start":{"b":[5.0,5.0],"d":[6.0,5.0]},"lines":{},"constraints":[{"type":"concentric","id":"c","entity1_id":"e1","entity2_id":"e2","center1_point_id":"b","center2_point_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["b"],"provisional":{}},
+   "nearest": [5.0,5.0],
+   "frames": [
+    {"wish":{"d":[9.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-parallel",
+   "kind": "golden",
+   "description": "parallel",
+   "tolerance": 0.0001118034,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"c":[0.0,5.0],"d":[10.0,5.0]},"lines":{"l1":["a","b"],"l2":["c","d"]},"constraints":[{"type":"parallel","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a","b","c"],"provisional":{}},
+   "nearest": [12.0,5.0],
+   "frames": [
+    {"wish":{"d":[12.0,9.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[12.0,5.0000000004]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-perpendicular",
+   "kind": "golden",
+   "description": "perpendicular",
+   "tolerance": 0.0001280625,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"c":[5.0,0.0],"d":[5.0,8.0]},"lines":{"l1":["a","b"],"l2":["c","d"]},"constraints":[{"type":"perpendicular","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a","b","c"],"provisional":{}},
+   "nearest": [5.0,9.0],
+   "frames": [
+    {"wish":{"d":[9.0,9.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000004,9.0]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-equal-length",
+   "kind": "golden",
+   "description": "equal length",
+   "tolerance": 0.0001118034,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"c":[0.0,5.0],"d":[10.0,5.0]},"lines":{"l1":["a","b"],"l2":["c","d"]},"constraints":[{"type":"equal_length","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a","b","c"],"provisional":{}},
+   "nearest": [10.0,5.0],
+   "frames": [
+    {"wish":{"d":[20.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0,5.0]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}}
+   ]
+  },
+  {
+   "id": "golden-line-tangent-to-a-circle-radius-point-moves",
+   "kind": "golden",
+   "description": "line tangent to a circle (radius point moves)",
+   "tolerance": 0.000401995,
+   "input": {"start":{"a":[-20.0,0.0],"b":[20.0,0.0],"c":[5.0,4.0],"d":[9.0,4.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"tangent","id":"k","center_point_id":"c","radius_point_id":"d","line_id":"l"}],"anchors":["d"],"stiff":[],"pinned":["a","b","c"],"provisional":{}},
+   "nearest": [5.0,8.0],
+   "frames": [
+    {"wish":{"d":[5.0,12.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0,8.0000000113]},"variable_points":1,"rows":1,"residual_inf":1.13e-8,"exit":"arrived","walks":6,"rejected_steps":0,"iterations":11}}
+   ]
+  },
+  {
+   "id": "golden-two-curves-tangent-at-a-shared-point",
+   "kind": "golden",
+   "description": "two curves tangent at a shared point",
+   "tolerance": 0.0001,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[10.0,0.0],"d":[6.0,0.0]},"lines":{},"constraints":[{"type":"curve_tangent","id":"k","entity1_id":"e1","entity2_id":"e2","center1_point_id":"c1","center2_point_id":"c2","shared_point_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["c1","c2"],"provisional":{}},
+   "nearest": [4.0,0.0],
+   "frames": [
+    {"wish":{"d":[4.0,3.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.0,3e-10]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-equal-radius",
+   "kind": "golden",
+   "description": "equal radius",
+   "tolerance": 0.00025,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[20.0,0.0],"d":[25.0,0.0],"r1":[5.0,0.0]},"lines":{},"constraints":[{"type":"equal_radius","id":"k","center1_point_id":"c1","radius1_point_id":"r1","center2_point_id":"c2","radius2_point_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["c1","r1","c2"],"provisional":{}},
+   "nearest": [20.0,5.0],
+   "frames": [
+    {"wish":{"d":[20.0,9.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[19.9999343362,5.0000000347]},"variable_points":1,"rows":1,"residual_inf":3.51e-8,"exit":"arrived","walks":8,"rejected_steps":5,"iterations":20}}
+   ]
+  },
+  {
+   "id": "golden-line-distance-signed-from-the-second-line-start",
+   "kind": "golden",
+   "description": "line distance (signed, from the second line start)",
+   "tolerance": 0.0001118034,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[0.0,5.0],"e":[10.0,5.0]},"lines":{"l1":["a","b"],"l2":["d","e"]},"constraints":[{"type":"line_distance","id":"k","line1_id":"l1","line2_id":"l2","distance":-5.0}],"anchors":["d"],"stiff":[],"pinned":["a","b","e"],"provisional":{}},
+   "nearest": [3.0,5.0],
+   "frames": [
+    {"wish":{"d":[3.0,9.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.0,5.0000000004]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":2}}
+   ]
+  },
+  {
+   "id": "golden-point-line-distance",
+   "kind": "golden",
+   "description": "point-line distance",
+   "tolerance": 0.0001044031,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[4.0,3.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"point_line_distance","id":"k","point_id":"d","line_id":"l","distance":-3.0}],"anchors":["d"],"stiff":[],"pinned":["a","b"],"provisional":{}},
+   "nearest": [6.0,3.0],
+   "frames": [
+    {"wish":{"d":[6.0,8.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.0,3.0000000005]},"variable_points":1,"rows":1,"residual_inf":5e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-collinear",
+   "kind": "golden",
+   "description": "collinear",
+   "tolerance": 0.0001004988,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[3.0,1.0],"e":[7.0,0.0]},"lines":{"l1":["a","b"],"l2":["d","e"]},"constraints":[{"type":"collinear","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a","b","e"],"provisional":{}},
+   "nearest": [3.0,0.0],
+   "frames": [
+    {"wish":{"d":[3.0,4.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.0,1e-10]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-at-midpoint",
+   "kind": "golden",
+   "description": "at midpoint",
+   "tolerance": 0.0001077033,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,4.0],"d":[4.0,2.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"at_midpoint","id":"k","point_id":"d","line_id":"l"}],"anchors":["d"],"stiff":[],"pinned":["a","b"],"provisional":{}},
+   "nearest": [5.0,2.0],
+   "frames": [
+    {"wish":{"d":[9.0,9.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.9999999999,2.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-point-on-line",
+   "kind": "golden",
+   "description": "point on line",
+   "tolerance": 0.0001414214,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,10.0],"d":[3.0,3.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"point_on_line","id":"k","point_id":"d","line_id":"l"}],"anchors":["d"],"stiff":[],"pinned":["a","b"],"provisional":{}},
+   "nearest": [5.5,5.5],
+   "frames": [
+    {"wish":{"d":[6.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.5000000001,5.4999999999]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":2}}
+   ]
+  },
+  {
+   "id": "golden-point-on-circle",
+   "kind": "golden",
+   "description": "point on circle",
+   "tolerance": 0.0000707107,
+   "input": {"start":{"c":[0.0,0.0],"d":[0.0,5.0],"r":[5.0,0.0]},"lines":{},"constraints":[{"type":"point_on_circle","id":"k","point_id":"d","circle_or_arc_id":"e","center_point_id":"c","radius_point_id":"r"}],"anchors":["d"],"stiff":[],"pinned":["c","r"],"provisional":{}},
+   "nearest": [3.0,4.0],
+   "frames": [
+    {"wish":{"d":[6.0,8.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.0000000063,3.9999999953]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":4,"rejected_steps":0,"iterations":8}}
+   ]
+  },
+  {
+   "id": "golden-point-on-ellipse",
+   "kind": "golden",
+   "description": "point on ellipse",
+   "tolerance": 0.000067082,
+   "input": {"start":{"c":[0.0,0.0],"d":[0.0,3.0],"maj":[6.0,0.0],"min":[0.0,3.0]},"lines":{},"constraints":[{"type":"point_on_ellipse","id":"k","point_id":"d","ellipse_id":"e","center_point_id":"c","major_point_id":"maj","minor_point_id":"min"}],"anchors":["d"],"stiff":[],"pinned":["c","maj","min"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[5.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.8627746396,2.2955921315]},"variable_points":1,"rows":1,"residual_inf":5.33e-8,"exit":"arrived","walks":10,"rejected_steps":4,"iterations":21}}
+   ]
+  },
+  {
+   "id": "golden-arc-length-alone-it-fixes-the-end-s-direction-radius-at-the-start-times-the-sweep",
+   "kind": "golden",
+   "description": "arc length (alone it fixes the end's direction: radius at the start times the sweep)",
+   "tolerance": 0.0000683501,
+   "input": {"start":{"c":[0.0,0.0],"d":[1.8117887724,4.6601954298],"s":[5.0,0.0]},"lines":{},"constraints":[{"type":"arc_length","id":"k","arc_id":"arc","center_point_id":"c","start_point_id":"s","end_point_id":"d","length":6.0}],"anchors":["d"],"stiff":[],"pinned":["c","s"],"provisional":{}},
+   "nearest": [2.1576926839,5.5499127369],
+   "frames": [
+    {"wish":{"d":[1.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[2.1576926838,5.5499127369]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-angle-to-horizontal-quadrant-0-30-degrees",
+   "kind": "golden",
+   "description": "angle to horizontal, quadrant 0 (30 degrees)",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[8.6602540378,5.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"horizontal_angle","id":"k","line_id":"l","line_start_id":"a","line_end_id":"d","angle_degrees":30.0,"quadrant":0}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "nearest": [8.5980762114,4.9641016151],
+   "frames": [
+    {"wish":{"d":[8.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.5980762113,4.9641016152]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-angle-to-horizontal-no-quadrant-the-supplement-the-reference-was-nearer-to-150-degrees",
+   "kind": "golden",
+   "description": "angle to horizontal, no quadrant: the supplement the reference was nearer to (150 degrees)",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[-8.6602540378,5.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"horizontal_angle","id":"k","line_id":"l","line_start_id":"a","line_end_id":"d","angle_degrees":30.0,"quadrant":null}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "nearest": [-5.3660254038,3.0980762114],
+   "frames": [
+    {"wish":{"d":[-6.0,2.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-5.365982327,3.0980513408]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":16,"rejected_steps":5,"iterations":21}}
+   ]
+  },
+  {
+   "id": "golden-three-point-angle-quadrant-0-40-degrees-vertex-first",
+   "kind": "golden",
+   "description": "three-point angle, quadrant 0 (40 degrees, vertex first)",
+   "tolerance": 0.0001188771,
+   "input": {"start":{"a":[10.0,0.0],"d":[7.6604444312,6.4278760969],"v":[0.0,0.0]},"lines":{},"constraints":[{"type":"point_angle","id":"k","vertex_point_id":"v","point1_id":"a","point2_id":"d","angle_degrees":40.0,"quadrant":0}],"anchors":["d"],"stiff":[],"pinned":["v","a"],"provisional":{}},
+   "nearest": [7.9525794216,6.6730064595],
+   "frames": [
+    {"wish":{"d":[6.0,9.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.9525794214,6.6730064598]},"variable_points":1,"rows":1,"residual_inf":2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "golden-minimum-distance-point-outside-a-circle",
+   "kind": "golden",
+   "description": "minimum distance, Point outside a circle",
+   "tolerance": 0.0000943398,
+   "input": {"start":{"c":[0.0,0.0],"d":[8.0,0.0],"r":[0.0,5.0]},"lines":{},"constraints":[{"type":"point_circle_distance","id":"k","point_id":"d","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":3.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["c","r"],"provisional":{}},
+   "nearest": [5.2063309876,6.0740528189],
+   "frames": [
+    {"wish":{"d":[6.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.2066091219,6.0738150372]},"variable_points":1,"rows":1,"residual_inf":4.784e-7,"exit":"arrived","walks":7,"rejected_steps":6,"iterations":19}}
+   ]
+  },
+  {
+   "id": "golden-minimum-distance-point-inside-a-circle-kept-inside",
+   "kind": "golden",
+   "description": "minimum distance, Point inside a circle (kept inside)",
+   "tolerance": 0.0000538516,
+   "input": {"start":{"c":[0.0,0.0],"d":[2.0,0.0],"r":[0.0,5.0]},"lines":{},"constraints":[{"type":"point_circle_distance","id":"k","point_id":"d","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":3.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["c","r"],"provisional":{}},
+   "nearest": [1.4142135624,1.4142135624],
+   "frames": [
+    {"wish":{"d":[1.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.4142214277,1.4142056972]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":10,"rejected_steps":0,"iterations":16}}
+   ]
+  },
+  {
+   "id": "golden-maximum-distance-point-and-circle",
+   "kind": "golden",
+   "description": "maximum distance, Point and circle",
+   "tolerance": 0.0000860233,
+   "input": {"start":{"c":[0.0,0.0],"d":[7.0,0.0],"r":[0.0,5.0]},"lines":{},"constraints":[{"type":"point_circle_distance","id":"k","point_id":"d","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":12.0,"side":"max"}],"anchors":["d"],"stiff":[],"pinned":["c","r"],"provisional":{}},
+   "nearest": [4.5555396142,5.3147962166],
+   "frames": [
+    {"wish":{"d":[6.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.5557860255,5.3145851919]},"variable_points":1,"rows":1,"residual_inf":1.48e-7,"exit":"arrived","walks":9,"rejected_steps":5,"iterations":29}}
+   ]
+  },
+  {
+   "id": "golden-minimum-distance-two-circles-the-second-one-s-rim-point-moves",
+   "kind": "golden",
+   "description": "minimum distance, two circles (the second one's rim point moves)",
+   "tolerance": 0.0001581139,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[15.0,0.0],"d":[15.0,5.0],"r1":[0.0,4.0]},"lines":{},"constraints":[{"type":"circle_distance","id":"k","entity1_id":"one","center1_point_id":"c1","radius1_point_id":"r1","entity2_id":"two","center2_point_id":"c2","radius2_point_id":"d","distance":6.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["c1","r1","c2"],"provisional":{}},
+   "nearest": [16.9695964929,4.5957251501],
+   "frames": [
+    {"wish":{"d":[18.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[16.9703902434,4.5953857176]},"variable_points":1,"rows":1,"residual_inf":7.605e-7,"exit":"arrived","walks":5,"rejected_steps":5,"iterations":14}}
+   ]
+  },
+  {
+   "id": "golden-maximum-distance-two-circles",
+   "kind": "golden",
+   "description": "maximum distance, two circles",
+   "tolerance": 0.0001552417,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[15.0,0.0],"d":[15.0,3.0],"r1":[0.0,4.0]},"lines":{},"constraints":[{"type":"circle_distance","id":"k","entity1_id":"one","center1_point_id":"c1","radius1_point_id":"r1","entity2_id":"two","center2_point_id":"c2","radius2_point_id":"d","distance":22.0,"side":"max"}],"anchors":["d"],"stiff":[],"pinned":["c1","r1","c2"],"provisional":{}},
+   "nearest": [12.0,0.0],
+   "frames": [
+    {"wish":{"d":[10.0,0.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[11.9999999234,-0.0001382546]},"variable_points":1,"rows":1,"residual_inf":7.97e-8,"exit":"arrived","walks":8,"rejected_steps":5,"iterations":20}}
+   ]
+  },
+  {
+   "id": "golden-tangent-side-distance-line-and-circle-the-rim-point-moves",
+   "kind": "golden",
+   "description": "tangent-side distance, line and circle (the rim point moves)",
+   "tolerance": 0.0004123106,
+   "input": {"start":{"a":[-20.0,0.0],"b":[20.0,0.0],"c":[2.0,10.0],"d":[6.0,10.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"line_circle_distance","id":"k","line_id":"l","line_start_id":"a","line_end_id":"b","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"d","distance":6.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["a","b","c"],"provisional":{}},
+   "nearest": [2.0,14.0],
+   "frames": [
+    {"wish":{"d":[2.0,17.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.9996874688,14.0000005862]},"variable_points":1,"rows":1,"residual_inf":5.984e-7,"exit":"arrived","walks":7,"rejected_steps":5,"iterations":18}}
+   ]
+  },
+  {
+   "id": "golden-far-side-distance-line-and-circle",
+   "kind": "golden",
+   "description": "far-side distance, line and circle",
+   "tolerance": 0.0004123106,
+   "input": {"start":{"a":[-20.0,0.0],"b":[20.0,0.0],"c":[2.0,10.0],"d":[8.0,10.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"line_circle_distance","id":"k","line_id":"l","line_start_id":"a","line_end_id":"b","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"d","distance":16.0,"side":"max"}],"anchors":["d"],"stiff":[],"pinned":["a","b","c"],"provisional":{}},
+   "nearest": [2.0,4.0],
+   "frames": [
+    {"wish":{"d":[2.0,3.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.999897356,3.9999999578]},"variable_points":1,"rows":1,"residual_inf":4.31e-8,"exit":"arrived","walks":9,"rejected_steps":6,"iterations":23}}
+   ]
+  },
+  {
+   "id": "drag-distance",
+   "kind": "drag",
+   "description": "distance: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[8.446364792,1.4055849109]},"expected":{"unsupported":false,"converged":true,"points":{"d":[9.8643472569,1.6415398869]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":6,"rejected_steps":6,"iterations":16}},
+    {"wish":{"d":[7.0150757595,2.8636038969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[9.2583449412,3.7792921232]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":8,"rejected_steps":6,"iterations":19}},
+    {"wish":{"d":[5.8098529817,4.4185084207]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.9596411941,6.0534380363]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":9,"rejected_steps":6,"iterations":20}},
+    {"wish":{"d":[4.9,6.1]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.2625345314,7.7961953054]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":8,"rejected_steps":0,"iterations":13}},
+    {"wish":{"d":[4.3098529817,7.9185084207]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.7805420642,8.7833033405]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":6,"rejected_steps":0,"iterations":9}},
+    {"wish":{"d":[4.0150757595,9.8636038969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.7699547753,9.2621520692]},"variable_points":1,"rows":1,"residual_inf":9.98e-7,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[3.946364792,11.9055849109]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.1457100532,9.492340071]},"variable_points":1,"rows":1,"residual_inf":5.881e-7,"exit":"arrived","walks":5,"rejected_steps":6,"iterations":15}},
+    {"wish":{"d":[4.0,14.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[2.7480029029,9.6150135459]},"variable_points":1,"rows":1,"residual_inf":2.722e-7,"exit":"arrived","walks":11,"rejected_steps":4,"iterations":21}}
+   ]
+  },
+  {
+   "id": "drag-horizontal-distance",
+   "kind": "drag",
+   "description": "horizontal distance: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001019804,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,2.0]},"lines":{},"constraints":[{"type":"distance","id":"c","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"horizontal"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[10.1555849109,2.9796100594]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0,2.9796100594]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[10.3636038969,3.9242640687]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0,3.9242640687]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[10.6685084207,4.8043277195]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0000000001,4.8043277195]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[11.1,5.6]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0000000001,5.6]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[11.6685084207,6.3043277195]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0000000002,6.3043277195]},"variable_points":1,"rows":1,"residual_inf":2e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[12.3636038969,6.9242640687]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0000000002,6.9242640687]},"variable_points":1,"rows":1,"residual_inf":2e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[13.1555849109,7.4796100594]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0000000003,7.4796100594]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[14.0,8.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.0000000004,8.0]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "drag-vertical-distance-negative-side-kept",
+   "kind": "drag",
+   "description": "vertical distance, negative side kept: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001044031,
+   "input": {"start":{"a":[0.0,0.0],"d":[3.0,-10.0]},"lines":{},"constraints":[{"type":"distance","id":"c","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"vertical"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[3.0611698217,-8.1555849109]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.0611698217,-9.9999999998]},"variable_points":1,"rows":1,"residual_inf":2e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[3.2272077939,-6.3636038969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.2272077939,-9.9999999996]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[3.5870168415,-4.6685084207]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.5870168415,-9.9999999995]},"variable_points":1,"rows":1,"residual_inf":5e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[4.2,-3.1]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.2,-9.9999999993]},"variable_points":1,"rows":1,"residual_inf":7e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[5.0870168415,-1.6685084207]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0870168415,-9.9999999992]},"variable_points":1,"rows":1,"residual_inf":8e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[6.2272077939,-0.3636038969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.2272077939,-9.999999999]},"variable_points":1,"rows":1,"residual_inf":1e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.5611698217,0.8444150891]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.5611698217,-9.9999999989]},"variable_points":1,"rows":1,"residual_inf":1.1e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[9.0,2.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[9.0,-9.9999999988]},"variable_points":1,"rows":1,"residual_inf":1.2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "drag-horizontal",
+   "kind": "drag",
+   "description": "horizontal: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"horizontal","id":"c","line_id":"l","point_a_id":"a","point_b_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[8.9259748515,1.0203899406]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.9259748515,1e-10]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.9393398282,2.0757359313]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.9393398282,2e-10]},"variable_points":1,"rows":1,"residual_inf":2e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.1141807012,3.1956722805]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.1141807012,3e-10]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[6.5,4.4]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.5,4e-10]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[6.1141807012,5.6956722805]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.1141807012,6e-10]},"variable_points":1,"rows":1,"residual_inf":6e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[5.9393398282,7.0757359313]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.9393398282,7e-10]},"variable_points":1,"rows":1,"residual_inf":7e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[5.9259748515,8.5203899406]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.9259748515,9e-10]},"variable_points":1,"rows":1,"residual_inf":9e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[6.0,10.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.0,1e-9]},"variable_points":1,"rows":1,"residual_inf":1e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "drag-vertical",
+   "kind": "drag",
+   "description": "vertical: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[0.0,10.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"vertical","id":"c","line_id":"l","point_a_id":"a","point_b_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[1.2296100594,9.9592201188]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1e-10,9.9592201188]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[2.4242640687,9.8485281374]},"expected":{"unsupported":false,"converged":true,"points":{"d":[2e-10,9.8485281374]},"variable_points":1,"rows":1,"residual_inf":2e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[3.5543277195,9.608655439]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4e-10,9.608655439]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[4.6,9.2]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5e-10,9.2]},"variable_points":1,"rows":1,"residual_inf":5e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[5.5543277195,8.608655439]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6e-10,8.608655439]},"variable_points":1,"rows":1,"residual_inf":6e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[6.4242640687,7.8485281374]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6e-10,7.8485281374]},"variable_points":1,"rows":1,"residual_inf":6e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.2296100594,6.9592201188]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7e-10,6.9592201188]},"variable_points":1,"rows":1,"residual_inf":7e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[8.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8e-10,6.0]},"variable_points":1,"rows":1,"residual_inf":8e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "drag-angle-60-degrees-to-a-fixed-line",
+   "kind": "drag",
+   "description": "angle 60 degrees to a fixed line: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001322876,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[5.0,8.6602540378]},"lines":{"l1":["a","b"],"l2":["a","d"]},"constraints":[{"type":"angle","id":"c","line1_id":"l1","line2_id":"l2","angle_degrees":60.0,"quadrant":null}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[4.1165803656,9.265580469]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.8891197218,1.0471433727],"d":[4.1166758161,9.2655380604]},"variable_points":2,"rows":1,"residual_inf":8.27e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[3.2915328948,9.9058629502]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.6945725614,1.9933271134],"d":[3.2916206613,9.9058337862]},"variable_points":2,"rows":1,"residual_inf":1.928e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[2.5743431185,10.61073579]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.4640100242,2.7786250722],"d":[2.5744154854,10.610718232]},"variable_points":2,"rows":1,"residual_inf":1.996e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[1.9980762114,11.4]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.2459179233,3.3759309653],"d":[1.9981297129,11.3999906225]},"variable_points":2,"rows":1,"residual_inf":1.238e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[1.5743431185,12.280608771]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.0712631656,3.7935693605],"d":[1.5743788579,12.2806041892]},"variable_points":2,"rows":1,"residual_inf":5.04e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[1.2915328948,13.2456089124]},"expected":{"unsupported":false,"converged":true,"points":{"b":[8.9480450993,4.0648145058],"d":[1.2915548135,13.2456067751]},"variable_points":2,"rows":1,"residual_inf":1.44e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[1.1165803656,14.2751994122]},"expected":{"unsupported":false,"converged":true,"points":{"b":[8.866982775,4.2345556609],"d":[1.11659324,14.2751984052]},"variable_points":2,"rows":1,"residual_inf":3.3e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[1.0,15.3397459622]},"expected":{"unsupported":false,"converged":true,"points":{"b":[8.8106126146,4.3487618903],"d":[1.0000081246,15.3397454326]},"variable_points":2,"rows":1,"residual_inf":8e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}}
+   ]
+  },
+  {
+   "id": "drag-coincident",
+   "kind": "drag",
+   "description": "coincident: [b] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.00001,
+   "input": {"start":{"b":[5.0,5.0],"d":[6.0,5.0]},"lines":{},"constraints":[{"type":"coincident","id":"c","point_a_id":"b","point_b_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["b"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[7.2092201188,4.3444150891]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[8.3485281374,3.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[9.358655439,2.8314915793]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[10.2,1.9]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[10.858655439,0.8314915793]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[11.3485281374,-0.3636038969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[11.7092201188,-1.6555849109]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[12.0,-3.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}}
+   ]
+  },
+  {
+   "id": "drag-concentric",
+   "kind": "drag",
+   "description": "concentric: [b] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.00001,
+   "input": {"start":{"b":[5.0,5.0],"d":[6.0,5.0]},"lines":{},"constraints":[{"type":"concentric","id":"c","entity1_id":"e1","entity2_id":"e2","center1_point_id":"b","center2_point_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["b"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[7.2092201188,4.3444150891]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[8.3485281374,3.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[9.358655439,2.8314915793]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[10.2,1.9]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[10.858655439,0.8314915793]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[11.3485281374,-0.3636038969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[11.7092201188,-1.6555849109]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}},
+    {"wish":{"d":[12.0,-3.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0000000001,5.0]},"variable_points":1,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":0}}
+   ]
+  },
+  {
+   "id": "drag-parallel",
+   "kind": "drag",
+   "description": "parallel: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001118034,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"c":[0.0,5.0],"d":[10.0,5.0]},"lines":{"l1":["a","b"],"l2":["c","d"]},"constraints":[{"type":"parallel","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[10.0407798812,6.2296100594]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.9620677358,0.6147248236],"c":[-0.0374959147,5.6076534407],"d":[10.0407836308,6.2295492941]},"variable_points":3,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":4,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[10.1514718626,7.4242640687]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.8903676356,1.2038121547],"c":[-0.106627218,6.1756356166],"d":[10.1514787757,7.4242072705]},"variable_points":3,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":4,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[10.391344561,8.5543277195]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.7949720843,1.7409576792],"c":[-0.194898038,6.6726785424],"d":[10.3913533881,8.5542780152]},"variable_points":3,"rows":1,"residual_inf":1.31e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[10.8,9.6]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.6895917888,2.2043488221],"c":[-0.2870030176,7.0777024221],"d":[10.8000092105,9.5999594976]},"variable_points":3,"rows":1,"residual_inf":7.9e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[11.391344561,10.5543277195]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.5877041634,2.5826508429],"c":[-0.3700651769,7.3861102772],"d":[11.3913528672,10.5542968787]},"variable_points":3,"rows":1,"residual_inf":2.9e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[12.1514718626,11.4242640687]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.4981069287,2.8783277191],"c":[-0.4376661047,7.6091989937],"d":[12.1514786227,11.4242417598]},"variable_points":3,"rows":1,"residual_inf":8e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[13.0407798812,12.2296100594]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.4227806296,3.1067944397],"c":[-0.490123705,7.7683046471],"d":[13.040785127,12.2295941488]},"variable_points":3,"rows":1,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[14.0,13.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.3577175997,3.2920248178],"c":[-0.5320441047,7.8876494036],"d":[14.000004192,12.9999880655]},"variable_points":3,"rows":1,"residual_inf":2.76e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-perpendicular",
+   "kind": "drag",
+   "description": "perpendicular: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001280625,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"c":[5.0,0.0],"d":[5.0,8.0]},"lines":{"l1":["a","b"],"l2":["c","d"]},"constraints":[{"type":"perpendicular","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[5.8851949703,8.7092201188]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.9807747973,-0.4385881205],"c":[5.5014671788,-0.0219814622],"d":[5.8851448236,8.7092223169]},"variable_points":3,"rows":1,"residual_inf":2.39e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[6.7878679656,9.3485281374]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.9426043411,-0.8735049835],"c":[5.9610348162,-0.0623120991],"d":[6.7878220088,9.3485321705]},"variable_points":3,"rows":1,"residual_inf":1.52e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[7.7228361402,9.858655439]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.8841884788,-1.3134025649],"c":[6.3968129206,-0.1201785407],"d":[7.7227925624,9.8586612256]},"variable_points":3,"rows":1,"residual_inf":1.04e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[8.7,10.2]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.8023257785,-1.7676007777],"c":[6.8250555284,-0.197361304],"d":[8.6999571757,10.2000077183]},"variable_points":3,"rows":1,"residual_inf":7.8e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[9.7228361402,10.358655439]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.6924528196,-2.2426624376],"c":[7.2571897084,-0.2973045138],"d":[9.7227929268,10.3586654333]},"variable_points":3,"rows":1,"residual_inf":6.2e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[10.7878679656,10.3485281374]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.5499802161,-2.7395265236],"c":[7.6977010745,-0.4236172239],"d":[10.7878239145,10.3485407687]},"variable_points":3,"rows":1,"residual_inf":4.9e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[11.8851949703,10.2092201188]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.3723778935,-3.2516409955],"c":[8.1426646816,-0.5779305689],"d":[11.8851504739,10.2092355501]},"variable_points":3,"rows":1,"residual_inf":4.2e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[13.0,10.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.1616522428,-3.7646474955],"c":[8.5795861646,-0.7574021231],"d":[12.9999563079,10.0000179472]},"variable_points":3,"rows":1,"residual_inf":4.2e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}}
+   ]
+  },
+  {
+   "id": "drag-equal-length",
+   "kind": "drag",
+   "description": "equal length: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001118034,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"c":[0.0,5.0],"d":[10.0,5.0]},"lines":{"l1":["a","b"],"l2":["c","d"]},"constraints":[{"type":"equal_length","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[12.5,6.1480502971]},"expected":{"unsupported":false,"converged":true,"points":{"b":[11.2762384648,0.0],"c":[1.2707795855,5.1179146475],"d":[12.499872922,6.1480385056]},"variable_points":3,"rows":1,"residual_inf":0.0000061371,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[15.0,7.1213203436]},"expected":{"unsupported":false,"converged":true,"points":{"b":[12.5753640896,0.0],"c":[2.5561878601,5.3062042026],"d":[14.9998714592,7.1213015146]},"variable_points":3,"rows":1,"residual_inf":0.0000022974,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[17.5,7.7716385975]},"expected":{"unsupported":false,"converged":true,"points":{"b":[13.8605280561,0.0],"c":[3.8241712244,5.5156429973],"d":[17.4998732017,7.7716176536]},"variable_points":3,"rows":1,"residual_inf":2.967e-7,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[20.0,8.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[15.1129423657,0.0],"c":[5.061818336,5.7074012565],"d":[19.9998762353,7.9999808242]},"variable_points":3,"rows":1,"residual_inf":0.000015481,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[22.5,7.7716385975]},"expected":{"unsupported":false,"converged":true,"points":{"b":[16.3363761601,0.0],"c":[6.2768166175,5.8508217054],"d":[22.4998785002,7.7716242555]},"variable_points":3,"rows":1,"residual_inf":0.0000010174,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[25.0,7.1213203436]},"expected":{"unsupported":false,"converged":true,"points":{"b":[17.551246325,0.0],"c":[7.4889372422,5.9325108035],"d":[24.9998787879,7.1213121747]},"variable_points":3,"rows":1,"residual_inf":0.0000021354,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[27.5,6.1480502971]},"expected":{"unsupported":false,"converged":true,"points":{"b":[18.7816720917,0.0],"c":[8.7192982523,5.9451342844],"d":[27.4998769639,6.1480490348]},"variable_points":3,"rows":1,"residual_inf":0.000002784,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[30.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[20.0416115087,0.0],"c":[9.9779697168,5.8886234094],"d":[29.9998741329,5.0000056511]},"variable_points":3,"rows":1,"residual_inf":0.0000026471,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}}
+   ]
+  },
+  {
+   "id": "drag-line-tangent-to-a-circle-radius-point-moves",
+   "kind": "drag",
+   "description": "line tangent to a circle (radius point moves): [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.000401995,
+   "input": {"start":{"a":[-20.0,0.0],"b":[20.0,0.0],"c":[5.0,4.0],"d":[9.0,4.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"tangent","id":"k","center_point_id":"c","radius_point_id":"d","line_id":"l"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[7.0815597623,5.5407798812]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9986070329,0.236033271],"c":[4.722019425,3.3593794662],"d":[7.0815877856,5.5408057834]},"variable_points":3,"rows":1,"residual_inf":1.69e-8,"exit":"arrived","walks":5,"rejected_steps":0,"iterations":9}},
+    {"wish":{"d":[5.3029437252,7.1514718626]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9989336115,0.1475499006],"c":[4.7439318636,3.6435097404],"d":[5.3029414812,7.1514577447]},"variable_points":3,"rows":1,"residual_inf":2.844e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[3.782689122,8.891344561]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.998258073,-0.1053303369],"c":[4.6658582677,4.4567191058],"d":[3.782697039,8.8913042858]},"variable_points":3,"rows":1,"residual_inf":0.0000143636,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":12}},
+    {"wish":{"d":[2.6,10.8]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9950600287,-0.4136880848],"c":[4.5028372857,5.4371922394],"d":[2.6000168255,10.7999524186]},"variable_points":3,"rows":1,"residual_inf":0.0000034354,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[1.782689122,12.891344561]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9891543385,-0.7355273867],"c":[4.3166890203,6.46331191],"d":[1.7827087125,12.8912951205]},"variable_points":3,"rows":1,"residual_inf":0.0000113383,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[1.3029437252,15.1514718626]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9805441768,-1.0593245437],"c":[4.1432931885,7.5127714118],"d":[1.3029625045,15.15142106]},"variable_points":3,"rows":1,"residual_inf":0.0000166638,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[1.0815597623,17.5407798812]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9692391277,-1.3855518524],"c":[3.9918711369,8.5879208792],"d":[1.0815768137,17.5407274589]},"variable_points":3,"rows":1,"residual_inf":1.727e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[1.0,20.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9551638174,-1.7137932266],"c":[3.8656618436,9.6884533659],"d":[1.0000150234,19.9999459726]},"variable_points":3,"rows":1,"residual_inf":1.398e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}}
+   ]
+  },
+  {
+   "id": "drag-two-curves-tangent-at-a-shared-point",
+   "kind": "drag",
+   "description": "two curves tangent at a shared point: [c1] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[10.0,0.0],"d":[6.0,0.0]},"lines":{},"constraints":[{"type":"curve_tangent","id":"k","entity1_id":"e1","entity2_id":"e2","center1_point_id":"c1","center2_point_id":"c2","shared_point_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["c1"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[5.1555849109,0.5203899406]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[9.8992150371,0.9988226243],"d":[5.1556044357,0.520196441]},"variable_points":2,"rows":1,"residual_inf":2.09e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[4.3636038969,1.0757359313]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[9.5644385196,2.3571639014],"d":[4.3636785749,1.0754329286]},"variable_points":2,"rows":1,"residual_inf":6.612e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[3.6685084207,1.6956722805]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[8.7790932711,4.0566818798],"d":[3.6687026673,1.6952519232]},"variable_points":2,"rows":1,"residual_inf":0.0000015634,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[3.1,2.4]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[7.4537855834,5.7690065367],"d":[3.100334585,2.3995677093]},"variable_points":2,"rows":1,"residual_inf":0.0000013486,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[2.6685084207,3.1956722805]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[5.901405749,7.0656111612],"d":[2.6688688998,3.1953711951]},"variable_points":2,"rows":1,"residual_inf":8.631e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[2.3636038969,4.0757359313]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[4.5520570696,7.8482600071],"d":[2.3638724059,4.0755801908]},"variable_points":2,"rows":1,"residual_inf":0.0000012835,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[2.1555849109,5.0203899406]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[3.5541003611,8.2767948464],"d":[2.1557522481,5.020318084]},"variable_points":2,"rows":1,"residual_inf":5.309e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[2.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[2.8385983775,8.5153114539],"d":[2.0001023898,5.9999658678]},"variable_points":2,"rows":1,"residual_inf":1.573e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-equal-radius",
+   "kind": "drag",
+   "description": "equal radius: [c1] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.00025,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[20.0,0.0],"d":[25.0,0.0],"r1":[5.0,0.0]},"lines":{},"constraints":[{"type":"equal_radius","id":"k","center1_point_id":"c1","radius1_point_id":"r1","center2_point_id":"c2","radius2_point_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["c1"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[22.7167547326,1.6759748515]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[19.2306623572,-0.4744922496],"d":[22.7168316664,1.6760223007],"r1":[4.0961065862,0.0]},"variable_points":3,"rows":1,"residual_inf":1.43e-8,"exit":"arrived","walks":7,"rejected_steps":0,"iterations":11}},
+    {"wish":{"d":[20.5908116908,3.4393398282]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[19.2384233795,-0.452136101],"d":[20.5908109147,3.4393375926],"r1":[4.1197715571,0.0]},"variable_points":3,"rows":1,"residual_inf":2.27e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[18.7555252622,5.3641807012]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[19.1662336995,0.40305526],"d":[18.7555324812,5.3640951821],"r1":[4.9780044007,0.0]},"variable_points":3,"rows":1,"residual_inf":0.0000065071,"exit":"arrived","walks":4,"rejected_steps":6,"iterations":13}},
+    {"wish":{"d":[17.3,7.5]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[18.8652565919,1.5440740245],"d":[17.3000300977,7.4998858981],"r1":[6.1580514507,0.0]},"variable_points":3,"rows":1,"residual_inf":0.000002548,"exit":"arrived","walks":4,"rejected_steps":6,"iterations":13}},
+    {"wish":{"d":[16.2555252622,9.8641807012]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[18.4808894223,2.7658472553],"d":[16.2555636989,9.8640585239],"r1":[7.4388589883,0.0]},"variable_points":3,"rows":1,"residual_inf":0.0000036794,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[15.5908116908,12.4393398282]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[18.0993184224,4.0383668948],"d":[15.5908498479,12.4392125762],"r1":[8.7673553793,0.0]},"variable_points":3,"rows":1,"residual_inf":0.0000058402,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[15.2167547326,15.1759748515]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[17.7573395856,5.3634957093],"d":[15.2167889305,15.1758423386],"r1":[10.1359005557,0.0]},"variable_points":3,"rows":1,"residual_inf":0.0000031537,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[15.0,18.0]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[17.4602414864,6.7304793072],"d":[15.0000297098,17.9998633016],"r1":[11.5347970628,0.0]},"variable_points":3,"rows":1,"residual_inf":0.0000049554,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}}
+   ]
+  },
+  {
+   "id": "drag-line-distance-signed-from-the-second-line-start",
+   "kind": "drag",
+   "description": "line distance (signed, from the second line start): [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001118034,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[0.0,5.0],"e":[10.0,5.0]},"lines":{"l1":["a","b"],"l2":["d","e"]},"constraints":[{"type":"line_distance","id":"k","line1_id":"l1","line2_id":"l2","distance":-5.0}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[0.2907798812,6.3444150891]},"expected":{"unsupported":false,"converged":true,"points":{"b":[6.6398719696,4.7234603188],"d":[0.2914793662,6.3434317964]},"variable_points":2,"rows":1,"residual_inf":1.1e-9,"exit":"arrived","walks":8,"rejected_steps":0,"iterations":22}},
+    {"wish":{"d":[0.6514718626,7.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.7506859075,5.6315010065],"d":[0.6515996706,7.636265585]},"variable_points":2,"rows":1,"residual_inf":0.0000041244,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[1.141344561,8.8314915793]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.3222539203,6.0108541987],"d":[1.1413915465,8.8314499762]},"variable_points":2,"rows":1,"residual_inf":1.347e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[1.8,9.9]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.169787517,6.1392445301],"d":[1.8000140242,9.8999881904]},"variable_points":2,"rows":1,"residual_inf":2.9e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[2.641344561,10.8314915793]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.1965684581,6.1166670302],"d":[2.641342143,10.8314936175]},"variable_points":2,"rows":1,"residual_inf":7.244e-7,"exit":"arrived","walks":2,"rejected_steps":2,"iterations":5}},
+    {"wish":{"d":[3.6514718626,11.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.3300170195,5.998081974],"d":[3.651462231,11.636404662]},"variable_points":2,"rows":1,"residual_inf":9e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[4.7907798812,12.3444150891]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.5102161902,5.8276998124],"d":[4.7907680814,12.3444262461]},"variable_points":2,"rows":1,"residual_inf":1.9e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[6.0,13.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.689494725,5.6470746017],"d":[5.9999892762,13.0000108043]},"variable_points":2,"rows":1,"residual_inf":1.7e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}}
+   ]
+  },
+  {
+   "id": "drag-point-line-distance",
+   "kind": "drag",
+   "description": "point-line distance: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001044031,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[4.0,3.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"point_line_distance","id":"k","point_id":"d","line_id":"l","distance":-3.0}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[3.9259748515,4.4796100594]},"expected":{"unsupported":false,"converged":true,"points":{"b":[8.9910562063,3.0118925809],"d":[3.9261574954,4.4790648319]},"variable_points":2,"rows":1,"residual_inf":8.17e-8,"exit":"arrived","walks":4,"rejected_steps":0,"iterations":9}},
+    {"wish":{"d":[3.9393398282,5.9242640687]},"expected":{"unsupported":false,"converged":true,"points":{"b":[7.8858183565,4.8201059939],"d":[3.9394993388,5.924003103]},"variable_points":2,"rows":1,"residual_inf":1.805e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":7}},
+    {"wish":{"d":[4.1141807012,7.3043277195]},"expected":{"unsupported":false,"converged":true,"points":{"b":[7.0443409675,5.8358473059],"d":[4.1142814784,7.304206072]},"variable_points":2,"rows":1,"residual_inf":9.056e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[4.5,8.6]},"expected":{"unsupported":false,"converged":true,"points":{"b":[6.516286586,6.3755591954],"d":[4.5000525746,8.5999462648]},"variable_points":2,"rows":1,"residual_inf":1.233e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[5.1141807012,9.8043277195]},"expected":{"unsupported":false,"converged":true,"points":{"b":[6.2457931567,6.6303638799],"d":[5.1142038959,9.8043058701]},"variable_points":2,"rows":1,"residual_inf":1.07e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[5.9393398282,10.9242640687]},"expected":{"unsupported":false,"converged":true,"points":{"b":[6.1525096238,6.7158229482],"d":[5.9393468706,10.924257617]},"variable_points":2,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[6.9259748515,11.9796100594]},"expected":{"unsupported":false,"converged":true,"points":{"b":[6.1597664788,6.7091767178],"d":[6.9259742968,11.9796105675]},"variable_points":2,"rows":1,"residual_inf":2.5e-8,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[8.0,13.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[6.2047560718,6.6673083372],"d":[7.9999972621,13.000002548]},"variable_points":2,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-collinear",
+   "kind": "drag",
+   "description": "collinear: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001004988,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[3.0,1.0],"e":[7.0,0.0]},"lines":{"l1":["a","b"],"l2":["d","e"]},"constraints":[{"type":"collinear","id":"k","line1_id":"l1","line2_id":"l2"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[2.6555849109,1.75]},"expected":{"unsupported":false,"converged":true,"points":{"b":[6.9784835421,4.5919725274],"d":[2.6567675498,1.7482026756],"e":[4.8849384798,3.2143807687]},"variable_points":3,"rows":2,"residual_inf":6e-10,"exit":"arrived","walks":4,"rejected_steps":0,"iterations":8}},
+    {"wish":{"d":[2.3636038969,2.5]},"expected":{"unsupported":false,"converged":true,"points":{"b":[5.5874968775,5.9076140389],"d":[2.3640937468,2.4995366837],"e":[3.9112478143,4.135329827]},"variable_points":3,"rows":2,"residual_inf":9e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[2.1685084207,3.25]},"expected":{"unsupported":false,"converged":true,"points":{"b":[4.4495634625,6.6670864674],"d":[2.1688677562,3.2497601745],"e":[3.1146944238,4.666960527]},"variable_points":3,"rows":2,"residual_inf":0.000001838,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[2.1,4.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[3.705716896,7.057660893],"d":[2.1001981078,3.9998959788],"e":[2.5940018272,4.940362625]},"variable_points":3,"rows":2,"residual_inf":4.945e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[2.1685084207,4.75]},"expected":{"unsupported":false,"converged":true,"points":{"b":[3.3055874543,7.2403421494],"d":[2.1685996251,4.7499583602],"e":[2.313911218,5.0682395045]},"variable_points":3,"rows":2,"residual_inf":6.37e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[2.3636038969,5.5]},"expected":{"unsupported":false,"converged":true,"points":{"b":[3.1418080132,7.3107270725],"d":[2.3636363532,5.4999860518],"e":[2.1992656092,5.1175089506]},"variable_points":3,"rows":2,"residual_inf":3.4e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[2.6555849109,6.25]},"expected":{"unsupported":false,"converged":true,"points":{"b":[3.1117202099,7.3235112215],"d":[2.6555901641,6.2499977679],"e":[2.1782041469,5.1264578549]},"variable_points":3,"rows":2,"residual_inf":0.0,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[3.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[3.1344655738,7.3137632239],"d":[2.999996459,7.0000015176],"e":[2.1941259016,5.1196342566]},"variable_points":3,"rows":2,"residual_inf":0.0,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-at-midpoint",
+   "kind": "drag",
+   "description": "at midpoint: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001077033,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,4.0],"d":[4.0,2.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"at_midpoint","id":"k","point_id":"d","line_id":"l"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[4.446364792,4.3240251485]},"expected":{"unsupported":false,"converged":true,"points":{"b":[8.8931723152,8.6461918198],"d":[4.4465861575,4.3230959101]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[5.0150757595,6.5606601718]},"expected":{"unsupported":false,"converged":true,"points":{"b":[10.029696909,13.1195310075],"d":[5.0148484546,6.559765504]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[5.8098529817,8.6358192988]},"expected":{"unsupported":false,"converged":true,"points":{"b":[11.6190702139,17.2699784182],"d":[5.809535107,8.6349892093]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[6.9,10.5]},"expected":{"unsupported":false,"converged":true,"points":{"b":[13.7991279767,20.9985085876],"d":[6.8995639884,10.499254294]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[8.3098529817,12.1358192988]},"expected":{"unsupported":false,"converged":true,"points":{"b":[16.618654782,24.2704187578],"d":[8.3093273911,12.135209379]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":15,"rejected_steps":0,"iterations":15}},
+    {"wish":{"d":[10.0150757595,13.5606601718]},"expected":{"unsupported":false,"converged":true,"points":{"b":[20.0287874656,27.1201804386],"d":[10.014393733,13.5600902195]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[11.946364792,14.8240251485]},"expected":{"unsupported":false,"converged":true,"points":{"b":[23.8911846247,29.6470395531],"d":[11.9455923126,14.8235197767]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[14.0,16.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[27.9983571306,31.9990591919],"d":[13.9991785655,15.9995295961]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-point-on-line",
+   "kind": "drag",
+   "description": "point on line: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001414214,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,10.0],"d":[3.0,3.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"point_on_line","id":"k","point_id":"d","line_id":"l"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[3.5203899406,3.8444150891]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.5419206795,10.4195051204],"d":[3.5205144044,3.8443011062]},"variable_points":2,"rows":1,"residual_inf":1.16e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[4.0757359313,4.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.3263268355,10.6090330482],"d":[4.0757852889,4.636352713]},"variable_points":2,"rows":1,"residual_inf":7.2e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[4.6956722805,5.3314915793]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.3361878357,10.600367131],"d":[4.6956699795,5.3314936015]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[5.4,5.9]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.5352046638,10.4182186228],"d":[5.3999648432,5.900032177]},"variable_points":2,"rows":1,"residual_inf":2.8e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[6.1956722805,6.3314915793]},"expected":{"unsupported":false,"converged":true,"points":{"b":[9.8720362802,10.0886187706],"d":[6.1956185432,6.3315441629]},"variable_points":2,"rows":1,"residual_inf":1.11e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[7.0757359313,6.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"b":[10.2858761297,9.6473909311],"d":[7.0756756495,6.6364603744]},"variable_points":2,"rows":1,"residual_inf":1.83e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[8.0203899406,6.8444150891]},"expected":{"unsupported":false,"converged":true,"points":{"b":[10.7152261139,9.1442814282],"d":[8.0203324409,6.8444824669]},"variable_points":2,"rows":1,"residual_inf":1.98e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[9.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[11.1078134592,8.6395341203],"d":[8.9999514378,7.0000624361]},"variable_points":2,"rows":1,"residual_inf":1.53e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-point-on-circle",
+   "kind": "drag",
+   "description": "point on circle: [c] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0000707107,
+   "input": {"start":{"c":[0.0,0.0],"d":[0.0,5.0],"r":[5.0,0.0]},"lines":{},"constraints":[{"type":"point_on_circle","id":"k","point_id":"d","circle_or_arc_id":"e","center_point_id":"c","radius_point_id":"r"}],"anchors":["d"],"stiff":[],"pinned":["c"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[1.1555849109,6.4388301783]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.1555830937,6.4386761847],"r":[6.5415535844,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[2.3636038969,7.7727922061]},"expected":{"unsupported":false,"converged":true,"points":{"d":[2.3635753001,7.7726365986],"r":[8.1240610469,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[3.6685084207,8.9129831585]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.6684639751,8.9128384272],"r":[9.6382735366,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[5.1,9.8]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0999460062,9.7998698516],"r":[11.0474838029,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[6.6685084207,10.4129831585]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.6684472074,10.4128664997],"r":[12.3651112772,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[8.3636038969,10.7727922061]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.3635348286,10.7726852922],"r":[13.6381620182,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[10.1555849109,10.9388301783]},"expected":{"unsupported":false,"converged":true,"points":{"d":[10.1555055366,10.938728771],"r":[14.926154221,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[12.0,11.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[11.9999076763,10.9999011805],"r":[16.2786857645,0.0]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}}
+   ]
+  },
+  {
+   "id": "drag-point-on-ellipse",
+   "kind": "drag",
+   "description": "point on ellipse: [c] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.000067082,
+   "input": {"start":{"c":[0.0,0.0],"d":[0.0,3.0],"maj":[6.0,0.0],"min":[0.0,3.0]},"lines":{},"constraints":[{"type":"point_on_ellipse","id":"k","point_id":"d","ellipse_id":"e","center_point_id":"c","major_point_id":"maj","minor_point_id":"min"}],"anchors":["d"],"stiff":[],"pinned":["c"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[1.0203899406,4.0740251485]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.0203920956,4.0739263127],"maj":[6.0164382409,-0.0731284495],"min":[-0.5116467999,3.9266191522]},"variable_points":3,"rows":1,"residual_inf":4.9e-9,"exit":"arrived","walks":13,"rejected_steps":0,"iterations":22}},
+    {"wish":{"d":[2.0757359313,5.0606601718]},"expected":{"unsupported":false,"converged":true,"points":{"d":[2.0757363789,5.0605929026],"maj":[6.0651955846,-0.222260856],"min":[-1.1680050589,4.4440388334]},"variable_points":3,"rows":1,"residual_inf":5.5e-9,"exit":"arrived","walks":8,"rejected_steps":0,"iterations":15}},
+    {"wish":{"d":[3.1956722805,5.8858192988]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.1956694055,5.8857796389],"maj":[6.1351874215,-0.4051274128],"min":[-1.716568779,4.6547947008]},"variable_points":3,"rows":1,"residual_inf":1.3e-9,"exit":"arrived","walks":6,"rejected_steps":0,"iterations":9}},
+    {"wish":{"d":[4.4,6.5]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.3999943971,6.4999773114],"maj":[6.2172168149,-0.5969798691],"min":[-2.1177469288,4.7073000529]},"variable_points":3,"rows":1,"residual_inf":0.000001557,"exit":"arrived","walks":4,"rejected_steps":6,"iterations":14}},
+    {"wish":{"d":[5.6956722805,6.8858192988]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.6956637476,6.8858053242],"maj":[6.3180135497,-0.8137195778],"min":[-2.4248712796,4.68388659]},"variable_points":3,"rows":1,"residual_inf":0.0000023811,"exit":"arrived","walks":4,"rejected_steps":6,"iterations":14}},
+    {"wish":{"d":[7.0757359313,7.0606601718]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.0757216177,7.0606513024],"maj":[6.4620231246,-1.1163164416],"min":[-2.6883567031,4.6106427477]},"variable_points":3,"rows":1,"residual_inf":6.489e-7,"exit":"arrived","walks":5,"rejected_steps":6,"iterations":16}},
+    {"wish":{"d":[8.5203899406,7.0740251485]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.5203641583,7.0740235214],"maj":[6.6702647858,-1.5996049275],"min":[-2.8927328733,4.5128030094]},"variable_points":3,"rows":1,"residual_inf":0.0000035728,"exit":"arrived","walks":11,"rejected_steps":4,"iterations":20}},
+    {"wish":{"d":[10.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[9.9999597797,7.0000111343],"maj":[6.9014478045,-2.3073798604],"min":[-2.9608080078,4.4711139354]},"variable_points":3,"rows":1,"residual_inf":0.0000049185,"exit":"arrived","walks":6,"rejected_steps":5,"iterations":18}}
+   ]
+  },
+  {
+   "id": "drag-arc-length-alone-it-fixes-the-end-s-direction-radius-at-the-start-times-the-sweep",
+   "kind": "drag",
+   "description": "arc length (alone it fixes the end's direction: radius at the start times the sweep): [c] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0000683501,
+   "input": {"start":{"c":[0.0,0.0],"d":[1.8117887724,4.6601954298],"s":[5.0,0.0]},"lines":{},"constraints":[{"type":"arc_length","id":"k","arc_id":"arc","center_point_id":"c","start_point_id":"s","end_point_id":"d","length":6.0}],"anchors":["d"],"stiff":[],"pinned":["c"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[1.4550252758,4.9019491382]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.4550395948,4.9019448879],"s":[4.7959993255,0.1527691443]},"variable_points":2,"rows":1,"residual_inf":1.05e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[1.1216789171,5.1578913112]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.1216902352,5.1578888498],"s":[4.6169660624,0.2745556958]},"variable_points":2,"rows":1,"residual_inf":5.5e-9,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[0.8316017871,5.440050348]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.8316101001,5.4400490772],"s":[4.4711859033,0.3658671024]},"variable_points":2,"rows":1,"residual_inf":0.0000046018,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":10}},
+    {"wish":{"d":[0.598058629,5.7564633683]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.5980642753,5.7564627817],"s":[4.3617734819,0.4302834497]},"variable_points":2,"rows":1,"residual_inf":0.0000015082,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[0.4257074009,6.1099526331]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.4257109536,6.1099523856],"s":[4.2862961025,0.4728089896]},"variable_points":2,"rows":1,"residual_inf":3.491e-7,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[0.3098901447,6.4976958813]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.3098922211,6.4976957823],"s":[4.2383538006,0.4990592058]},"variable_points":2,"rows":1,"residual_inf":5.75e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[0.2373421172,6.9116559935]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.2373432775,6.9116559537],"s":[4.2094677948,0.5146003981]},"variable_points":2,"rows":1,"residual_inf":7.6e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[0.1882112276,7.3398045702]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.1882119292,7.3398045522],"s":[4.1907540657,0.5245534702]},"variable_points":2,"rows":1,"residual_inf":1.3e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-angle-to-horizontal-quadrant-0-30-degrees",
+   "kind": "drag",
+   "description": "angle to horizontal, quadrant 0 (30 degrees): [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[8.6602540378,5.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"horizontal_angle","id":"k","line_id":"l","line_start_id":"a","line_end_id":"d","angle_degrees":30.0,"quadrant":0}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[8.3803854987,5.1741995156]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.5257832364,4.9223632466]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[8.1179949846,5.3599389678]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.4094178928,4.8551796842]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.8878996497,5.5670014425]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.3265070733,4.8073111003]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.7,5.8019237886]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.2873066958,4.7846787518]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.5577726308,6.0670014425]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.29541816,4.7893619079]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.4577409467,6.3599389678]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.3472400663,4.8192812994]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.3900044419,6.6741995156]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.4325164965,4.8685156695]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.3397459622,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.5358983848,4.9282032305]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "drag-angle-to-horizontal-no-quadrant-the-supplement-the-reference-was-nearer-to-150-degrees",
+   "kind": "drag",
+   "description": "angle to horizontal, no quadrant: the supplement the reference was nearer to (150 degrees): [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[-8.6602540378,5.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"horizontal_angle","id":"k","line_id":"l","line_start_id":"a","line_end_id":"d","angle_degrees":30.0,"quadrant":null}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[-7.6507754393,4.5554105438]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-7.7106322073,4.4517355805]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-6.6937309159,4.064325101]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-6.7802025803,3.9145517849]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-5.8335719302,3.4873262771]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-5.8852355213,3.3978423125]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-5.1,2.7980762114]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-5.0366025404,2.9078838325]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-4.5034449113,1.9873262771]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-4.2381212043,2.4468804181]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-4.033476878,1.064325101]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-3.4859739462,2.0126279961]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-3.6603943825,0.0554105438]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-2.7692892562,1.5988498974]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-3.3397459622,-1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-2.0717967699,1.1961524225]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "drag-three-point-angle-quadrant-0-40-degrees-vertex-first",
+   "kind": "drag",
+   "description": "three-point angle, quadrant 0 (40 degrees, vertex first): [v] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001188771,
+   "input": {"start":{"a":[10.0,0.0],"d":[7.6604444312,6.4278760969],"v":[0.0,0.0]},"lines":{},"constraints":[{"type":"point_angle","id":"k","vertex_point_id":"v","point1_id":"a","point2_id":"d","angle_degrees":40.0,"quadrant":0}],"anchors":["d"],"stiff":[],"pinned":["v"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[6.9500405623,6.8802797004]},"expected":{"unsupported":false,"converged":true,"points":{"a":[9.9325608235,0.8184387461],"d":[6.9500998286,6.8802198322]},"variable_points":2,"rows":1,"residual_inf":8.81e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[6.2845923394,7.3617045933]},"expected":{"unsupported":false,"converged":true,"points":{"a":[9.7946810312,1.6412697303],"d":[6.2846578963,7.3616486272]},"variable_points":2,"rows":1,"residual_inf":5.2e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[5.702211319,7.8967538368]},"expected":{"unsupported":false,"converged":true,"points":{"a":[9.5974621421,2.4225844914],"d":[5.702278151,7.8967055768]},"variable_points":2,"rows":1,"residual_inf":9.8e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[5.2283628291,8.5018666706]},"expected":{"unsupported":false,"converged":true,"points":{"a":[9.3661890984,3.1174341986],"d":[5.2284248724,8.5018285154]},"variable_points":2,"rows":1,"residual_inf":5.73e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[4.8719891034,9.1828157883]},"expected":{"unsupported":false,"converged":true,"points":{"a":[9.1307850868,3.6985824892],"d":[4.8720418155,9.1827878212]},"variable_points":2,"rows":1,"residual_inf":6.45e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[4.6241479082,9.9338284964]},"expected":{"unsupported":false,"converged":true,"points":{"a":[8.9135425077,4.1636551423],"d":[4.6241898103,9.933808991]},"variable_points":2,"rows":1,"residual_inf":4.59e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[4.4593739155,10.7384655551]},"expected":{"unsupported":false,"converged":true,"points":{"a":[8.722844704,4.5307935051],"d":[4.4594062748,10.7384521171]},"variable_points":2,"rows":1,"residual_inf":2.62e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}},
+    {"wish":{"d":[4.3395555688,11.5721239031]},"expected":{"unsupported":false,"converged":true,"points":{"a":[8.5545829499,4.8288772127],"d":[4.3395810761,11.5721143378]},"variable_points":2,"rows":1,"residual_inf":1.44e-8,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":4}}
+   ]
+  },
+  {
+   "id": "drag-minimum-distance-point-outside-a-circle",
+   "kind": "drag",
+   "description": "minimum distance, Point outside a circle: [c] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0000943398,
+   "input": {"start":{"c":[0.0,0.0],"d":[8.0,0.0],"r":[0.0,5.0]},"lines":{},"constraints":[{"type":"point_circle_distance","id":"k","point_id":"d","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":3.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["c"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[6.696364792,1.5203899406]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.6964785243,1.5203861676],"r":[0.0,3.8669060519]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[5.5150757595,3.0757359313]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.5151322004,3.0757413663],"r":[0.0,3.3148133892]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[4.5598529817,4.6956722805]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.5598377232,4.6956547003],"r":[0.0,3.5453260519]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[3.9,6.4]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.8999371544,6.399929357],"r":[0.0,4.4945717411]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[3.5598529817,8.1956722805]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.5597790411,8.1955487196],"r":[0.0,5.9352697574]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[3.5150757595,10.0757359313]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.5150068065,10.075576639],"r":[0.0,7.6711066651]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[3.696364792,12.0203899406]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.6963020869,12.0202101007],"r":[0.0,9.5756948111]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[4.0,14.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.9999416814,13.9998103307],"r":[0.0,11.5600213857]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}}
+   ]
+  },
+  {
+   "id": "drag-minimum-distance-point-inside-a-circle-kept-inside",
+   "kind": "drag",
+   "description": "minimum distance, Point inside a circle (kept inside): [c] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0000538516,
+   "input": {"start":{"c":[0.0,0.0],"d":[2.0,0.0],"r":[0.0,5.0]},"lines":{},"constraints":[{"type":"point_circle_distance","id":"k","point_id":"d","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":3.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["c"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[1.6351949703,0.1351949703]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.6352308912,0.1351949243],"r":[0.0,4.640810085]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[1.2878679656,0.2878679656]},"expected":{"unsupported":false,"converged":true,"points":{"d":[1.2878999951,0.2878704427],"r":[0.0,4.3196801844]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[0.9728361402,0.4728361402]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.9728595897,0.4728406945],"r":[0.0,4.0816811469]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[0.7,0.7]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.700009295,0.7000025417],"r":[0.0,3.9899578635]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[0.4728361402,0.9728361402]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.4728312605,0.9728285143],"r":[0.0,4.0816490739]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[0.2878679656,1.2878679656]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.2878583403,1.2878462905],"r":[0.0,4.3196251331]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[0.1351949703,1.6351949703]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.1351881755,1.6351635999],"r":[0.0,4.6407424664]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[0.0,2.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-0.0000029038,1.9999641977],"r":[0.0,4.9999641977]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}}
+   ]
+  },
+  {
+   "id": "drag-maximum-distance-point-and-circle",
+   "kind": "drag",
+   "description": "maximum distance, Point and circle: [c] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0000860233,
+   "input": {"start":{"c":[0.0,0.0],"d":[7.0,0.0],"r":[0.0,5.0]},"lines":{},"constraints":[{"type":"point_circle_distance","id":"k","point_id":"d","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":12.0,"side":"max"}],"anchors":["d"],"stiff":[],"pinned":["c"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[5.946364792,1.6351949703]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.946448864,1.6351891183],"r":[0.0,5.8328209411]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[5.0150757595,3.2878679656]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0150958921,3.2878642906],"r":[0.0,6.0032310033]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[4.3098529817,4.9728361402]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.3098086926,4.9727989549],"r":[0.0,5.4194847913]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[3.9,6.7]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.8999253068,6.6999099833],"r":[0.0,4.2476963951]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[3.8098529817,8.4728361402]},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.8097761053,8.4727030166],"r":[0.0,2.7101619831]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[4.0150757595,10.2878679656]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.0150039102,10.2877080042],"r":[0.0,0.9565769628]},"variable_points":2,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[4.446364792,12.1351949703]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.234488098,11.2278002545],"r":[0.0,0.0002368413]},"variable_points":2,"rows":1,"residual_inf":0.0000030059,"exit":"limit","walks":7,"rejected_steps":17,"iterations":67}},
+    {"wish":{"d":[5.0,14.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.234488098,11.2278002545],"r":[0.0,0.0002368413]},"variable_points":2,"rows":1,"residual_inf":0.000003006,"exit":"stalled","walks":0,"rejected_steps":6,"iterations":27}}
+   ]
+  },
+  {
+   "id": "drag-minimum-distance-two-circles-the-second-one-s-rim-point-moves",
+   "kind": "drag",
+   "description": "minimum distance, two circles (the second one's rim point moves): [c1] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001581139,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[15.0,0.0],"d":[15.0,5.0],"r1":[0.0,4.0]},"lines":{},"constraints":[{"type":"circle_distance","id":"k","entity1_id":"one","center1_point_id":"c1","radius1_point_id":"r1","entity2_id":"two","center2_point_id":"c2","radius2_point_id":"d","distance":6.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["c1"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[15.5203899406,5.8444150891]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[15.2884459098,0.2815180936],"d":[15.5203887575,5.8443874482],"r1":[0.0,3.7233383213]},"variable_points":3,"rows":1,"residual_inf":0.0000033878,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[16.0757359313,6.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[15.5671725986,0.5468953928],"d":[16.0757337661,6.636370471],"r1":[0.0,3.4661045483]},"variable_points":3,"rows":1,"residual_inf":0.0000026968,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[16.6956722805,7.3314915793]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[15.8246395616,0.7836958124],"d":[16.695669258,7.3314690287],"r1":[0.0,3.2385821089]},"variable_points":3,"rows":1,"residual_inf":0.0000029695,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[17.4,7.9]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[16.056265342,0.9867276081],"d":[17.3999962661,7.8999808959],"r1":[0.0,3.043926107]},"variable_points":3,"rows":1,"residual_inf":0.0000032789,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[18.1956722805,8.3314915793]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[16.2649657457,1.1586672901],"d":[18.1956679529,8.3314755691],"r1":[0.0,2.8780787296]},"variable_points":3,"rows":1,"residual_inf":0.0000032998,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[19.0757359313,8.6363961031]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[16.4604300183,1.3082859035],"d":[19.0757309916,8.6363823076],"r1":[0.0,2.7315463951]},"variable_points":3,"rows":1,"residual_inf":0.0000031357,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[20.0203899406,8.8444150891]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[16.6564647529,1.4467664197],"d":[20.0203841769,8.8444024487],"r1":[0.0,2.5926224119]},"variable_points":3,"rows":1,"residual_inf":0.0000029806,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}},
+    {"wish":{"d":[21.0,9.0]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[16.866771835,1.5838606765],"d":[20.999993085,8.9999876222],"r1":[0.0,2.4508382187]},"variable_points":3,"rows":1,"residual_inf":0.0000028168,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":3}}
+   ]
+  },
+  {
+   "id": "drag-maximum-distance-two-circles",
+   "kind": "drag",
+   "description": "maximum distance, two circles: [c1] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0001552417,
+   "input": {"start":{"c1":[0.0,0.0],"c2":[15.0,0.0],"d":[15.0,3.0],"r1":[0.0,4.0]},"lines":{},"constraints":[{"type":"circle_distance","id":"k","entity1_id":"one","center1_point_id":"c1","radius1_point_id":"r1","entity2_id":"two","center2_point_id":"c2","radius2_point_id":"d","distance":22.0,"side":"max"}],"anchors":["d"],"stiff":[],"pinned":["c1"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[14.0944150891,1.6759748515]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[15.4182171383,-0.2220740842],"d":[14.0943998707,1.6759966754],"r1":[0.0,4.2660607544]},"variable_points":3,"rows":1,"residual_inf":9.4e-9,"exit":"arrived","walks":5,"rejected_steps":0,"iterations":9}},
+    {"wish":{"d":[13.1363961031,0.4393398282]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[15.3937083849,-0.2184008886],"d":[13.1363973037,0.4393394786],"r1":[0.0,4.2535564073]},"variable_points":3,"rows":1,"residual_inf":3.59e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[12.0814915793,-0.6358192988]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[14.9988852778,-0.24137996],"d":[12.0815112346,-0.6358166752],"r1":[0.0,4.0552598729]},"variable_points":3,"rows":1,"residual_inf":0.0000050471,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":12}},
+    {"wish":{"d":[10.9,-1.5]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[14.4630624033,-0.3212141223],"d":[10.9000261042,-1.499991398],"r1":[0.0,3.7804097178]},"variable_points":3,"rows":1,"residual_inf":0.0000032803,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[9.5814915793,-2.1358192988]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[13.8834034931,-0.4231173457],"d":[9.5815195051,-2.1358081901],"r1":[0.0,3.4798682193]},"variable_points":3,"rows":1,"residual_inf":2.531e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[8.1363961031,-2.5606601718]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[13.284365344,-0.5247712394],"d":[8.1364249831,-2.5606487723],"r1":[0.0,3.1693845524]},"variable_points":3,"rows":1,"residual_inf":0.0000016851,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[6.5944150891,-2.8240251485]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[12.6694667244,-0.6176606152],"d":[6.5944448994,-2.8240143173],"r1":[0.0,2.8522140885]},"variable_points":3,"rows":1,"residual_inf":8.86e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[5.0,-3.0]},"expected":{"unsupported":false,"converged":true,"points":{"c2":[12.0416543474,-0.6991101645],"d":[5.0000306204,-2.9999899904],"r1":[0.0,2.5300651886]},"variable_points":3,"rows":1,"residual_inf":9.63e-8,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}}
+   ]
+  },
+  {
+   "id": "drag-tangent-side-distance-line-and-circle-the-rim-point-moves",
+   "kind": "drag",
+   "description": "tangent-side distance, line and circle (the rim point moves): [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0004123106,
+   "input": {"start":{"a":[-20.0,0.0],"b":[20.0,0.0],"c":[2.0,10.0],"d":[6.0,10.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"line_circle_distance","id":"k","line_id":"l","line_start_id":"a","line_end_id":"b","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"d","distance":6.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[4.196364792,11.2907798812]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9987061086,0.227483937],"c":[1.6719599142,9.3237379854],"d":[4.1963978342,11.2908056225]},"variable_points":3,"rows":1,"residual_inf":1.73e-8,"exit":"arrived","walks":5,"rejected_steps":0,"iterations":9}},
+    {"wish":{"d":[2.5150757595,12.6514718626]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9988537164,0.1976145509],"c":[1.685386809,9.4319530766],"d":[2.5150743896,12.6514665385]},"variable_points":3,"rows":1,"residual_inf":2.494e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[1.0598529817,14.141344561]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9989268082,0.0171756596],"c":[1.638678649,10.0958973181],"d":[1.059857639,14.1413115271]},"variable_points":3,"rows":1,"residual_inf":0.0000088239,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":12}},
+    {"wish":{"d":[-0.1,15.8]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9975826769,-0.222873882],"c":[1.5008197206,10.9693267706],"d":[-0.0999859633,15.7999574561]},"variable_points":3,"rows":1,"residual_inf":0.0000045373,"exit":"arrived","walks":3,"rejected_steps":6,"iterations":11}},
+    {"wish":{"d":[-0.9401470183,17.641344561]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9944811567,-0.4807153491],"c":[1.3276839761,11.9090644279],"d":[-0.940129119,17.6412992769]},"variable_points":3,"rows":1,"residual_inf":3.144e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[-1.4849242405,19.6514718626]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9895879033,-0.7429537024],"c":[1.1551890979,12.8785227139],"d":[-1.4849060548,19.6514250909]},"variable_points":3,"rows":1,"residual_inf":0.0000032483,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[-1.803635208,21.7907798812]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9829118975,-1.0069441688],"c":[0.9984053675,13.8738361056],"d":[-1.8036182347,21.7907315543]},"variable_points":3,"rows":1,"residual_inf":0.0000266673,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}},
+    {"wish":{"d":[-2.0,24.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9744593335,-1.2717390345],"c":[0.8602267107,14.8913285206],"d":[-1.999984521,23.9999502892]},"variable_points":3,"rows":1,"residual_inf":0.0000300087,"exit":"arrived","walks":2,"rejected_steps":6,"iterations":9}}
+   ]
+  },
+  {
+   "id": "drag-far-side-distance-line-and-circle",
+   "kind": "drag",
+   "description": "far-side distance, line and circle: [a] pinned, the other points follow; 8 frames along a bowed path",
+   "tolerance": 0.0004123106,
+   "input": {"start":{"a":[-20.0,0.0],"b":[20.0,0.0],"c":[2.0,10.0],"d":[8.0,10.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"line_circle_distance","id":"k","line_id":"l","line_start_id":"a","line_end_id":"b","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"d","distance":16.0,"side":"max"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[7.303635208,7.5611698217]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9999794878,-0.0283310442],"c":[1.9532788388,10.0735714363],"d":[7.3036398839,7.561167629]},"variable_points":3,"rows":1,"residual_inf":7.58e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[6.4849242405,5.2272077939]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9997680152,0.0785062087],"c":[2.0883680713,9.7417454475],"d":[6.4849107698,5.227221651]},"variable_points":3,"rows":1,"residual_inf":0.0000024564,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[5.4401470183,3.0870168415]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9988461552,0.2351034313],"c":[2.220809229,9.2116224306],"d":[5.4401339397,3.0870417346]},"variable_points":3,"rows":1,"residual_inf":1.211e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[4.1,1.2]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9970937472,0.4071150567],"c":[2.2967702079,8.6055175155],"d":[4.0999927171,1.2000298685]},"variable_points":3,"rows":1,"residual_inf":4.011e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[2.4401470183,-0.4129831585]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9944187798,0.5887009054],"c":[2.3067956061,7.9575802046],"d":[2.440146493,-0.412950762]},"variable_points":3,"rows":1,"residual_inf":3.632e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[0.4849242405,-1.7727922061]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9904667404,0.7888865933],"c":[2.2454189542,7.2486144502],"d":[0.4849310844,-1.7727570846]},"variable_points":3,"rows":1,"residual_inf":3.748e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":5}},
+    {"wish":{"d":[-1.696364792,-2.9388301783]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9845333388,1.0210671583],"c":[2.0996077048,6.4443632261],"d":[-1.6963491445,-2.9387914809]},"variable_points":3,"rows":1,"residual_inf":1.728e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}},
+    {"wish":{"d":[-4.0,-4.0]},"expected":{"unsupported":false,"converged":true,"points":{"b":[19.9757023423,1.2937282684],"c":[1.8562788853,5.5269421771],"d":[-3.9999740631,-3.9999577813]},"variable_points":3,"rows":1,"residual_inf":4.551e-7,"exit":"arrived","walks":3,"rejected_steps":0,"iterations":6}}
+   ]
+  },
+  {
+   "id": "branch-vertical-distance-below",
+   "kind": "branch",
+   "description": "vertical distance 10 with d below a: the hand rises past a, d stays 10 below",
+   "tolerance": 0.0001044031,
+   "input": {"start":{"a":[0.0,0.0],"d":[3.0,-10.0]},"lines":{},"constraints":[{"type":"distance","id":"k","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"vertical"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[4.0,-6.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[4.0,-9.9999999996]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[5.0,-2.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5.0,-9.9999999992]},"variable_points":1,"rows":1,"residual_inf":8e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[6.0,2.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[6.0,-9.9999999988]},"variable_points":1,"rows":1,"residual_inf":1.2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[7.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.0,-9.9999999984]},"variable_points":1,"rows":1,"residual_inf":1.6e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[8.0,10.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.0,-9.999999998]},"variable_points":1,"rows":1,"residual_inf":2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[9.0,14.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[9.0,-9.9999999976]},"variable_points":1,"rows":1,"residual_inf":2.4e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "branch-horizontal-distance-left",
+   "kind": "branch",
+   "description": "horizontal distance 10 with d left of a: the hand crosses to the right, d stays 10 left",
+   "tolerance": 0.0001019804,
+   "input": {"start":{"a":[0.0,0.0],"d":[-10.0,2.0]},"lines":{},"constraints":[{"type":"distance","id":"k","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"horizontal"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[-6.0,3.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-9.9999999996,3.0]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-2.0,4.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-9.9999999992,4.0]},"variable_points":1,"rows":1,"residual_inf":8e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[2.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-9.9999999988,5.0]},"variable_points":1,"rows":1,"residual_inf":1.2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[6.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-9.9999999984,6.0]},"variable_points":1,"rows":1,"residual_inf":1.6e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[10.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-9.999999998,7.0]},"variable_points":1,"rows":1,"residual_inf":2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[14.0,8.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-9.9999999976,8.0]},"variable_points":1,"rows":1,"residual_inf":2.4e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "branch-angle-supplement",
+   "kind": "branch",
+   "description": "two-line angle 60 held as its supplement (120, as the start has it): the hand sweeps to 60 degrees, d stays on the 120 ray",
+   "tolerance": 0.0001732051,
+   "input": {"start":{"a":[0.0,0.0],"b":[10.0,0.0],"d":[-5.0,8.6602540378]},"lines":{"l1":["a","b"],"l2":["a","d"]},"constraints":[{"type":"angle","id":"k","line1_id":"l1","line2_id":"l2","angle_degrees":60.0,"quadrant":null}],"anchors":["d"],"stiff":[],"pinned":["a","b"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[-3.7460659342,9.2718385457]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-4.9513403436,8.575973041]},"variable_points":1,"rows":1,"residual_inf":1.2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-2.419218956,9.7029572628]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-4.8063084795,8.3247704838]},"variable_points":1,"rows":1,"residual_inf":2.4e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-1.0452846327,9.9452189537]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-4.5677272879,7.9115357385]},"variable_points":1,"rows":1,"residual_inf":3.5e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[0.348994967,9.9939082702]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-4.2402404803,7.3443119493]},"variable_points":1,"rows":1,"residual_inf":4.6e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[2.419218956,9.7029572628]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-3.5966990011,6.2296654108]},"variable_points":1,"rows":1,"residual_inf":6e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[4.3837114679,8.987940463]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-2.7959645166,4.8427526006]},"variable_points":1,"rows":1,"residual_inf":7.2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "branch-horizontal-angle-no-quadrant",
+   "kind": "branch",
+   "description": "angle to horizontal 30, no quadrant, the line at 150: the hand sweeps to 40 degrees, the line stays at 150",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[-8.6602540378,5.0]},"lines":{"l":["a","d"]},"constraints":[{"type":"horizontal_angle","id":"k","line_id":"l","line_start_id":"a","line_end_id":"d","angle_degrees":30.0,"quadrant":null}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[-7.6604444312,6.4278760969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-8.5286853195,4.9240387652]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-5.0,8.6602540378]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-7.4999999997,4.3301270193]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-1.7364817767,9.8480775301]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-5.5667039919,3.2139380491]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[1.7364817767,9.8480775301]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-2.9619813268,1.7101007174]},"variable_points":1,"rows":1,"residual_inf":5e-10,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[5.0,8.6602540378]},"expected":{"unsupported":false,"converged":true,"points":{"d":[5e-10,9e-10]},"variable_points":1,"rows":1,"residual_inf":1.4e-9,"exit":"arrived","walks":2,"rejected_steps":5,"iterations":27}},
+    {"wish":{"d":[7.6604444312,6.4278760969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[8.5286853195,4.9240387652]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":5,"rejected_steps":0,"iterations":8}}
+   ]
+  },
+  {
+   "id": "branch-point-angle-no-quadrant",
+   "kind": "branch",
+   "description": "three-point angle 40, no quadrant, the start open at 140: the hand sweeps to 40 degrees, the angle stays 140",
+   "tolerance": 0.0001879385,
+   "input": {"start":{"a":[10.0,0.0],"d":[-7.6604444312,6.4278760969],"v":[0.0,0.0]},"lines":{},"constraints":[{"type":"point_angle","id":"k","vertex_point_id":"v","point1_id":"a","point2_id":"d","angle_degrees":40.0,"quadrant":null}],"anchors":["d"],"stiff":[],"pinned":["v","a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[-6.4278760969,7.6604444312]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-7.5440650673,6.3302222157]},"variable_points":1,"rows":1,"residual_inf":1.1e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[-3.4202014333,9.3969262079]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-6.6341394814,5.5667039927]},"variable_points":1,"rows":1,"residual_inf":3.2e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[0.0,10.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-4.9240387646,4.1317591123]},"variable_points":1,"rows":1,"residual_inf":4.9e-9,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":1}},
+    {"wish":{"d":[3.4202014333,9.3969262079]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-2.6200263017,2.1984631046]},"variable_points":1,"rows":1,"residual_inf":6e-9,"exit":"arrived","walks":2,"rejected_steps":0,"iterations":2}},
+    {"wish":{"d":[6.4278760969,7.6604444312]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7e-10,8e-10]},"variable_points":1,"rows":1,"residual_inf":1.42e-8,"exit":"arrived","walks":2,"rejected_steps":5,"iterations":27}},
+    {"wish":{"d":[7.6604444312,6.4278760969]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.6604444312,6.4278760969]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":5,"rejected_steps":0,"iterations":7}}
+   ]
+  },
+  {
+   "id": "branch-point-circle-minimum-outside",
+   "kind": "branch",
+   "description": "minimum distance 3 from a radius-5 circle, the Point outside: the hand passes over the centre, the Point stays 8 out",
+   "tolerance": 0.0000943398,
+   "input": {"start":{"c":[0.0,0.0],"d":[8.0,0.0],"r":[0.0,5.0]},"lines":{},"constraints":[{"type":"point_circle_distance","id":"k","point_id":"d","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":3.0,"side":"min"}],"anchors":["d"],"stiff":[],"pinned":["c","r"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[6.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.8911538315,1.3151772528]},"variable_points":1,"rows":1,"residual_inf":1e-10,"exit":"arrived","walks":8,"rejected_steps":6,"iterations":18}},
+    {"wish":{"d":[4.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.7611660474,1.940180814]},"variable_points":1,"rows":1,"residual_inf":4e-10,"exit":"arrived","walks":12,"rejected_steps":6,"iterations":25}},
+    {"wish":{"d":[2.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.155417528,3.577708764]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":4,"rejected_steps":0,"iterations":7}},
+    {"wish":{"d":[0.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[0.0000818302,7.9999999996]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":8,"rejected_steps":6,"iterations":22}},
+    {"wish":{"d":[-2.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-7.1554174679,3.5777088843]},"variable_points":1,"rows":1,"residual_inf":0.0,"exit":"arrived","walks":7,"rejected_steps":0,"iterations":14}},
+    {"wish":{"d":[-4.0,1.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[-7.7611049196,1.9404253258]},"variable_points":1,"rows":1,"residual_inf":1.1e-9,"exit":"arrived","walks":13,"rejected_steps":6,"iterations":27}}
+   ]
+  },
+  {
+   "id": "branch-line-circle-tangent-side",
+   "kind": "branch",
+   "description": "tangent-side distance 6, circle above the line: its centre is dragged down through the line, the circle stays above",
+   "tolerance": 0.0004123106,
+   "input": {"start":{"a":[-20.0,0.0],"b":[20.0,0.0],"c":[2.0,10.0],"r":[6.0,10.0]},"lines":{"l":["a","b"]},"constraints":[{"type":"line_circle_distance","id":"k","line_id":"l","line_start_id":"a","line_end_id":"b","circle_or_arc_id":"circle","center_point_id":"c","radius_point_id":"r","distance":6.0,"side":"min"},{"type":"distance","id":"rad","point_a_id":"c","point_b_id":"r","distance":4.0,"orientation":"linear"}],"anchors":["c"],"stiff":[],"pinned":["a","b"],"provisional":{}},
+   "frames": [
+    {"wish":{"c":[3.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[2.99990001,10.0],"r":[6.99990001,10.0]},"variable_points":2,"rows":2,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"c":[4.0,2.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[3.9999,10.0],"r":[7.9999,10.0]},"variable_points":2,"rows":2,"residual_inf":0.0,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"c":[5.0,-2.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[4.9999,10.0],"r":[8.9999,10.0000000001]},"variable_points":2,"rows":2,"residual_inf":1e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"c":[6.0,-6.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[5.9999,9.9999999999],"r":[9.9999000001,10.0000000003]},"variable_points":2,"rows":2,"residual_inf":2e-10,"exit":"arrived","walks":1,"rejected_steps":0,"iterations":2}},
+    {"wish":{"c":[7.0,-10.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[6.9999000003,9.9999949989],"r":[10.9998974999,10.0000000006]},"variable_points":2,"rows":2,"residual_inf":0.0000025007,"exit":"arrived","walks":2,"rejected_steps":3,"iterations":9}},
+    {"wish":{"c":[8.0,-14.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[7.9999000001,9.9999939987],"r":[11.9998969997,10.0000011341]},"variable_points":2,"rows":2,"residual_inf":0.0000030009,"exit":"arrived","walks":2,"rejected_steps":3,"iterations":9}}
+   ]
+  },
+  {
+   "id": "scene-free-point",
+   "kind": "scene",
+   "description": "a point no constraint touches goes exactly where the hand is",
+   "tolerance": 0.0000702567,
+   "input": {"start":{"p":[8.0,0.4],"q":[1.0,1.0]},"lines":{},"constraints":[],"anchors":["p"],"stiff":[],"pinned":[],"provisional":{}},
+   "frames": [
+    {"wish":{"p":[50.0,60.0]},"expected":{"unsupported":false,"converged":true,"points":{"p":[50.0,60.0]},"variable_points":1,"rows":0,"residual_inf":0.0,"exit":"limit","walks":0,"rejected_steps":0,"iterations":0}}
+   ]
+  },
+  {
+   "id": "scene-horizontal-to-pinned",
+   "kind": "scene",
+   "description": "horizontal to a pinned point: d slides along y = 0 to the hand's x",
+   "tolerance": 0.0001,
+   "input": {"start":{"d":[10.0,0.0],"o":[0.0,0.0]},"lines":{},"constraints":[{"type":"horizontal","id":"h","line_id":"l","point_a_id":"o","point_b_id":"d"}],"anchors":["d"],"stiff":[],"pinned":["o"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[30.0,40.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[30.0,4e-9]},"variable_points":1,"rows":1,"residual_inf":4e-9,"exit":"arrived","walks":10,"rejected_steps":0,"iterations":10}}
+   ]
+  },
+  {
+   "id": "scene-group-only",
+   "kind": "scene",
+   "description": "only the dragged point's group is solved: x and y are not in the answer",
+   "tolerance": 0.000781025,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0],"x":[50.0,50.0],"y":[60.0,50.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"x","point_b_id":"y","distance":10.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[10.0,3.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[9.5782424681,2.873547301]},"variable_points":1,"rows":1,"residual_inf":1.434e-7,"exit":"arrived","walks":4,"rejected_steps":6,"iterations":13}}
+   ]
+  },
+  {
+   "id": "scene-pinned-does-not-link",
+   "kind": "scene",
+   "description": "a pinned point does not join two groups: x stays out",
+   "tolerance": 0.0002,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0],"x":[-10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"a","point_b_id":"x","distance":10.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[10.0,3.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[9.5782424681,2.873547301]},"variable_points":1,"rows":1,"residual_inf":1.434e-7,"exit":"arrived","walks":4,"rejected_steps":6,"iterations":13}}
+   ]
+  },
+  {
+   "id": "scene-arm-followers",
+   "kind": "scene",
+   "description": "two-link arm: the joint f follows, the tip is pulled toward a point past its reach",
+   "tolerance": 0.0002000625,
+   "input": {"start":{"a":[0.0,0.0],"d":[20.0,0.5],"f":[10.0,0.5]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"f","distance":10.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"f","point_b_id":"d","distance":10.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[25.0,0.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[19.9946999232,0.4567835438],"f":[9.9980107639,0.199466596]},"variable_points":2,"rows":2,"residual_inf":3.08e-7,"exit":"limit","walks":11,"rejected_steps":13,"iterations":124}}
+   ]
+  },
+  {
+   "id": "scene-arm-wall",
+   "kind": "scene",
+   "description": "two-link arm, the hand far beyond the reach: the tip lands on the wall (20 from a)",
+   "tolerance": 0.00020001,
+   "input": {"start":{"a":[0.0,0.0],"d":[20.0,0.2],"f":[10.0,0.2]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"f","distance":10.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"f","point_b_id":"d","distance":10.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[60.0,0.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[19.9989996791,0.1999950897],"f":[9.9995185231,0.0981292378]},"variable_points":2,"rows":2,"residual_inf":2.1e-9,"exit":"arrived","walks":0,"rejected_steps":8,"iterations":43}}
+   ]
+  },
+  {
+   "id": "scene-redundant",
+   "kind": "scene",
+   "description": "the same distance twice (consistent, redundant): harmless",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"d","point_b_id":"a","distance":10.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[7.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.0710672313,7.0710683929]},"variable_points":1,"rows":2,"residual_inf":3e-10,"exit":"arrived","walks":7,"rejected_steps":0,"iterations":13}}
+   ]
+  },
+  {
+   "id": "scene-conflict",
+   "kind": "scene",
+   "description": "distance 10 and 12 between the same points: not converged",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"a","point_b_id":"d","distance":12.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{},"expected":{"unsupported":false,"converged":false,"points":{"d":[11.0,0.0]},"variable_points":1,"rows":2,"residual_inf":1.0,"exit":"limit","walks":0,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "scene-provisional-off",
+   "kind": "scene",
+   "description": "a provisional distance with no value from the caller takes no part (0 rows)",
+   "tolerance": 0.0000989949,
+   "input": {"start":{"a":[0.0,0.0],"d":[7.0,7.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear","provisional":true}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.0,7.0]},"variable_points":1,"rows":0,"residual_inf":0.0,"exit":"limit","walks":0,"rejected_steps":0,"iterations":0}}
+   ]
+  },
+  {
+   "id": "scene-provisional-on",
+   "kind": "scene",
+   "description": "the same provisional distance switched on at 5 by the caller: the start is polished onto it (it starts at 9.9)",
+   "tolerance": 0.0000989949,
+   "input": {"start":{"a":[0.0,0.0],"d":[7.0,7.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear","provisional":true}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{"c1":5.0}},
+   "frames": [
+    {"wish":{},"expected":{"unsupported":false,"converged":true,"points":{"d":[3.5355339063,3.5355339063]},"variable_points":1,"rows":1,"residual_inf":5e-10,"exit":"arrived","walks":0,"rejected_steps":0,"iterations":1}}
+   ]
+  },
+  {
+   "id": "scene-spline-unsupported",
+   "kind": "scene",
+   "description": "a spline tangency in the dragged group: unsupported, nothing computed",
+   "tolerance": 0.00001,
+   "input": {"start":{"a0":[0.0,0.0],"a1":[0.0,0.0],"a2":[0.0,0.0],"a3":[0.0,0.0],"b0":[0.0,0.0],"b1":[0.0,0.0],"b2":[0.0,0.0],"b3":[0.0,0.0]},"lines":{},"constraints":[{"type":"spline_tangent","id":"k","spline_id":"s","segment_a_p0":"a0","segment_a_p1":"a1","segment_a_p2":"a2","segment_a_p3":"a3","segment_b_p0":"b0","segment_b_p1":"b1","segment_b_p2":"b2","segment_b_p3":"b3"}],"anchors":["a3"],"stiff":[],"pinned":[],"provisional":{}},
+   "frames": [
+    {"wish":{"a3":[1.0,1.0]},"expected":{"unsupported":true,"converged":false,"points":{},"variable_points":0,"rows":0,"residual_inf":null,"exit":"none","walks":0,"rejected_steps":0,"iterations":0}}
+   ]
+  },
+  {
+   "id": "scene-spline-elsewhere",
+   "kind": "scene",
+   "description": "a spline tangency outside the dragged group does not matter",
+   "tolerance": 0.0004242641,
+   "input": {"start":{"a":[0.0,0.0],"a0":[30.0,30.0],"a1":[30.0,30.0],"a2":[30.0,30.0],"a3":[30.0,30.0],"b0":[30.0,30.0],"b1":[30.0,30.0],"b2":[30.0,30.0],"b3":[30.0,30.0],"d":[10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"},{"type":"spline_tangent","id":"k","spline_id":"s","segment_a_p0":"a0","segment_a_p1":"a1","segment_a_p2":"a2","segment_a_p3":"a3","segment_b_p0":"b0","segment_b_p1":"b1","segment_b_p2":"b2","segment_b_p3":"b3"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[7.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.0710672313,7.0710683929]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":7,"rejected_steps":0,"iterations":13}}
+   ]
+  },
+  {
+   "id": "scene-unknown-ids-skipped",
+   "kind": "scene",
+   "description": "a constraint naming a Line the caller does not know, and one naming a missing Point, take no part (1 row)",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"},{"type":"point_on_line","id":"ghost-line","point_id":"d","line_id":"no-such-line"},{"type":"distance","id":"ghost-point","point_a_id":"d","point_b_id":"no-such-point","distance":3.0,"orientation":"linear"}],"anchors":["d"],"stiff":[],"pinned":["a"],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[7.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"d":[7.0710672313,7.0710683929]},"variable_points":1,"rows":1,"residual_inf":3e-10,"exit":"arrived","walks":7,"rejected_steps":0,"iterations":13}}
+   ]
+  },
+  {
+   "id": "scene-fixed-is-the-callers",
+   "kind": "scene",
+   "description": "a Fix constraint is ignored: pinning is the caller's pinned set, so a, not in it, follows the drag",
+   "tolerance": 0.0001,
+   "input": {"start":{"a":[0.0,0.0],"d":[10.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"d","distance":10.0,"orientation":"linear"},{"type":"fixed","id":"fix","point_ids":["a"]}],"anchors":["d"],"stiff":[],"pinned":[],"provisional":{}},
+   "frames": [
+    {"wish":{"d":[15.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"a":[5.5127017343,1.8376245632],"d":[14.9995347164,4.9999022241]},"variable_points":2,"rows":1,"residual_inf":1.7e-9,"exit":"arrived","walks":16,"rejected_steps":0,"iterations":21}}
+   ]
+  },
+  {
+   "id": "scene-rectangle-stiff-proposal",
+   "kind": "scene",
+   "description": "rectangle on the origin, width dimensioned: b grabbed, c a stiff proposal; b can only rise, c keeps its proposal",
+   "tolerance": 0.000116619,
+   "input": {"start":{"a":[10.0,0.0],"b":[10.0,6.0],"c":[0.0,6.0],"o":[0.0,0.0]},"lines":{"l0":["o","a"],"l1":["a","b"],"l2":["b","c"],"l3":["c","o"]},"constraints":[{"type":"horizontal","id":"h0","line_id":"l0","point_a_id":"o","point_b_id":"a"},{"type":"vertical","id":"v1","line_id":"l1","point_a_id":"a","point_b_id":"b"},{"type":"horizontal","id":"h2","line_id":"l2","point_a_id":"b","point_b_id":"c"},{"type":"vertical","id":"v3","line_id":"l3","point_a_id":"c","point_b_id":"o"},{"type":"distance","id":"w","point_a_id":"o","point_b_id":"a","distance":10.0,"orientation":"horizontal"}],"anchors":["b"],"stiff":["c"],"pinned":["o"],"provisional":{}},
+   "frames": [
+    {"wish":{"b":[14.0,9.3],"c":[0.0,9.3]},"expected":{"unsupported":false,"converged":true,"points":{"a":[10.0000040005,0.0],"b":[10.000008001,9.3000854492],"c":[0.0,9.3000854492]},"variable_points":3,"rows":5,"residual_inf":0.0000040005,"exit":"arrived","walks":15,"rejected_steps":0,"iterations":15}},
+    {"wish":{"b":[15.0,12.4],"c":[0.0,12.4]},"expected":{"unsupported":false,"converged":true,"points":{"a":[10.0000050005,0.0],"b":[10.0000100011,12.4001098737],"c":[0.0,12.4001098737]},"variable_points":3,"rows":5,"residual_inf":0.0000050005,"exit":"arrived","walks":15,"rejected_steps":0,"iterations":15}}
+   ]
+  },
+  {
+   "id": "scene-circle-cardinals",
+   "kind": "scene",
+   "description": "circle as the backend builds it (cardinal points pinned to the centre by distance 0 horizontal / vertical, equal radii), centre dimensioned 15 from a pinned point: the centre slides on the 15 circle, the shape rides along",
+   "tolerance": 0.0001941649,
+   "input": {"start":{"c":[15.0,0.0],"e":[19.0,0.0],"n":[15.0,4.0],"o":[0.0,0.0]},"lines":{},"constraints":[{"type":"distance","id":"pe","point_a_id":"c","point_b_id":"e","distance":0.0,"orientation":"vertical"},{"type":"distance","id":"pn","point_a_id":"c","point_b_id":"n","distance":0.0,"orientation":"horizontal"},{"type":"equal_radius","id":"eq","center1_point_id":"c","radius1_point_id":"e","center2_point_id":"c","radius2_point_id":"n"},{"type":"distance","id":"dim","point_a_id":"o","point_b_id":"c","distance":15.0,"orientation":"linear"}],"anchors":["c"],"stiff":[],"pinned":["o"],"provisional":{}},
+   "frames": [
+    {"wish":{"c":[14.0,6.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[13.787588097,5.9078277268],"e":[15.4398801854,5.9078277256],"n":[13.7875880972,7.5601198146]},"variable_points":3,"rows":4,"residual_inf":4.66e-7,"exit":"arrived","walks":5,"rejected_steps":0,"iterations":9}},
+    {"wish":{"c":[10.0,12.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[9.6037565024,11.5224953358],"e":[10.5406305838,11.5224953347],"n":[9.6037565032,12.4593694162]},"variable_points":3,"rows":4,"residual_inf":0.0000012573,"exit":"arrived","walks":5,"rejected_steps":0,"iterations":9}},
+    {"wish":{"c":[2.0,20.0]},"expected":{"unsupported":false,"converged":true,"points":{"c":[1.4934745547,14.9254672289],"e":[4.7840036629,14.9254672288],"n":[1.4934745549,18.2159963371]},"variable_points":3,"rows":4,"residual_inf":0.0000012749,"exit":"arrived","walks":18,"rejected_steps":4,"iterations":43}}
+   ]
+  },
+  {
+   "id": "scene-two-anchors",
+   "kind": "scene",
+   "description": "a whole line grabbed (both ends anchors): horizontal, length 10; r hangs off q at 5 and follows",
+   "tolerance": 0.0001118034,
+   "input": {"start":{"p":[0.0,0.0],"q":[10.0,0.0],"r":[10.0,5.0]},"lines":{"l":["p","q"]},"constraints":[{"type":"horizontal","id":"h","line_id":"l","point_a_id":"p","point_b_id":"q"},{"type":"distance","id":"len","point_a_id":"p","point_b_id":"q","distance":10.0,"orientation":"linear"},{"type":"distance","id":"hang","point_a_id":"q","point_b_id":"r","distance":5.0,"orientation":"linear"}],"anchors":["p","q"],"stiff":[],"pinned":[],"provisional":{}},
+   "frames": [
+    {"wish":{"p":[3.0,4.0],"q":[13.0,5.0]},"expected":{"unsupported":false,"converged":true,"points":{"p":[3.000096604,4.4999837134],"q":[13.0000966041,4.4999842135],"r":[8.067918758,5.32073116]},"variable_points":3,"rows":3,"residual_inf":5e-7,"exit":"arrived","walks":10,"rejected_steps":6,"iterations":24}},
+    {"wish":{"p":[6.0,8.0],"q":[16.0,7.0]},"expected":{"unsupported":false,"converged":true,"points":{"p":[5.9998445181,7.4999573499],"q":[15.999844518,7.4999568498],"r":[11.1775578041,6.178733291]},"variable_points":3,"rows":3,"residual_inf":0.0000080844,"exit":"arrived","walks":3,"rejected_steps":5,"iterations":10}}
+   ]
+  },
+  {
+   "id": "scene-chain-20-nearly-straight",
+   "kind": "scene",
+   "description": "20 distance-5 links from a pinned origin, nearly straight (an infeasible start: polished first), the tip pulled sideways and out: as built the walk stalls and nothing moves (the straight-chain bifurcation; spec 7.4)",
+   "tolerance": 0.0010000178,
+   "input": {"start":{"p0":[0.0,0.0],"p1":[5.0,0.2524412954],"p10":[50.0,-0.1632063333],"p11":[55.0,-0.299997062],"p12":[60.0,-0.1609718754],"p13":[65.0,0.126050111],"p14":[70.0,0.2971822067],"p15":[75.0,0.195086352],"p16":[80.0,-0.086370995],"p17":[85.0,-0.2884192476],"p18":[90.0,-0.225296174],"p19":[95.0,0.0449631629],"p2":[10.0,0.272789228],"p20":[100.0,0.2738835752],"p3":[15.0,0.0423360024],"p4":[20.0,-0.2270407486],"p5":[25.0,-0.2876772824],"p6":[30.0,-0.0838246495],"p7":[35.0,0.1970959796],"p8":[40.0,0.296807474],"p9":[45.0,0.1236355456]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"p0","point_b_id":"p1","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"p1","point_b_id":"p2","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c3","point_a_id":"p2","point_b_id":"p3","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c4","point_a_id":"p3","point_b_id":"p4","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c5","point_a_id":"p4","point_b_id":"p5","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c6","point_a_id":"p5","point_b_id":"p6","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c7","point_a_id":"p6","point_b_id":"p7","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c8","point_a_id":"p7","point_b_id":"p8","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c9","point_a_id":"p8","point_b_id":"p9","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c10","point_a_id":"p9","point_b_id":"p10","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c11","point_a_id":"p10","point_b_id":"p11","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c12","point_a_id":"p11","point_b_id":"p12","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c13","point_a_id":"p12","point_b_id":"p13","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c14","point_a_id":"p13","point_b_id":"p14","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c15","point_a_id":"p14","point_b_id":"p15","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c16","point_a_id":"p15","point_b_id":"p16","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c17","point_a_id":"p16","point_b_id":"p17","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c18","point_a_id":"p17","point_b_id":"p18","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c19","point_a_id":"p18","point_b_id":"p19","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c20","point_a_id":"p19","point_b_id":"p20","distance":5.0,"orientation":"linear"}],"anchors":["p20"],"stiff":[],"pinned":["p0"],"provisional":{}},
+   "frames": [
+    {"wish":{"p20":[100.0,2.2738835752]},"expected":{"unsupported":false,"converged":true,"points":{"p1":[4.9999997275,0.0023210071],"p10":[49.9999981363,-0.0014841579],"p11":[54.999998044,-0.0027760691],"p12":[59.999997952,-0.0014938563],"p13":[64.999997618,0.0011375873],"p14":[69.9999974762,0.0027512197],"p15":[74.9999998365,0.00961945],"p16":[80.0000020207,0.0152539321],"p17":[84.999930904,0.0527355463],"p18":[89.9998021643,0.0962076392],"p19":[94.9990824218,0.1825685159],"p2":[9.9999997258,0.0025136349],"p20":[99.9982790218,0.2738229367],"p3":[14.9999994926,0.0003911577],"p4":[19.9999991894,-0.0020818226],"p5":[24.9999991711,-0.002655631],"p6":[29.9999989833,-0.0007751773],"p7":[34.9999986594,0.0018009905],"p8":[39.9999986098,0.0027438341],"p9":[44.9999984704,0.0011450241]},"variable_points":20,"rows":20,"residual_inf":0.0000693705,"exit":"stalled","walks":0,"rejected_steps":6,"iterations":36}},
+    {"wish":{"p20":[102.0,8.2738835752]},"expected":{"unsupported":false,"converged":true,"points":{"p1":[4.9999997275,0.0023210071],"p10":[49.9999981363,-0.0014841579],"p11":[54.999998044,-0.0027760691],"p12":[59.999997952,-0.0014938563],"p13":[64.999997618,0.0011375873],"p14":[69.9999974762,0.0027512197],"p15":[74.9999998365,0.00961945],"p16":[80.0000020207,0.0152539321],"p17":[84.999930904,0.0527355463],"p18":[89.9998021643,0.0962076392],"p19":[94.9990824218,0.1825685159],"p2":[9.9999997258,0.0025136349],"p20":[99.9982790218,0.2738229367],"p3":[14.9999994926,0.0003911577],"p4":[19.9999991894,-0.0020818226],"p5":[24.9999991711,-0.002655631],"p6":[29.9999989833,-0.0007751773],"p7":[34.9999986594,0.0018009905],"p8":[39.9999986098,0.0027438341],"p9":[44.9999984704,0.0011450241]},"variable_points":20,"rows":20,"residual_inf":0.0000693705,"exit":"stalled","walks":0,"rejected_steps":6,"iterations":30}},
+    {"wish":{"p20":[120.0,10.2738835752]},"expected":{"unsupported":false,"converged":true,"points":{"p1":[4.9999997275,0.0023210071],"p10":[49.9999981363,-0.0014841579],"p11":[54.999998044,-0.0027760691],"p12":[59.999997952,-0.0014938563],"p13":[64.999997618,0.0011375873],"p14":[69.9999974762,0.0027512197],"p15":[74.9999998365,0.00961945],"p16":[80.0000020207,0.0152539321],"p17":[84.999930904,0.0527355463],"p18":[89.9998021643,0.0962076392],"p19":[94.9990824218,0.1825685159],"p2":[9.9999997258,0.0025136349],"p20":[99.9982790218,0.2738229367],"p3":[14.9999994926,0.0003911577],"p4":[19.9999991894,-0.0020818226],"p5":[24.9999991711,-0.002655631],"p6":[29.9999989833,-0.0007751773],"p7":[34.9999986594,0.0018009905],"p8":[39.9999986098,0.0027438341],"p9":[44.9999984704,0.0011450241]},"variable_points":20,"rows":20,"residual_inf":0.0000693705,"exit":"stalled","walks":0,"rejected_steps":6,"iterations":30}}
+   ]
+  },
+  {
+   "id": "scene-chain-20-curled",
+   "kind": "scene",
+   "description": "20 distance-5 links curled on a radius-60 arc from a pinned origin, the tip dragged about (the timing vector)",
+   "tolerance": 0.000890246,
+   "input": {"start":{"p0":[0.0,0.0],"p1":[4.9956578368,0.2083333333],"p10":[44.420345693,19.6659834815],"p11":[47.6243574767,23.5045129512],"p12":[50.4976445558,27.5964833032],"p13":[53.0202535476,31.9134780767],"p14":[55.1746663342,36.4255181413],"p15":[56.9459217158,41.1012698855],"p16":[58.3217193076,45.908262811],"p17":[59.2925049598,50.8131150226],"p18":[59.8515371054,55.7817650465],"p19":[59.9949335766,60.7797083687],"p2":[9.9566236053,0.8318865741],"p20":[59.7216985646,65.7722370495],"p3":[14.8484461542,1.8663294914],"p4":[19.6371544938,3.3044784539],"p5":[24.289493705,5.136346316],"p6":[28.7731558765,7.3492117732],"p7":[33.0570044656,9.9277077041],"p8":[37.1112905237,12.8539278872],"p9":[40.9078592864,16.1075513487]},"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"p0","point_b_id":"p1","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"p1","point_b_id":"p2","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c3","point_a_id":"p2","point_b_id":"p3","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c4","point_a_id":"p3","point_b_id":"p4","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c5","point_a_id":"p4","point_b_id":"p5","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c6","point_a_id":"p5","point_b_id":"p6","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c7","point_a_id":"p6","point_b_id":"p7","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c8","point_a_id":"p7","point_b_id":"p8","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c9","point_a_id":"p8","point_b_id":"p9","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c10","point_a_id":"p9","point_b_id":"p10","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c11","point_a_id":"p10","point_b_id":"p11","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c12","point_a_id":"p11","point_b_id":"p12","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c13","point_a_id":"p12","point_b_id":"p13","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c14","point_a_id":"p13","point_b_id":"p14","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c15","point_a_id":"p14","point_b_id":"p15","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c16","point_a_id":"p15","point_b_id":"p16","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c17","point_a_id":"p16","point_b_id":"p17","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c18","point_a_id":"p17","point_b_id":"p18","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c19","point_a_id":"p18","point_b_id":"p19","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c20","point_a_id":"p19","point_b_id":"p20","distance":5.0,"orientation":"linear"}],"anchors":["p20"],"stiff":[],"pinned":["p0"],"provisional":{}},
+   "frames": [
+    {"wish":{"p20":[56.7216985646,67.7722370495]},"expected":{"unsupported":false,"converged":true,"points":{"p1":[4.9534631827,0.6806429555],"p10":[43.9493514677,21.0950003066],"p11":[47.0374670397,25.0273714604],"p12":[49.7683758417,29.2157050728],"p13":[52.1193006657,33.6285448842],"p14":[54.0703395267,38.2321797522],"p15":[55.6048527273,42.9908869719],"p16":[56.7098416817,47.8672617925],"p17":[57.3763093923,52.8226470351],"p18":[57.5996158733,57.8176624799],"p19":[57.3798314802,62.812836588],"p2":[9.875451619,1.5604598945],"p20":[56.7220567735,67.7693818627],"p3":[14.7337887691,2.742272275],"p4":[19.492805107,4.2758200539],"p5":[24.1155225533,6.1812099417],"p6":[28.565236642,8.4615731613],"p7":[32.8063934952,11.1097029937],"p8":[36.8050816353,14.111451503],"p9":[40.5293457574,17.4475955638]},"variable_points":20,"rows":20,"residual_inf":0.0000120366,"exit":"limit","walks":22,"rejected_steps":2,"iterations":36}},
+    {"wish":{"p20":[51.7216985646,71.7722370495]},"expected":{"unsupported":false,"converged":true,"points":{"p1":[4.8318282732,1.2858811803],"p10":[42.5573701293,24.1848511839],"p11":[45.3707156908,28.3182625943],"p12":[47.7769501611,32.70118867],"p13":[49.7566736689,37.2925652074],"p14":[51.2984802126,42.0489134379],"p15":[52.399155448,46.926266783],"p16":[53.0636564488,51.8819238269],"p17":[53.3048606201,56.8761272428],"p18":[53.1430073517,61.8735532764],"p19":[52.6048594453,66.8445501542],"p2":[9.6339362069,2.67865029],"p20":[51.7226733674,71.7661206619],"p3":[14.3749729944,4.2669170016],"p4":[19.0200314406,6.1171692261],"p5":[23.5302746909,8.2753419055],"p6":[27.8636591949,10.769695621],"p7":[31.9762399784,13.6134110522],"p8":[35.8238254159,16.8065477961],"p9":[39.3638608613,20.3375779532]},"variable_points":20,"rows":20,"residual_inf":0.000046344,"exit":"limit","walks":22,"rejected_steps":2,"iterations":43}},
+    {"wish":{"p20":[44.7216985646,69.7722370495]},"expected":{"unsupported":false,"converged":true,"points":{"p1":[4.8148391698,1.3480816569],"p10":[42.3777771252,24.5330633958],"p11":[45.1588702901,28.6882433962],"p12":[47.5261736886,33.0923181863],"p13":[49.4569103638,37.704504028],"p14":[50.9302355964,42.4825074377],"p15":[51.917530017,47.3840701748],"p16":[52.3625838733,52.3642299158],"p17":[52.1427239456,57.3594006973],"p18":[51.0103252659,62.2294903802],"p19":[48.5929724739,66.6063076732],"p2":[9.6006894494,2.7957133164],"p20":[44.7224515917,69.7716102432],"p3":[14.3263386224,4.4291881777],"p4":[18.9566550877,6.3160293425],"p5":[23.452268489,8.5045128918],"p6":[27.7703485749,11.0252636623],"p7":[31.8660245157,13.8932662176],"p8":[35.6941659371,17.1096824422],"p9":[39.211348143,20.6634732925]},"variable_points":20,"rows":20,"residual_inf":0.0000124137,"exit":"arrived","walks":14,"rejected_steps":2,"iterations":33}},
+    {"wish":{"p20":[69.7216985646,80.7722370495]},"expected":{"unsupported":false,"converged":true,"points":{"p1":[4.0770613463,2.8944033573],"p10":[36.8318379603,33.4425325994],"p11":[39.7604392048,37.4950990394],"p12":[42.5228557857,41.6627188259],"p13":[45.0609584702,45.970622594],"p14":[47.4611773914,50.3568452435],"p15":[49.7351383961,54.8098332204],"p16":[52.0801855118,59.2257990421],"p17":[54.4096781756,63.6499898085],"p18":[56.7462415715,68.0704503681],"p19":[59.0258471817,72.5205512969],"p2":[8.1297893335,5.8227810436],"p20":[61.2173818351,77.0146781283],"p3":[12.1376492993,8.8122723899],"p4":[16.075606681,11.8932611401],"p5":[19.9133856839,15.0981718009],"p6":[23.6174222841,18.4567597303],"p7":[27.1547440359,21.9905048859],"p8":[30.525182103,25.6837618824],"p9":[33.7429317968,29.5107825147]},"variable_points":20,"rows":20,"residual_inf":5.73e-8,"exit":"limit","walks":10,"rejected_steps":14,"iterations":113}}
+   ]
+  }
+ ]
+}
