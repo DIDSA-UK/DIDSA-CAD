@@ -1,0 +1,255 @@
+{
+  "version": 1,
+  "source": "DIDSA-CAD client/lib/sketch/sketch_controller.dart (_rebuildDimensionGhosts and the builders it calls; referenceDimensionKinds) as built for docs/bug-report-2026-11-18-plan.md parts A and D. Contract: DIDSA-VR docs/dimension-constraint-parity-plan.md section 3.1. Checked by client/test/sketch_dimension_catalogue_test.dart.",
+  "notes": [
+    "An option may carry its own \"when\" (same vocabulary as the entry's): it is offered only while that holds.",
+    "\"pinned.kinds\" keys are the picks joined with '+', unordered except point+point+point (the vertex first).",
+    "Nothing is offered, whatever the entry says, when: the picked Point is the picked circle's or arc's centre; the circle's or arc's centre is an end of the picked line; two circles or arcs share one centre Point.",
+    "Two Points that lie on two different parallel lines (an end or a midpoint of each) are read as those two lines: the line+line lines_parallel entry, not point+point.",
+    "Picking: at most two picks; a third pick restarts the selection unless all three are Points; picking a picked entity again removes it.",
+    "A spline, a text, a lone Point, and an ellipse or elliptical arc with anything else have no options."
+  ],
+  "entries": [
+    {
+      "picks": ["line"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "length", "label": "Length", "creates": "distance:linear"},
+        {"key": "h", "label": "Horizontal length", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical length", "creates": "distance:vertical"},
+        {"key": "horizontalAngle", "label": "Angle to horizontal", "creates": "horizontal_angle", "side": "pointer"}
+      ],
+      "default": "length",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["circle"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "diameter", "label": "Diameter", "creates": "diameter"},
+        {"key": "radius", "label": "Radius", "creates": "radius"}
+      ],
+      "default": "diameter",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["arc"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "radius", "label": "Radius", "creates": "radius"},
+        {"key": "diameter", "label": "Diameter", "creates": "diameter"},
+        {"key": "arcLength", "label": "Arc length", "creates": "arc_length"}
+      ],
+      "default": "radius",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["ellipse"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "majorradius", "label": "Major radius", "creates": "radius"},
+        {"key": "majordiameter", "label": "Major diameter", "creates": "diameter"},
+        {"key": "minorradius", "label": "Minor radius", "creates": "radius"},
+        {"key": "minordiameter", "label": "Minor diameter", "creates": "diameter"}
+      ],
+      "default": "majorradius",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["ellipse_arc"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "majorradius", "label": "Major radius", "creates": "radius"},
+        {"key": "majordiameter", "label": "Major diameter", "creates": "diameter"},
+        {"key": "minorradius", "label": "Minor radius", "creates": "radius"},
+        {"key": "minordiameter", "label": "Minor diameter", "creates": "diameter"}
+      ],
+      "default": "majorradius",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["point", "point"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "linear", "label": "Aligned", "creates": "distance:linear"},
+        {"key": "h", "label": "Horizontal", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical", "creates": "distance:vertical"}
+      ],
+      "default": "linear",
+      "cursor_rule": "point_pair_box"
+    },
+    {
+      "picks": ["point", "line"],
+      "ordered": false,
+      "when": "point_not_on_line_end",
+      "options": [
+        {"key": "perpendicular", "label": "Perpendicular", "creates": "point_line_distance"},
+        {"key": "h", "label": "Horizontal", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical", "creates": "distance:vertical"},
+        {"key": "linear", "label": "Aligned", "creates": "distance:linear"}
+      ],
+      "default": "perpendicular",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["line", "line"],
+      "ordered": false,
+      "when": "lines_parallel",
+      "options": [
+        {"key": "lineDistance", "label": "Distance", "creates": "line_distance"}
+      ],
+      "default": "lineDistance",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["line", "line"],
+      "ordered": false,
+      "when": "lines_not_parallel",
+      "options": [
+        {"key": "angle", "label": "Angle", "creates": "angle", "side": "pointer"}
+      ],
+      "default": "angle",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["point", "circle"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "linear", "label": "Aligned", "creates": "distance:linear"},
+        {"key": "h", "label": "Horizontal", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical", "creates": "distance:vertical"},
+        {"key": "minDistance", "label": "Minimum distance", "creates": "point_circle_distance:min", "when": "point_not_of_curve"},
+        {"key": "maxDistance", "label": "Maximum distance", "creates": "point_circle_distance:max", "when": "point_not_of_curve"}
+      ],
+      "default": "linear",
+      "cursor_rule": "point_pair_box"
+    },
+    {
+      "picks": ["point", "arc"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "linear", "label": "Aligned", "creates": "distance:linear"},
+        {"key": "h", "label": "Horizontal", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical", "creates": "distance:vertical"},
+        {"key": "minDistance", "label": "Minimum distance", "creates": "point_circle_distance:min", "when": "point_not_of_curve"},
+        {"key": "maxDistance", "label": "Maximum distance", "creates": "point_circle_distance:max", "when": "point_not_of_curve"}
+      ],
+      "default": "linear",
+      "cursor_rule": "point_pair_box"
+    },
+    {
+      "picks": ["circle", "circle"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "linear", "label": "Aligned", "creates": "distance:linear"},
+        {"key": "h", "label": "Horizontal", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical", "creates": "distance:vertical"},
+        {"key": "minDistance", "label": "Minimum distance", "creates": "circle_distance:min", "when": "curves_apart"},
+        {"key": "maxDistance", "label": "Maximum distance", "creates": "circle_distance:max"}
+      ],
+      "default": "linear",
+      "cursor_rule": "point_pair_box"
+    },
+    {
+      "picks": ["circle", "arc"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "linear", "label": "Aligned", "creates": "distance:linear"},
+        {"key": "h", "label": "Horizontal", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical", "creates": "distance:vertical"},
+        {"key": "minDistance", "label": "Minimum distance", "creates": "circle_distance:min", "when": "curves_apart"},
+        {"key": "maxDistance", "label": "Maximum distance", "creates": "circle_distance:max"}
+      ],
+      "default": "linear",
+      "cursor_rule": "point_pair_box"
+    },
+    {
+      "picks": ["arc", "arc"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "linear", "label": "Aligned", "creates": "distance:linear"},
+        {"key": "h", "label": "Horizontal", "creates": "distance:horizontal"},
+        {"key": "v", "label": "Vertical", "creates": "distance:vertical"},
+        {"key": "minDistance", "label": "Minimum distance", "creates": "circle_distance:min", "when": "curves_apart"},
+        {"key": "maxDistance", "label": "Maximum distance", "creates": "circle_distance:max"}
+      ],
+      "default": "linear",
+      "cursor_rule": "point_pair_box"
+    },
+    {
+      "picks": ["line", "circle"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "perpendicular", "label": "Perpendicular from centre", "creates": "point_line_distance"},
+        {"key": "tangentDistance", "label": "Tangent distance", "creates": "line_circle_distance:min", "when": "line_misses_curve"},
+        {"key": "farDistance", "label": "Far-side distance", "creates": "line_circle_distance:max"}
+      ],
+      "default": "perpendicular",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["line", "arc"],
+      "ordered": false,
+      "when": null,
+      "options": [
+        {"key": "perpendicular", "label": "Perpendicular from centre", "creates": "point_line_distance"},
+        {"key": "tangentDistance", "label": "Tangent distance", "creates": "line_circle_distance:min", "when": "line_misses_curve"},
+        {"key": "farDistance", "label": "Far-side distance", "creates": "line_circle_distance:max"}
+      ],
+      "default": "perpendicular",
+      "cursor_rule": null
+    },
+    {
+      "picks": ["point", "point", "point"],
+      "ordered": true,
+      "when": null,
+      "options": [
+        {"key": "pointAngle", "label": "Angle", "creates": "point_angle", "side": "pointer"}
+      ],
+      "default": "pointAngle",
+      "cursor_rule": null
+    }
+  ],
+  "conditions": {
+    "lines_parallel": "the two lines' unit directions have |cross| <= sin(0.02 rad)",
+    "lines_not_parallel": "not lines_parallel",
+    "point_not_on_line_end": "the Point is neither end Point of the line",
+    "point_not_of_curve": "the Point is not one of the curve's own Points (a circle: centre, rim; an arc: centre, start, end)",
+    "curves_apart": "the centres' distance is greater than the sum of the two radii (strictly)",
+    "line_misses_curve": "the centre's distance from the line's infinite extension is greater than the radius (strictly)"
+  },
+  "cursor_rules": {
+    "point_pair_box": "until the drawer picks a kind: the cursor within the pair's x span and outside its y span gives h; within the y span and outside the x span gives v; else (inside the box, or a corner region) the default. The pair is the two Points, or the centre Points standing in for a circle or arc. Spans are closed intervals."
+  },
+  "pinned": {
+    "offer": "reference",
+    "kinds": {
+      "point+point": ["distance", "horizontal", "vertical"],
+      "point+line": ["distance"],
+      "line": ["distance", "horizontal", "vertical", "horizontal_angle"],
+      "line+line": ["angle", "distance"],
+      "circle": ["radius", "diameter"],
+      "arc": ["radius", "diameter", "arc_length"],
+      "point+point+point": ["point_angle"],
+      "point+circle": ["min_distance", "max_distance"],
+      "point+arc": ["min_distance", "max_distance"],
+      "circle+circle": ["min_distance", "max_distance"],
+      "circle+arc": ["min_distance", "max_distance"],
+      "arc+arc": ["min_distance", "max_distance"],
+      "line+circle": ["min_distance", "max_distance"],
+      "line+arc": ["min_distance", "max_distance"]
+    }
+  }
+}

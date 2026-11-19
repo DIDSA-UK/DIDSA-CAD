@@ -1,0 +1,249 @@
+{
+  "version": 1,
+  "source": "DIDSA-CAD client/lib/sketch/label_drag_resolver.dart (distance, line distance, radius, two-line angle) and client/lib/sketch/dimension_types.dart (the part D types), as the flat app's label drag and click-to-drop use them. Contract: DIDSA-VR docs/dimension-constraint-parity-plan.md section 3.2. Checked by client/test/sketch_label_placement_cases_test.dart.",
+  "units": "Sketch units (millimetres on the wire); angles in degrees; points as [x, y] in the sketch plane.",
+  "tolerance": 1e-09,
+  "notes": [
+    "placement is what PUT .../constraints/{id}/label saves (only the fields the kind uses); null means the pointer gives no placement and the label stays where it was.",
+    "label_center is where that placement lays out the label's centre. It equals the pointer except where a kind says otherwise (arc_length near the centre, rounding)."
+  ],
+  "kinds": {
+    "distance_linear": "A distance between Points A and B (a line's length, an aligned point pair, a centre distance). offset: how far the dimension line sits from A-B along its left-hand normal (A-B turned 90 degrees counter-clockwise); along: the label's distance from the dimension line's midpoint towards B. Label centre = mid(A,B) + n*offset + t*along.",
+    "distance_horizontal": "offset: the dimension line's y past max(A.y, B.y); along: the label's x from the points' mid x (positive right). Label centre = (mid.x + along, max(A.y,B.y) + offset).",
+    "distance_vertical": "offset: the dimension line's x past max(A.x, B.x); along: the label's y from the points' mid y (positive up). Label centre = (max(A.x,B.x) + offset, mid.y + along).",
+    "point_line_distance": "distance_linear from the Point (A) to its foot on the line's infinite extension (B).",
+    "ellipse_axis": "A full ellipse's radius or diameter along an axis: distance_linear from the opposite tip (A) to the tip the dimension names (B). An elliptical arc has no opposite tip: its axes use radius (centre, axis tip).",
+    "line_distance": "Two parallel lines. With u = line 1's unit direction, n = the unit normal from line 1 towards line 2, midA = line 1's midpoint, midB = its foot on line 2: offset = (P - midA).u; along = (P - mid(midA,midB)).n. Label centre = mid(midA,midB) + u*offset + n*along.",
+    "radius": "Circle or arc (rim = the circle's radius Point, an arc's start). angle: the leader's direction in degrees counter-clockwise from the rim Point's direction, in (-180, 180]; leg: the label's distance beyond the circle (negative inside). Label centre = centre + (r + leg) at (rim angle + angle).",
+    "diameter": "Same fields and rule as radius.",
+    "angle": "Two lines (AngleConstraint). The vertex is where the lines' extensions meet; each outward ray points from it towards its line's midpoint. quadrant bit 0 flips ray 1, bit 1 flips ray 2; no quadrant: ray 2 flips when the outward angle is nearer 180 - value_degrees than value_degrees. radius: the arc's radius (the pointer's distance from the vertex); along: the label's distance ALONG THE ARC from the arc's middle, positive towards ray 2. No placement (null) when the pointer is behind the vertex (its direction has a dot product <= 0 with the arc's middle) or on it.",
+    "arc_length": "leg: how far outside the arc the dimension arc runs (negative inside); angle: the label's place along it, degrees counter-clockwise from the arc's middle, in (-180, 180]. The dimension arc's radius is max(r + leg, 0.1 r), so a pointer within a tenth of the radius of the centre puts the label on that smallest arc, not at the pointer.",
+    "horizontal_angle": "quadrant bit 0: the angle is drawn at the line's end (else its start); bit 1: the horizontal ray is -x (else +x). Ray 1 runs along the line from that vertex, ray 2 is the horizontal. radius: the pointer's distance from the vertex; angle: degrees counter-clockwise from the middle of the arc that runs the short way from ray 1 to ray 2, in (-180, 180].",
+    "point_angle": "Three Points, the vertex first. quadrant bit 0 flips ray 1 (vertex to point 1), bit 1 ray 2 (vertex to point 2). radius and angle as horizontal_angle.",
+    "point_circle_distance": "distance_linear between the Point (A) and the circle's point on the line through the Point and the centre (B): the nearer one for side min, the farther one for max.",
+    "circle_distance": "distance_linear between each circle's point on the centre line (A on circle 1, B on circle 2): facing each other for side min (the gap), facing away for max.",
+    "line_circle_distance": "distance_linear from the centre's foot on the line (A) to the circle's point square to the line (B): towards the line for side min (tangent side), away from it for max (far side)."
+  },
+  "cases": [
+    {
+      "kind": "distance_linear",
+      "name": "a point pair (also a line length)",
+      "geometry": {"a": [0, 0], "b": [8, 6]},
+      "pointers": [
+        {"pointer": [2.0, 6.0], "placement": {"offset": 3.6000000000000005, "along": 0.19999999999999973}, "label_center": [1.9999999999999996, 6.000000000000001]},
+        {"pointer": [10.0, 2.0], "placement": {"offset": -4.4, "along": 4.200000000000001}, "label_center": [10.000000000000002, 2.0]},
+        {"pointer": [12.0, 12.0], "placement": {"offset": 2.400000000000002, "along": 11.8}, "label_center": [12.0, 12.000000000000002]}
+      ]
+    },
+    {
+      "kind": "distance_horizontal",
+      "name": "horizontal",
+      "geometry": {"a": [2, 1], "b": [10, 5]},
+      "pointers": [
+        {"pointer": [6.0, 9.0], "placement": {"offset": 4.0, "along": 0.0}, "label_center": [6.0, 9.0]},
+        {"pointer": [14.0, -3.0], "placement": {"offset": -8.0, "along": 8.0}, "label_center": [14.0, -3.0]},
+        {"pointer": [0.0, 6.0], "placement": {"offset": 1.0, "along": -6.0}, "label_center": [0.0, 6.0]}
+      ]
+    },
+    {
+      "kind": "distance_vertical",
+      "name": "vertical",
+      "geometry": {"a": [2, 1], "b": [10, 5]},
+      "pointers": [
+        {"pointer": [13.0, 3.0], "placement": {"offset": 3.0, "along": 0.0}, "label_center": [13.0, 3.0]},
+        {"pointer": [-2.0, 4.0], "placement": {"offset": -12.0, "along": 1.0}, "label_center": [-2.0, 4.0]},
+        {"pointer": [12.0, 10.0], "placement": {"offset": 2.0, "along": 7.0}, "label_center": [12.0, 10.0]}
+      ]
+    },
+    {
+      "kind": "point_line_distance",
+      "name": "perpendicular, point to line",
+      "geometry": {"point": [8, 3], "line_start": [0, 10], "line_end": [20, 10]},
+      "pointers": [
+        {"pointer": [14.0, 6.0], "placement": {"offset": -6.0, "along": -0.5}, "label_center": [14.0, 6.0]},
+        {"pointer": [2.0, 6.0], "placement": {"offset": 6.0, "along": -0.5}, "label_center": [2.0, 6.0]},
+        {"pointer": [14.0, 14.0], "placement": {"offset": -6.0, "along": 7.5}, "label_center": [14.0, 14.0]}
+      ]
+    },
+    {
+      "kind": "ellipse_axis",
+      "name": "an ellipse's major radius or diameter",
+      "geometry": {"center": [0, 0], "tip": [6, 0], "opposite_tip": [-6, 0]},
+      "pointers": [
+        {"pointer": [0.0, 4.0], "placement": {"offset": 4.0, "along": 0.0}, "label_center": [0.0, 4.0]},
+        {"pointer": [3.0, -5.0], "placement": {"offset": -5.0, "along": 3.0}, "label_center": [3.0, -5.0]},
+        {"pointer": [9.0, 2.0], "placement": {"offset": 2.0, "along": 9.0}, "label_center": [9.0, 2.0]}
+      ]
+    },
+    {
+      "kind": "line_distance",
+      "name": "two parallel lines",
+      "geometry": {"line1_start": [0, 0], "line1_end": [10, 0], "line2_start": [0, 6], "line2_end": [10, 6]},
+      "pointers": [
+        {"pointer": [5.0, 3.0], "placement": {"offset": 0.0, "along": 0.0}, "label_center": [5.0, 3.0]},
+        {"pointer": [8.0, -2.0], "placement": {"offset": 3.0, "along": -5.0}, "label_center": [8.0, -2.0]},
+        {"pointer": [2.0, 9.0], "placement": {"offset": -3.0, "along": 6.0}, "label_center": [2.0, 9.0]}
+      ]
+    },
+    {
+      "kind": "radius",
+      "name": "a circle",
+      "geometry": {"center": [5, 5], "rim": [9, 5]},
+      "pointers": [
+        {"pointer": [12.0, 9.0], "placement": {"angle": 29.744881296942225, "leg": 4.062257748298549}, "label_center": [12.0, 9.0]},
+        {"pointer": [5.0, 0.0], "placement": {"angle": -90.0, "leg": 1.0}, "label_center": [5.0, 0.0]},
+        {"pointer": [6.0, 6.0], "placement": {"angle": 45.0, "leg": -2.585786437626905}, "label_center": [6.0, 6.0]}
+      ]
+    },
+    {
+      "kind": "diameter",
+      "name": "a circle",
+      "geometry": {"center": [0, 0], "rim": [0, 5]},
+      "pointers": [
+        {"pointer": [4.0, 4.0], "placement": {"angle": -45.0, "leg": 0.6568542494923806}, "label_center": [4.000000000000001, 4.0]},
+        {"pointer": [-7.0, 0.0], "placement": {"angle": 90.0, "leg": 2.0}, "label_center": [-7.0, 8.572527594031472e-16]},
+        {"pointer": [0.0, -9.0], "placement": {"angle": 180.0, "leg": 4.0}, "label_center": [-1.6532731788489267e-15, -9.0]}
+      ]
+    },
+    {
+      "kind": "angle",
+      "name": "two lines, quadrant chosen (0: the outward rays)",
+      "geometry": {"line1_start": [0, 0], "line1_end": [10, 0], "line2_start": [2, 2], "line2_end": [6, 6], "quadrant": 0},
+      "pointers": [
+        {"pointer": [6.0, 2.0], "placement": {"along": -0.44871788581844024, "radius": 6.324555320336759}, "label_center": [6.0, 2.0]},
+        {"pointer": [2.0, 8.0], "placement": {"along": 7.694692949372059, "radius": 8.246211251235321}, "label_center": [1.9999999999999993, 8.0]},
+        {"pointer": [-4.0, -3.0], "placement": null, "label_center": null}
+      ]
+    },
+    {
+      "kind": "angle",
+      "name": "two lines, quadrant 1 (the first ray flipped)",
+      "geometry": {"line1_start": [0, 0], "line1_end": [10, 0], "line2_start": [2, 2], "line2_end": [6, 6], "quadrant": 1},
+      "pointers": [
+        {"pointer": [-3.0, 6.0], "placement": {"along": -0.47593718985286393, "radius": 6.708203932499369}, "label_center": [-3.0, 6.0]},
+        {"pointer": [-6.0, 1.0], "placement": {"along": -6.161525592612554, "radius": 6.082762530298219}, "label_center": [-6.0, 1.000000000000001]},
+        {"pointer": [5.0, 1.0], "placement": null, "label_center": null}
+      ]
+    },
+    {
+      "kind": "angle",
+      "name": "two lines, no quadrant: the value picks the sector",
+      "geometry": {"line1_start": [0, 0], "line1_end": [10, 0], "line2_start": [2, 2], "line2_end": [6, 6], "value_degrees": 135},
+      "pointers": [
+        {"pointer": [5.0, -5.0], "placement": {"along": -2.776801836348979, "radius": 7.0710678118654755}, "label_center": [5.000000000000001, -5.0]},
+        {"pointer": [-2.0, -6.0], "placement": {"along": 4.518576247079611, "radius": 6.324555320336759}, "label_center": [-2.000000000000001, -6.0]},
+        {"pointer": [1.0, 9.0], "placement": null, "label_center": null}
+      ]
+    },
+    {
+      "kind": "arc_length",
+      "name": "a quarter arc",
+      "geometry": {"center": [0, 0], "start": [5, 0], "end": [0, 5]},
+      "pointers": [
+        {"pointer": [5.0, 5.0], "placement": {"angle": 0.0, "leg": 2.0710678118654755}, "label_center": [5.000000000000001, 5.0]},
+        {"pointer": [-2.0, 7.0], "placement": {"angle": 60.94539590092286, "leg": 2.280109889280518}, "label_center": [-2.0, 7.0]},
+        {"pointer": [0.2, 0.2], "placement": {"angle": 0.0, "leg": -4.717157287525381}, "label_center": [0.3535533905932738, 0.35355339059327373]}
+      ]
+    },
+    {
+      "kind": "horizontal_angle",
+      "name": "quadrant 0: at the start, towards +x",
+      "geometry": {"line_start": [2, 1], "line_end": [8, 7], "quadrant": 0},
+      "pointers": [
+        {"pointer": [6.0, 3.0], "placement": {"angle": 4.065051177077989, "radius": 4.47213595499958}, "label_center": [6.0, 3.0]},
+        {"pointer": [9.0, 1.0], "placement": {"angle": -22.5, "radius": 7.0}, "label_center": [9.0, 1.0]},
+        {"pointer": [1.0, 6.0], "placement": {"angle": 78.80993247402021, "radius": 5.0990195135927845}, "label_center": [1.0000000000000009, 6.0]}
+      ]
+    },
+    {
+      "kind": "horizontal_angle",
+      "name": "quadrant 3: at the end, towards -x",
+      "geometry": {"line_start": [2, 1], "line_end": [8, 7], "quadrant": 3},
+      "pointers": [
+        {"pointer": [5.0, 6.0], "placement": {"angle": -4.065051177077993, "radius": 3.1622776601683795}, "label_center": [5.0, 6.0]},
+        {"pointer": [3.0, 8.0], "placement": {"angle": -33.80993247402022, "radius": 5.0990195135927845}, "label_center": [3.000000000000001, 8.0]},
+        {"pointer": [10.0, 9.0], "placement": {"angle": -157.5, "radius": 2.8284271247461903}, "label_center": [10.0, 9.0]}
+      ]
+    },
+    {
+      "kind": "point_angle",
+      "name": "quadrant 0",
+      "geometry": {"vertex": [0, 0], "point1": [10, 0], "point2": [0, 10], "quadrant": 0},
+      "pointers": [
+        {"pointer": [3.0, 3.0], "placement": {"angle": 0.0, "radius": 4.242640687119285}, "label_center": [3.0, 2.9999999999999996]},
+        {"pointer": [6.0, 1.0], "placement": {"angle": -35.53767779197438, "radius": 6.082762530298219}, "label_center": [6.0, 0.9999999999999998]},
+        {"pointer": [-2.0, 5.0], "placement": {"angle": 66.80140948635182, "radius": 5.385164807134504}, "label_center": [-1.9999999999999996, 5.0]}
+      ]
+    },
+    {
+      "kind": "point_angle",
+      "name": "quadrant 1: the first ray flipped",
+      "geometry": {"vertex": [0, 0], "point1": [10, 0], "point2": [0, 10], "quadrant": 1},
+      "pointers": [
+        {"pointer": [-3.0, 3.0], "placement": {"angle": 0.0, "radius": 4.242640687119285}, "label_center": [-3.0000000000000004, 2.9999999999999996]},
+        {"pointer": [-6.0, 1.0], "placement": {"angle": 35.53767779197438, "radius": 6.082762530298219}, "label_center": [-6.0, 0.9999999999999997]},
+        {"pointer": [2.0, 5.0], "placement": {"angle": -66.80140948635182, "radius": 5.385164807134504}, "label_center": [1.999999999999999, 5.0]}
+      ]
+    },
+    {
+      "kind": "point_circle_distance",
+      "name": "minimum",
+      "geometry": {"point": [0, 0], "center": [10, 0], "rim": [13, 0], "side": "min"},
+      "pointers": [
+        {"pointer": [3.0, 4.0], "placement": {"offset": 4.0, "along": -0.5}, "label_center": [3.0, 4.0]},
+        {"pointer": [5.0, -2.0], "placement": {"offset": -2.0, "along": 1.5}, "label_center": [5.0, -2.0]},
+        {"pointer": [9.0, 1.0], "placement": {"offset": 1.0, "along": 5.5}, "label_center": [9.0, 1.0]}
+      ]
+    },
+    {
+      "kind": "point_circle_distance",
+      "name": "maximum",
+      "geometry": {"point": [0, 0], "center": [10, 0], "rim": [13, 0], "side": "max"},
+      "pointers": [
+        {"pointer": [6.0, 5.0], "placement": {"offset": 5.0, "along": -0.5}, "label_center": [6.0, 5.0]},
+        {"pointer": [6.0, -4.0], "placement": {"offset": -4.0, "along": -0.5}, "label_center": [6.0, -4.0]},
+        {"pointer": [15.0, 2.0], "placement": {"offset": 2.0, "along": 8.5}, "label_center": [15.0, 2.0]}
+      ]
+    },
+    {
+      "kind": "circle_distance",
+      "name": "minimum (the gap)",
+      "geometry": {"center1": [0, 0], "rim1": [2, 0], "center2": [10, 0], "rim2": [10, 3], "side": "min"},
+      "pointers": [
+        {"pointer": [4.0, 5.0], "placement": {"offset": 5.0, "along": -0.5}, "label_center": [4.0, 5.0]},
+        {"pointer": [5.0, -3.0], "placement": {"offset": -3.0, "along": 0.5}, "label_center": [5.0, -3.0]},
+        {"pointer": [8.0, 1.0], "placement": {"offset": 1.0, "along": 3.5}, "label_center": [8.0, 1.0]}
+      ]
+    },
+    {
+      "kind": "circle_distance",
+      "name": "maximum (overall)",
+      "geometry": {"center1": [0, 0], "rim1": [2, 0], "center2": [10, 0], "rim2": [10, 3], "side": "max"},
+      "pointers": [
+        {"pointer": [5.0, 6.0], "placement": {"offset": 6.0, "along": -0.5}, "label_center": [5.0, 6.0]},
+        {"pointer": [5.0, -6.0], "placement": {"offset": -6.0, "along": -0.5}, "label_center": [5.0, -6.0]},
+        {"pointer": [15.0, 2.0], "placement": {"offset": 2.0, "along": 9.5}, "label_center": [15.0, 2.0]}
+      ]
+    },
+    {
+      "kind": "line_circle_distance",
+      "name": "tangent side",
+      "geometry": {"line_start": [0, 0], "line_end": [20, 0], "center": [10, 6], "rim": [10, 9], "side": "min"},
+      "pointers": [
+        {"pointer": [7.0, 2.0], "placement": {"offset": 3.0, "along": 0.5}, "label_center": [7.0, 2.0]},
+        {"pointer": [13.0, 1.0], "placement": {"offset": -3.0, "along": -0.5}, "label_center": [13.0, 1.0]},
+        {"pointer": [8.0, -2.0], "placement": {"offset": 2.0, "along": -3.5}, "label_center": [8.0, -2.0]}
+      ]
+    },
+    {
+      "kind": "line_circle_distance",
+      "name": "far side",
+      "geometry": {"line_start": [0, 0], "line_end": [20, 0], "center": [10, 6], "rim": [10, 9], "side": "max"},
+      "pointers": [
+        {"pointer": [6.0, 4.0], "placement": {"offset": 4.0, "along": -0.5}, "label_center": [6.0, 4.0]},
+        {"pointer": [15.0, 7.0], "placement": {"offset": -5.0, "along": 2.5}, "label_center": [15.0, 7.0]},
+        {"pointer": [11.0, 11.0], "placement": {"offset": -1.0, "along": 6.5}, "label_center": [11.0, 11.0]}
+      ]
+    }
+  ]
+}
