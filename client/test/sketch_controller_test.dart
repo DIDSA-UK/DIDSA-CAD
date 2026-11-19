@@ -125,6 +125,11 @@ class _FakeBackend {
   /// P48's edge-shaped sibling to [convertVertexRequestCount].
   int convertEdgeRequestCount = 0;
 
+  /// Bug report 2026-11-18 part C3: the bodies of the `convert-entities/sketch` calls the fake has seen, and the status to answer with instead of
+  /// converting (a test sets it to simulate the real route's 422 `source_after_sketch`).
+  final List<Map<String, dynamic>> convertSketchRequests = [];
+  int? convertSketchFailStatus;
+
   /// DIDSA-VR plan, phase 2.2: how many `convert-entities/face` calls the fake has seen.
   int convertFaceRequestCount = 0;
 
@@ -218,6 +223,129 @@ class _FakeBackend {
   (double, double)? curveTrimTargetPoint;
 
   String _newId(String prefix) => '$prefix-${_nextId++}';
+
+  /// Bug report 2026-11-18 part C3: one converted shape as the real routes answer it (`ConvertEdgeResponse`), with its server-side state added to this
+  /// fake: [kind] is `line`, `arc`, `circle`, `ellipse`, `ellipse_arc`, `spline` or `point`. Only the start / end / centre Points are in the answer; the
+  /// rest (an ellipse's axes, a spline's points, a circle's cardinals) are only in the fake's lists, as on the real server.
+  Map<String, dynamic> convertShapeItem(String kind, {bool construction = false, bool reference = false}) {
+    final n = _nextId;
+    Map<String, dynamic> pointAt(double x, double y) {
+      final id = _newId('point');
+      final point = {'id': id, 'x': x, 'y': y, 'is_locked': true, if (reference) 'is_reference': true};
+      points[id] = point;
+      return point;
+    }
+
+    Map<String, dynamic> lineBetween(Map<String, dynamic> a, Map<String, dynamic> b) {
+      final id = _newId('line');
+      final line = {
+        'id': id,
+        'start_point_id': a['id'],
+        'end_point_id': b['id'],
+        'length': 1.0,
+        'construction': true,
+        if (reference) 'is_reference': true,
+      };
+      lines[id] = line;
+      return line;
+    }
+
+    Map<String, dynamic> flags(Map<String, dynamic> shape) => {...shape, 'construction': construction, if (reference) 'is_reference': true};
+    final x = n.toDouble();
+    switch (kind) {
+      case 'point':
+        final p = pointAt(x, 0);
+        return {'point': p, 'start_point': p, 'end_point': p};
+      case 'line':
+        final a = pointAt(x, 0);
+        final b = pointAt(x + 10, 0);
+        final id = _newId('line');
+        final line = flags({'id': id, 'start_point_id': a['id'], 'end_point_id': b['id'], 'length': 10.0});
+        lines[id] = line;
+        return {'line': line, 'start_point': a, 'end_point': b};
+      case 'arc':
+        final c = pointAt(x, 0);
+        final a = pointAt(x + 5, 0);
+        final b = pointAt(x, 5);
+        final id = _newId('arc');
+        final arc = flags({'id': id, 'center_point_id': c['id'], 'start_point_id': a['id'], 'end_point_id': b['id'], 'radius': 5.0});
+        arcs[id] = arc;
+        return {'arc': arc, 'start_point': a, 'end_point': b, 'center_point': c};
+      case 'circle':
+        final c = pointAt(x, 0);
+        final cardinals = [pointAt(x, 5), pointAt(x + 5, 0), pointAt(x, -5), pointAt(x - 5, 0)];
+        final id = _newId('circle');
+        final circle = flags({
+          'id': id,
+          'center_point_id': c['id'],
+          'radius_point_id': cardinals.first['id'],
+          'radius': 5.0,
+          'cardinal_point_ids': [for (final p in cardinals) p['id']],
+        });
+        circles[id] = circle;
+        return {'circle': circle, 'start_point': c, 'end_point': c, 'center_point': c};
+      case 'ellipse':
+        final c = pointAt(x, 0);
+        final major = pointAt(x + 6, 0);
+        final majorNeg = pointAt(x - 6, 0);
+        final minor = pointAt(x, 3);
+        final minorNeg = pointAt(x, -3);
+        final majorLine = lineBetween(majorNeg, major);
+        final minorLine = lineBetween(minorNeg, minor);
+        final id = _newId('ellipse');
+        final ellipse = flags({
+          'id': id,
+          'center_point_id': c['id'],
+          'major_point_id': major['id'],
+          'major_point_neg_id': majorNeg['id'],
+          'minor_point_id': minor['id'],
+          'minor_point_neg_id': minorNeg['id'],
+          'major_axis_line_id': majorLine['id'],
+          'minor_axis_line_id': minorLine['id'],
+          'major_radius': 6.0,
+          'minor_radius': 3.0,
+          'rotation': 0.0,
+        });
+        ellipses[id] = ellipse;
+        return {'ellipse': ellipse, 'start_point': c, 'end_point': c, 'center_point': c};
+      case 'ellipse_arc':
+        final c = pointAt(x, 0);
+        final major = pointAt(x + 6, 0);
+        final minor = pointAt(x, 3);
+        final start = pointAt(x + 6, 0.5);
+        final end = pointAt(x, 3.5);
+        final majorLine = lineBetween(c, major);
+        final minorLine = lineBetween(c, minor);
+        final id = _newId('ellipse-arc');
+        final ellipseArc = flags({
+          'id': id,
+          'center_point_id': c['id'],
+          'major_point_id': major['id'],
+          'minor_point_id': minor['id'],
+          'start_point_id': start['id'],
+          'end_point_id': end['id'],
+          'major_axis_line_id': majorLine['id'],
+          'minor_axis_line_id': minorLine['id'],
+          'major_radius': 6.0,
+          'minor_radius': 3.0,
+          'rotation': 0.0,
+        });
+        ellipseArcs[id] = ellipseArc;
+        return {'ellipse_arc': ellipseArc, 'start_point': start, 'end_point': end, 'center_point': c};
+      case 'spline':
+        final through = [pointAt(x, 0), pointAt(x + 5, 2), pointAt(x + 10, 0)];
+        final controls = [pointAt(x + 2, 1), pointAt(x + 3, 2), pointAt(x + 7, 2), pointAt(x + 8, 1)];
+        final id = _newId('spline');
+        final spline = flags({
+          'id': id,
+          'through_point_ids': [for (final p in through) p['id']],
+          'control_point_ids': [for (final p in controls) p['id']],
+        });
+        splines[id] = spline;
+        return {'spline': spline, 'start_point': through.first, 'end_point': through.last};
+    }
+    throw ArgumentError('unknown shape $kind');
+  }
 
   /// How many times `PUT .../state` was hit, and the last merge refusal to answer with (a test sets it to simulate a server-side refusal).
   int restoreCount = 0;
@@ -428,12 +556,18 @@ class _FakeBackend {
 
     final arcDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs/(.+)$').firstMatch(path);
     if (arcDeleteMatch != null && request.method == 'DELETE') {
+      arcs.remove(arcDeleteMatch.group(1));
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final ellipseDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipses/(.+)$').firstMatch(path);
     if (ellipseDeleteMatch != null && request.method == 'DELETE') {
-      ellipses.remove(ellipseDeleteMatch.group(1));
+      final ellipse = ellipses.remove(ellipseDeleteMatch.group(1));
+      if (ellipse != null) {
+        // Mirrors the real backend's Sketch.delete_ellipse, which also removes the two axis Lines.
+        lines.remove(ellipse['major_axis_line_id']);
+        lines.remove(ellipse['minor_axis_line_id']);
+      }
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
@@ -866,6 +1000,37 @@ class _FakeBackend {
       return _json(point, 201);
     }
 
+    // Bug report 2026-11-18 part C3: `convert-entities/sketch`. The entity ids ARE the shape kinds (`line`, `arc`, `circle`, `ellipse`, `ellipse_arc`,
+    // `spline`, `point`, `closed` = a closed free-form curve: a spline with a second one in `more`, `text` = skipped as Text, `gone` = not in the source);
+    // no ids = the whole sketch, one of each shape and a Text. A real answer lists items in the order asked.
+    final convertSketchMatch = RegExp(
+      r'^/document/parts/[^/]+/features/sketch/[^/]+/convert-entities/sketch$',
+    ).hasMatch(path);
+    if (convertSketchMatch && request.method == 'POST') {
+      convertSketchRequests.add(body);
+      final failStatus = convertSketchFailStatus;
+      if (failStatus != null) {
+        return _json({'detail': {'type': 'source_after_sketch', 'message': 'Only a sketch earlier in the feature tree can be converted into this one.'}}, failStatus);
+      }
+      final ids = (body['entity_ids'] as List?)?.cast<String>() ??
+          const ['line', 'arc', 'circle', 'ellipse', 'ellipse_arc', 'spline', 'point', 'text'];
+      final items = <Map<String, dynamic>>[];
+      final skipped = <Map<String, dynamic>>[];
+      for (final id in ids) {
+        if (id == 'text') {
+          skipped.add({'entity_id': id, 'reason': 'text', 'message': 'Text is not converted.'});
+        } else if (id == 'gone') {
+          skipped.add({'entity_id': id, 'reason': 'not_found', 'message': 'No such entity or point in the source sketch.'});
+        } else if (id == 'closed') {
+          final first = convertShapeItem('spline');
+          items.add({...first, 'more': [convertShapeItem('spline')], 'source_entity_id': id});
+        } else {
+          items.add({...convertShapeItem(id, construction: body['construction'] == true, reference: body['reference'] == true), 'source_entity_id': id});
+        }
+      }
+      return _json({'items': items, 'skipped': skipped}, 201);
+    }
+
     // P48's edge-shaped sibling to the vertex route above.
     final convertEdgeMatch = RegExp(
       r'^/document/parts/[^/]+/features/sketch/[^/]+/convert-entities/edge$',
@@ -912,6 +1077,17 @@ class _FakeBackend {
       if (edgeIndex == 101) {
         points.remove(endId);
         return _json({'point': startPoint, 'start_point': startPoint, 'end_point': startPoint}, 201);
+      }
+      // Bug report 2026-11-18 part C3: 102 an ellipse, 103 an elliptical arc, 104 a spline, 105 a closed free-form edge (a spline with a second in
+      // `more`), 106 an elliptical arc with a `more` spline: what the real route answers for an edge seen at an angle.
+      if (edgeIndex >= 102 && edgeIndex <= 106) {
+        points.remove(startId);
+        points.remove(endId);
+        final kind = const {102: 'ellipse', 103: 'ellipse_arc', 104: 'spline', 105: 'spline', 106: 'ellipse_arc'}[edgeIndex.toInt()]!;
+        final item = convertShapeItem(kind, construction: construction, reference: asReference);
+        if (edgeIndex == 105) item['more'] = [convertShapeItem('spline', construction: construction, reference: asReference)];
+        if (edgeIndex == 106) item['more'] = [convertShapeItem('spline', construction: construction, reference: asReference)];
+        return _json(item, 201);
       }
       if (edgeIndex == 99) {
         final centerId = _newId('point');
@@ -9950,6 +10126,269 @@ void main() {
         expect(freshController.beginPointDrag(cardinalId), isFalse);
       }
       expect(freshController.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+    });
+  });
+
+  group('Convert Entities from another sketch, every shape drawn, one-step undo (bug report 2026-11-18 plan part C3)', () {
+    Future<(SketchController, _FakeBackend)> adoptedController({Set<String>? sources = const {'src-1', 'src-2'}}) async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      freshController.convertSourceSketchFeatureIds = sources;
+      freshController.enterConvertEntitiesMode();
+      return (freshController, freshBackend);
+    }
+
+    /// Everything the fake holds other than the sketch's origin, as one count (entities and points).
+    int serverCount(_FakeBackend b) =>
+        b.lines.length + b.arcs.length + b.circles.length + b.ellipses.length + b.ellipseArcs.length + b.splines.length + b.points.length;
+
+    test('a sketch picked in the tree is staged whole, and a second pick un-stages it', () async {
+      final (c, _) = await adoptedController();
+      expect(c.stageConvertSketch('src-1'), isTrue);
+      expect(c.pendingConvertSketches, ['src-1']);
+      expect(c.hasPendingConvertSelection, isTrue);
+      expect(c.pendingConvertCount, 1);
+      expect(c.stageConvertSketch('src-1'), isTrue);
+      expect(c.pendingConvertSketches, isEmpty);
+      expect(c.hasPendingConvertSelection, isFalse);
+    });
+
+    test("another sketch's entities are staged by their ids (pattern copies by their expanded id), a second pick un-stages, Exit discards", () async {
+      final (c, _) = await adoptedController();
+      expect(c.stageConvertSketchEntity('src-1', 'line-a'), isTrue);
+      expect(c.stageConvertSketchEntity('src-1', 'inst-1#2#line-a'), isTrue);
+      expect(c.stageConvertSketchEntity('src-2', 'point-x'), isTrue);
+      expect(c.pendingConvertSketchEntities, [('src-1', 'line-a'), ('src-1', 'inst-1#2#line-a'), ('src-2', 'point-x')]);
+      c.stageConvertSketchEntity('src-1', 'line-a');
+      expect(c.pendingConvertSketchEntities, hasLength(2));
+      c.discardPendingConvertSelection();
+      expect(c.hasPendingConvertSelection, isFalse);
+    });
+
+    test('staging a whole sketch takes over that sketch\'s staged entities, and entity picks of a staged sketch are ignored', () async {
+      final (c, _) = await adoptedController();
+      c.stageConvertSketchEntity('src-1', 'line-a');
+      c.stageConvertSketchEntity('src-2', 'line-b');
+      c.stageConvertSketch('src-1');
+      expect(c.pendingConvertSketchEntities, [('src-2', 'line-b')]);
+      expect(c.stageConvertSketchEntity('src-1', 'line-c'), isTrue);
+      expect(c.pendingConvertSketchEntities, [('src-2', 'line-b')]);
+    });
+
+    test('a sketch LATER in the tree (or this one) is refused with a message and nothing is staged', () async {
+      final (c, _) = await adoptedController();
+      expect(c.stageConvertSketch('later-1'), isFalse);
+      expect(c.errorMessage, SketchController.convertSourceAfterSketchMessage);
+      expect(c.stageConvertSketchEntity('later-1', 'line-a'), isFalse);
+      expect(c.stageConvertSketch('sketch-feat-1'), isFalse);
+      expect(c.hasPendingConvertSelection, isFalse);
+      // A staged earlier sketch clears the message again.
+      expect(c.stageConvertSketch('src-1'), isTrue);
+      expect(c.errorMessage, isNull);
+    });
+
+    test('with no list of earlier sketches known, nothing is refused here (the backend decides)', () async {
+      final (c, _) = await adoptedController(sources: null);
+      expect(c.stageConvertSketch('anything'), isTrue);
+    });
+
+    test('the Tick converts a staged whole sketch through convertSketchEntities (entity_ids absent) and draws every shape', () async {
+      final (c, b) = await adoptedController();
+      c.stageConvertSketch('src-1');
+      await c.confirmConvertSelection();
+
+      expect(b.convertSketchRequests, hasLength(1));
+      expect(b.convertSketchRequests.single['source_sketch_feature_id'], 'src-1');
+      expect(b.convertSketchRequests.single.containsKey('entity_ids'), isFalse);
+      expect(c.hasPendingConvertSelection, isFalse);
+      expect(c.lines.values.where((l) => !l.construction), hasLength(1)); // the line (the axis lines of the two ellipses are construction)
+      expect(c.arcs, hasLength(1));
+      expect(c.circles, hasLength(1));
+      expect(c.ellipses, hasLength(1));
+      expect(c.ellipseArcs, hasLength(1));
+      expect(c.splines, hasLength(1));
+      // Every Point any new shape stands on is in the local picture (the answer carried only start / end / centre; the rest was read back).
+      for (final id in [
+        ...c.circles.values.single.cardinalPointIds,
+        c.ellipses.values.single.majorPointNegId,
+        c.ellipses.values.single.minorPointNegId,
+        c.ellipseArcs.values.single.startPointId,
+        ...c.splines.values.single.throughPointIds,
+        ...c.splines.values.single.controlPointIds,
+      ]) {
+        expect(c.points.containsKey(id), isTrue, reason: id);
+      }
+      // The ellipses' axis Lines too, so the picture matches a reloaded sketch.
+      expect(c.lines.containsKey(c.ellipses.values.single.majorAxisLineId), isTrue);
+      expect(c.lines.containsKey(c.ellipseArcs.values.single.minorAxisLineId), isTrue);
+    });
+
+    test('staged entities of one source go in ONE call, in the order picked; a second source is a second call', () async {
+      final (c, b) = await adoptedController();
+      c.stageConvertSketchEntity('src-1', 'spline');
+      c.stageConvertSketchEntity('src-2', 'circle');
+      c.stageConvertSketchEntity('src-1', 'ellipse');
+      await c.confirmConvertSelection();
+
+      expect(b.convertSketchRequests.map((r) => '${r['source_sketch_feature_id']}: ${(r['entity_ids'] as List).join(', ')}'), [
+        'src-1: spline, ellipse',
+        'src-2: circle',
+      ]);
+      expect(c.splines, hasLength(1));
+      expect(c.ellipses, hasLength(1));
+      expect(c.circles, hasLength(1));
+    });
+
+    test('a lone Point, a line, an arc and the two ellipse shapes are each drawn into the local picture', () async {
+      final (c, _) = await adoptedController();
+      for (final kind in ['point', 'line', 'arc', 'ellipse_arc']) {
+        c.stageConvertSketchEntity('src-1', kind);
+      }
+      await c.confirmConvertSelection();
+      expect(c.arcs, hasLength(1));
+      expect(c.ellipseArcs, hasLength(1));
+      expect(c.lines.values.where((l) => !l.construction), hasLength(1));
+      final arc = c.arcs.values.single;
+      expect([arc.centerPointId, arc.startPointId, arc.endPointId].every(c.points.containsKey), isTrue);
+      final ellipseArc = c.ellipseArcs.values.single;
+      expect([ellipseArc.centerPointId, ellipseArc.majorPointId, ellipseArc.minorPointId, ellipseArc.endPointId].every(c.points.containsKey), isTrue);
+    });
+
+    test('what the backend skipped (Text, an id that is gone) is reported in one short message', () async {
+      final (c, _) = await adoptedController();
+      c.stageConvertSketchEntity('src-1', 'line');
+      c.stageConvertSketchEntity('src-1', 'text');
+      c.stageConvertSketchEntity('src-1', 'gone');
+      await c.confirmConvertSelection();
+      expect(c.lines.values.where((l) => !l.construction), hasLength(1));
+      expect(c.errorMessage, contains('Text is not converted'));
+      expect(c.errorMessage, contains('no longer in the source sketch'));
+    });
+
+    test('a refusal from the backend (a later sketch) draws nothing, says why and leaves no undo step', () async {
+      final (c, b) = await adoptedController();
+      b.convertSketchFailStatus = 422;
+      c.stageConvertSketch('src-1');
+      await c.confirmConvertSelection();
+      expect(c.errorMessage, isNotNull);
+      expect(c.lines, isEmpty);
+      expect(c.canUndo, isFalse);
+    });
+
+    test('one Tick is ONE undo step that deletes every entity it made, then the Points that were new', () async {
+      final (c, b) = await adoptedController();
+      final before = serverCount(b);
+      c.stageConvertSketch('src-1');
+      await c.confirmConvertSelection();
+      expect(serverCount(b), greaterThan(before + 10));
+      b.requestLog.clear();
+
+      await c.undo();
+
+      expect(c.canUndo, isFalse); // one step took it all
+      expect(serverCount(b), before);
+      expect(c.lines, isEmpty);
+      expect(c.arcs, isEmpty);
+      expect(c.circles, isEmpty);
+      expect(c.ellipses, isEmpty);
+      expect(c.ellipseArcs, isEmpty);
+      expect(c.splines, isEmpty);
+      expect(c.points.keys, ['origin-99']);
+      final deletes = b.requestLog.where((r) => r.startsWith('DELETE')).toList();
+      final lastEntity = deletes.lastIndexWhere((r) => !r.contains('/points/'));
+      final firstPoint = deletes.indexWhere((r) => r.contains('/points/'));
+      expect(lastEntity, lessThan(firstPoint), reason: 'every entity before any Point: $deletes');
+    });
+
+    test('a Tick of body picks and a sketch together is still ONE undo step', () async {
+      final (c, b) = await adoptedController();
+      final before = serverCount(b);
+      c.stageConvertVertex('body-1', 3);
+      c.stageConvertEdge('body-1', 0);
+      c.stageConvertSketchEntity('src-1', 'circle');
+      c.stageConvertSketchEntity('src-1', 'spline');
+      await c.confirmConvertSelection();
+      expect(c.lines, hasLength(1));
+      expect(c.circles, hasLength(1));
+
+      await c.undo();
+
+      expect(c.canUndo, isFalse);
+      expect(serverCount(b), before);
+      expect(c.lines, isEmpty);
+      expect(c.circles, isEmpty);
+      expect(c.splines, isEmpty);
+      expect(c.points.keys, ['origin-99']);
+    });
+
+    test('an edge whose answer carries `more` (a closed free-form edge) draws every piece and ONE undo removes them all', () async {
+      final (c, b) = await adoptedController();
+      final before = serverCount(b);
+      await c.pickConvertEntityEdge('body-1', 105);
+      expect(c.splines, hasLength(2));
+      expect(c.errorMessage, isNull);
+
+      await c.undo();
+
+      expect(c.splines, isEmpty);
+      expect(c.canUndo, isFalse);
+      expect(serverCount(b), before);
+      expect(c.points.keys, ['origin-99']);
+    });
+
+    test('an angled edge answers with an ellipse, an elliptical arc or a spline: each is drawn (no reload) and undone in one step', () async {
+      for (final (edge, check) in <(int, bool Function(SketchController))>[
+        (102, (c) => c.ellipses.length == 1),
+        (103, (c) => c.ellipseArcs.length == 1),
+        (104, (c) => c.splines.length == 1),
+        (106, (c) => c.ellipseArcs.length == 1 && c.splines.length == 1),
+      ]) {
+        final (c, b) = await adoptedController();
+        final before = serverCount(b);
+        b.requestLog.clear();
+        await c.pickConvertEntityEdge('body-1', edge);
+        expect(check(c), isTrue, reason: 'edge $edge');
+        // Drawn from the answer plus one read of the Points (and axis Lines), not a reload of the whole sketch.
+        expect(b.requestLog.where((r) => r.endsWith('/ellipses') || r.endsWith('/splines') || r.endsWith('/circles')), isEmpty, reason: 'edge $edge');
+        await c.undo();
+        expect(c.canUndo, isFalse, reason: 'edge $edge');
+        expect(serverCount(b), before, reason: 'edge $edge');
+        expect(c.points.keys, ['origin-99'], reason: 'edge $edge');
+      }
+    });
+
+    test('a straight edge along the normal (one Point) is one undo step that deletes the Point', () async {
+      final (c, b) = await adoptedController();
+      await c.pickConvertEntityEdge('body-1', 101);
+      expect(c.points.length, 2);
+      await c.undo();
+      expect(c.points.keys, ['origin-99']);
+      expect(b.points.length, 1);
+    });
+
+    test('an implicit reference of an angled edge is flagged as a reference helper and leaves no undo entry', () async {
+      final (c, _) = await adoptedController();
+      final selection = await c.ensureReferenceEdge('body-1', 102);
+      expect(selection?.kind, SelectionKind.ellipse);
+      expect(c.isReferenceHelper(selection!.id), isTrue);
+      expect(c.canUndo, isFalse);
+    });
+
+    test('a spline, ellipse or elliptical arc flagged as a reference helper stays marked when the sketch is read back', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final ids = <String>[
+        for (final kind in ['spline', 'ellipse', 'ellipse_arc'])
+          ((freshBackend.convertShapeItem(kind, reference: true)[kind] as Map<String, dynamic>)['id'] as String),
+      ];
+      final c = SketchController(api: SketchApiClient(httpClient: MockClient((request) async => freshBackend.handle(request))));
+      await c.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      for (final id in ids) {
+        expect(c.isReferenceHelper(id), isTrue, reason: id);
+      }
     });
   });
 

@@ -217,6 +217,44 @@ String _featureTypeAsset(String type, {String? curveType}) => switch (type) {
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
 
+/// Bug report 2026-11-18 part C3: what a locked tree ([FeatureTreePanel.lockedReason], the sketcher's) is told while the sketcher is in Convert
+/// Entities. Handed down with [TreeConvertPickScope] by the sketcher so the tree builder the Part screen supplies needs no new parameters.
+class TreeConvertPick {
+  /// The sketch Features that may be picked (the ones earlier in the tree than the sketch being edited): their rows act on a tap.
+  final Set<String> pickable;
+
+  /// The pickable sketches already staged (shown ticked).
+  final Set<String> picked;
+
+  /// The sketch Features that come LATER: they stay locked, and say why with [laterReason].
+  final Set<String> later;
+  final String laterReason;
+
+  /// A pickable row was tapped.
+  final void Function(FeatureDto feature) onPick;
+
+  const TreeConvertPick({
+    required this.pickable,
+    required this.picked,
+    required this.later,
+    required this.laterReason,
+    required this.onPick,
+  });
+}
+
+/// Carries a [TreeConvertPick] (null: not in Convert Entities) down to the [FeatureTreePanel] built inside it.
+class TreeConvertPickScope extends InheritedWidget {
+  final TreeConvertPick? pick;
+
+  const TreeConvertPickScope({super.key, required this.pick, required super.child});
+
+  static TreeConvertPick? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<TreeConvertPickScope>()?.pick;
+
+  @override
+  bool updateShouldNotify(TreeConvertPickScope oldWidget) => true;
+}
+
 /// The "Build Tree": a Part's currently-computed Bodies (top, collapsible)
 /// followed by its user-authored Features (Sketch/Extrude/etc, also
 /// collapsible), in creation order. B3 revision, off on-device feedback:
@@ -746,6 +784,17 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
   /// While [FeatureTreePanel.lockedReason] is set, a row explains why it does nothing (the reason as its tooltip).
   Widget _lockedTip(Widget row) => _locked ? Tooltip(message: widget.lockedReason!, child: row) : row;
 
+  /// [_lockedTip] for a Feature row, which in Convert Entities ([TreeConvertPickScope]) may instead be pickable (a tap converts that sketch) or a
+  /// later sketch (locked for its own reason).
+  Widget _lockedFeatureTip(BuildContext context, FeatureDto feature, Widget row) {
+    final convert = _locked ? TreeConvertPickScope.maybeOf(context) : null;
+    if (convert != null && convert.pickable.contains(feature.id)) {
+      return Tooltip(message: "Convert this sketch's entities into the sketch being edited", child: row);
+    }
+    if (convert != null && convert.later.contains(feature.id)) return Tooltip(message: convert.laterReason, child: row);
+    return _lockedTip(row);
+  }
+
   /// The Hide / Show eye the locked tree's rows have ([FeatureTreePanel.onToggleVisibility]); null when it does not apply.
   Widget? _lockedEye(String id, bool hidden) {
     final toggle = widget.onToggleVisibility;
@@ -1147,7 +1196,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       visualDensity: VisualDensity.compact,
       leading: const SvgIcon('assets/icons/feature/feature_tree.svg', size: 26),
       title: const Text('Features', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [for (final feature in widget.features) _lockedTip(_buildFeatureTile(context, feature))],
+      children: [for (final feature in widget.features) _lockedFeatureTip(context, feature, _buildFeatureTile(context, feature))],
     );
   }
 
@@ -1184,6 +1233,10 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     // hide/delete-capable), so unlike the picker above nothing is dimmed.
     final multiSelectKey = TreeMultiSelectKeys.feature(feature.id);
     final multiSelected = _isMultiSelected(multiSelectKey);
+    // Convert Entities in the sketcher: an earlier sketch's row is pickable (bug report 2026-11-18 part C3).
+    final convert = _locked ? TreeConvertPickScope.maybeOf(context) : null;
+    final convertPickable = convert != null && isSketch && convert.pickable.contains(feature.id);
+    final convertPicked = convertPickable && convert.picked.contains(feature.id);
     return Opacity(
       opacity: hidden || pickerDimmed || featurePickerDimmed ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
@@ -1191,7 +1244,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         child: ListTile(
           dense: true,
           visualDensity: VisualDensity.compact,
-          selected: widget.isMultiSelectMode ? multiSelected : selected || featurePickerSelected,
+          selected: widget.isMultiSelectMode ? multiSelected : selected || featurePickerSelected || convertPicked,
           // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
           // independent overlay badge - kept alongside (not instead of) the
           // type glyph below.
@@ -1279,7 +1332,10 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                     : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
             final eye = feature.id == widget.selectedFeatureId ? null : _lockedEye(feature.id, hidden);
             final children = _locked
-                ? [if (eye != null) eye else if (stateIcon != null) stateIcon]
+                ? [
+                    if (convertPicked) const Icon(Icons.check_circle, key: ValueKey('tree-convert-picked'), size: 18),
+                    if (eye != null) eye else if (stateIcon != null) stateIcon,
+                  ]
                 : [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
             // Bug fix (assembly testing, `assembly_tree_panel.dart`'s sibling
             // fix): scale down instead of overflowing on a narrow panel.
@@ -1291,7 +1347,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   );
           }(),
           onTap: _locked
-              ? null
+              ? (convertPickable ? () => convert.onPick(feature) : null)
               : () {
             if (widget.isSketchPickerMode) {
               if (isSketch) widget.onSketchPicked?.call(feature);

@@ -28,6 +28,7 @@ import '../layout/adaptive_sheet.dart';
 import '../storage/picked_file.dart' show savedFileNameFromUri;
 import '../layout/layout_mode.dart';
 import '../viewport3d/desktop_chrome.dart';
+import '../viewport3d/feature_tree_panel.dart' show TreeConvertPick, TreeConvertPickScope;
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/keyboard_shortcuts.dart';
 import '../viewport3d/controls_preferences.dart';
@@ -325,15 +326,34 @@ Map<String, List<TextContourDto>> _textContoursFrom(SketchController controller)
 /// pushes the current values here and [SketchScreen] rebuilds. [notifyListeners] also fires when only the tree's own inputs
 /// changed (the tree is built by [SketchScreen.featureTreeBuilder] on every rebuild).
 class SketchReferenceSource extends ChangeNotifier {
-  SketchReferenceSource({this.bodies = const [], this.otherSketchGeometries = const {}});
+  SketchReferenceSource({
+    this.bodies = const [],
+    this.otherSketchGeometries = const {},
+    this.earlierSketchFeatureIds,
+    this.laterSketchFeatureIds = const {},
+  });
 
   List<BodyMeshDto> bodies;
   Map<String, SketchGeometry3D> otherSketchGeometries;
 
-  /// Takes the current values and tells the listeners (always: the tree may have changed even if these did not).
-  void update({required List<BodyMeshDto> bodies, required Map<String, SketchGeometry3D> otherSketchGeometries}) {
+  /// Bug report 2026-11-18 part C3: the sketch Features EARLIER than the one being edited in the Part's feature list (what Convert Entities may
+  /// take from: its tree rows become pickable and its viewport picks are accepted) and the LATER ones (which the backend refuses, 422
+  /// `source_after_sketch`: their rows stay locked and say why). Null earlier: not known, so no tree row is pickable.
+  Set<String>? earlierSketchFeatureIds;
+  Set<String> laterSketchFeatureIds;
+
+  /// Takes the current values and tells the listeners (always: the tree may have changed even if these did not). The two sketch id sets keep
+  /// their value when not given.
+  void update({
+    required List<BodyMeshDto> bodies,
+    required Map<String, SketchGeometry3D> otherSketchGeometries,
+    Set<String>? earlierSketchFeatureIds,
+    Set<String>? laterSketchFeatureIds,
+  }) {
     this.bodies = bodies;
     this.otherSketchGeometries = otherSketchGeometries;
+    this.earlierSketchFeatureIds = earlierSketchFeatureIds ?? this.earlierSketchFeatureIds;
+    this.laterSketchFeatureIds = laterSketchFeatureIds ?? this.laterSketchFeatureIds;
     notifyListeners();
   }
 }
@@ -493,7 +513,31 @@ class _SketchScreenState extends State<SketchScreen> {
       widget.referenceSource?.otherSketchGeometries ?? widget.otherSketchGeometries;
 
   void _onReferenceSourceChanged() {
+    _controller.convertSourceSketchFeatureIds = widget.referenceSource?.earlierSketchFeatureIds;
     if (mounted) setState(() {});
+  }
+
+  /// The feature tree for [SketchScreen.featureTreeBuilder], with what Convert Entities needs handed down to it (bug report 2026-11-18 part C3,
+  /// [TreeConvertPickScope]): in Convert mode the rows of the sketches earlier than this one can be picked (they stage the whole sketch), the later
+  /// ones stay locked and say why. Outside Convert mode nothing changes.
+  Widget _buildFeatureTree(BuildContext context) {
+    final tree = widget.featureTreeBuilder!(context, () => setState(() => _treeOpen = false));
+    final source = widget.referenceSource;
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, _) => TreeConvertPickScope(
+        pick: _controller.mode == SketchMode.convert && source != null
+            ? TreeConvertPick(
+                pickable: source.earlierSketchFeatureIds ?? const {},
+                picked: _controller.pendingConvertSketches.toSet(),
+                later: source.laterSketchFeatureIds,
+                laterReason: SketchController.convertSourceAfterSketchMessage,
+                onPick: (feature) => _controller.stageConvertSketch(feature.id),
+              )
+            : null,
+        child: tree,
+      ),
+    );
   }
 
   /// Stage 23f's View submenu controls - all in-memory only/session-only
@@ -567,6 +611,7 @@ class _SketchScreenState extends State<SketchScreen> {
     super.initState();
     _controller = widget.controller ?? SketchController();
     widget.referenceSource?.addListener(_onReferenceSourceChanged);
+    _controller.convertSourceSketchFeatureIds = widget.referenceSource?.earlierSketchFeatureIds;
     final adoptSketchId = widget.adoptSketchId;
     if (adoptSketchId != null) {
       _controller.adoptSketch(
@@ -648,7 +693,7 @@ class _SketchScreenState extends State<SketchScreen> {
           width: _treePaneWidth,
           onResize: (delta) =>
               setState(() => _treePaneWidth = (_treePaneWidth + delta).clamp(DesktopLeftPane.minWidth, DesktopLeftPane.maxWidth)),
-          child: builder(context, () => setState(() => _treeOpen = false)),
+          child: _buildFeatureTree(context),
         ),
         Expanded(child: viewport),
       ],
@@ -1234,7 +1279,7 @@ Stack(
                         duration: const Duration(milliseconds: 200),
                         curve: Curves.easeOut,
                         builder: (context, dx, child) => FractionalTranslation(translation: Offset(dx, 0), child: child),
-                        child: widget.featureTreeBuilder!(context, () => setState(() => _treeOpen = false)),
+                        child: _buildFeatureTree(context),
                       ),
                     ),
                   // Tap-outside barrier: while the FAB menu is open, any tap
@@ -1753,6 +1798,8 @@ Stack(
         preferEntityPickIncludesFace: _controller.mode == SketchMode.convert,
         preferEntityPickIncludesEdge: _preferEntityPickIncludesEdge,
         preferEntityPickIncludesVertex: _preferEntityPickIncludesVertex,
+        // Bug report 2026-11-18 part C3: only Convert Entities picks the drawn geometry of the other sketches.
+        preferEntityPickIncludesOtherSketches: _controller.mode == SketchMode.convert,
         onSketchEntityTap: _handleEmbeddedSketchEntityTap,
         hasEntityNearSketchTap: (x, y) => _controller.hasEntityNear(x, y, SketchController.snapRadius),
         // P19 on-device feedback: same _orbitCursorActive gating as
@@ -1922,6 +1969,17 @@ Stack(
       return;
     }
     switch (entity.kind) {
+      // Bug report 2026-11-18 part C3: another sketch's drawn entity (a Point, Line, Circle, Arc, Ellipse, elliptical Arc, Spline or Text) stages
+      // that entity for Convert Entities. A sketch later in the tree is refused with a message.
+      case SelectionEntityKind.sketchPoint ||
+            SelectionEntityKind.sketchLine ||
+            SelectionEntityKind.sketchCircle ||
+            SelectionEntityKind.sketchArc ||
+            SelectionEntityKind.sketchEllipse ||
+            SelectionEntityKind.sketchEllipseArc ||
+            SelectionEntityKind.sketchSpline ||
+            SelectionEntityKind.sketchText:
+        if (convert) _controller.stageConvertSketchEntity(entity.sketchFeatureId, entity.sketchEntityId);
       case SelectionEntityKind.vertex:
         if (convert) {
           _controller.stageConvertVertex(entity.bodyId, entity.id);

@@ -45,6 +45,22 @@ class SketchPointView {
   const SketchPointView({required this.id, required this.x, required this.y});
 }
 
+/// What one Convert Entities call made in the local picture (bug report 2026-11-18 part C3): the entities in the order they were made, and the Points
+/// that were new (not already in the sketch), so ONE undo step can delete all of it ([SketchController._undoConvertMade]).
+class _ConvertMade {
+  final List<(_ConvertKind, String)> entities = [];
+  final List<String> newPointIds = [];
+
+  bool get isEmpty => entities.isEmpty && newPointIds.isEmpty;
+
+  void absorb(_ConvertMade other) {
+    entities.addAll(other.entities);
+    newPointIds.addAll(other.newPointIds);
+  }
+}
+
+enum _ConvertKind { line, arc, circle, ellipse, ellipseArc, spline }
+
 class SketchLineView {
   final String id;
   final String startPointId;
@@ -1934,7 +1950,7 @@ class SketchController extends ChangeNotifier {
   /// them. A dedicated `Set` for the same reason as [_lockedPointIds].
   final Set<String> _referenceIds = {};
 
-  /// Whether [id] (a Point, Line, Circle or Arc) is a reference helper (see [_referenceIds]).
+  /// Whether [id] (a Point, Line, Circle, Arc, Ellipse, elliptical Arc or Spline) is a reference helper (see [_referenceIds]).
   bool isReferenceHelper(String id) => _referenceIds.contains(id);
 
   /// DIDSA-VR plan, phase 3: the sketch's persistent reference (driven) dimensions with their current values, as the backend last said (every solve brings them
@@ -3092,7 +3108,14 @@ class SketchController extends ChangeNotifier {
       ..addAll(result.points.where((p) => p.isLocked).map((p) => p.id));
     _referenceDimensions = result.referenceDimensions;
     // A helper the backend cleaned up (nothing depended on it any more) takes its shape out of the local picture too.
-    _referenceIds.removeWhere((id) => points.containsKey(id) == false && !lines.containsKey(id) && !circles.containsKey(id) && !arcs.containsKey(id));
+    _referenceIds.removeWhere((id) =>
+        points.containsKey(id) == false &&
+        !lines.containsKey(id) &&
+        !circles.containsKey(id) &&
+        !arcs.containsKey(id) &&
+        !ellipses.containsKey(id) &&
+        !ellipseArcs.containsKey(id) &&
+        !splines.containsKey(id));
     for (final id in _referenceIds.where((id) => lines.containsKey(id)).toList()) {
       final line = lines[id]!;
       if (!points.containsKey(line.startPointId) || !points.containsKey(line.endPointId)) {
@@ -14654,7 +14677,34 @@ class SketchController extends ChangeNotifier {
   final List<(String, int)> _pendingConvertEdges = [];
   List<(String, int)> get pendingConvertVertices => List.unmodifiable(_pendingConvertVertices);
   List<(String, int)> get pendingConvertEdges => List.unmodifiable(_pendingConvertEdges);
-  bool get hasPendingConvertSelection => _pendingConvertVertices.isNotEmpty || _pendingConvertEdges.isNotEmpty;
+
+  /// Bug report 2026-11-18 part C3: the Feature ids of whole sketches staged from the feature tree ([stageConvertSketch]) and the
+  /// `(source sketch Feature id, entity id)` picks staged from another sketch's drawn geometry ([stageConvertSketchEntity]). Like the body
+  /// picks they are only staged until the Tick ([confirmConvertSelection]).
+  final List<String> _pendingConvertSketches = [];
+  final List<(String, String)> _pendingConvertSketchEntities = [];
+  List<String> get pendingConvertSketches => List.unmodifiable(_pendingConvertSketches);
+  List<(String, String)> get pendingConvertSketchEntities => List.unmodifiable(_pendingConvertSketchEntities);
+
+  /// How many picks are staged, of every kind.
+  int get pendingConvertCount =>
+      _pendingConvertVertices.length + _pendingConvertEdges.length + _pendingConvertSketches.length + _pendingConvertSketchEntities.length;
+  bool get hasPendingConvertSelection => pendingConvertCount > 0;
+
+  /// The Feature ids of the sketches that come EARLIER than this one in the feature tree: the only ones the backend lets Convert Entities
+  /// take from (a later one is a 422, `source_after_sketch`, since a rebuild could loop). Set by [SketchScreen] from the Part's feature list;
+  /// null means it is not known (a sketch opened without a Part around it): nothing is refused here and the backend decides.
+  Set<String>? convertSourceSketchFeatureIds;
+
+  /// Why [stageConvertSketch] / [stageConvertSketchEntity] refuse a sketch that is not earlier in the tree (shown as [errorMessage]).
+  static const String convertSourceAfterSketchMessage = 'Only a sketch earlier in the feature tree can be converted into this one.';
+
+  /// Whether [featureId] (a sketch Feature id) may be a Convert Entities source for this sketch.
+  bool canConvertFromSketch(String featureId) {
+    if (featureId.isEmpty || featureId == _documentSketchFeatureId) return false;
+    final allowed = convertSourceSketchFeatureIds;
+    return allowed == null || allowed.contains(featureId);
+  }
 
   /// [SketchCanvas]/[SketchScreen]'s own tap handler for a Body vertex hit
   /// in [SketchMode.convert] - stages it (a second tap on the same vertex
@@ -14697,34 +14747,192 @@ class SketchController extends ChangeNotifier {
     if (changed) notifyListeners();
   }
 
+  /// Bug report 2026-11-18 part C3: a sketch row picked in the sketcher's feature tree - stages that WHOLE sketch (a second pick un-stages it, like
+  /// the body picks). Refused (false, with [errorMessage]) for a sketch that is not earlier in the tree. Entity picks already staged from that
+  /// sketch are dropped: the whole sketch covers them.
+  bool stageConvertSketch(String sketchFeatureId) {
+    if (!canConvertFromSketch(sketchFeatureId)) {
+      errorMessage = convertSourceAfterSketchMessage;
+      notifyListeners();
+      return false;
+    }
+    errorMessage = null;
+    if (!_pendingConvertSketches.remove(sketchFeatureId)) {
+      _pendingConvertSketches.add(sketchFeatureId);
+      _pendingConvertSketchEntities.removeWhere((e) => e.$1 == sketchFeatureId);
+    }
+    notifyListeners();
+    return true;
+  }
+
+  /// Bug report 2026-11-18 part C3: one entity (or loose Point) of ANOTHER sketch picked in the viewport - [entityId] is the id the backend knows it
+  /// by, a pattern / mirror instance's copy by its expanded id (`<instance>#<n>#<entity>`), which the drawn geometry carries. A second pick
+  /// un-stages it. Refused (false, with [errorMessage]) for a sketch that is not earlier in the tree; ignored while the whole sketch is staged.
+  bool stageConvertSketchEntity(String sketchFeatureId, String entityId) {
+    if (!canConvertFromSketch(sketchFeatureId)) {
+      errorMessage = convertSourceAfterSketchMessage;
+      notifyListeners();
+      return false;
+    }
+    errorMessage = null;
+    if (_pendingConvertSketches.contains(sketchFeatureId)) return true;
+    final index = _pendingConvertSketchEntities.indexWhere((e) => e.$1 == sketchFeatureId && e.$2 == entityId);
+    if (index != -1) {
+      _pendingConvertSketchEntities.removeAt(index);
+    } else {
+      _pendingConvertSketchEntities.add((sketchFeatureId, entityId));
+    }
+    notifyListeners();
+    return true;
+  }
+
   /// Discards every staged-but-unconverted pick without touching the
   /// backend - Convert mode's own Exit affordance (`sketch_convert_bar.dart`).
   void discardPendingConvertSelection() {
-    if (_pendingConvertVertices.isEmpty && _pendingConvertEdges.isEmpty) return;
+    if (!hasPendingConvertSelection) return;
     _pendingConvertVertices.clear();
     _pendingConvertEdges.clear();
+    _pendingConvertSketches.clear();
+    _pendingConvertSketchEntities.clear();
     notifyListeners();
   }
 
   /// Convert Entities' ribbon Tick: actually materializes every currently
-  /// staged vertex/edge pick as real Sketch geometry via
-  /// [pickConvertEntityVertex]/[pickConvertEntityEdge] below, then clears the
-  /// staged set and stays in Convert mode for further picks. Sequential
-  /// (same as [_convertFaceEdges]'s own reasoning), not `Future.wait` - two
-  /// staged picks sharing a Body vertex only reuse the same Point correctly
-  /// (`Sketch.add_or_reuse_external_vertex_reference`) if the first has
-  /// already completed before the second's request goes out.
+  /// staged pick as real Sketch geometry - Body vertices and edges via
+  /// [pickConvertEntityVertex]/[pickConvertEntityEdge], then each source sketch via [pickConvertSketchEntities]
+  /// (bug report 2026-11-18 part C3) - then clears the staged set and stays in Convert mode for further picks. Sequential (same as
+  /// [_convertFaceEdges]'s own reasoning), not `Future.wait` - two staged picks sharing a Body vertex only reuse the same Point correctly
+  /// (`Sketch.add_or_reuse_external_vertex_reference`) if the first has already completed before the second's request goes out.
+  ///
+  /// ONE undo step for the whole Tick, however many entities it made: it deletes every entity the call made (newest first), then the Points that
+  /// were new. What the backend skipped (Text, ...) is reported in [errorMessage] when nothing failed.
   Future<void> confirmConvertSelection() async {
     final vertices = List<(String, int)>.of(_pendingConvertVertices);
     final edges = List<(String, int)>.of(_pendingConvertEdges);
+    final sketches = List<String>.of(_pendingConvertSketches);
+    final sketchEntities = List<(String, String)>.of(_pendingConvertSketchEntities);
     _pendingConvertVertices.clear();
     _pendingConvertEdges.clear();
+    _pendingConvertSketches.clear();
+    _pendingConvertSketchEntities.clear();
     notifyListeners();
-    for (final (bodyId, vertexIndex) in vertices) {
-      await pickConvertEntityVertex(bodyId, vertexIndex);
+    final made = _ConvertMade();
+    final skipped = <ConvertSketchSkippedDto>[];
+    _convertBatch = made;
+    _convertSkipped = skipped;
+    try {
+      for (final (bodyId, vertexIndex) in vertices) {
+        await pickConvertEntityVertex(bodyId, vertexIndex);
+      }
+      for (final (bodyId, edgeIndex) in edges) {
+        await pickConvertEntityEdge(bodyId, edgeIndex);
+      }
+      // Whole sketches, then the picked entities of each other source sketch, one call per source.
+      final bySource = <String, List<String>?>{for (final id in sketches) id: null};
+      for (final (sourceId, entityId) in sketchEntities) {
+        (bySource[sourceId] ??= <String>[]).add(entityId);
+      }
+      for (final entry in bySource.entries) {
+        await pickConvertSketchEntities(entry.key, entityIds: entry.value);
+      }
+    } finally {
+      _convertBatch = null;
+      _convertSkipped = null;
+      if (!made.isEmpty) _pushUndo(() => _undoConvertMade(made));
+      if (skipped.isNotEmpty && errorMessage == null) {
+        errorMessage = convertSkippedMessage(skipped);
+        notifyListeners();
+      }
     }
-    for (final (bodyId, edgeIndex) in edges) {
-      await pickConvertEntityEdge(bodyId, edgeIndex);
+  }
+
+  /// One Tick's collector: while [confirmConvertSelection] runs, every convert call adds what it made here instead of pushing its own undo step.
+  _ConvertMade? _convertBatch;
+  List<ConvertSketchSkippedDto>? _convertSkipped;
+
+  /// Records what a convert call made: into the Tick's batch, else as its own single undo step.
+  void _recordConvertUndo(_ConvertMade made) {
+    if (made.isEmpty) return;
+    final batch = _convertBatch;
+    if (batch != null) {
+      batch.absorb(made);
+    } else {
+      _pushUndo(() => _undoConvertMade(made));
+    }
+  }
+
+  /// The short message for the source entities `convert-entities/sketch` skipped: Text says so, an id that is gone and a shape with no size are
+  /// counted.
+  static String convertSkippedMessage(List<ConvertSketchSkippedDto> skipped) {
+    final text = skipped.where((s) => s.reason == 'text').length;
+    final gone = skipped.where((s) => s.reason == 'not_found').length;
+    final flat = skipped.where((s) => s.reason == 'degenerate').length;
+    final parts = [
+      if (text > 0) text == 1 ? 'Text is not converted (its outlines are a font\'s, not sketch geometry)' : '$text Text items are not converted (their outlines are a font\'s, not sketch geometry)',
+      if (gone > 0) gone == 1 ? '1 item is no longer in the source sketch' : '$gone items are no longer in the source sketch',
+      if (flat > 0) flat == 1 ? '1 item has no length or radius' : '$flat items have no length or radius',
+      if (skipped.length > text + gone + flat) '${skipped.length - text - gone - flat} more skipped',
+    ];
+    return 'Not converted: ${parts.join('; ')}.';
+  }
+
+  /// Undoes one [_ConvertMade]: deletes every entity the call made (newest first), then the Points that were new, skipping any the backend
+  /// pruned along with their entity (or that are already gone).
+  Future<void> _undoConvertMade(_ConvertMade made) async {
+    final sketchId = _sketchId;
+    if (sketchId == null) return;
+    final pruned = <String>{};
+    for (final (kind, id) in made.entities.reversed) {
+      try {
+        final removed = switch (kind) {
+          _ConvertKind.line => await _api.deleteLine(sketchId, id),
+          _ConvertKind.arc => await _api.deleteArc(sketchId, id),
+          _ConvertKind.circle => await _api.deleteCircle(sketchId, id),
+          _ConvertKind.ellipse => await _api.deleteEllipse(sketchId, id),
+          _ConvertKind.ellipseArc => await _api.deleteEllipseArc(sketchId, id),
+          _ConvertKind.spline => await _api.deleteSpline(sketchId, id),
+        };
+        pruned.addAll(removed);
+      } on ApiException {
+        // Already gone (deleted by hand since): nothing to undo for it.
+      }
+      switch (kind) {
+        case _ConvertKind.line:
+          lines.remove(id);
+        case _ConvertKind.arc:
+          arcs.remove(id);
+        case _ConvertKind.circle:
+          circles.remove(id);
+        case _ConvertKind.ellipse:
+          final e = ellipses.remove(id);
+          if (e != null) {
+            lines.remove(e.majorAxisLineId);
+            lines.remove(e.minorAxisLineId);
+          }
+        case _ConvertKind.ellipseArc:
+          final e = ellipseArcs.remove(id);
+          if (e != null) {
+            lines.remove(e.majorAxisLineId);
+            lines.remove(e.minorAxisLineId);
+          }
+        case _ConvertKind.spline:
+          splines.remove(id);
+      }
+      _structuralConstraintIds.remove(id);
+      _referenceIds.remove(id);
+    }
+    for (final id in pruned) {
+      points.remove(id);
+    }
+    for (final id in made.newPointIds) {
+      if (pruned.contains(id) || !points.containsKey(id)) continue;
+      try {
+        await _api.deletePoint(sketchId, id);
+      } on ApiException {
+        // Something still stands on it (a shape the user drew from it since), or it is gone: leave it.
+        continue;
+      }
+      points.remove(id);
     }
   }
 
@@ -14761,11 +14969,7 @@ class SketchController extends ChangeNotifier {
       final point = await _api.convertBodyVertex(partId, sketchFeatureId, bodyId, vertexIndex);
       if (points.containsKey(point.id)) return;
       points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
-      final sketchId = _sketchId!;
-      _pushUndo(() async {
-        await _api.deletePoint(sketchId, point.id);
-        points.remove(point.id);
-      });
+      _recordConvertUndo(_ConvertMade()..newPointIds.add(point.id));
       await _solveAndTrackDof();
     });
   }
@@ -14827,158 +15031,220 @@ class SketchController extends ChangeNotifier {
   }) async {
     final partId = _documentPartId!;
     final sketchFeatureId = _documentSketchFeatureId!;
-    // An implicit reference ([ensureReferenceEdge]) is not something the user drew, so it leaves no undo entry.
-    void pushUndo(Future<void> Function() undo) {
-      if (undoable) _pushUndo(undo);
-    }
-
     // An implicit reference ([ensureReferenceEdge]) asks the backend to flag what it makes as a reference helper (drawn quietly, not selectable).
     final result = await _api.convertBodyEdge(partId, sketchFeatureId, bodyId, edgeIndex, construction: construction, reference: !undoable);
-    final newPointIds = <String>[];
-    for (final p in [result.startPoint, result.endPoint, if (result.centerPoint case final c?) c]) {
-      if (p.isReference) _referenceIds.add(p.id);
-      if (points.containsKey(p.id)) continue;
-      points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
-      newPointIds.add(p.id);
-    }
-    if (result.line case final l? when l.isReference) _referenceIds.add(l.id);
-    if (result.arc case final a? when a.isReference) _referenceIds.add(a.id);
-    if (result.circle case final c? when c.isReference) _referenceIds.add(c.id);
-    final sketchId = _sketchId!;
-
-    final arc = result.arc;
-    if (arc != null) {
-      if (arcs.containsKey(arc.id)) return SketchSelection(kind: SelectionKind.arc, id: arc.id);
-      _noteStructural(arc.id, arc.structuralConstraintIds);
-      arcs[arc.id] = SketchArcView(
-        id: arc.id,
-        centerPointId: arc.centerPointId,
-        startPointId: arc.startPointId,
-        endPointId: arc.endPointId,
-        construction: arc.construction,
-      );
-      final arcId = arc.id;
-      pushUndo(() async {
-        await _api.deleteArc(sketchId, arcId);
-        arcs.remove(arcId);
-        for (final pointId in newPointIds) {
-          await _api.deletePoint(sketchId, pointId);
-          points.remove(pointId);
-        }
-      });
-      // On-device feedback ("converted edges... are not constrained to
-      // parent edge" / follow-up: "all the converted lines are completely
-      // mobile... the converted entities should be projected onto the
-      // sketch plane and locked at that projection point"): start_point/
-      // end_point are real, associative external vertex references, and
-      // the backend now also pins the centre Point directly (`Sketch.
-      // pinned_point_ids` - see `convert_body_edge`'s own doc comment) -
-      // every Point defining this Arc is excluded from `solve_sketch`'s
-      // free parameters, reported via `radiusConstraintId`'s sibling
-      // `PointResponse.is_locked`, and refreshed into [_lockedPointIds]
-      // below so [dragTargetPointIdAt] excludes them too. A first attempt
-      // instead confirmed the Arc's own provisional radius
-      // DistanceConstraint - reverted (on-device feedback: "there is a
-      // visible radius dimension... any constraining constraints should
-      // not be visible to the user") since that made an implementation
-      // detail show up as a real, user-facing dimension; pinning the
-      // Points directly needs no visible Constraint at all.
-      await _solveAndTrackDof();
-      return SketchSelection(kind: SelectionKind.arc, id: arc.id);
-    }
-
-    // On-device feedback ("offsetting the circular edge of a cylinder
-    // fails with a degenerate_edge error"): a full circular Body edge
-    // (both endpoints the same vertex) now resolves as a real Circle -
-    // see the backend's own ConvertEdgeResponse doc comment for why
-    // start_point/end_point are meaningless (both equal to centerPoint)
-    // in this case and are deliberately not used here.
-    final circle = result.circle;
-    if (circle != null) {
-      if (circles.containsKey(circle.id)) return SketchSelection(kind: SelectionKind.circle, id: circle.id);
-      _noteStructural(circle.id, circle.structuralConstraintIds);
-      circles[circle.id] = SketchCircleView(
-        id: circle.id,
-        centerPointId: circle.centerPointId,
-        radiusPointId: circle.radiusPointId,
-        construction: circle.construction,
-        cardinalPointIds: circle.cardinalPointIds,
-      );
-      final circleId = circle.id;
-      final cardinalPointIds = <String>[];
-      // The four cardinal Points (including the radius Point itself, in
-      // this bare-radius creation mode - see Sketch.add_circle's own doc
-      // comment) are always freshly created server-side, same fetch-and-
-      // cache as the centre-point circle tool's own post-creation step.
-      for (final id in circle.cardinalPointIds) {
-        final point = await _api.getPoint(sketchId, id);
-        points[point.id] = SketchPointView(id: point.id, x: point.x, y: point.y);
-        cardinalPointIds.add(point.id);
-      }
-      pushUndo(() async {
-        await _api.deleteCircle(sketchId, circleId);
-        circles.remove(circleId);
-        for (final pointId in [...newPointIds, ...cardinalPointIds]) {
-          await _api.deletePoint(sketchId, pointId);
-          points.remove(pointId);
-        }
-      });
-      // See the Arc branch's own doc comment above - the backend now pins
-      // this Circle's centre AND all four cardinal Points directly
-      // (`convert_body_edge`'s own full-circular-edge branch), so the
-      // whole Circle is locked with no visible Constraint needed.
-      await _solveAndTrackDof();
-      return SketchSelection(kind: SelectionKind.circle, id: circle.id);
-    }
-
-    // Bug report 2026-11-18 part C1: an edge that is not in the sketch plane is now projected onto it, so the answer can be an ellipse, an
-    // elliptical arc, a spline (or two) or a lone point, which this method does not build into the local picture by hand (that, and one-step undo
-    // for it, is plan part C3). Read the sketch back so whatever was made is drawn and its points are locked; no undo entry yet.
-    final line = result.line;
-    if (line == null) {
-      await _reloadLocalSketch();
-      await _solveAndTrackDof();
-      if (result.ellipse case final e?) return SketchSelection(kind: SelectionKind.ellipse, id: e.id);
-      if (result.ellipseArc case final e?) return SketchSelection(kind: SelectionKind.ellipseArc, id: e.id);
-      if (result.spline case final sp?) return SketchSelection(kind: SelectionKind.spline, id: sp.id);
-      return SketchSelection(kind: SelectionKind.point, id: result.startPoint.id);
-    }
-    if (lines.containsKey(line.id)) return SketchSelection(kind: SelectionKind.line, id: line.id);
     // Implicit references (see [ensureReferenceEdge]): an edge is two pinned points plus ONE construction line, reused if present. The backend's
     // convert-entities/edge reuses the endpoint Points but always makes a new Line, so a second pick of the same edge (e.g. after reopening the sketch,
     // when the per-session cache is empty) hands back a duplicate: keep the line already joining those two Points and drop the new one.
-    if (!undoable) {
+    final line = result.line;
+    if (!undoable && line != null && result.more.isEmpty && !lines.containsKey(line.id)) {
       for (final existing in lines.values) {
         final sameEnds = (existing.startPointId == line.startPointId && existing.endPointId == line.endPointId) ||
             (existing.startPointId == line.endPointId && existing.endPointId == line.startPointId);
         if (sameEnds) {
-          await _api.deleteLine(sketchId, line.id);
+          for (final p in [result.startPoint, result.endPoint]) {
+            if (p.isReference) _referenceIds.add(p.id);
+            points.putIfAbsent(p.id, () => SketchPointView(id: p.id, x: p.x, y: p.y));
+          }
+          await _api.deleteLine(_sketchId!, line.id);
           return SketchSelection(kind: SelectionKind.line, id: existing.id);
         }
       }
     }
-    lines[line.id] = SketchLineView(
-      id: line.id,
-      startPointId: line.startPointId,
-      endPointId: line.endPointId,
-      construction: line.construction,
-    );
-    final lineId = line.id;
-    pushUndo(() async {
-      await _api.deleteLine(sketchId, lineId);
-      lines.remove(lineId);
-      for (final pointId in newPointIds) {
-        await _api.deletePoint(sketchId, pointId);
-        points.remove(pointId);
-      }
-    });
-    // See the Arc branch's own doc comment above - a converted Line's own
-    // two endpoints are external vertex references too; solving/refreshing
-    // now (rather than waiting for some later, unrelated mutation to do it)
-    // gets them into [_lockedPointIds] immediately, so they can't be
-    // dragged even before anything else touches this Sketch.
+    final made = _ConvertMade();
+    final selection = await _drawConvertItems([result], made);
+    // An implicit reference ([ensureReferenceEdge]) is not something the user drew, so it leaves no undo entry.
+    if (undoable) _recordConvertUndo(made);
+    // Every Point of a converted edge is an external reference (or pinned with them); solving now (rather than waiting for some later, unrelated
+    // mutation to do it) gets them into [_lockedPointIds] immediately, so they can't be dragged even before anything else touches this Sketch.
     await _solveAndTrackDof();
-    return SketchSelection(kind: SelectionKind.line, id: line.id);
+    return selection;
+  }
+
+  /// Bug report 2026-11-18 part C3: converts the entities of ANOTHER sketch (the Feature [sourceSketchFeatureId], earlier in the tree) into this one
+  /// through `convert-entities/sketch`: [entityIds] picks some (entity or loose Point ids of the source, a pattern / mirror copy by its expanded
+  /// id), null takes the whole sketch. Every answer is drawn into the local picture ([_drawConvertItems]); what the backend skipped (Text, ...) is
+  /// reported in [errorMessage]. One undo step deletes everything this call made (inside [confirmConvertSelection], everything the Tick made).
+  /// A no-op for a bare, non-Part sketch or a source that is not earlier in the tree.
+  Future<void> pickConvertSketchEntities(String sourceSketchFeatureId, {List<String>? entityIds}) async {
+    if (_busy || _sketchId == null) return;
+    final partId = _documentPartId;
+    final sketchFeatureId = _documentSketchFeatureId;
+    if (partId == null || sketchFeatureId == null) return;
+    if (!canConvertFromSketch(sourceSketchFeatureId)) {
+      errorMessage = convertSourceAfterSketchMessage;
+      notifyListeners();
+      return;
+    }
+    await _runGuarded(() async {
+      final result = await _api.convertSketchEntities(partId, sketchFeatureId, sourceSketchFeatureId, entityIds: entityIds);
+      final made = _ConvertMade();
+      await _drawConvertItems(result.items, made);
+      _recordConvertUndo(made);
+      final batchSkipped = _convertSkipped;
+      if (batchSkipped != null) {
+        batchSkipped.addAll(result.skipped);
+      } else if (result.skipped.isNotEmpty) {
+        errorMessage = convertSkippedMessage(result.skipped);
+      }
+      await _solveAndTrackDof();
+    });
+  }
+
+  /// Draws what a convert answer made into the local picture - EVERY shape (line, arc, circle, ellipse, elliptical arc, spline, a lone point) and
+  /// each item's `more` - and records it in [made] (entities in order, and the Points that were new). Reference-flagged items are marked as
+  /// [_referenceIds] always has. Points and axis Lines the answer does not carry (an ellipse's axes, a spline's points, a circle's cardinals) are
+  /// read from the backend in one call each. Items already in the local picture (a re-pick) are left alone and not recorded. Returns the selection
+  /// for the first item's entity. Must run inside an open [_runGuarded] block, after [_documentPartId] / [_documentSketchFeatureId] are known.
+  Future<SketchSelection> _drawConvertItems(List<ConvertEdgeResultDto> answer, _ConvertMade made) async {
+    final items = <ConvertEdgeResultDto>[];
+    void flatten(ConvertEdgeResultDto item) {
+      items.add(item);
+      item.more.forEach(flatten);
+    }
+    answer.forEach(flatten);
+
+    final sketchId = _sketchId!;
+    final wantedPointIds = <String>{};
+    final wantedLineIds = <String>{};
+    void addPoint(PointDto p) {
+      if (p.isReference) _referenceIds.add(p.id);
+      if (points.containsKey(p.id)) return;
+      points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+      made.newPointIds.add(p.id);
+    }
+
+    SketchSelection? first;
+    for (final item in items) {
+      for (final p in [item.startPoint, item.endPoint, if (item.centerPoint case final c?) c, if (item.point case final p?) p]) {
+        addPoint(p);
+      }
+      SketchSelection? selection;
+      final line = item.line;
+      final arc = item.arc;
+      final circle = item.circle;
+      final ellipse = item.ellipse;
+      final ellipseArc = item.ellipseArc;
+      final spline = item.spline;
+      if (line != null) {
+        selection = SketchSelection(kind: SelectionKind.line, id: line.id);
+        if (line.isReference) _referenceIds.add(line.id);
+        if (!lines.containsKey(line.id)) {
+          lines[line.id] = SketchLineView(id: line.id, startPointId: line.startPointId, endPointId: line.endPointId, construction: line.construction);
+          made.entities.add((_ConvertKind.line, line.id));
+        }
+      } else if (arc != null) {
+        selection = SketchSelection(kind: SelectionKind.arc, id: arc.id);
+        if (arc.isReference) _referenceIds.add(arc.id);
+        if (!arcs.containsKey(arc.id)) {
+          _noteStructural(arc.id, arc.structuralConstraintIds);
+          arcs[arc.id] = SketchArcView(
+            id: arc.id,
+            centerPointId: arc.centerPointId,
+            startPointId: arc.startPointId,
+            endPointId: arc.endPointId,
+            construction: arc.construction,
+          );
+          made.entities.add((_ConvertKind.arc, arc.id));
+          wantedPointIds.addAll([arc.centerPointId, arc.startPointId, arc.endPointId]);
+        }
+      } else if (circle != null) {
+        selection = SketchSelection(kind: SelectionKind.circle, id: circle.id);
+        if (circle.isReference) _referenceIds.add(circle.id);
+        if (!circles.containsKey(circle.id)) {
+          _noteStructural(circle.id, circle.structuralConstraintIds);
+          circles[circle.id] = SketchCircleView(
+            id: circle.id,
+            centerPointId: circle.centerPointId,
+            radiusPointId: circle.radiusPointId,
+            construction: circle.construction,
+            cardinalPointIds: circle.cardinalPointIds,
+          );
+          made.entities.add((_ConvertKind.circle, circle.id));
+          wantedPointIds.addAll([circle.centerPointId, circle.radiusPointId, ...circle.cardinalPointIds]);
+        }
+      } else if (ellipse != null) {
+        selection = SketchSelection(kind: SelectionKind.ellipse, id: ellipse.id);
+        if (ellipse.isReference) _referenceIds.add(ellipse.id);
+        if (!ellipses.containsKey(ellipse.id)) {
+          _noteStructural(ellipse.id, ellipse.structuralConstraintIds);
+          ellipses[ellipse.id] = SketchEllipseView(
+            id: ellipse.id,
+            centerPointId: ellipse.centerPointId,
+            majorPointId: ellipse.majorPointId,
+            majorPointNegId: ellipse.majorPointNegId,
+            minorPointId: ellipse.minorPointId,
+            minorPointNegId: ellipse.minorPointNegId,
+            majorAxisLineId: ellipse.majorAxisLineId,
+            minorAxisLineId: ellipse.minorAxisLineId,
+            minorRadius: ellipse.minorRadius,
+            construction: ellipse.construction,
+          );
+          made.entities.add((_ConvertKind.ellipse, ellipse.id));
+          wantedPointIds.addAll([ellipse.centerPointId, ellipse.majorPointId, ellipse.majorPointNegId, ellipse.minorPointId, ellipse.minorPointNegId]);
+          wantedLineIds.addAll([ellipse.majorAxisLineId, ellipse.minorAxisLineId]);
+        }
+      } else if (ellipseArc != null) {
+        selection = SketchSelection(kind: SelectionKind.ellipseArc, id: ellipseArc.id);
+        if (ellipseArc.isReference) _referenceIds.add(ellipseArc.id);
+        if (!ellipseArcs.containsKey(ellipseArc.id)) {
+          _noteStructural(ellipseArc.id, ellipseArc.structuralConstraintIds);
+          ellipseArcs[ellipseArc.id] = SketchEllipseArcView(
+            id: ellipseArc.id,
+            centerPointId: ellipseArc.centerPointId,
+            majorPointId: ellipseArc.majorPointId,
+            minorPointId: ellipseArc.minorPointId,
+            startPointId: ellipseArc.startPointId,
+            endPointId: ellipseArc.endPointId,
+            majorAxisLineId: ellipseArc.majorAxisLineId,
+            minorAxisLineId: ellipseArc.minorAxisLineId,
+            minorRadius: ellipseArc.minorRadius,
+            construction: ellipseArc.construction,
+          );
+          made.entities.add((_ConvertKind.ellipseArc, ellipseArc.id));
+          wantedPointIds.addAll([ellipseArc.centerPointId, ellipseArc.majorPointId, ellipseArc.minorPointId, ellipseArc.startPointId, ellipseArc.endPointId]);
+          wantedLineIds.addAll([ellipseArc.majorAxisLineId, ellipseArc.minorAxisLineId]);
+        }
+      } else if (spline != null) {
+        selection = SketchSelection(kind: SelectionKind.spline, id: spline.id);
+        if (spline.isReference) _referenceIds.add(spline.id);
+        if (!splines.containsKey(spline.id)) {
+          splines[spline.id] = SketchSplineView(
+            id: spline.id,
+            throughPointIds: spline.throughPointIds,
+            controlPointIds: spline.controlPointIds,
+            construction: spline.construction,
+          );
+          made.entities.add((_ConvertKind.spline, spline.id));
+          wantedPointIds.addAll([...spline.throughPointIds, ...spline.controlPointIds]);
+        }
+      } else {
+        // A lone Point (an edge along the sketch normal, a source's loose Point): no shape, only the Point.
+        selection = SketchSelection(kind: SelectionKind.point, id: (item.point ?? item.startPoint).id);
+      }
+      first ??= selection;
+    }
+
+    // The Points (and axis Lines) of the new shapes the answer did not carry: one read of each list, only what is missing locally.
+    final missingPoints = wantedPointIds.where((id) => !points.containsKey(id)).toSet();
+    if (missingPoints.isNotEmpty) {
+      for (final p in await _api.listPoints(sketchId)) {
+        if (!missingPoints.contains(p.id)) continue;
+        points[p.id] = SketchPointView(id: p.id, x: p.x, y: p.y);
+        made.newPointIds.add(p.id);
+        if (p.isLocked) _lockedPointIds.add(p.id);
+        if (p.isReference) _referenceIds.add(p.id);
+      }
+    }
+    final missingLines = wantedLineIds.where((id) => !lines.containsKey(id)).toSet();
+    if (missingLines.isNotEmpty) {
+      for (final line in await _api.listLines(sketchId)) {
+        if (!missingLines.contains(line.id)) continue;
+        lines[line.id] = SketchLineView(id: line.id, startPointId: line.startPointId, endPointId: line.endPointId, construction: line.construction);
+        if (line.isReference) _referenceIds.add(line.id);
+      }
+    }
+    return first ?? SketchSelection(kind: SelectionKind.point, id: answer.first.startPoint.id);
   }
 
   /// Sketcher-roadmap Phase 9 v1 (Offset Entities): ribbon "Offset" action
@@ -16501,6 +16767,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final ellipse in await _api.listEllipses(sketchId)) {
+      if (ellipse.isReference) _referenceIds.add(ellipse.id);
       _noteStructural(ellipse.id, ellipse.structuralConstraintIds);
       ellipses[ellipse.id] = SketchEllipseView(
         id: ellipse.id,
@@ -16516,6 +16783,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final ellipseArc in await _api.listEllipseArcs(sketchId)) {
+      if (ellipseArc.isReference) _referenceIds.add(ellipseArc.id);
       _noteStructural(ellipseArc.id, ellipseArc.structuralConstraintIds);
       ellipseArcs[ellipseArc.id] = SketchEllipseArcView(
         id: ellipseArc.id,
@@ -16576,6 +16844,7 @@ class SketchController extends ChangeNotifier {
       );
     }
     for (final spline in await _api.listSplines(sketchId)) {
+      if (spline.isReference) _referenceIds.add(spline.id);
       splines[spline.id] = SketchSplineView(
         id: spline.id,
         throughPointIds: spline.throughPointIds,

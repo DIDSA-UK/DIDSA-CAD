@@ -26444,7 +26444,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
     // Bug report 2026-11-18, part B: the sketcher shows the feature tree and follows this screen's visibility changes through
     // this object (see [_pingSketchSource]).
-    final source = SketchReferenceSource(bodies: _visibleBodies, otherSketchGeometries: _otherSketchGeometriesFor(feature));
+    final source = SketchReferenceSource(
+      bodies: _visibleBodies,
+      otherSketchGeometries: _otherSketchGeometriesFor(feature),
+      earlierSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: true),
+      laterSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: false),
+    );
     _sketchSource = source;
     _sketchSourceFeature = feature;
     await Navigator.of(context).push(
@@ -26488,6 +26493,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           if (entry.key != sketchFeature.id) entry.key: entry.value,
       };
 
+  /// Bug report 2026-11-18 part C3: the sketch Features before ([earlier]) or after [sketchFeature] in the feature list. Convert Entities can take
+  /// only from an earlier one (the backend refuses a later one with 422 `source_after_sketch`).
+  Set<String> _sketchFeatureIdsRelativeTo(FeatureDto sketchFeature, {required bool earlier}) {
+    final index = _features.indexWhere((f) => f.id == sketchFeature.id);
+    if (index == -1) return {};
+    return {
+      for (var i = 0; i < _features.length; i++)
+        if (i != index && _features[i].type == 'sketch' && (i < index) == earlier) _features[i].id,
+    };
+  }
+
   /// Bug report 2026-11-18, part B: set while a sketch is open over this screen ([_openSketch]).
   SketchReferenceSource? _sketchSource;
   FeatureDto? _sketchSourceFeature;
@@ -26503,7 +26519,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _sketchSourcePingScheduled = false;
       if (!mounted || !identical(_sketchSource, source)) return;
-      source.update(bodies: _visibleBodies, otherSketchGeometries: _otherSketchGeometriesFor(feature));
+      source.update(
+        bodies: _visibleBodies,
+        otherSketchGeometries: _otherSketchGeometriesFor(feature),
+        earlierSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: true),
+        laterSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: false),
+      );
     });
   }
 

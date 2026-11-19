@@ -28,13 +28,11 @@ class SketchConvertBar extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) {
-        final vertexCount = controller.pendingConvertVertices.length;
-        final edgeCount = controller.pendingConvertEdges.length;
-        final total = vertexCount + edgeCount;
+        final total = controller.pendingConvertCount;
         return ResizableToolPanel(
           title: 'Convert Entities',
           tooltip: total == 0
-              ? 'Tap a body vertex, edge, or face to convert'
+              ? 'Tap a body vertex, edge, or face, another sketch\'s entity, or a sketch in the feature tree to convert'
               : total == 1
                   ? '1 entity selected'
                   : '$total entities selected',
