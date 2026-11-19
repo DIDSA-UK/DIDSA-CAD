@@ -303,13 +303,22 @@ def _get_constraint_or_404(sketch: Sketch, constraint_id: str) -> Constraint:
     return constraint
 
 
+def _restore_number(sketch: Sketch, item_id: str, payload) -> None:
+    """F4 / A1: a create route may carry the `number` the thing had before (an undo that re-creates a deleted thing); give it back unless that number is
+    taken by another thing of the same kind."""
+    number = getattr(payload, "number", None)
+    if number is not None:
+        sketch.set_number(item_id, number)
+
+
 def _point_response(sketch: Sketch, point: Point) -> PointResponse:
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id), is_reference=sketch.is_reference(point.id))
+    return PointResponse(id=point.id, number=sketch.number_of(point.id), x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id), is_reference=sketch.is_reference(point.id))
 
 
 def _line_response(sketch: Sketch, line: Line) -> LineResponse:
     return LineResponse(
         id=line.id,
+        number=sketch.number_of(line.id),
         start_point_id=line.start_point_id,
         end_point_id=line.end_point_id,
         length=line.length(sketch.points),
@@ -347,6 +356,7 @@ def _structural_constraint_ids(sketch: Sketch, entity, *nested_entity_ids: str |
 def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
     return CircleResponse(
         id=circle.id,
+        number=sketch.number_of(circle.id),
         center_point_id=circle.center_point_id,
         radius_point_id=circle.radius_point_id,
         radius=circle.radius(sketch.points),
@@ -361,6 +371,7 @@ def _circle_response(sketch: Sketch, circle: Circle) -> CircleResponse:
 def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
     return ArcResponse(
         id=arc.id,
+        number=sketch.number_of(arc.id),
         center_point_id=arc.center_point_id,
         start_point_id=arc.start_point_id,
         end_point_id=arc.end_point_id,
@@ -375,6 +386,7 @@ def _arc_response(sketch: Sketch, arc: Arc) -> ArcResponse:
 def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
     return EllipseResponse(
         id=ellipse.id,
+        number=sketch.number_of(ellipse.id),
         center_point_id=ellipse.center_point_id,
         major_point_id=ellipse.major_point_id,
         major_point_neg_id=ellipse.major_point_neg_id,
@@ -395,6 +407,7 @@ def _ellipse_response(sketch: Sketch, ellipse: Ellipse) -> EllipseResponse:
 def _ellipse_arc_response(sketch: Sketch, ellipse_arc: EllipseArc) -> EllipseArcResponse:
     return EllipseArcResponse(
         id=ellipse_arc.id,
+        number=sketch.number_of(ellipse_arc.id),
         center_point_id=ellipse_arc.center_point_id,
         major_point_id=ellipse_arc.major_point_id,
         minor_point_id=ellipse_arc.minor_point_id,
@@ -419,6 +432,7 @@ def _polygon_structural_constraint_ids(sketch: Sketch, polygon: Polygon) -> list
 def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
     return PolygonResponse(
         id=polygon.id,
+        number=sketch.number_of(polygon.id),
         center_point_id=polygon.center_point_id,
         vertex_point_ids=polygon.vertex_point_ids,
         line_ids=polygon.line_ids,
@@ -436,6 +450,7 @@ def _polygon_response(sketch: Sketch, polygon: Polygon) -> PolygonResponse:
 def _slot_response(sketch: Sketch, slot: Slot) -> SlotResponse:
     return SlotResponse(
         id=slot.id,
+        number=sketch.number_of(slot.id),
         center1_point_id=slot.center1_point_id,
         center2_point_id=slot.center2_point_id,
         centerline_id=slot.centerline_id,
@@ -457,6 +472,7 @@ def _slot_response(sketch: Sketch, slot: Slot) -> SlotResponse:
 def _rectangle_response(sketch: Sketch, rectangle: Rectangle) -> RectangleResponse:
     return RectangleResponse(
         id=rectangle.id,
+        number=sketch.number_of(rectangle.id),
         corner_point_ids=rectangle.corner_point_ids,
         line_ids=rectangle.line_ids,
         axis_aligned=rectangle.axis_aligned,
@@ -468,18 +484,20 @@ def _rectangle_response(sketch: Sketch, rectangle: Rectangle) -> RectangleRespon
     )
 
 
-def _spline_response(spline: Spline) -> SplineResponse:
+def _spline_response(sketch: Sketch, spline: Spline) -> SplineResponse:
     return SplineResponse(
         id=spline.id,
+        number=sketch.number_of(spline.id),
         through_point_ids=spline.through_point_ids,
         control_point_ids=spline.control_point_ids,
         construction=spline.construction,
     )
 
 
-def _text_response(text: TextEntity) -> TextResponse:
+def _text_response(sketch: Sketch, text: TextEntity) -> TextResponse:
     return TextResponse(
         id=text.id,
+        number=sketch.number_of(text.id),
         content=text.content,
         font=text.font,
         size=text.size,
@@ -501,8 +519,8 @@ def _profile_response(profile: Profile) -> ProfileResponse:
 def _constraint_response_with_label(sketch: Sketch, constraint: Constraint) -> ConstraintResponse:
     """`_constraint_response`, plus the label placement the user saved for it (null when none)."""
     response = _constraint_response(constraint)
-    placement = sketch.label_placements.get(constraint.id)
-    response.label = dict(placement) if placement else None
+    response.number = sketch.number_of(constraint.id)
+    response.label = sketch.label_record(constraint.id)
     return response
 
 
@@ -697,6 +715,7 @@ def _reference_dimension_response(sketch: Sketch, dimension) -> ReferenceDimensi
         value = None
     return ReferenceDimensionResponse(
         id=dimension.id,
+        number=sketch.number_of(dimension.id),
         kind=dimension.kind,
         refs=[ReferenceDimensionRef(type=t, id=i) for t, i in dimension.refs],
         value=value,
@@ -794,7 +813,7 @@ def restore_sketch_state(sketch_id: str, payload: dict) -> SketchResponse:
     except NativeFormatError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid sketch file: {exc}")
     if restored.id != sketch_id:
-        raise HTTPException(status_code=422, detail=f"Invalid sketch file: it is the state of sketch {restored.id}, not {sketch_id}")
+        raise HTTPException(status_code=422, detail="Invalid sketch file: it is the state of a different sketch")
     sketch.copy_state_from(restored)
     return _sketch_response(sketch)
 
@@ -819,6 +838,7 @@ def update_sketch_orientation(sketch_id: str, payload: SketchOrientationUpdate) 
 def create_point(sketch_id: str, payload: PointCreate) -> PointResponse:
     sketch = _get_sketch_or_404(sketch_id)
     point = sketch.add_point(payload.x, payload.y)
+    _restore_number(sketch, point.id, payload)
     return _point_response(sketch, point)
 
 
@@ -903,9 +923,10 @@ def create_line(sketch_id: str, payload: LineCreate) -> LineResponse:
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, line.id, payload)
     return _line_response(sketch, line)
 
 
@@ -1025,7 +1046,7 @@ def offset_chain(sketch_id: str, payload: OffsetChainRequest) -> OffsetChainResp
     try:
         results = sketch.offset_chain(payload.entity_ids, payload.distance, construction=payload.construction)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Something it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1061,9 +1082,10 @@ def create_circle(sketch_id: str, payload: CircleCreate) -> CircleResponse:
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, circle.id, payload)
     return _circle_response(sketch, circle)
 
 
@@ -1146,9 +1168,10 @@ def create_arc(sketch_id: str, payload: ArcCreate) -> ArcResponse:
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, arc.id, payload)
     return _arc_response(sketch, arc)
 
 
@@ -1236,9 +1259,10 @@ def create_ellipse(sketch_id: str, payload: EllipseCreate) -> EllipseResponse:
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, ellipse.id, payload)
     return _ellipse_response(sketch, ellipse)
 
 
@@ -1305,9 +1329,10 @@ def create_ellipse_arc(sketch_id: str, payload: EllipseArcCreate) -> EllipseArcR
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, ellipse_arc.id, payload)
     return _ellipse_arc_response(sketch, ellipse_arc)
 
 
@@ -1352,9 +1377,10 @@ def create_polygon(sketch_id: str, payload: PolygonCreate) -> PolygonResponse:
             reference_circles=payload.reference_circles,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, polygon.id, payload)
     return _polygon_response(sketch, polygon)
 
 
@@ -1412,9 +1438,10 @@ def create_slot(sketch_id: str, payload: SlotCreate) -> SlotResponse:
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, slot.id, payload)
     return _slot_response(sketch, slot)
 
 
@@ -1466,9 +1493,10 @@ def create_rectangle(sketch_id: str, payload: RectangleCreate) -> RectangleRespo
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, rectangle.id, payload)
     return _rectangle_response(sketch, rectangle)
 
 
@@ -1516,22 +1544,23 @@ def create_spline(sketch_id: str, payload: SplineCreate) -> SplineResponse:
     try:
         spline = sketch.add_spline(payload.through_point_ids, construction=payload.construction)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _spline_response(spline)
+    _restore_number(sketch, spline.id, payload)
+    return _spline_response(sketch, spline)
 
 
 @router.get("/sketches/{sketch_id}/splines", response_model=list[SplineResponse])
 def list_splines(sketch_id: str) -> list[SplineResponse]:
     sketch = _get_sketch_or_404(sketch_id)
-    return [_spline_response(spline) for spline in sketch.splines()]
+    return [_spline_response(sketch, spline) for spline in sketch.splines()]
 
 
 @router.get("/sketches/{sketch_id}/splines/{spline_id}", response_model=SplineResponse)
 def get_spline(sketch_id: str, spline_id: str) -> SplineResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return _spline_response(_get_spline_or_404(sketch, spline_id))
+    return _spline_response(sketch, _get_spline_or_404(sketch, spline_id))
 
 
 @router.patch("/sketches/{sketch_id}/splines/{spline_id}", response_model=SplineResponse)
@@ -1540,7 +1569,7 @@ def update_spline(sketch_id: str, spline_id: str, payload: SplineUpdate) -> Spli
     spline = _get_spline_or_404(sketch, spline_id)
     if payload.construction is not None:
         spline.construction = payload.construction
-    return _spline_response(spline)
+    return _spline_response(sketch, spline)
 
 
 @router.delete("/sketches/{sketch_id}/splines/{spline_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
@@ -1564,22 +1593,23 @@ def create_text(sketch_id: str, payload: TextCreate) -> TextResponse:
             construction=payload.construction,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Point not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="A point it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return _text_response(text)
+    _restore_number(sketch, text.id, payload)
+    return _text_response(sketch, text)
 
 
 @router.get("/sketches/{sketch_id}/texts", response_model=list[TextResponse])
 def list_texts(sketch_id: str) -> list[TextResponse]:
     sketch = _get_sketch_or_404(sketch_id)
-    return [_text_response(text) for text in sketch.texts()]
+    return [_text_response(sketch, text) for text in sketch.texts()]
 
 
 @router.get("/sketches/{sketch_id}/texts/{text_id}", response_model=TextResponse)
 def get_text(sketch_id: str, text_id: str) -> TextResponse:
     sketch = _get_sketch_or_404(sketch_id)
-    return _text_response(_get_text_or_404(sketch, text_id))
+    return _text_response(sketch, _get_text_or_404(sketch, text_id))
 
 
 @router.patch("/sketches/{sketch_id}/texts/{text_id}", response_model=TextResponse)
@@ -1596,7 +1626,7 @@ def update_text(sketch_id: str, text_id: str, payload: TextUpdate) -> TextRespon
         text.rotation_degrees = payload.rotation_degrees
     if payload.construction is not None:
         text.construction = payload.construction
-    return _text_response(text)
+    return _text_response(sketch, text)
 
 
 @router.delete("/sketches/{sketch_id}/texts/{text_id}", response_model=DeleteEntityResponse, dependencies=[Depends(_prune_reference_helpers_after)])
@@ -1767,9 +1797,10 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Referenced id not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Something it refers to is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, constraint.id, payload)
     return _constraint_response_with_label(sketch, constraint)
 
 
@@ -1785,6 +1816,7 @@ def delete_constraint(sketch_id: str, constraint_id: str) -> None:
     _get_constraint_or_404(sketch, constraint_id)
     del sketch.constraints[constraint_id]
     sketch.label_placements.pop(constraint_id, None)
+    sketch.label_shows.pop(constraint_id, None)
     # Phase 2.3: the last dimension / constraint on a reference helper (a pinned corner, edge or hole made only to point the sketch at the part) takes the
     # helper with it, so nothing orphaned is left behind. A sketch with no helpers is untouched.
     sketch.prune_unused_reference_helpers()
@@ -1795,12 +1827,20 @@ def put_constraint_label(sketch_id: str, constraint_id: str, payload: LabelPlace
     """Saves where the user put a dimension's label. Never re-solves: the solver does not see it."""
     sketch = _get_sketch_or_404(sketch_id)
     _get_constraint_or_404(sketch, constraint_id)
-    sketch.label_placements[constraint_id] = payload.model_dump(exclude_none=True)
+    record = payload.model_dump(exclude_none=True)
+    # F4 / decision 10: `show` is part of the label record but kept apart from the placement numbers, and the two are independent: a PUT with placement numbers
+    # replaces the placement (as it always did) and leaves `show` alone unless it carries one, so a client that only knows placements never wipes the choice; a
+    # PUT with only `show` changes just that.
+    show = record.pop("show", None)
+    if record:
+        sketch.label_placements[constraint_id] = record
+    if show is not None:
+        sketch.label_shows[constraint_id] = show
 
 
 @router.delete("/sketches/{sketch_id}/constraints/{constraint_id}/label", status_code=204)
 def delete_constraint_label(sketch_id: str, constraint_id: str) -> None:
-    """Puts a dimension's label back in its default place."""
+    """Puts a dimension's label back in its default place. The `show` choice (radius / diameter, semi / full) is kept: it is how the value is read, not where."""
     sketch = _get_sketch_or_404(sketch_id)
     _get_constraint_or_404(sketch, constraint_id)
     sketch.label_placements.pop(constraint_id, None)
@@ -2179,6 +2219,7 @@ def create_reference_dimension(sketch_id: str, payload: ReferenceDimensionCreate
         dimension = reference_dimensions.add(sketch, payload.kind, [(r.type, r.id) for r in payload.refs])
     except reference_dimensions.ReferenceDimensionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    _restore_number(sketch, dimension.id, payload)
     return _reference_dimension_response(sketch, dimension)
 
 
@@ -2310,7 +2351,7 @@ def create_pattern_instance(sketch_id: str, payload: SketchPatternInstanceCreate
             reverse_2=payload.reverse_2,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Something it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _pattern_instance_response(instance)
@@ -2346,7 +2387,7 @@ def update_pattern_instance(
             reverse_2=payload.reverse_2,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Something it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _pattern_instance_response(instance)
@@ -2383,7 +2424,7 @@ def create_mirror_instance(sketch_id: str, payload: SketchMirrorInstanceCreate) 
     try:
         instance = sketch.add_mirror_instance(payload.source_entity_ids, payload.mirror_line_id)
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Something it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _mirror_instance_response(instance)
@@ -2402,7 +2443,7 @@ def update_mirror_instance(
             mirror_line_id=payload.mirror_line_id,
         )
     except KeyError as exc:
-        raise HTTPException(status_code=404, detail=f"Entity not found: {exc}") from exc
+        raise HTTPException(status_code=404, detail="Something it uses is no longer in the sketch") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _mirror_instance_response(instance)

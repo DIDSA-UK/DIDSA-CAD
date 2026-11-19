@@ -244,3 +244,19 @@ at the saved place). Not run: a device, a headset, touch, the VR repo's Godot su
   It now returns the nearest label within reach (test in `dimension_label_placement_canvas_test.dart`).
 - **Stale placements after a delete** are filtered when read and when written (`Sketch.live_label_placements`), so they never reach a file;
   the cost is a few bytes held in memory until the sketch goes. Acceptable.
+
+## How a dimension is read: the `show` field (parity follow-ups F4, decision 10)
+
+Radius / Diameter (a circle, arc or polygon size) and, since F4, **semi-axis / full axis** (an ellipse axis) are a choice of how the stored value is
+*read*, not a different constraint: the constraint always stores the radius (or the semi-axis), a diameter or full axis is twice that. The choice is
+saved with the dimension's label record, so a reload, the other app and a live session show it the same way.
+
+- Backend: `Sketch.label_shows` (constraint id to `"radius"` / `"diameter"` / `"semi"` / `"full"`), kept beside `label_placements` and independent of it:
+  `PUT .../constraints/{id}/label` with placement numbers replaces the placement and leaves `show` alone unless it carries one; a body with only `show`
+  changes only that; `DELETE .../label` puts the label back in its default place and keeps `show`. `ConstraintResponse.label` carries both (`show` is the one
+  string in a record of numbers). Native format: `label_shows`, written only when there are some; an entry whose constraint is gone is dropped.
+- Defaults (no saved choice): a circle reads as its radius, an ellipse axis as the **full axis** (what the flat canvas has always drawn).
+- Flat app: `SketchController.showsDiameterFor` / `showsFullAxisFor`, `toggleRadiusDiameterDisplay` / `toggleAxisDisplay` (both save), `displayFactorFor`
+  (2 while a diameter or full axis is shown, else 1: the ribbon's editor shows `stored * factor` and stores `typed / factor`, so "show full, edit 80" stores
+  40). The ribbon's `_AxisToggle` is "Show semi-axis" / "Show full axis". A semi-axis is drawn centre to tip with the stored value, a full axis tip to tip.
+- The names every sketch thing carries (`number` on every response) are in `backend/app/sketch/numbering.py`.

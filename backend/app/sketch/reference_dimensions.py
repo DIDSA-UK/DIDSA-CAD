@@ -19,14 +19,14 @@ class ReferenceDimensionError(ValueError):
 def _point(sketch: Sketch, point_id: str):
     point = sketch.points.get(point_id)
     if point is None:
-        raise ReferenceDimensionError(f"Point not found: {point_id}")
+        raise ReferenceDimensionError("A point it measures is no longer in the sketch")
     return point
 
 
 def _line(sketch: Sketch, line_id: str) -> Line:
     line = sketch.entities.get(line_id)
     if not isinstance(line, Line):
-        raise ReferenceDimensionError(f"Line not found: {line_id}")
+        raise ReferenceDimensionError("A line it measures is no longer in the sketch")
     return line
 
 
@@ -36,7 +36,7 @@ def _round(sketch: Sketch, kind: str, entity_id: str):
         return shape
     if kind == "arc" and isinstance(shape, Arc):
         return shape
-    raise ReferenceDimensionError(f"{kind.capitalize()} not found: {entity_id}")
+    raise ReferenceDimensionError(f"A {kind} it measures is no longer in the sketch")
 
 
 def _center_and_rim(sketch: Sketch, shape):

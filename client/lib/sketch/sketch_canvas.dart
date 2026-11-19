@@ -3086,7 +3086,7 @@ class _SketchPainter extends CustomPainter {
     final double displayValue;
     if (ellipseAxis != null) {
       (pointAId, pointBId) = ellipseAxis;
-      displayValue = c.distance * 2;
+      displayValue = controller.ellipseAxisDisplayValue(c);
     } else {
       pointAId = c.pointAId;
       pointBId = c.pointBId;

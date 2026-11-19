@@ -125,7 +125,7 @@ def test_point_ids_are_the_arcs_three_points_and_block_their_deletion():
     # With the Arc gone but the dimension left, the dimension still holds every one of the three Points...
     probe = round_trip(sketch)
     assert probe.delete_arc(arc.id) == []
-    assert all(f"constraint {constraint.id}" in (reason or "") for reason in blockers(probe, own).values())
+    assert all(f"referenced by {sketch.name_of(constraint.id)}" in (reason or "") for reason in blockers(probe, own).values())
     # ...so the client's cascade deletes the dimension first; then deleting the Arc takes its Points.
     del sketch.constraints[constraint.id]
     pruned = sketch.delete_arc(arc.id)

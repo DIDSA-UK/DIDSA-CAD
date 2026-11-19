@@ -116,7 +116,7 @@ def test_point_ids_are_the_line_ends_the_centre_and_the_rim_and_block_deletion()
     assert set(constraint.point_ids()) == own
     probe = round_trip(sketch)
     assert probe.delete_line(line.id) == []
-    assert all(f"constraint {constraint.id}" in (r or "") for r in blockers(probe, [line.start_point_id, line.end_point_id]).values())
+    assert all(f"referenced by {sketch.name_of(constraint.id)}" in (r or "") for r in blockers(probe, [line.start_point_id, line.end_point_id]).values())
     del sketch.constraints[constraint.id]
     assert set(sketch.delete_line(line.id)) == {line.start_point_id, line.end_point_id}
 

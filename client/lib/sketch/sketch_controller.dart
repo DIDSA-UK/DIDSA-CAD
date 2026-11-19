@@ -2930,7 +2930,6 @@ class SketchController extends ChangeNotifier {
   /// reporting `dof == 0`, which - trusted blindly - showed a visibly
   /// under-constrained sketch as "fully constrained".
   bool _lastSolveConverged = true;
-  String _lastSolveDetail = '';
 
   /// Whether the backend's own numbers say there's nothing left to solve -
   /// `dof <= 0` (a genuinely negative dof, e.g. from a redundant Constraint
@@ -3165,7 +3164,6 @@ class SketchController extends ChangeNotifier {
         await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds, pointUpdates: pointUpdates);
     _dof = result.solve.dof;
     _lastSolveConverged = result.solve.converged;
-    _lastSolveDetail = result.solve.detail;
     _solverReportedFailedConstraintIds = result.solve.solverReportedFailedConstraintIds;
     final freshIds = result.points.map((p) => p.id).toSet();
     points
@@ -3202,6 +3200,7 @@ class SketchController extends ChangeNotifier {
       ..clear()
       ..addEntries(result.constraints.map((c) => MapEntry(c.id, c)));
     _absorbLabelPlacements(result.constraints);
+    _absorbShows(result.constraints);
     // `pointIds.length >= 2` alone (a standalone Circle profile is exactly
     // 2 points: center, radius point) used to also drop every Text-contour
     // loop, since a Text loop's own `pointIds` is always empty (see
@@ -3246,7 +3245,6 @@ class SketchController extends ChangeNotifier {
     final made = [...madeIds, ...registered.keys];
     if (made.isEmpty) return true;
     if (!wasConverged && !_solverReportedFailedConstraintIds.any(made.contains)) return true;
-    final detail = _lastSolveDetail.trim();
     for (final id in made) {
       await _api.deleteConstraint(_sketchId!, id);
       constraints.remove(id);
@@ -3255,9 +3253,9 @@ class SketchController extends ChangeNotifier {
     registered.values.forEach(_undoStack.remove);
     await restore?.call();
     await _solveAndTrackDof();
-    errorMessage = detail.isEmpty
-        ? "The sketch can't satisfy that $what together with the rest, so it was not added."
-        : "The sketch can't satisfy that $what together with the rest, so it was not added ($detail).";
+    // Plain words only: the solver's own `detail` is developer text ("blamed_constraint_ids names the most-recently-added constraint by convention
+    // only ...") and is not shown (parity follow-ups F4).
+    errorMessage = "The sketch can't satisfy that $what together with the rest, so it was not added.";
     return false;
   }
 
@@ -9210,29 +9208,101 @@ class SketchController extends ChangeNotifier {
     }
   }
 
-  /// On-device feedback: session-only display-mode override for a circle's
-  /// radius/diameter dimension - whether it currently reads as `R<value>`
-  /// (false, the default) or `⌀<value*2>` (true), toggleable from the
-  /// ribbon once the dimension is selected (see [toggleRadiusDiameterDisplay]).
-  /// Needed because the underlying DistanceConstraint always stores the
-  /// *radius* value either way (see [confirmGhostValue]'s `distanceValue` -
-  /// a confirmed diameter ghost is halved before it's sent), so a radius-
-  /// confirmed and a diameter-confirmed dimension of the same circle are
-  /// otherwise indistinguishable from the persisted data alone - R/⌀ is
-  /// purely a display choice layered on top of that one persisted value,
-  /// not sent to the backend (matching this file's other session-only view
-  /// preferences, e.g. [labelOffsetFor]'s drag offsets).
-  final Map<String, bool> _showsDiameter = {};
+  /// How the user reads each dimension, by constraint id: "radius" / "diameter" for a circle's, arc's or polygon's size, "semi" / "full" for an ellipse
+  /// axis (parity follow-ups F4, decision 10). The constraint always stores the *radius* (or the semi-axis) whichever way it is read - a confirmed
+  /// diameter ghost is halved before it is sent ([confirmGhostValue]'s `distanceValue`) and a full axis is shown as twice the stored value - so this is
+  /// purely how the value is labelled on the canvas and typed in the ribbon's editor. It is saved with the dimension's label record on the backend
+  /// (`PUT .../constraints/{id}/label` with `show`, [SketchApiClient.putConstraintShow]) and read back with the constraint list, so a reload, the other
+  /// app and a live session show the dimension the same way. No entry means the default: radius for a circle, the full axis for an ellipse (what the
+  /// canvas has always drawn).
+  final Map<String, String> _dimensionShow = {};
 
-  bool showsDiameterFor(String constraintId) => _showsDiameter[constraintId] ?? false;
+  /// Writes of [_dimensionShow] still out (or queued behind one): a refresh that lands meanwhile must not put an older choice over them.
+  final Set<String> _showWritesInFlight = {};
+  final Set<String> _showWritesQueued = {};
 
-  /// Flips [constraintId]'s R/⌀ display mode - only meaningful for a
-  /// [circleForDistanceConstraint]-eligible dimension, but harmless to call
-  /// for any id (just sets an unused map entry) since [SketchRibbon] only
-  /// ever offers this action while such a dimension is selected.
+  bool showsDiameterFor(String constraintId) => _dimensionShow[constraintId] == 'diameter';
+
+  /// Whether the ellipse axis dimension [constraintId] reads as the full axis (tip to tip, twice the stored value: the default) rather than the semi-axis
+  /// (centre to tip, the stored value).
+  bool showsFullAxisFor(String constraintId) => _dimensionShow[constraintId] != 'semi';
+
+  /// Flips [constraintId]'s R/⌀ display mode and saves the choice - only meaningful for a [circleForDistanceConstraint]-eligible dimension, but harmless
+  /// to call for any id since [SketchRibbon] only ever offers this action while such a dimension is selected.
   void toggleRadiusDiameterDisplay(String constraintId) {
-    _showsDiameter[constraintId] = !showsDiameterFor(constraintId);
+    _chooseShow(constraintId, showsDiameterFor(constraintId) ? 'radius' : 'diameter');
     notifyListeners();
+  }
+
+  /// Flips an ellipse axis dimension between the full axis and the semi-axis and saves the choice (F4, C4).
+  void toggleAxisDisplay(String constraintId) {
+    _chooseShow(constraintId, showsFullAxisFor(constraintId) ? 'semi' : 'full');
+    notifyListeners();
+  }
+
+  /// Sets [constraintId]'s choice and writes it to the backend unless it is the same as before (the defaults, "radius" and "full", are not written for a
+  /// dimension that never had another choice).
+  void _chooseShow(String constraintId, String show) {
+    final previous = _dimensionShow[constraintId];
+    _dimensionShow[constraintId] = show;
+    final isDefault = show == 'radius' || show == 'full';
+    if (previous == show || (previous == null && isDefault)) return;
+    unawaited(_saveShow(constraintId));
+  }
+
+  Future<void> _saveShow(String constraintId) async {
+    final sketchId = _sketchId;
+    if (sketchId == null) return;
+    if (!_showWritesInFlight.add(constraintId)) {
+      _showWritesQueued.add(constraintId);
+      return;
+    }
+    try {
+      do {
+        _showWritesQueued.remove(constraintId);
+        final show = _dimensionShow[constraintId];
+        if (show == null || !constraints.containsKey(constraintId)) break;
+        await _api.putConstraintShow(sketchId, constraintId, show);
+      } while (_showWritesQueued.contains(constraintId));
+    } on ApiException catch (e) {
+      _showWritesQueued.remove(constraintId);
+      errorMessage = 'Could not save how the dimension is shown: ${e.message}';
+      notifyListeners();
+    } finally {
+      _showWritesInFlight.remove(constraintId);
+    }
+  }
+
+  /// Takes the choices the backend sent with [fetched] (noted by [SketchApiClient.showOf]), leaving alone one being written right now, and drops those of
+  /// constraints that no longer exist. A constraint the backend holds no choice for (or an older server that sends none) keeps whatever this session set.
+  void _absorbShows(Iterable<ConstraintDto> fetched) {
+    final ids = <String>{};
+    for (final constraint in fetched) {
+      ids.add(constraint.id);
+      final show = _api.showOf(constraint.id);
+      if (show == null || _showWritesInFlight.contains(constraint.id)) continue;
+      _dimensionShow[constraint.id] = show;
+    }
+    _dimensionShow.removeWhere((id, _) => !ids.contains(id));
+  }
+
+  /// The factor between an editable dimension's stored value and the value it is shown (and typed) as: 2 while a radius / diameter dimension reads as
+  /// the diameter or an ellipse axis reads as the full axis, else 1. The ribbon's value editor shows `stored * factor` and stores `typed / factor`, so
+  /// "show full, edit 80" stores 40 (F4, C4).
+  double displayFactorFor(String constraintId) {
+    final c = constraints[constraintId];
+    if (c is! DistanceConstraintDto) return 1.0;
+    if (isRadiusDistanceConstraint(c)) return showsDiameterFor(constraintId) ? 2.0 : 1.0;
+    if (ellipseAxisForDistanceConstraint(c) != null) return showsFullAxisFor(constraintId) ? 2.0 : 1.0;
+    return 1.0;
+  }
+
+  /// The selected single dimension's id when it is an ellipse axis (drives the ribbon's "Show full axis" / "Show semi-axis" toggle), else null.
+  String? get selectedEllipseAxisConstraintId {
+    if (_selectionSet.length != 1 || _selectionSet.first.kind != SelectionKind.constraint) return null;
+    final id = _selectionSet.first.id;
+    final constraint = constraints[id];
+    return constraint is DistanceConstraintDto && ellipseAxisForDistanceConstraint(constraint) != null ? id : null;
   }
 
   /// The Circle a [DistanceConstraintDto] measures the radius/diameter of -
@@ -9310,15 +9380,20 @@ class SketchController extends ChangeNotifier {
   (String, String)? ellipseAxisForDistanceConstraint(DistanceConstraintDto c) {
     for (final ellipse in ellipses.values) {
       if (ellipse.centerPointId != c.pointAId) continue;
+      final full = showsFullAxisFor(c.id);
+      // F4 / C4: the full axis runs tip to tip; the semi-axis runs from the centre to the tip (the stored value).
       if (ellipse.majorPointId == c.pointBId) {
-        return (ellipse.majorPointNegId, ellipse.majorPointId);
+        return (full ? ellipse.majorPointNegId : ellipse.centerPointId, ellipse.majorPointId);
       }
       if (ellipse.minorPointId == c.pointBId) {
-        return (ellipse.minorPointNegId, ellipse.minorPointId);
+        return (full ? ellipse.minorPointNegId : ellipse.centerPointId, ellipse.minorPointId);
       }
     }
     return null;
   }
+
+  /// The value an ellipse axis dimension [c] shows: twice the stored semi-axis while it reads as the full axis, the stored value as the semi-axis (F4, C4).
+  double ellipseAxisDisplayValue(DistanceConstraintDto c) => showsFullAxisFor(c.id) ? c.distance * 2 : c.distance;
 
   /// Whether [c] measures the radius of a Circle, an Arc, or a Polygon's
   /// circumradius - [circleForDistanceConstraint]/[arcForDistanceConstraint]/
@@ -10210,15 +10285,54 @@ class SketchController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Stage 23h: a short, human-friendly label for [selection] - e.g.
-  /// "Line 2" - for the flyout's Selected Entities list. Purely derived
-  /// from each entity map's current iteration order (i.e. creation order:
-  /// [_loadExistingContent] seeds that order from the backend, and every
-  /// later draw-tool method only ever appends new ids), not a separately
-  /// persisted number - stable for this session only, and "Point" numbering
-  /// excludes the origin Point, same as every other selection path
-  /// ([selectAll]/[selectInRect]) excludes it from being selectable at all.
+  /// Stage 23h: a short, human-friendly label for [selection] - e.g. "Line 2" - for the flyout's Selected Entities list.
+  ///
+  /// Parity follow-ups F4 / A1: the number is the backend's (`number` on every response, kept in [SketchApiClient.numberOf]): given when the thing was
+  /// made, never reused, so deleting Line 2 leaves Line 3 as Line 3, an undo that re-creates a line gives its old number back, and every app and a live
+  /// session's observers read the same name. Dimensions share one counter (`D4`), relations are numbered per type (`Coincident 2`). Only a sketch the
+  /// backend has not numbered (an older backend, a test double) falls back to the position rule: each entity map's current iteration order (creation
+  /// order: [_loadExistingContent] seeds that order from the backend, every draw-tool method only appends), stable for this session only, with "Point"
+  /// numbering excluding the origin Point, as every other selection path ([selectAll]/[selectInRect]) does.
   String selectionLabel(SketchSelection selection) {
+    final number = _api.numberOf(selection.id);
+    if (number != null) {
+      final named = _numberedName(selection, number);
+      if (named != null) return named;
+    }
+    return _positionLabel(selection);
+  }
+
+  /// The backend's name for [selection] built from its [number]; null for a kind the backend does not number (pattern / mirror instances).
+  String? _numberedName(SketchSelection selection, int number) {
+    switch (selection.kind) {
+      case SelectionKind.point:
+        return 'Point $number';
+      case SelectionKind.line:
+        return 'Line $number';
+      case SelectionKind.circle:
+        return 'Circle $number';
+      case SelectionKind.arc:
+        return 'Arc $number';
+      case SelectionKind.ellipse:
+        return 'Ellipse $number';
+      case SelectionKind.ellipseArc:
+        return 'Ellipse Arc $number';
+      case SelectionKind.spline:
+        return 'Spline $number';
+      case SelectionKind.text:
+        return 'Text $number';
+      case SelectionKind.constraint:
+        final constraint = constraints[selection.id];
+        if (constraint == null) return null;
+        final relation = constraintRelationName(constraint);
+        return relation == null ? 'D$number' : '$relation $number';
+      case SelectionKind.patternInstance:
+      case SelectionKind.mirrorInstance:
+        return null;
+    }
+  }
+
+  String _positionLabel(SketchSelection selection) {
     switch (selection.kind) {
       case SelectionKind.point:
         final ids = points.keys.where((id) => id != _originPointId).toList();
@@ -10921,7 +11035,7 @@ class SketchController extends ChangeNotifier {
     final idMap = <String, String>{};
 
     for (final point in capturedPoints) {
-      final created = await _api.createPoint(_sketchId!, point.x, point.y);
+      final created = await _api.createPoint(_sketchId!, point.x, point.y, number: _api.numberOf(point.id));
       idMap[point.id] = created.id;
       points[created.id] = SketchPointView(id: created.id, x: created.x, y: created.y);
     }
@@ -10930,7 +11044,7 @@ class SketchController extends ChangeNotifier {
         _sketchId!,
         idMap[line.startPointId] ?? line.startPointId,
         idMap[line.endPointId] ?? line.endPointId,
-        construction: line.construction,
+        construction: line.construction, number: _api.numberOf(line.id),
       );
       idMap[line.id] = created.id;
       lines[created.id] = SketchLineView(
@@ -10945,7 +11059,7 @@ class SketchController extends ChangeNotifier {
         _sketchId!,
         idMap[circle.centerPointId] ?? circle.centerPointId,
         idMap[circle.radiusPointId] ?? circle.radiusPointId,
-        construction: circle.construction,
+        construction: circle.construction, number: _api.numberOf(circle.id),
       );
       idMap[circle.id] = created.id;
       _noteStructural(created.id, created.structuralConstraintIds);
@@ -10970,7 +11084,7 @@ class SketchController extends ChangeNotifier {
         idMap[arc.centerPointId] ?? arc.centerPointId,
         idMap[arc.startPointId] ?? arc.startPointId,
         idMap[arc.endPointId] ?? arc.endPointId,
-        construction: arc.construction,
+        construction: arc.construction, number: _api.numberOf(arc.id),
       );
       idMap[arc.id] = created.id;
       _noteStructural(created.id, created.structuralConstraintIds);
@@ -10988,7 +11102,7 @@ class SketchController extends ChangeNotifier {
         idMap[ellipse.centerPointId] ?? ellipse.centerPointId,
         idMap[ellipse.majorPointId] ?? ellipse.majorPointId,
         ellipse.minorRadius,
-        construction: ellipse.construction,
+        construction: ellipse.construction, number: _api.numberOf(ellipse.id),
       );
       idMap[ellipse.id] = created.id;
       _noteStructural(created.id, created.structuralConstraintIds);
@@ -11062,7 +11176,7 @@ class SketchController extends ChangeNotifier {
         ellipseArc.minorRadius,
         ellipseLocalAngle(center, major, ellipseArc.minorRadius, start),
         ellipseLocalAngle(center, major, ellipseArc.minorRadius, end),
-        construction: ellipseArc.construction,
+        construction: ellipseArc.construction, number: _api.numberOf(ellipseArc.id),
       );
       idMap[ellipseArc.id] = created.id;
       _noteStructural(created.id, created.structuralConstraintIds);
@@ -11104,7 +11218,7 @@ class SketchController extends ChangeNotifier {
         idMap[polygon.vertexPointIds[0]] ?? polygon.vertexPointIds[0],
         polygon.sides,
         construction: polygon.construction,
-        referenceCircles: polygon.circumscribedCircleId != null,
+        referenceCircles: polygon.circumscribedCircleId != null, number: _api.numberOf(polygon.id),
       );
       idMap[polygon.id] = created.id;
       // Reference circles are recreated with the polygon (they are no longer
@@ -11158,7 +11272,7 @@ class SketchController extends ChangeNotifier {
         idMap[slot.center1PointId] ?? slot.center1PointId,
         idMap[slot.center2PointId] ?? slot.center2PointId,
         radius,
-        construction: slot.construction,
+        construction: slot.construction, number: _api.numberOf(slot.id),
       );
       idMap[slot.id] = created.id;
       _noteStructural(created.id, created.structuralConstraintIds);
@@ -11212,7 +11326,7 @@ class SketchController extends ChangeNotifier {
         _sketchId!,
         cornerIds,
         axisAligned: rectangle.axisAligned,
-        construction: rectangle.construction,
+        construction: rectangle.construction, number: _api.numberOf(rectangle.id),
       );
       idMap[rectangle.id] = created.id;
       _noteStructural(created.id, created.structuralConstraintIds);
@@ -11259,7 +11373,7 @@ class SketchController extends ChangeNotifier {
       final created = await _api.createSpline(
         _sketchId!,
         [for (final id in spline.throughPointIds) idMap[id] ?? id],
-        construction: spline.construction,
+        construction: spline.construction, number: _api.numberOf(spline.id),
       );
       idMap[spline.id] = created.id;
       // Same fetch-and-cache as [finishSpline] - these fresh control-handle
@@ -11285,7 +11399,7 @@ class SketchController extends ChangeNotifier {
         idMap[text.anchorPointId] ?? text.anchorPointId,
         size: text.size,
         rotationDegrees: text.rotationDegrees,
-        construction: text.construction,
+        construction: text.construction, number: _api.numberOf(text.id),
       );
       idMap[text.id] = created.id;
       texts[created.id] = SketchTextView(
@@ -11310,50 +11424,52 @@ class SketchController extends ChangeNotifier {
   /// [idMap] (falling back to the original id when it was never deleted).
   Future<void> _recreateConstraint(ConstraintDto dto, Map<String, String> idMap) async {
     String mapped(String id) => idMap[id] ?? id;
+    // F4 / A1: the re-created constraint asks for the number it had, so its name (`D4`, `Coincident 2`) comes back with it.
+    final number = _api.numberOf(dto.id);
     if (dto is VerticalConstraintDto) {
-      await _api.createVerticalConstraint(_sketchId!, mapped(dto.lineId));
+      await _api.createVerticalConstraint(_sketchId!, mapped(dto.lineId), number: number);
     } else if (dto is HorizontalConstraintDto) {
-      await _api.createHorizontalConstraint(_sketchId!, mapped(dto.lineId));
+      await _api.createHorizontalConstraint(_sketchId!, mapped(dto.lineId), number: number);
     } else if (dto is AngleConstraintDto) {
       await _api.createAngleConstraint(
         _sketchId!,
         mapped(dto.line1Id),
         mapped(dto.line2Id),
-        dto.angleDegrees,
+        dto.angleDegrees, number: number,
       );
     } else if (dto is CoincidentConstraintDto) {
-      await _api.createCoincidentConstraint(_sketchId!, mapped(dto.pointAId), mapped(dto.pointBId));
+      await _api.createCoincidentConstraint(_sketchId!, mapped(dto.pointAId), mapped(dto.pointBId), number: number);
     } else if (dto is ParallelConstraintDto) {
-      await _api.createParallelConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+      await _api.createParallelConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id), number: number);
     } else if (dto is PerpendicularConstraintDto) {
-      await _api.createPerpendicularConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+      await _api.createPerpendicularConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id), number: number);
     } else if (dto is EqualLengthConstraintDto) {
-      await _api.createEqualLengthConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+      await _api.createEqualLengthConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id), number: number);
     } else if (dto is CollinearConstraintDto) {
-      await _api.createCollinearConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id));
+      await _api.createCollinearConstraint(_sketchId!, mapped(dto.line1Id), mapped(dto.line2Id), number: number);
     } else if (dto is LineDistanceConstraintDto) {
       await _api.createLineDistanceConstraint(
         _sketchId!,
         mapped(dto.line1Id),
         mapped(dto.line2Id),
-        dto.distance,
+        dto.distance, number: number,
       );
     } else if (dto is PointLineDistanceConstraintDto) {
       await _api.createPointLineDistanceConstraint(
         _sketchId!,
         mapped(dto.pointId),
         mapped(dto.lineId),
-        dto.distance,
+        dto.distance, number: number,
       );
     } else if (dto is AtMidpointConstraintDto) {
-      await _api.createAtMidpointConstraint(_sketchId!, mapped(dto.pointId), mapped(dto.lineId));
+      await _api.createAtMidpointConstraint(_sketchId!, mapped(dto.pointId), mapped(dto.lineId), number: number);
     } else if (dto is DistanceConstraintDto) {
       await _api.createDistanceConstraint(
         _sketchId!,
         mapped(dto.pointAId),
         mapped(dto.pointBId),
         dto.distance,
-        orientation: dto.orientation,
+        orientation: dto.orientation, number: number,
       );
     }
   }
@@ -16667,7 +16783,8 @@ class SketchController extends ChangeNotifier {
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       }
       if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
-        _showsDiameter[constraintId] = target.kind == GhostKind.diameter;
+        // Saved with the dimension (F4, decision 10): a reload keeps the diameter the user asked for.
+        _chooseShow(constraintId, target.kind == GhostKind.diameter ? 'diameter' : 'radius');
       }
       // On-device feedback (bug fix): used to only solve in the new-
       // constraint branch above (the angle/lineDistance branches earlier in
@@ -17057,6 +17174,7 @@ class SketchController extends ChangeNotifier {
       constraints[constraint.id] = constraint;
     }
     _absorbLabelPlacements(fetchedConstraints);
+    _absorbShows(fetchedConstraints);
     // Sketcher-roadmap Phase 7 (2D Pattern/Mirror): fetched alongside every
     // other entity collection above, so a re-entered Sketch continues to
     // show a previously-created instance's own derived ghosts (see
@@ -17126,6 +17244,7 @@ class SketchController extends ChangeNotifier {
       constraints[constraint.id] = constraint;
     }
     _absorbLabelPlacements(fetched);
+    _absorbShows(fetched);
   }
 
   void _adoptSketchDto(SketchDto sketch) {
@@ -19530,7 +19649,7 @@ class SketchController extends ChangeNotifier {
           final double displayValue;
           if (ellipseAxis != null) {
             (pointAId, pointBId) = ellipseAxis;
-            displayValue = c.distance * 2;
+            displayValue = ellipseAxisDisplayValue(c);
           } else {
             pointAId = c.pointAId;
             pointBId = c.pointBId;

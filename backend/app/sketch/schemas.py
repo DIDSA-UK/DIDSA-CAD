@@ -7,6 +7,21 @@ from app.sketch.profile import ProfileStatus
 from app.sketch.text_fonts import DEFAULT_FONT, FONT_ALLOWLIST
 
 
+class _NumberedCreate(BaseModel):
+    """Parity follow-ups F4 / A1: a create route may carry the `number` the thing had before (an undo that re-creates a deleted thing passes it so the name
+    comes back). Ignored when another thing of the same kind has that number (see `app.sketch.numbering.set_number`)."""
+
+    number: int | None = Field(default=None, ge=1)
+
+
+class _NumberedResponse(BaseModel):
+    """Every point / entity / constraint / reference-dimension response carries its backend `number` (null only for the sketch's origin Point, which is just
+    `Origin`). The name is built from it: `Line 3`, `Point 12`, `D4` (dimensions share one counter), `(D5)` (reference dimensions), `Coincident 2`
+    (relations by type), `Part corner 2` / `Hole centre 1` (points that track the part). See `app.sketch.numbering`."""
+
+    number: int | None = None
+
+
 class SketchCreate(BaseModel):
     plane: Plane
     # Sketcher-roadmap Phase 5 - see app.sketch.models.Sketch's own
@@ -52,7 +67,7 @@ class ReferenceDimensionRef(BaseModel):
     id: str
 
 
-class ReferenceDimensionCreate(BaseModel):
+class ReferenceDimensionCreate(_NumberedCreate):
     """DIDSA-VR plan, phase 3: `POST .../reference-dimensions`. See `app.sketch.models.ReferenceDimension` for which kinds take which entities."""
 
     kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle", "min_distance", "max_distance"]
@@ -66,7 +81,7 @@ class ReferenceDimensionUpdate(BaseModel):
     refs: list[ReferenceDimensionRef] | None = None
 
 
-class ReferenceDimensionResponse(BaseModel):
+class ReferenceDimensionResponse(_NumberedResponse):
     id: str
     kind: str
     refs: list[ReferenceDimensionRef]
@@ -85,7 +100,7 @@ class SketchOrientationUpdate(BaseModel):
     rotation_quarter_turns: int
 
 
-class PointCreate(BaseModel):
+class PointCreate(_NumberedCreate):
     x: float
     y: float
 
@@ -103,7 +118,7 @@ class PointPlacement(BaseModel):
     y: float
 
 
-class PointResponse(BaseModel):
+class PointResponse(_NumberedResponse):
     id: str
     x: float
     y: float
@@ -136,7 +151,7 @@ class DeleteEntityResponse(BaseModel):
     pruned_point_ids: list[str] = []
 
 
-class LineCreate(BaseModel):
+class LineCreate(_NumberedCreate):
     """Create a line from an existing start Point, plus either an existing
     end Point's id (explicit sharing - no coordinate-matching/auto-merge)
     or a length and direction angle (radians from the +x axis), which
@@ -172,7 +187,7 @@ class LineUpdate(BaseModel):
 # `type` is a discriminator so that when Circle/Arc entities are added,
 # the entity collection response becomes Union[LineResponse, CircleResponse, ...]
 # without restructuring the API layer.
-class LineResponse(BaseModel):
+class LineResponse(_NumberedResponse):
     type: Literal["line"] = "line"
     id: str
     start_point_id: str
@@ -286,7 +301,7 @@ class LineSplitTrimResponse(BaseModel):
     line2: LineResponse
 
 
-class CircleCreate(BaseModel):
+class CircleCreate(_NumberedCreate):
     """Create a circle from an existing center Point, plus one of three
     ways to define the radius Point: an existing Point's id (explicit
     sharing), a radius and angle (radians from the +x axis) which creates a
@@ -311,7 +326,7 @@ class CircleCreate(BaseModel):
         return self
 
 
-class CircleResponse(BaseModel):
+class CircleResponse(_NumberedResponse):
     type: Literal["circle"] = "circle"
     id: str
     # The constraints that only hold this shape together (see `_structural_constraint_ids`);
@@ -344,7 +359,7 @@ class CircleUpdate(BaseModel):
     construction: bool | None = None
 
 
-class ArcCreate(BaseModel):
+class ArcCreate(_NumberedCreate):
     """Create an arc from an existing center Point and an existing start
     Point (together fixing the radius), plus either an existing end
     Point's id (explicit sharing) or an end angle (radians from the +x
@@ -368,7 +383,7 @@ class ArcCreate(BaseModel):
         return self
 
 
-class ArcResponse(BaseModel):
+class ArcResponse(_NumberedResponse):
     type: Literal["arc"] = "arc"
     id: str
     # The constraints that only hold this shape together (see `_structural_constraint_ids`);
@@ -466,7 +481,7 @@ class CircleTrimResponse(BaseModel):
     pruned_point_ids: list[str] = []
 
 
-class EllipseCreate(BaseModel):
+class EllipseCreate(_NumberedCreate):
     """Create an ellipse from an existing center Point, plus either an
     existing major-axis Point's id (explicit sharing) or a major radius
     and angle (radians from the +x axis), which creates a new major-axis
@@ -494,7 +509,7 @@ class EllipseCreate(BaseModel):
         return self
 
 
-class EllipseResponse(BaseModel):
+class EllipseResponse(_NumberedResponse):
     type: Literal["ellipse"] = "ellipse"
     id: str
     # The constraints that only hold this shape together (see `_structural_constraint_ids`);
@@ -524,7 +539,7 @@ class EllipseResponse(BaseModel):
     minor_constraint_id: str
 
 
-class EllipseArcCreate(BaseModel):
+class EllipseArcCreate(_NumberedCreate):
     """Create a partial ellipse from an existing centre Point and an
     existing major-axis Point (together fixing the major radius and
     rotation, same as ArcCreate's own existing start Point fixing a
@@ -545,7 +560,7 @@ class EllipseArcCreate(BaseModel):
     construction: bool = False
 
 
-class EllipseArcResponse(BaseModel):
+class EllipseArcResponse(_NumberedResponse):
     type: Literal["ellipse_arc"] = "ellipse_arc"
     id: str
     # The constraints that only hold this shape together (see `_structural_constraint_ids`);
@@ -606,7 +621,7 @@ class EllipseArcUpdate(BaseModel):
     construction: bool | None = None
 
 
-class PolygonCreate(BaseModel):
+class PolygonCreate(_NumberedCreate):
     """Create a regular Polygon from an existing center Point and an
     existing first-vertex Point (together fixing the circumradius and
     rotation), plus a side count - see the backend's
@@ -625,7 +640,7 @@ class PolygonCreate(BaseModel):
     reference_circles: bool = False
 
 
-class PolygonResponse(BaseModel):
+class PolygonResponse(_NumberedResponse):
     type: Literal["polygon"] = "polygon"
     id: str
     center_point_id: str
@@ -665,7 +680,7 @@ class PolygonUpdate(BaseModel):
     construction: bool | None = None
 
 
-class SlotCreate(BaseModel):
+class SlotCreate(_NumberedCreate):
     """Create a Slot from two existing centre Points and a radius - see the
     backend's `app.sketch.models.Sketch.add_slot` docstring for what this
     creates. Unlike Arc/Ellipse there is no "computed point" alternative
@@ -679,7 +694,7 @@ class SlotCreate(BaseModel):
     construction: bool = False
 
 
-class SlotResponse(BaseModel):
+class SlotResponse(_NumberedResponse):
     type: Literal["slot"] = "slot"
     id: str
     # The constraints that only hold this shape together (see `_structural_constraint_ids`);
@@ -715,7 +730,7 @@ class SlotUpdate(BaseModel):
     construction: bool | None = None
 
 
-class RectangleCreate(BaseModel):
+class RectangleCreate(_NumberedCreate):
     """Create a Rectangle from four existing corner Points, in order
     (corner0 -> corner1 -> corner2 -> corner3 -> corner0) - see the
     backend's `app.sketch.models.Sketch.add_rectangle` docstring for what
@@ -729,7 +744,7 @@ class RectangleCreate(BaseModel):
     construction: bool = False
 
 
-class RectangleResponse(BaseModel):
+class RectangleResponse(_NumberedResponse):
     type: Literal["rectangle"] = "rectangle"
     id: str
     # The constraints that only hold this shape together (see `_structural_constraint_ids`);
@@ -753,7 +768,7 @@ class RectangleUpdate(BaseModel):
     construction: bool | None = None
 
 
-class SplineCreate(BaseModel):
+class SplineCreate(_NumberedCreate):
     """Create a spline through 2+ existing Points, in order - see the
     backend's `app.sketch.models.Spline` docstring for what this creates
     alongside the Spline itself (2 control-handle Points per segment, plus
@@ -774,7 +789,7 @@ class SplineCreate(BaseModel):
         return self
 
 
-class SplineResponse(BaseModel):
+class SplineResponse(_NumberedResponse):
     type: Literal["spline"] = "spline"
     id: str
     through_point_ids: list[str]
@@ -792,7 +807,7 @@ class SplineUpdate(BaseModel):
     construction: bool | None = None
 
 
-class TextCreate(BaseModel):
+class TextCreate(_NumberedCreate):
     """Create a Text entity anchored to an existing Point - mirrors
     `SplineCreate`: unlike Circle/Arc/Ellipse's existing-vs-computed-point
     choice, the anchor Point must already exist (created via the ordinary
@@ -823,7 +838,7 @@ class TextCreate(BaseModel):
         return self
 
 
-class TextResponse(BaseModel):
+class TextResponse(_NumberedResponse):
     type: Literal["text"] = "text"
     id: str
     content: str
@@ -919,7 +934,7 @@ class ProfileDetectionResponse(BaseModel):
     open_chain: bool = False
 
 
-class DistanceConstraintCreate(BaseModel):
+class DistanceConstraintCreate(_NumberedCreate):
     # `type` defaults to "distance" (rather than being required) so existing
     # clients/tests that predate Stage 12 and never sent a `type` field keep
     # working unmodified - Pydantic's smart-mode union resolution (no
@@ -944,17 +959,17 @@ class DistanceConstraintCreate(BaseModel):
     provisional: bool = False
 
 
-class VerticalConstraintCreate(BaseModel):
+class VerticalConstraintCreate(_NumberedCreate):
     type: Literal["vertical"]
     line_id: str
 
 
-class HorizontalConstraintCreate(BaseModel):
+class HorizontalConstraintCreate(_NumberedCreate):
     type: Literal["horizontal"]
     line_id: str
 
 
-class AngleConstraintCreate(BaseModel):
+class AngleConstraintCreate(_NumberedCreate):
     type: Literal["angle"]
     line1_id: str
     line2_id: str
@@ -963,69 +978,69 @@ class AngleConstraintCreate(BaseModel):
     quadrant: int | None = Field(default=None, ge=0, le=3)
 
 
-class CoincidentConstraintCreate(BaseModel):
+class CoincidentConstraintCreate(_NumberedCreate):
     type: Literal["coincident"]
     point_a_id: str
     point_b_id: str
 
 
-class ParallelConstraintCreate(BaseModel):
+class ParallelConstraintCreate(_NumberedCreate):
     type: Literal["parallel"]
     line1_id: str
     line2_id: str
 
 
-class PerpendicularConstraintCreate(BaseModel):
+class PerpendicularConstraintCreate(_NumberedCreate):
     type: Literal["perpendicular"]
     line1_id: str
     line2_id: str
 
 
-class EqualLengthConstraintCreate(BaseModel):
+class EqualLengthConstraintCreate(_NumberedCreate):
     type: Literal["equal_length"]
     line1_id: str
     line2_id: str
 
 
-class CollinearConstraintCreate(BaseModel):
+class CollinearConstraintCreate(_NumberedCreate):
     type: Literal["collinear"]
     line1_id: str
     line2_id: str
 
 
-class LineDistanceConstraintCreate(BaseModel):
+class LineDistanceConstraintCreate(_NumberedCreate):
     type: Literal["line_distance"]
     line1_id: str
     line2_id: str
     distance: float
 
 
-class PointLineDistanceConstraintCreate(BaseModel):
+class PointLineDistanceConstraintCreate(_NumberedCreate):
     type: Literal["point_line_distance"]
     point_id: str
     line_id: str
     distance: float
 
 
-class AtMidpointConstraintCreate(BaseModel):
+class AtMidpointConstraintCreate(_NumberedCreate):
     type: Literal["at_midpoint"]
     point_id: str
     line_id: str
 
 
-class TangentConstraintCreate(BaseModel):
+class TangentConstraintCreate(_NumberedCreate):
     type: Literal["tangent"]
     circle_or_arc_id: str
     line_id: str
 
 
-class ConcentricConstraintCreate(BaseModel):
+class ConcentricConstraintCreate(_NumberedCreate):
     type: Literal["concentric"]
     entity1_id: str
     entity2_id: str
 
 
-class CurveTangentConstraintCreate(BaseModel):
+class CurveTangentConstraintCreate(_NumberedCreate):
     """Two Arcs meeting smoothly at a shared endpoint Point - see
     app.sketch.constraints.CurveTangentConstraint's own docstring for why
     this only ever takes two Arcs (never a Circle, which has no endpoint to
@@ -1038,14 +1053,14 @@ class CurveTangentConstraintCreate(BaseModel):
     shared_point_id: str
 
 
-class EqualRadiusConstraintCreate(BaseModel):
+class EqualRadiusConstraintCreate(_NumberedCreate):
     type: Literal["equal_radius"]
     entity1_id: str
     entity2_id: str
     radius2_point_id: str | None = None
 
 
-class EqualRadiusPointsConstraintCreate(BaseModel):
+class EqualRadiusPointsConstraintCreate(_NumberedCreate):
     """The raw-Point counterpart to EqualRadiusConstraintCreate, for callers
     with no Circle/Arc entity id to pass - see
     Sketch.add_equal_radius_constraint_from_points."""
@@ -1057,7 +1072,7 @@ class EqualRadiusPointsConstraintCreate(BaseModel):
     radius2_point_id: str
 
 
-class PointOnLineConstraintCreate(BaseModel):
+class PointOnLineConstraintCreate(_NumberedCreate):
     """The "Line" half of the sketcher's "point coincident to line/curve"
     context-menu feature - see Sketch.add_point_on_line_constraint."""
 
@@ -1066,7 +1081,7 @@ class PointOnLineConstraintCreate(BaseModel):
     line_id: str
 
 
-class PointOnCircleConstraintCreate(BaseModel):
+class PointOnCircleConstraintCreate(_NumberedCreate):
     """The curved-entity half of "point coincident to line/curve" - see
     Sketch.add_point_on_circle_constraint. Circle/Arc only (see that
     method's own doc comment for why Ellipse/Spline are out of scope)."""
@@ -1076,7 +1091,7 @@ class PointOnCircleConstraintCreate(BaseModel):
     circle_or_arc_id: str
 
 
-class PointOnEllipseConstraintCreate(BaseModel):
+class PointOnEllipseConstraintCreate(_NumberedCreate):
     """The ellipse half of "point coincident to line/curve" - see
     Sketch.add_point_on_ellipse_constraint (Trammel of Archimedes
     construction; spline remains out of scope, see that method's own doc
@@ -1087,7 +1102,7 @@ class PointOnEllipseConstraintCreate(BaseModel):
     ellipse_id: str
 
 
-class ArcLengthConstraintCreate(BaseModel):
+class ArcLengthConstraintCreate(_NumberedCreate):
     """Bug report 2026-11-18 part D: an Arc's length (see `ArcLengthConstraint`)."""
 
     type: Literal["arc_length"]
@@ -1095,7 +1110,7 @@ class ArcLengthConstraintCreate(BaseModel):
     length: float
 
 
-class HorizontalAngleConstraintCreate(BaseModel):
+class HorizontalAngleConstraintCreate(_NumberedCreate):
     """Bug report 2026-11-18 part D: a Line's angle to the horizontal (see `HorizontalAngleConstraint`)."""
 
     type: Literal["horizontal_angle"]
@@ -1104,7 +1119,7 @@ class HorizontalAngleConstraintCreate(BaseModel):
     quadrant: int | None = Field(default=None, ge=0, le=3)
 
 
-class PointAngleConstraintCreate(BaseModel):
+class PointAngleConstraintCreate(_NumberedCreate):
     """Bug report 2026-11-18 part D: the angle at a vertex Point between the rays to two others (see `PointAngleConstraint`)."""
 
     type: Literal["point_angle"]
@@ -1115,7 +1130,7 @@ class PointAngleConstraintCreate(BaseModel):
     quadrant: int | None = Field(default=None, ge=0, le=3)
 
 
-class PointCircleDistanceConstraintCreate(BaseModel):
+class PointCircleDistanceConstraintCreate(_NumberedCreate):
     """Bug report 2026-11-18 part D: the nearest or farthest distance from a Point to a Circle or Arc."""
 
     type: Literal["point_circle_distance"]
@@ -1125,7 +1140,7 @@ class PointCircleDistanceConstraintCreate(BaseModel):
     side: Literal["min", "max"] = "min"
 
 
-class CircleCircleDistanceConstraintCreate(BaseModel):
+class CircleCircleDistanceConstraintCreate(_NumberedCreate):
     """Bug report 2026-11-18 part D: the gap ("min") or overall size ("max") of two Circles / Arcs along their centre line."""
 
     type: Literal["circle_distance"]
@@ -1135,7 +1150,7 @@ class CircleCircleDistanceConstraintCreate(BaseModel):
     side: Literal["min", "max"] = "min"
 
 
-class LineCircleDistanceConstraintCreate(BaseModel):
+class LineCircleDistanceConstraintCreate(_NumberedCreate):
     """Bug report 2026-11-18 part D: from a Line to a Circle's / Arc's tangent side ("min") or far side ("max")."""
 
     type: Literal["line_circle_distance"]
@@ -1145,7 +1160,7 @@ class LineCircleDistanceConstraintCreate(BaseModel):
     side: Literal["min", "max"] = "min"
 
 
-class FixedConstraintCreate(BaseModel):
+class FixedConstraintCreate(_NumberedCreate):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
     every Point that defines it)."""
@@ -1185,11 +1200,13 @@ ConstraintCreate = Union[
 ]
 
 
-class _ConstraintResponseBase(BaseModel):
+class _ConstraintResponseBase(_NumberedResponse):
     """What every constraint response carries beyond its own fields: the saved dimension-label placement, if the user moved the label
     (see `Sketch.label_placements`). Null for a constraint with no saved placement, which a client draws in its default place."""
 
-    label: dict[str, float] | None = None
+    # The saved label record: the placement numbers (offset / along / angle / leg / radius) and, when the user chose how to read the dimension, `show`
+    # ("radius" / "diameter" / "semi" / "full"). Null when there is neither.
+    label: dict[str, float | str] | None = None
 
 
 class LabelPlacementUpdate(BaseModel):
@@ -1203,11 +1220,14 @@ class LabelPlacementUpdate(BaseModel):
     angle: float | None = Field(default=None, allow_inf_nan=False)
     leg: float | None = Field(default=None, allow_inf_nan=False)
     radius: float | None = Field(default=None, allow_inf_nan=False)
+    # Parity follow-ups F4 (decision 10): how the dimension is read. "radius" / "diameter" for a circle or arc size, "semi" / "full" for an ellipse axis. The
+    # stored value never changes with it. May be sent alone (a toggle with no moved label).
+    show: Literal["radius", "diameter", "semi", "full"] | None = None
 
     @model_validator(mode="after")
     def check_not_empty(self) -> "LabelPlacementUpdate":
         if not self.model_dump(exclude_none=True):
-            raise ValueError("Provide at least one of 'offset', 'along', 'angle', 'leg', 'radius'")
+            raise ValueError("Provide at least one of 'offset', 'along', 'angle', 'leg', 'radius', 'show'")
         return self
 
 

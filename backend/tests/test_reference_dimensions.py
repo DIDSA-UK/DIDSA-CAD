@@ -58,7 +58,7 @@ def test_each_kind_measures_what_it_says(bare):
 def test_nonsense_is_refused_with_a_reason(bare):
     a, b = _point(bare, 0, 0), _point(bare, 3, 4)
     assert "radius dimension measures" in _dim(bare, "radius", [("point", a["id"]), ("point", b["id"])], expect=400)["detail"]
-    assert "not found" in _dim(bare, "distance", [("point", a["id"]), ("point", "nope")], expect=400)["detail"]
+    assert "no longer in the sketch" in _dim(bare, "distance", [("point", a["id"]), ("point", "nope")], expect=400)["detail"]
     assert client.post(f"/sketch/sketches/{bare}/reference-dimensions", json={"kind": "bogus", "refs": []}).status_code == 422
     assert _json(client.get(f"/sketch/sketches/{bare}/reference-dimensions")) == []
 

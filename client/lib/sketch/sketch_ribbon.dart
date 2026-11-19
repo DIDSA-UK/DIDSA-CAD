@@ -263,6 +263,7 @@ class SketchRibbon extends StatelessWidget {
     );
 
     final radiusDiameterId = controller.selectedRadiusDiameterConstraintId;
+    final axisId = controller.selectedEllipseAxisConstraintId;
     final content = !controller.selectedConstraintHasValue
         ? chipRow
         : Column(
@@ -270,6 +271,8 @@ class SketchRibbon extends StatelessWidget {
             children: [
               if (radiusDiameterId != null)
                 _RadiusDiameterToggle(controller: controller, constraintId: radiusDiameterId),
+              // F4 / C4: an ellipse axis reads as the full axis (tip to tip) or the semi-axis (centre to tip), as a circle reads as diameter or radius.
+              if (axisId != null) _AxisToggle(controller: controller, constraintId: axisId),
               _ConstraintValueEditor(controller: controller),
               chipRow,
             ],
@@ -801,31 +804,29 @@ class _ConstraintValueEditor extends StatefulWidget {
 class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
   late final TextEditingController _textController;
 
-  /// On-device feedback: a circle's radius/diameter dimension always stores
-  /// the *radius* value (see [SketchController.confirmGhostValue]'s
-  /// `distanceValue`), so editing it while [SketchController.
-  /// showsDiameterFor] is true must show/accept the *diameter* the label
-  /// itself displays, not the raw stored radius the user never sees -
-  /// tracked here (rather than read fresh in [_submit]) so
-  /// [didUpdateWidget] can tell whether the R/⌀ toggle flipped mid-edit and
-  /// re-sync the displayed text to match.
-  bool _showsDiameter = false;
+  /// On-device feedback: a circle's radius/diameter dimension always stores the *radius* value (see [SketchController.confirmGhostValue]'s
+  /// `distanceValue`), so editing it while [SketchController.showsDiameterFor] is true must show/accept the *diameter* the label itself displays, not the
+  /// raw stored radius the user never sees. Parity follow-ups F4 / C4: an ellipse axis stores the semi-axis, so while it reads as the full axis the editor
+  /// shows and accepts the full axis ("show full, edit 80" stores 40). Both are one factor, [SketchController.displayFactorFor] (2 or 1): the editor
+  /// shows `stored * factor` and stores `typed / factor`. Tracked here (rather than read fresh in [_submit]) so [didUpdateWidget] can tell whether the
+  /// toggle flipped mid-edit and re-sync the displayed text to match.
+  double _factor = 1.0;
 
-  bool _computeShowsDiameter() {
-    final id = widget.controller.selectedRadiusDiameterConstraintId;
-    return id != null && widget.controller.showsDiameterFor(id);
+  double _computeFactor() {
+    final id = widget.controller.selectedRadiusDiameterConstraintId ?? widget.controller.selectedEllipseAxisConstraintId;
+    return id == null ? 1.0 : widget.controller.displayFactorFor(id);
   }
 
   double? _displayValue() {
     final raw = widget.controller.selectedConstraintValue;
     if (raw == null) return null;
-    return _showsDiameter ? raw * 2 : raw;
+    return raw * _factor;
   }
 
   @override
   void initState() {
     super.initState();
-    _showsDiameter = _computeShowsDiameter();
+    _factor = _computeFactor();
     // On-device feedback ("the current dimension should be highlighted so
     // the user can immediately type over it"): pre-selects the whole value
     // rather than just prefilling it with the cursor at the end - same fix
@@ -838,9 +839,9 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
   @override
   void didUpdateWidget(covariant _ConstraintValueEditor oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final nowShowsDiameter = _computeShowsDiameter();
-    if (nowShowsDiameter != _showsDiameter) {
-      _showsDiameter = nowShowsDiameter;
+    final nowFactor = _computeFactor();
+    if (nowFactor != _factor) {
+      _factor = nowFactor;
       final text = _formatValue(_displayValue());
       _textController.value = TextEditingValue(
         text: text,
@@ -863,17 +864,20 @@ class _ConstraintValueEditorState extends State<_ConstraintValueEditor> {
   void _submit() {
     final value = double.tryParse(_textController.text);
     if (value == null) return;
-    widget.controller.updateSelectedConstraintValue(_showsDiameter ? value / 2 : value);
+    widget.controller.updateSelectedConstraintValue(value / _factor);
   }
 
   @override
   Widget build(BuildContext context) {
     final isRadiusDiameter = widget.controller.selectedRadiusDiameterConstraintId != null;
+    final isAxis = widget.controller.selectedEllipseAxisConstraintId != null;
     final suffix = widget.controller.selectedConstraintIsAngle
         ? '°'
         : isRadiusDiameter
-            ? (_showsDiameter ? 'mm ⌀' : 'mm R')
-            : 'mm';
+            ? (_factor == 2.0 ? 'mm ⌀' : 'mm R')
+            : isAxis
+                ? (_factor == 2.0 ? 'mm full' : 'mm semi')
+                : 'mm';
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
       child: Row(
@@ -947,6 +951,47 @@ class _RadiusDiameterToggle extends StatelessWidget {
               selected: showsDiameter,
               onSelected: (_) {
                 if (!showsDiameter) controller.toggleRadiusDiameterDisplay(constraintId);
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Parity follow-ups F4 / C4: the ellipse axis counterpart of [_RadiusDiameterToggle] - "Show full axis" / "Show semi-axis" on a selected ellipse axis
+/// dimension. The constraint stores the semi-axis (centre to tip) either way; the choice is how it is drawn (tip to tip, or centre to tip) and what the
+/// editor above shows and accepts. It is saved with the dimension's label record, so a reload and the other app show it the same way.
+class _AxisToggle extends StatelessWidget {
+  final SketchController controller;
+  final String constraintId;
+
+  const _AxisToggle({required this.controller, required this.constraintId});
+
+  @override
+  Widget build(BuildContext context) {
+    final showsFull = controller.showsFullAxisFor(constraintId);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+      child: Row(
+        children: [
+          Expanded(
+            child: ChoiceChip(
+              label: const Text('Show semi-axis'),
+              selected: !showsFull,
+              onSelected: (_) {
+                if (showsFull) controller.toggleAxisDisplay(constraintId);
+              },
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: ChoiceChip(
+              label: const Text('Show full axis'),
+              selected: showsFull,
+              onSelected: (_) {
+                if (!showsFull) controller.toggleAxisDisplay(constraintId);
               },
             ),
           ),

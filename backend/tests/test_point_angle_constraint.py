@@ -85,7 +85,7 @@ def test_point_ids_are_the_three_points_and_block_their_deletion():
     constraint = sketch.add_point_angle_constraint(v, a, b, 40.0)
     assert set(constraint.point_ids()) == {v, a, b}
     reasons = blockers(sketch, (a, b))
-    assert all(f"constraint {constraint.id}" in (reason or "") for reason in reasons.values())
+    assert all(f"referenced by {sketch.name_of(constraint.id)}" in (reason or "") for reason in reasons.values())
     del sketch.constraints[constraint.id]
     assert blockers(sketch, (a, b)) == {a: None, b: None}
 

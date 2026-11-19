@@ -98,7 +98,7 @@ def test_point_ids_are_the_lines_two_points_and_block_their_deletion():
     assert set(constraint.point_ids()) == set(own)
     probe = round_trip(sketch)
     assert probe.delete_line(line.id) == []
-    assert all(f"constraint {constraint.id}" in (reason or "") for reason in blockers(probe, own).values())
+    assert all(f"referenced by {sketch.name_of(constraint.id)}" in (reason or "") for reason in blockers(probe, own).values())
     del sketch.constraints[constraint.id]
     assert set(sketch.delete_line(line.id)) == set(own)
 

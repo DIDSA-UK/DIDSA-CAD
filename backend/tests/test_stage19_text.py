@@ -95,7 +95,7 @@ def test_point_deletion_blocked_while_referenced_by_text():
     anchor = sketch.add_point(0.0, 0.0)
     sketch.add_text("Hi", "Open Sans", 10.0, anchor.id)
 
-    with pytest.raises(ValueError, match="still referenced by text"):
+    with pytest.raises(ValueError, match="still referenced by Text"):
         sketch.delete_point(anchor.id)
 
 

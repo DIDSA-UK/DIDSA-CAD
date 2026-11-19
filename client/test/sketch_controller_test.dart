@@ -512,7 +512,85 @@ class _FakeBackend {
     }
   }
 
+  /// F4 / A1: when true, every response carries the `number` the real backend gives (`app/sketch/numbering.py`): per kind, in creation order, never
+  /// reused after a delete; dimensions share one counter; shape glue and a shape tool's provisional sizes take none; a create body's `number` is
+  /// honoured unless another thing of the kind has it (an undo that re-creates).
+  bool numbering = false;
+  final Map<String, int> _numbers = {};
+  final Map<String, int> _numberCounters = {};
+
+  String? _numberKindOf(String id) {
+    if (sketches.values.any((s) => s['origin_point_id'] == id)) return null;
+    if (points.containsKey(id)) return 'point';
+    for (final (map, kind) in [
+      (lines, 'line'),
+      (circles, 'circle'),
+      (arcs, 'arc'),
+      (ellipses, 'ellipse'),
+      (ellipseArcs, 'ellipse_arc'),
+      (polygons, 'polygon'),
+      (slots, 'slot'),
+      (rectangles, 'rectangle'),
+      (splines, 'spline'),
+      (texts, 'text'),
+    ]) {
+      if (map.containsKey(id)) return kind;
+    }
+    final constraint = constraints[id];
+    if (constraint != null) {
+      if (constraint['provisional'] == true) return null;
+      for (final map in [circles, arcs, ellipses, ellipseArcs, polygons, slots, rectangles]) {
+        for (final shape in map.values) {
+          final glue = (shape['structural_constraint_ids'] as List?) ?? const [];
+          if (glue.contains(id) && constraint['provisional'] != false) return null;
+        }
+      }
+      final type = constraint['type'] as String? ?? 'distance';
+      const dimensions = {'distance', 'angle', 'line_distance', 'point_line_distance', 'arc_length', 'horizontal_angle', 'point_angle'};
+      return dimensions.contains(type) ? 'dimension' : type;
+    }
+    if (referenceDimensions.containsKey(id)) return 'dimension';
+    return null;
+  }
+
+  Object? _numbered(Object? node, int? requested) {
+    if (node is List) return [for (final item in node) _numbered(item, requested)];
+    if (node is! Map) return node;
+    final out = <String, dynamic>{for (final e in node.entries) e.key as String: _numbered(e.value, null)};
+    final id = out['id'];
+    if (id is String) {
+      final kind = _numberKindOf(id);
+      if (kind != null) {
+        if (!_numbers.containsKey(id)) {
+          final taken = requested != null && _numbers.entries.any((e) => e.value == requested && _numberKindOf(e.key) == kind && e.key != id);
+          if (taken || requested == null || requested < 1) {
+            _numberCounters[kind] = (_numberCounters[kind] ?? 0) + 1;
+            _numbers[id] = _numberCounters[kind]!;
+          } else {
+            _numbers[id] = requested;
+            if (requested > (_numberCounters[kind] ?? 0)) _numberCounters[kind] = requested;
+          }
+        }
+        out['number'] = _numbers[id];
+      }
+    }
+    return out;
+  }
+
   http.Response handle(http.Request request) {
+    final response = _handle(request);
+    if (!numbering || response.statusCode >= 300 || response.body.isEmpty) return response;
+    Object? requested;
+    if (request.method == 'POST' && request.body.isNotEmpty) {
+      try {
+        requested = (jsonDecode(request.body) as Map)['number'];
+      } catch (_) {}
+    }
+    final decoded = jsonDecode(response.body);
+    return http.Response(jsonEncode(_numbered(decoded, requested is int ? requested : null)), response.statusCode, headers: response.headers);
+  }
+
+  http.Response _handle(http.Request request) {
     final path = request.url.path;
     requestLog.add('${request.method} $path');
     final body = request.body.isEmpty ? <String, dynamic>{} : jsonDecode(request.body) as Map<String, dynamic>;
@@ -777,11 +855,23 @@ class _FakeBackend {
       if (labelWritesFail) return _json({'detail': 'no such route'}, 404);
       if (request.method == 'PUT') {
         labelWrites.add({'id': constraintLabelMatch.group(1)!, ...body});
-        constraint['label'] = body;
+        // Like the backend (F4, decision 10): placement numbers replace the placement, `show` is kept apart, and a PUT with only one of them leaves the other.
+        final before = (constraint['label'] as Map<String, dynamic>?) ?? const {};
+        final placement = {for (final e in body.entries) if (e.key != 'show') e.key: e.value};
+        final show = body['show'] ?? before['show'];
+        constraint['label'] = {
+          ...(placement.isNotEmpty ? placement : {for (final e in before.entries) if (e.key != 'show') e.key: e.value}),
+          if (show != null) 'show': show,
+        };
         return http.Response('', 204);
       }
       if (request.method == 'DELETE') {
-        constraint.remove('label');
+        final show = (constraint['label'] as Map<String, dynamic>?)?['show'];
+        if (show != null) {
+          constraint['label'] = {'show': show};
+        } else {
+          constraint.remove('label');
+        }
         return http.Response('', 204);
       }
     }
@@ -3000,6 +3090,9 @@ class _FakeBackend {
   /// When 0 or more, this many solves converge and every later one does not (a trial that only fails after the first answer).
   int convergeFirst = -1;
 
+  /// What a solve that does not converge puts in `detail`: the real backend's developer text (`solver.py`), which the flat app must not show.
+  String solveDetail = 'Solve did not fully converge. blamed_constraint_ids names the most-recently-added constraint by convention only (result code 1)';
+
   Map<String, dynamic> _solveResultBody() {
     if (convergeFirst > 0) {
       convergeFirst--;
@@ -3014,7 +3107,7 @@ class _FakeBackend {
         'result_code': converged ? 0 : 1,
         'blamed_constraint_ids': [],
         'solver_reported_failed_constraint_ids': solverReportedFailedConstraintIds,
-        'detail': 'ok',
+        'detail': converged ? 'ok' : solveDetail,
       };
 
   http.Response _json(Map<String, dynamic> body, int statusCode) =>
@@ -17214,6 +17307,214 @@ void main() {
       // Deleting the line takes the dimension with it.
       final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.line, id: lineId)]);
       expect(cascade.constraints, contains(made.id));
+    });
+  });
+
+  group('parity follow-ups F4: names from the backend, the take-back message, and the saved radius / diameter and semi / full choices', () {
+    setUp(() => backend.numbering = true);
+
+    /// Three lines in a row, drawn through the tool: the backend numbers them Line 1, 2, 3.
+    Future<List<String>> threeLines() async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 5);
+      await controller.handleCanvasTap(10, 5);
+      controller.finishChain();
+      await controller.handleCanvasTap(0, 15);
+      await controller.handleCanvasTap(10, 15);
+      controller.finishChain();
+      await controller.handleCanvasTap(0, 25);
+      await controller.handleCanvasTap(10, 25);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      return controller.lines.keys.toList();
+    }
+
+    String label(String lineId) => controller.selectionLabel(SketchSelection(kind: SelectionKind.line, id: lineId));
+
+    Future<SketchController> reopen() async {
+      final reopened = SketchController(api: SketchApiClient(httpClient: MockClient((request) async => backend.handle(request))));
+      backend.sketches[controller.sketchId!] = {'id': controller.sketchId!, 'plane': 'XY', 'origin_point_id': 'origin-1'};
+      await reopened.adoptSketch(controller.sketchId!);
+      return reopened;
+    }
+
+    test('selectionLabel reads the backend number', () async {
+      final ids = await threeLines();
+      expect(ids.map(label), ['Line 1', 'Line 2', 'Line 3']);
+      final pointIds = controller.points.keys.where((id) => id != controller.originPointId).toList();
+      expect(controller.selectionLabel(SketchSelection(kind: SelectionKind.point, id: pointIds.first)), 'Point 1');
+    });
+
+    test('a delete leaves the others\' names alone (the old position rule renamed Line 3 to Line 2)', () async {
+      final ids = await threeLines();
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: ids[1]));
+      await controller.deleteSelected();
+      expect(controller.lines.keys, [ids[0], ids[2]]);
+      expect(label(ids[0]), 'Line 1');
+      expect(label(ids[2]), 'Line 3');
+    });
+
+    test('a reload keeps the names', () async {
+      final ids = await threeLines();
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: ids[0]));
+      await controller.deleteSelected();
+      final reopened = await reopen();
+      expect(reopened.lines.keys, [ids[1], ids[2]]);
+      expect([for (final id in reopened.lines.keys) reopened.selectionLabel(SketchSelection(kind: SelectionKind.line, id: id))], ['Line 2', 'Line 3']);
+    });
+
+    test('undo of a delete asks for the number the line had, so its name comes back', () async {
+      final ids = await threeLines();
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: ids[1]));
+      await controller.deleteSelected();
+      await controller.undo();
+      expect(controller.lines.length, 3);
+      final back = controller.lines.keys.firstWhere((id) => !ids.contains(id));
+      expect(label(back), 'Line 2');
+      expect(label(ids[2]), 'Line 3');
+    });
+
+    test('dimensions are D<n>, relations are named by type', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 5);
+      await controller.handleCanvasTap(10, 5);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      // A line drawn level gets its Horizontal from the drawing path (the inferred one).
+      final relation = controller.constraints.values.whereType<HorizontalConstraintDto>().single;
+      expect(controller.selectionLabel(SketchSelection(kind: SelectionKind.constraint, id: relation.id)), 'Horizontal 1');
+    });
+
+    test('against a backend that numbers nothing the position rule still names everything', () async {
+      backend.numbering = false;
+      final ids = await threeLines();
+      expect(ids.map(label), ['Line 1', 'Line 2', 'Line 3']);
+      controller.selectEntity(SketchSelection(kind: SelectionKind.line, id: ids[0]));
+      await controller.deleteSelected();
+      expect(label(ids[1]), 'Line 1'); // the fallback is the position rule: it renumbers, which is why the backend number exists
+    });
+
+    test('the take-back message is plain words: the solver\'s developer detail is not shown', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 5);
+      await controller.handleCanvasTap(10, 6);
+      controller.finishChain();
+      await controller.handleCanvasTap(0, 15);
+      await controller.handleCanvasTap(10, 16);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      await controller.handleCanvasTap(8, 5.8);
+      await controller.handleCanvasTap(8, 15.8);
+      backend.converged = false;
+      await controller.addParallelConstraint();
+      expect(controller.errorMessage, "The sketch can't satisfy that constraint together with the rest, so it was not added.");
+      expect(controller.errorMessage, isNot(contains('(')));
+      expect(controller.errorMessage, isNot(contains('blamed')));
+    });
+
+    group('the Radius / Diameter choice is saved with the dimension', () {
+      Future<String> circleDimension() async {
+        controller.selectDrawTool(SketchTool.circle);
+        await controller.handleCanvasTap(0, 0);
+        await controller.handleCanvasTap(4, 0);
+        controller.exitToSelectMode();
+        final circle = controller.circles.values.single;
+        await controller.addRadiusDimensionFor(SketchSelection(kind: SelectionKind.circle, id: circle.id), diameter: true);
+        await controller.confirmGhostValue('diameter', 20.0);
+        return controller.constraints.values.whereType<DistanceConstraintDto>().firstWhere((c) => controller.isRadiusDistanceConstraint(c) && !c.provisional).id;
+      }
+
+      test('a diameter confirmed from the ghost is written as show diameter, and a reload reads it back', () async {
+        final id = await circleDimension();
+        await Future<void>.delayed(Duration.zero);
+        expect(controller.showsDiameterFor(id), isTrue);
+        expect(backend.constraints[id]!['label'], {'show': 'diameter'});
+        final reopened = await reopen();
+        expect(reopened.showsDiameterFor(id), isTrue);
+      });
+
+      test('toggling back to Radius is saved too', () async {
+        final id = await circleDimension();
+        controller.toggleRadiusDiameterDisplay(id);
+        await Future<void>.delayed(Duration.zero);
+        expect(controller.showsDiameterFor(id), isFalse);
+        expect(backend.constraints[id]!['label'], {'show': 'radius'});
+        final reopened = await reopen();
+        expect(reopened.showsDiameterFor(id), isFalse);
+      });
+
+      test('a moved label keeps the choice (the backend keeps show when a PUT carries only the placement)', () async {
+        final id = await circleDimension();
+        await Future<void>.delayed(Duration.zero);
+        controller.beginLabelDrag(id);
+        await controller.updateGrabbedPosition(6.5, 1.4);
+        controller.endLabelDrag();
+        await Future<void>.delayed(Duration.zero);
+        expect((backend.constraints[id]!['label'] as Map)['show'], 'diameter');
+        final reopened = await reopen();
+        expect(reopened.showsDiameterFor(id), isTrue);
+        expect(reopened.labelPlacementFor(id), isNotNull);
+      });
+    });
+
+    group('an ellipse axis: Show full axis / Show semi-axis', () {
+      /// An ellipse with a 40 mm semi major axis and its major-axis dimension confirmed at 40.
+      Future<(String, DistanceConstraintDto)> axisDimension() async {
+        controller.selectDrawTool(SketchTool.ellipse);
+        await controller.handleCanvasTap(0, 0);
+        await controller.handleCanvasTap(40, 0);
+        await controller.handleCanvasTap(40, 20);
+        controller.exitToSelectMode();
+        final ellipse = controller.ellipses.values.single;
+        final axis = controller.constraints.values.whereType<DistanceConstraintDto>().firstWhere((c) => c.pointAId == ellipse.centerPointId && c.pointBId == ellipse.majorPointId);
+        // The user confirms the axis size: the backend clears `provisional` (the fake does not model that PATCH), the client holds the confirmed one.
+        backend.constraints[axis.id]!['provisional'] = false;
+        final confirmed = DistanceConstraintDto(id: axis.id, pointAId: axis.pointAId, pointBId: axis.pointBId, distance: axis.distance);
+        controller.constraints[axis.id] = confirmed;
+        controller.selectEntity(SketchSelection(kind: SelectionKind.constraint, id: axis.id));
+        return (axis.id, confirmed);
+      }
+
+      test('with no saved choice it shows the full axis, tip to tip, twice the stored value', () async {
+        final (id, axis) = await axisDimension();
+        expect(controller.selectedEllipseAxisConstraintId, id);
+        expect(controller.showsFullAxisFor(id), isTrue);
+        expect(controller.displayFactorFor(id), 2.0);
+        expect(controller.ellipseAxisDisplayValue(axis), 2 * axis.distance);
+        final ellipse = controller.ellipses.values.single;
+        expect(controller.ellipseAxisForDistanceConstraint(axis), (ellipse.majorPointNegId, ellipse.majorPointId));
+      });
+
+      test('Show semi-axis draws centre to tip with the stored value, and the editor reads and writes the stored value', () async {
+        final (id, axis) = await axisDimension();
+        controller.toggleAxisDisplay(id);
+        expect(controller.showsFullAxisFor(id), isFalse);
+        expect(controller.displayFactorFor(id), 1.0);
+        expect(controller.ellipseAxisDisplayValue(axis), axis.distance);
+        final ellipse = controller.ellipses.values.single;
+        expect(controller.ellipseAxisForDistanceConstraint(axis), (ellipse.centerPointId, ellipse.majorPointId));
+        expect(controller.selectedConstraintValue, axis.distance);
+      });
+
+      test('the toggle round-trips: show full, edit 80, stored 40; and a reload keeps the choice', () async {
+        final (id, axis) = await axisDimension();
+        // Default is the full axis: the editor shows 2 x the stored value, and typing 80 stores 40.
+        expect(controller.selectedConstraintValue! * controller.displayFactorFor(id), 2 * axis.distance);
+        await controller.updateSelectedConstraintValue(80.0 / controller.displayFactorFor(id));
+        expect((backend.constraints[id]!['distance'] as num).toDouble(), 40.0);
+        // Semi-axis, then back to the full axis: both are saved; a reload reads the last.
+        controller.toggleAxisDisplay(id);
+        await Future<void>.delayed(Duration.zero);
+        expect(backend.constraints[id]!['label'], {'show': 'semi'});
+        final semiReload = await reopen();
+        expect(semiReload.showsFullAxisFor(id), isFalse);
+        controller.toggleAxisDisplay(id);
+        await Future<void>.delayed(Duration.zero);
+        expect(backend.constraints[id]!['label'], {'show': 'full'});
+        final fullReload = await reopen();
+        expect(fullReload.showsFullAxisFor(id), isTrue);
+        expect(fullReload.displayFactorFor(id), 2.0);
+      });
     });
   });
 }

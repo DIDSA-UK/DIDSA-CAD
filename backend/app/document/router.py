@@ -5845,11 +5845,11 @@ def reattach_external_reference(
             sketch.external_references[point_id] = existing
             raise HTTPException(status_code=422, detail={"type": "not_coplanar" if reason == "not_coplanar" else "reference_lost", "reason": reason})
         sketch.external_reference_decisions.pop(point_id, None)
-        return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+        return PointResponse(id=point.id, number=sketch.number_of(point.id), x=point.x, y=point.y, is_locked=True)
     if payload.vertex_index is None:
         raise HTTPException(status_code=422, detail={"type": "vertex_required", "point_id": point_id})
     _reattach_vertex_point(part, sketch, point_id, payload.body_id, payload.vertex_index, bodies, excluded)
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+    return PointResponse(id=point.id, number=sketch.number_of(point.id), x=point.x, y=point.y, is_locked=True)
 
 
 def _reattach_vertex_point(part, sketch, point_id: str, body_id: str, vertex_index: int, bodies: dict, excluded) -> None:
@@ -5907,7 +5907,7 @@ def reattach_external_edge(part_id: str, feature_id: str, payload: ExternalEdgeR
             sketch.external_references[point_id] = ref
             sketch.points[point_id].x, sketch.points[point_id].y = x, y
         raise
-    return [PointResponse(id=i, x=sketch.points[i].x, y=sketch.points[i].y, is_locked=True) for i in payload.point_ids]
+    return [PointResponse(id=i, number=sketch.number_of(i), x=sketch.points[i].x, y=sketch.points[i].y, is_locked=True) for i in payload.point_ids]
 
 
 @router.post(
@@ -5944,7 +5944,7 @@ def confirm_external_reference(part_id: str, feature_id: str, point_id: str) -> 
     sketch.external_references[point_id] = confirmed
     sketch.external_reference_decisions.pop(point_id, None)
     point = sketch.points[point_id]
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+    return PointResponse(id=point.id, number=sketch.number_of(point.id), x=point.x, y=point.y, is_locked=True)
 
 
 def _confirm_curve_reference(part: Part, feature_id: str, sketch, curve_id: str, point_id: str) -> PointResponse:
@@ -6023,7 +6023,7 @@ def create_external_vertex_reference(
     ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, payload.vertex_index)
     x, y = resolve_external_vertex_position(part, sketch, ref, bodies, excluded)
     point = sketch.add_external_vertex_reference(x, y, ref)
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
+    return PointResponse(id=point.id, number=sketch.number_of(point.id), x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
 @router.post(
@@ -6080,16 +6080,15 @@ def create_external_edge_reference(
     return ExternalEdgeReferenceResponse(
         line=LineResponse(
             id=line.id,
+            number=sketch.number_of(line.id),
             start_point_id=line.start_point_id,
             end_point_id=line.end_point_id,
             length=line.length(sketch.points),
             construction=line.construction,
         ),
-        start_point=PointResponse(
-            id=start_point.id, x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
+        start_point=PointResponse(id=start_point.id, number=sketch.number_of(start_point.id), x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
         ),
-        end_point=PointResponse(
-            id=end_point.id, x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
+        end_point=PointResponse(id=end_point.id, number=sketch.number_of(end_point.id), x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
         ),
     )
 
@@ -6148,7 +6147,7 @@ def _convert_body_vertex(part_id: str, feature_id: str, payload: ConvertVertexCr
     ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, payload.vertex_index)
     x, y = resolve_external_vertex_position(part, sketch, ref, bodies, excluded)
     point = sketch.add_or_reuse_external_vertex_reference(x, y, ref)
-    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
+    return PointResponse(id=point.id, number=sketch.number_of(point.id), x=point.x, y=point.y, is_locked=sketch.is_point_locked(point.id))
 
 
 def _drop_constraints_between_pinned_points(sketch, constraint_ids: list[str]) -> None:
@@ -6195,7 +6194,7 @@ def convert_body_face(part_id: str, feature_id: str, payload: ConvertFaceCreate)
         _flag_converted(sketch, payload.reference, before_points, before_entities, [centre.id], [])
         return ConvertFaceResponse(
             kind="centre",
-            center_point=PointResponse(id=centre.id, x=centre.x, y=centre.y, is_locked=True, is_reference=sketch.is_reference(centre.id)),
+            center_point=PointResponse(id=centre.id, number=sketch.number_of(centre.id), x=centre.x, y=centre.y, is_locked=True, is_reference=sketch.is_reference(centre.id)),
         )
     face = face_line(bodies, payload.body_id, payload.face_index, basis)
     start_ref = _new_external_reference(part, sketch, bodies, excluded, payload.body_id, face.start_vertex)
@@ -6216,8 +6215,8 @@ def convert_body_face(part_id: str, feature_id: str, payload: ConvertFaceCreate)
             construction=line.construction,
             is_reference=sketch.is_reference(line.id),
         ),
-        start_point=PointResponse(id=start_point.id, x=start_point.x, y=start_point.y, is_locked=True, is_reference=sketch.is_reference(start_point.id)),
-        end_point=PointResponse(id=end_point.id, x=end_point.x, y=end_point.y, is_locked=True, is_reference=sketch.is_reference(end_point.id)),
+        start_point=PointResponse(id=start_point.id, number=sketch.number_of(start_point.id), x=start_point.x, y=start_point.y, is_locked=True, is_reference=sketch.is_reference(start_point.id)),
+        end_point=PointResponse(id=end_point.id, number=sketch.number_of(end_point.id), x=end_point.x, y=end_point.y, is_locked=True, is_reference=sketch.is_reference(end_point.id)),
     )
 
 
@@ -6270,7 +6269,7 @@ def _convert_elliptical_edge(sketch, params: tuple[float, float, float, float, f
         if existing.type == "ellipse":
             c = sketch.points[existing.center_point_id]
             if abs(c.x - centre_x) < 1e-6 and abs(c.y - centre_y) < 1e-6 and abs(existing.major_radius(sketch.points) - major) < 1e-6 and abs(existing.minor_radius(sketch.points) - minor) < 1e-6:
-                centre = PointResponse(id=c.id, x=c.x, y=c.y, is_locked=True)
+                centre = PointResponse(id=c.id, number=sketch.number_of(c.id), x=c.x, y=c.y, is_locked=True)
                 return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, existing), start_point=centre, end_point=centre, center_point=centre)
     centre_point = sketch.add_point(centre_x, centre_y)
     ellipse = sketch.add_ellipse(centre_point.id, major_radius=major, angle=angle, minor_radius=minor, construction=construction)
@@ -6279,7 +6278,7 @@ def _convert_elliptical_edge(sketch, params: tuple[float, float, float, float, f
         sketch,
         [ellipse.major_constraint_id, ellipse.minor_constraint_id, ellipse.major_midpoint_constraint_id, ellipse.minor_midpoint_constraint_id, ellipse.perpendicular_constraint_id],
     )
-    centre = PointResponse(id=centre_point.id, x=centre_point.x, y=centre_point.y, is_locked=True)
+    centre = PointResponse(id=centre_point.id, number=sketch.number_of(centre_point.id), x=centre_point.x, y=centre_point.y, is_locked=True)
     return ConvertEdgeResponse(ellipse=_ellipse_response(sketch, ellipse), start_point=centre, end_point=centre, center_point=centre)
 
 
@@ -6352,7 +6351,7 @@ def _projected_copy_response(sketch, made_id: str) -> ConvertEdgeResponse:
         )
     assert isinstance(entity, Spline)
     return ConvertEdgeResponse(
-        spline=_spline_response(entity),
+        spline=_spline_response(sketch, entity),
         start_point=_converted_point_response(sketch, entity.through_point_ids[0]),
         end_point=_converted_point_response(sketch, entity.through_point_ids[-1]),
     )
@@ -6480,7 +6479,7 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
         existing_circle = next((c for c in sketch.circles() if c.center_point_id == center_point.id), None)
         if existing_circle is not None:
             # Idempotent per edge, as `convert_body_vertex` is: the same rim converted again answers with the Circle already made (R-E).
-            centre_existing = PointResponse(id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True)
+            centre_existing = PointResponse(id=center_point.id, number=sketch.number_of(center_point.id), x=center_point.x, y=center_point.y, is_locked=True)
             return ConvertEdgeResponse(
                 circle=CircleResponse(
                     id=existing_circle.id,
@@ -6510,8 +6509,7 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
         # that defines it needs to be.
         sketch.add_fixed_constraint(circle.id)
         _drop_constraints_between_pinned_points(sketch, [circle.radius_constraint_id, *circle.cardinal_constraint_ids])
-        center_response = PointResponse(
-            id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True
+        center_response = PointResponse(id=center_point.id, number=sketch.number_of(center_point.id), x=center_point.x, y=center_point.y, is_locked=True
         )
         return ConvertEdgeResponse(
             circle=CircleResponse(
@@ -6590,13 +6588,11 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
                 construction=arc.construction,
                 radius_constraint_id=arc.radius_constraint_id,
             ),
-            start_point=PointResponse(
-                id=start_point.id, x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
+            start_point=PointResponse(id=start_point.id, number=sketch.number_of(start_point.id), x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
             ),
-            end_point=PointResponse(
-                id=end_point.id, x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
+            end_point=PointResponse(id=end_point.id, number=sketch.number_of(end_point.id), x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
             ),
-            center_point=PointResponse(id=center_point.id, x=center_point.x, y=center_point.y, is_locked=True),
+            center_point=PointResponse(id=center_point.id, number=sketch.number_of(center_point.id), x=center_point.x, y=center_point.y, is_locked=True),
         )
 
     line = next(
@@ -6611,11 +6607,9 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
             length=line.length(sketch.points),
             construction=line.construction,
         ),
-        start_point=PointResponse(
-            id=start_point.id, x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
+        start_point=PointResponse(id=start_point.id, number=sketch.number_of(start_point.id), x=start_point.x, y=start_point.y, is_locked=sketch.is_point_locked(start_point.id)
         ),
-        end_point=PointResponse(
-            id=end_point.id, x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
+        end_point=PointResponse(id=end_point.id, number=sketch.number_of(end_point.id), x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
         ),
     )
 

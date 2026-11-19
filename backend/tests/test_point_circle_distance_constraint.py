@@ -117,7 +117,7 @@ def test_point_ids_list_the_point_the_centre_and_the_radius_point_and_block_dele
     point = sketch.add_point(10.0, 0.0)
     constraint = sketch.add_point_circle_distance_constraint(point.id, circle.id, 3.0)
     assert set(constraint.point_ids()) == {point.id, circle.center_point_id, circle.radius_point_id}
-    assert f"constraint {constraint.id}" in blockers(sketch, [point.id])[point.id]
+    assert f"referenced by {sketch.name_of(constraint.id)}" in blockers(sketch, [point.id])[point.id]
     probe = round_trip(sketch)
     probe.delete_circle(circle.id)
     assert circle.center_point_id in probe.points and circle.radius_point_id in probe.points  # still held by the dimension

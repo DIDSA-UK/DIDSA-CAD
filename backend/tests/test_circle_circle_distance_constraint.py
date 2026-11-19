@@ -110,7 +110,7 @@ def test_point_ids_are_both_centres_and_rims_and_block_deletion():
     probe = round_trip(sketch)
     probe.delete_circle(two.id)
     assert {two.center_point_id, two.radius_point_id} <= set(probe.points)
-    assert f"constraint {constraint.id}" in blockers(probe, [two.center_point_id])[two.center_point_id]
+    assert f"referenced by {sketch.name_of(constraint.id)}" in blockers(probe, [two.center_point_id])[two.center_point_id]
     del sketch.constraints[constraint.id]
     assert two.center_point_id in sketch.delete_circle(two.id)
 

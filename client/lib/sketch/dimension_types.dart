@@ -29,6 +29,29 @@ bool isLaidOutDimension(ConstraintDto c) =>
     c is CircleCircleDistanceConstraintDto ||
     c is LineCircleDistanceConstraintDto;
 
+/// The relation's name for a constraint that is not a dimension (`Coincident`, `Horizontal`, `Equal length`, ...), as the backend names it
+/// (`app/sketch/numbering.py`), so "Coincident 2" reads the same in every app; null for a dimension, which is `D4` (all dimensions share one counter).
+String? constraintRelationName(ConstraintDto c) => switch (c) {
+      VerticalConstraintDto() => 'Vertical',
+      HorizontalConstraintDto() => 'Horizontal',
+      CoincidentConstraintDto() => 'Coincident',
+      ConcentricConstraintDto() => 'Concentric',
+      ParallelConstraintDto() => 'Parallel',
+      PerpendicularConstraintDto() => 'Perpendicular',
+      EqualLengthConstraintDto() => 'Equal length',
+      CollinearConstraintDto() => 'Collinear',
+      AtMidpointConstraintDto() => 'Midpoint',
+      SplineTangentConstraintDto() => 'Spline tangent',
+      TangentConstraintDto() => 'Tangent',
+      CurveTangentConstraintDto() => 'Curve tangent',
+      EqualRadiusConstraintDto() => 'Equal radius',
+      PointOnLineConstraintDto() => 'Point on line',
+      PointOnCircleConstraintDto() => 'Point on circle',
+      PointOnEllipseConstraintDto() => 'Point on ellipse',
+      FixedConstraintDto() => 'Fixed',
+      _ => null,
+    };
+
 /// Whether [c]'s value is an angle (degrees) rather than a length.
 bool isAngularDimension(ConstraintDto c) => c is HorizontalAngleConstraintDto || c is PointAngleConstraintDto;
 

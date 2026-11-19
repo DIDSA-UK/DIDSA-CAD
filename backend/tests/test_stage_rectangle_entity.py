@@ -185,7 +185,7 @@ def test_collapse_rectangle_removes_the_rectangle_specific_point_deletion_blocke
 
     blocker = sketch._point_deletion_blocker(rectangle.center_point_id)
     assert blocker is not None
-    assert "rectangle" in blocker
+    assert "Rectangle" in blocker
 
     sketch.collapse_rectangle(rectangle.id)
 

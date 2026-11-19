@@ -46,6 +46,7 @@ from app.sketch.intersections import (
     line_vs_line,
     line_vs_segment,
 )
+from app.sketch import numbering as _numbering
 from app.sketch.reference_signature import LineageOrigin, ReferenceDecision, ShapeSignature
 
 
@@ -1276,6 +1277,46 @@ class Sketch:
     # the dimension). Kept beside `constraints` rather than on every constraint class; the solver never sees it. An entry whose constraint has gone is ignored
     # (see `live_label_placements`), so the many places that delete constraints need not each clear it. Persisted (additive: an older file has none).
     label_placements: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Which way the user reads a dimension (parity follow-ups F4, decision 10): constraint id -> "radius" / "diameter" (a circle or arc size) or "semi" / "full"
+    # (an ellipse axis). Part of the dimension's label record (`PUT .../label` saves it with the placement); the stored value never changes with it, it is only
+    # how the value is shown and typed. Persisted (additive); an entry whose constraint has gone is ignored (`live_label_shows`).
+    label_shows: dict[str, str] = field(default_factory=dict)
+    # A1: the number of every point / entity / constraint / reference dimension (id -> number) and the highest number given per kind, so a number is never
+    # reused. Kept and filled by `app.sketch.numbering`; persisted (additive: an older file has none and is numbered on load in its stored order).
+    numbers: dict[str, int] = field(default_factory=dict)
+    number_counters: dict[str, int] = field(default_factory=dict)
+
+    def live_label_shows(self) -> dict[str, str]:
+        """`label_shows` for the constraints that still exist."""
+        return {cid: show for cid, show in self.label_shows.items() if cid in self.constraints and show}
+
+    def label_record(self, constraint_id: str) -> dict[str, float | str] | None:
+        """What a constraint response's `label` carries: the saved placement numbers and the `show` choice; None when there is neither."""
+        record: dict[str, float | str] = dict(self.label_placements.get(constraint_id) or {})
+        show = self.label_shows.get(constraint_id)
+        if show:
+            record["show"] = show
+        return record or None
+
+    def ensure_numbers(self) -> None:
+        """See `app.sketch.numbering.ensure_numbers`."""
+        _numbering.ensure_numbers(self)
+
+    def number_of(self, item_id: str) -> int | None:
+        """The number of a point / entity / constraint / reference dimension (None for the origin or an unknown id)."""
+        return _numbering.number_of(self, item_id)
+
+    def name_of(self, item_id: str) -> str | None:
+        """The human name (`Line 3`, `D4`, `Origin`) of an id of this sketch, None for an id it does not have."""
+        return _numbering.name_of(self, item_id)
+
+    def describe(self, item_id: str, fallback: str = "that item") -> str:
+        """`name_of` for an error text: the name, or `fallback` when the id is not in this sketch."""
+        return _numbering.describe(self, item_id, fallback)
+
+    def set_number(self, item_id: str, number: int) -> bool:
+        """Restores an earlier number on a just re-created item (see `app.sketch.numbering.set_number`)."""
+        return _numbering.set_number(self, item_id, number)
 
     def live_label_placements(self) -> dict[str, dict[str, float]]:
         """`label_placements` for the constraints that still exist."""
@@ -2404,10 +2445,10 @@ class Sketch:
         elif moved_point_id == line.end_point_id:
             fixed_point_id = line.start_point_id
         else:
-            raise ValueError(f"Point {moved_point_id} is not an endpoint of line {line_id}")
+            raise ValueError(f"{self.describe(moved_point_id)} is not an endpoint of {self.describe(line_id)}")
         for entity in self.entities.values():
             if isinstance(entity, Polygon) and line_id in entity.line_ids:
-                raise ValueError(f"Cannot trim/extend line {line_id} - it is an edge of polygon {entity.id}")
+                raise ValueError(f"Cannot trim/extend {self.describe(line_id)} - it is an edge of {self.describe(entity.id)}")
 
         fixed_point = self.points[fixed_point_id]
         moved_point = self.points[moved_point_id]
@@ -2415,7 +2456,7 @@ class Sketch:
         moved_xy = (moved_point.x, moved_point.y)
         line_length = math.hypot(moved_xy[0] - fixed_xy[0], moved_xy[1] - fixed_xy[1])
         if line_length < 1e-9:
-            raise ValueError(f"Cannot trim/extend a zero-length line {line_id}")
+            raise ValueError(f"Cannot trim/extend {self.describe(line_id)}: it has no length")
         current_t = 1.0  # by construction: fixed_xy + 1.0 * (moved_xy - fixed_xy) == moved_xy
 
         candidates: list[tuple[float, tuple[float, float]]] = []
@@ -2458,7 +2499,7 @@ class Sketch:
                 continue
             valid.append((t, point))
         if not valid:
-            raise NoIntersectionFoundError(f"No intersection found to trim/extend line {line_id} to")
+            raise NoIntersectionFoundError(f"No intersection found to trim/extend {self.describe(line_id)} to")
         _, best_point = min(valid, key=lambda candidate: abs(candidate[0] - current_t))
 
         # On-device feedback (closed-profile bug fix): see
@@ -2571,7 +2612,7 @@ class Sketch:
             raise KeyError(line_id)
         for entity in self.entities.values():
             if isinstance(entity, Polygon) and line_id in entity.line_ids:
-                raise ValueError(f"Cannot split line {line_id} - it is an edge of polygon {entity.id}")
+                raise ValueError(f"Cannot split {self.describe(line_id)} - it is an edge of {self.describe(entity.id)}")
 
         a = self.points[line.start_point_id]
         b = self.points[line.end_point_id]
@@ -2580,7 +2621,7 @@ class Sketch:
         dx, dy = b_xy[0] - a_xy[0], b_xy[1] - a_xy[1]
         length_sq = dx * dx + dy * dy
         if length_sq < 1e-18:
-            raise ValueError(f"Cannot split a zero-length line {line_id}")
+            raise ValueError(f"Cannot split {self.describe(line_id)}: it has no length")
         click_t = ((click_x - a_xy[0]) * dx + (click_y - a_xy[1]) * dy) / length_sq
 
         candidates = self._line_candidates_against(a_xy, b_xy, exclude_id=line_id)
@@ -2597,7 +2638,7 @@ class Sketch:
                 break
         if left is None or right is None:
             raise NoIntersectionFoundError(
-                f"Click on line {line_id} isn't bracketed by two interior crossings to split at"
+                f"Click on {self.describe(line_id)} isn't bracketed by two interior crossings to split at"
             )
 
         left_point = self.add_point(*left[1])
@@ -2741,13 +2782,13 @@ class Sketch:
             fixed_point_id = arc.start_point_id
             direction = 1.0
         else:
-            raise ValueError(f"Point {moved_point_id} is not an endpoint of arc {arc_id}")
+            raise ValueError(f"{self.describe(moved_point_id)} is not an endpoint of {self.describe(arc_id)}")
 
         center = self.points[arc.center_point_id]
         center_xy = (center.x, center.y)
         radius = arc.radius(self.points)
         if radius < 1e-9:
-            raise ValueError(f"Cannot trim/extend a degenerate arc {arc_id}")
+            raise ValueError(f"Cannot trim/extend {self.describe(arc_id)}: it is degenerate")
 
         fixed_point = self.points[fixed_point_id]
         moved_point = self.points[moved_point_id]
@@ -2769,7 +2810,7 @@ class Sketch:
                 continue
             valid.append((t, (px, py)))
         if not valid:
-            raise NoIntersectionFoundError(f"No intersection found to trim/extend arc {arc_id} to")
+            raise NoIntersectionFoundError(f"No intersection found to trim/extend {self.describe(arc_id)} to")
         _, best_point = min(valid, key=lambda candidate: abs(candidate[0] - current_t))
 
         # On-device feedback (closed-profile bug fix): see
@@ -2839,7 +2880,7 @@ class Sketch:
         minor_radius = ellipse.minor_radius(self.points)
         rotation = ellipse.rotation(self.points)
         if major_radius < 1e-9 or minor_radius < 1e-9:
-            raise ValueError(f"Cannot trim a degenerate ellipse {ellipse_id}")
+            raise ValueError(f"Cannot trim {self.describe(ellipse_id)}: it is degenerate")
 
         candidate_points = self._ellipse_candidates_against(
             center_xy,
@@ -2856,7 +2897,7 @@ class Sketch:
             }
         )
         if len(angles) < 2:
-            raise NoIntersectionFoundError(f"Fewer than 2 crossings found to trim ellipse {ellipse_id} at")
+            raise NoIntersectionFoundError(f"Fewer than 2 crossings found to trim {self.describe(ellipse_id)} at")
 
         click_angle = (
             _ellipse_local_angle_at(center_xy, major_radius, minor_radius, rotation, (click_x, click_y)) % two_pi
@@ -2926,13 +2967,13 @@ class Sketch:
         center_xy = (center.x, center.y)
         radius = circle.radius(self.points)
         if radius < 1e-9:
-            raise ValueError(f"Cannot trim a degenerate circle {circle_id}")
+            raise ValueError(f"Cannot trim {self.describe(circle_id)}: it is degenerate")
 
         candidate_points = self._circle_candidates_against(center_xy, radius, exclude_id=circle_id)
         two_pi = 2 * math.pi
         angles = sorted({math.atan2(py - center.y, px - center.x) % two_pi for px, py in candidate_points})
         if len(angles) < 2:
-            raise NoIntersectionFoundError(f"Fewer than 2 crossings found to trim circle {circle_id} at")
+            raise NoIntersectionFoundError(f"Fewer than 2 crossings found to trim {self.describe(circle_id)} at")
 
         click_angle = math.atan2(click_y - center.y, click_x - center.x) % two_pi
         next_angle = next((a for a in angles if a > click_angle + 1e-9), angles[0])
@@ -3440,7 +3481,7 @@ class Sketch:
             if entity is None:
                 raise KeyError(entity_id)
             if not isinstance(entity, (Line, Arc)):
-                raise ValueError(f"offset_chain only supports Lines and Arcs, got {entity_id!r}")
+                raise ValueError(f"offset_chain only supports Lines and Arcs, got {self.describe(entity_id)}")
             entities[entity_id] = entity
 
         # Raw (unjoined) offset geometry per entity - identical math to
@@ -3459,7 +3500,7 @@ class Sketch:
             dx, dy = end.x - start.x, end.y - start.y
             length = math.hypot(dx, dy)
             if length == 0:
-                raise ValueError(f"Cannot offset a zero-length Line: {entity_id}")
+                raise ValueError(f"Cannot offset {self.describe(entity_id)}: it has no length")
             offset_x = -dy / length * distance
             offset_y = dx / length * distance
             raw[entity_id] = {
@@ -3530,7 +3571,7 @@ class Sketch:
             primary = _arc_candidate(distance)
             alternate = _arc_candidate(-distance)
             if primary is None and alternate is None:
-                raise ValueError(f"Offset distance would collapse or invert the Arc's radius: {entity_id}")
+                raise ValueError(f"Offset distance would collapse or invert the radius of {self.describe(entity_id)}")
 
             chosen = primary if primary is not None else alternate
             if primary is not None and alternate is not None:
@@ -3581,7 +3622,7 @@ class Sketch:
             start_point = self.add_or_reuse_point(*res["start_xy"])
             end_point = self.add_or_reuse_point(*res["end_xy"])
             if start_point.id == end_point.id:
-                raise ValueError(f"Offset collapsed {entity_id} to a single point")
+                raise ValueError(f"Offset collapsed {self.describe(entity_id)} to a single point")
             if r["kind"] == "line":
                 results.append(self.add_line(start_point.id, end_point.id, construction=construction))
             else:
@@ -3667,7 +3708,7 @@ class Sketch:
                 raise KeyError(entity_id)
             if not isinstance(entity, self._PATTERNABLE_ENTITY_TYPES):
                 raise ValueError(
-                    f"Pattern/Mirror only supports Lines, Circles, Arcs, Ellipses and Ellipse Arcs, got {entity_id!r}"
+                    f"Pattern/Mirror only supports Lines, Circles, Arcs, Ellipses and Ellipse Arcs, got {self.describe(entity_id)}"
                 )
             resolved.append(entity)
         return resolved
@@ -4220,15 +4261,15 @@ class Sketch:
             if entity.id == exclude_entity_id:
                 continue
             if isinstance(entity, Line) and point_id in entity.endpoint_point_ids():
-                return f"Point is still referenced by line {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, Circle) and point_id in (entity.center_point_id, entity.radius_point_id):
-                return f"Point is still referenced by circle {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, Arc) and point_id in (
                 entity.center_point_id,
                 entity.start_point_id,
                 entity.end_point_id,
             ):
-                return f"Point is still referenced by arc {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, Ellipse) and point_id in (
                 entity.center_point_id,
                 entity.major_point_id,
@@ -4236,12 +4277,12 @@ class Sketch:
                 entity.minor_point_id,
                 entity.minor_point_neg_id,
             ):
-                return f"Point is still referenced by ellipse {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, Polygon) and point_id in (
                 entity.center_point_id,
                 *entity.vertex_point_ids,
             ):
-                return f"Point is still referenced by polygon {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, Slot) and point_id in (
                 entity.center1_point_id,
                 entity.center2_point_id,
@@ -4250,21 +4291,21 @@ class Sketch:
                 entity.c_point_id,
                 entity.d_point_id,
             ):
-                return f"Point is still referenced by slot {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, Rectangle) and point_id in (
                 *entity.corner_point_ids,
                 *((entity.center_point_id,) if entity.center_point_id else ()),
             ):
-                return f"Point is still referenced by rectangle {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, Spline) and (
                 point_id in entity.through_point_ids or point_id in entity.control_point_ids
             ):
-                return f"Point is still referenced by spline {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
             if isinstance(entity, TextEntity) and point_id == entity.anchor_point_id:
-                return f"Point is still referenced by text {entity.id}"
+                return f"Point is still referenced by {self.describe(entity.id)}"
         for constraint in self.constraints.values():
             if point_id in constraint.point_ids():
-                return f"Point is still referenced by constraint {constraint.id}"
+                return f"Point is still referenced by {self.describe(constraint.id)}"
         return None
 
     @staticmethod
@@ -4716,12 +4757,12 @@ class Sketch:
         entity = self.entities.get(entity_id)
         if isinstance(entity, Circle):
             if radius_point_id is not None and radius_point_id != entity.radius_point_id:
-                raise ValueError(f"{radius_point_id} is not a rim point of circle {entity_id}")
+                raise ValueError(f"{self.describe(radius_point_id)} is not a rim point of {self.describe(entity_id)}")
             return entity.center_point_id, entity.radius_point_id
         if isinstance(entity, Arc):
             if radius_point_id is not None:
                 if radius_point_id not in (entity.start_point_id, entity.end_point_id):
-                    raise ValueError(f"{radius_point_id} is not a rim point of arc {entity_id}")
+                    raise ValueError(f"{self.describe(radius_point_id)} is not a rim point of {self.describe(entity_id)}")
                 return entity.center_point_id, radius_point_id
             return entity.center_point_id, entity.start_point_id
         raise KeyError(entity_id)
@@ -4926,9 +4967,9 @@ class Sketch:
         if not isinstance(entity2, Arc):
             raise KeyError(entity2_id)
         if shared_point_id not in (entity1.start_point_id, entity1.end_point_id):
-            raise ValueError(f"{shared_point_id} is not an endpoint of arc {entity1_id}")
+            raise ValueError(f"{self.describe(shared_point_id)} is not an endpoint of {self.describe(entity1_id)}")
         if shared_point_id not in (entity2.start_point_id, entity2.end_point_id):
-            raise ValueError(f"{shared_point_id} is not an endpoint of arc {entity2_id}")
+            raise ValueError(f"{self.describe(shared_point_id)} is not an endpoint of {self.describe(entity2_id)}")
 
         constraint = CurveTangentConstraint(
             id=str(uuid.uuid4()),
@@ -5161,7 +5202,7 @@ class Sketch:
                 raise KeyError(entity_id)
             point_ids = self._entity_defining_point_ids(entity)
             if not point_ids:
-                raise ValueError(f"{entity_id} has no Points of its own to fix")
+                raise ValueError(f"{self.describe(entity_id)} has no Points of its own to fix")
 
         # One entry per Point: a Circle's radius Point is also its East cardinal Point, and pinning the same Point twice is a redundancy py-slvs reports as result_code 5.
         new_point_ids = [pid for pid in dict.fromkeys(point_ids) if not self.is_point_locked(pid)]

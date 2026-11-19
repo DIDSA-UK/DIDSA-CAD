@@ -296,7 +296,7 @@ def test_delete_point_referenced_by_a_constraint_is_rejected_over_the_api():
     response = client.delete(f"/sketch/sketches/{sketch['id']}/points/{a['id']}")
 
     assert response.status_code == 400
-    assert "constraint" in response.json()["detail"].lower()
+    assert "still referenced by D" in response.json()["detail"]  # the dimension is named (D1), not its id
 
 
 def test_delete_origin_point_is_rejected_over_the_api():

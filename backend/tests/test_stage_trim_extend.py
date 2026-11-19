@@ -303,7 +303,7 @@ def test_rejects_trimming_a_polygons_own_edge():
     edge_id = polygon.line_ids[2]
     edge = sketch.entities[edge_id]
 
-    with pytest.raises(ValueError, match="polygon"):
+    with pytest.raises(ValueError, match="Polygon"):
         sketch.trim_or_extend_line(edge_id, edge.start_point_id)
 
 

@@ -827,6 +827,7 @@ def sketch_to_dict(sketch: Sketch) -> dict:
     needed a save/open path independent of `export_native`/`import_native`'s
     own Document-level format, but the underlying per-Sketch dict shape is
     identical either way."""
+    sketch.ensure_numbers()  # F4 / A1: a sketch is never saved with an unnumbered thing in it
     return {
         "id": sketch.id,
         "plane": sketch.plane.value if sketch.plane is not None else None,
@@ -857,6 +858,11 @@ def sketch_to_dict(sketch: Sketch) -> dict:
         ),
         # Where the user moved each dimension label (constraint id -> parameters in sketch units). Written only when there are some; a file without it loads as before.
         **({"label_placements": sketch.live_label_placements()} if sketch.live_label_placements() else {}),
+        # Parity follow-ups F4: how each dimension is read (radius / diameter, semi / full), and the number of everything (A1). Written only when there are
+        # some; a file without them loads as before (the numbers are then given in the stored order).
+        **({"label_shows": sketch.live_label_shows()} if sketch.live_label_shows() else {}),
+        "numbers": dict(sketch.numbers),
+        "number_counters": dict(sketch.number_counters),
         # A converted Arc/Circle centre's own pin (On-device feedback:
         # "converted edges... should be... locked at that projection
         # point") is a `FixedConstraint` now, not a separate field - it
@@ -913,6 +919,14 @@ def sketch_from_dict(data: dict) -> Sketch:
             refs=tuple((ref["type"], ref["id"]) for ref in dimension_data["refs"]),
         )
         sketch.reference_dimensions[dimension.id] = dimension
+    sketch.label_shows = {
+        str(cid): str(show) for cid, show in data.get("label_shows", {}).items() if cid in sketch.constraints and isinstance(show, str)
+    }
+    # F4 / A1: the saved numbers (only well-formed ones) and counters; whatever has no number yet (a file from before numbers) is numbered at the end, in order.
+    sketch.numbers = {str(item_id): number for item_id, number in data.get("numbers", {}).items() if isinstance(number, int) and not isinstance(number, bool) and number > 0}
+    sketch.number_counters = {
+        str(key): number for key, number in data.get("number_counters", {}).items() if isinstance(number, int) and not isinstance(number, bool) and number > 0
+    }
     # Backward compatibility: a file saved before `pinned_point_ids` was
     # replaced by `FixedConstraint` still has that key, naming Points a
     # converted Arc/Circle centre pinned in the old, non-Constraint way
@@ -937,6 +951,7 @@ def sketch_from_dict(data: dict) -> Sketch:
     for instance_data in data.get("mirror_instances", []):
         instance = _mirror_instance_from_dict(instance_data)
         sketch.mirror_instances[instance.id] = instance
+    sketch.ensure_numbers()
     return sketch
 
 

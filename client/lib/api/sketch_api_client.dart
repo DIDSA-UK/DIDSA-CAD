@@ -2141,7 +2141,52 @@ class SketchApiClient {
       );
     }
     final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
+    _noteNames(decoded);
     return onSuccess(decoded);
+  }
+
+  /// Parity follow-ups F4 / A1: the backend numbers every point, entity, constraint and reference dimension of a sketch (`Line 3`, `Point 12`, `D4`,
+  /// `Coincident 2`; the number is kept for good and a delete leaves the others alone). Every response carries `number` beside `id`, so this notes them
+  /// as they go by, whichever call brought them: [numberOf] is what [SketchController.selectionLabel] reads. Empty against an older backend, and then
+  /// the controller falls back to its own position rule.
+  final Map<String, int> _numbers = {};
+
+  /// How the user reads each dimension (the label record's `show`: "radius" / "diameter" / "semi" / "full"), noted the same way (F4, decision 10).
+  final Map<String, String> _shows = {};
+
+  /// The backend's number of the point / entity / constraint / reference dimension [id], or null when it has not been seen (an older backend, an
+  /// id from another sketch, the origin Point).
+  int? numberOf(String id) => _numbers[id];
+
+  /// The saved radius / diameter / semi / full choice of the dimension [id], or null when none is saved.
+  String? showOf(String id) => _shows[id];
+
+  /// Forgets what [_noteNames] saw (a test, or a new session).
+  void clearNames() {
+    _numbers.clear();
+    _shows.clear();
+  }
+
+  void _noteNames(Object? node) {
+    if (node is List) {
+      for (final item in node) {
+        _noteNames(item);
+      }
+    } else if (node is Map) {
+      final id = node['id'];
+      if (id is String) {
+        final number = node['number'];
+        if (number is int) _numbers[id] = number;
+        final label = node['label'];
+        if (label is Map) {
+          final show = label['show'];
+          if (show is String) _shows[id] = show;
+        }
+      }
+      for (final value in node.values) {
+        if (value is Map || value is List) _noteNames(value);
+      }
+    }
   }
 
   /// FastAPI's HTTPException responses are `{"detail": "..."}` - extracting
@@ -2244,11 +2289,11 @@ class SketchApiClient {
         (body) => SketchDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<PointDto> createPoint(String sketchId, double x, double y) => _send(
+  Future<PointDto> createPoint(String sketchId, double x, double y, {int? number}) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/points'),
               headers: _headers,
-              body: jsonEncode({'x': x, 'y': y}),
+              body: jsonEncode({if (number != null) 'number': number, 'x': x, 'y': y}),
             ),
         (body) => PointDto.fromJson(body as Map<String, dynamic>),
       );
@@ -2566,14 +2611,14 @@ class SketchApiClient {
   Future<LineDto> createLine(
     String sketchId,
     String startPointId,
-    String endPointId, {
+    String endPointId, {int? number, 
     bool construction = false,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/lines'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'start_point_id': startPointId,
                 'end_point_id': endPointId,
                 'construction': construction,
@@ -2585,14 +2630,14 @@ class SketchApiClient {
   Future<CircleDto> createCircle(
     String sketchId,
     String centerPointId,
-    String radiusPointId, {
+    String radiusPointId, {int? number, 
     bool construction = false,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/circles'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'center_point_id': centerPointId,
                 'radius_point_id': radiusPointId,
                 'construction': construction,
@@ -2631,14 +2676,14 @@ class SketchApiClient {
     String sketchId,
     String centerPointId,
     String startPointId,
-    String endPointId, {
+    String endPointId, {int? number, 
     bool construction = false,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/arcs'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'center_point_id': centerPointId,
                 'start_point_id': startPointId,
                 'end_point_id': endPointId,
@@ -2656,14 +2701,14 @@ class SketchApiClient {
     String sketchId,
     String centerPointId,
     String majorPointId,
-    double minorRadius, {
+    double minorRadius, {int? number, 
     bool construction = false,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/ellipses'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'center_point_id': centerPointId,
                 'major_point_id': majorPointId,
                 'minor_radius': minorRadius,
@@ -2685,14 +2730,14 @@ class SketchApiClient {
     String majorPointId,
     double minorRadius,
     double startAngle,
-    double endAngle, {
+    double endAngle, {int? number, 
     bool construction = false,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/ellipse-arcs'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'center_point_id': centerPointId,
                 'major_point_id': majorPointId,
                 'minor_radius': minorRadius,
@@ -2715,7 +2760,7 @@ class SketchApiClient {
     String sketchId,
     String centerPointId,
     String firstVertexPointId,
-    int sides, {
+    int sides, {int? number, 
     bool construction = false,
     bool referenceCircles = false,
   }) =>
@@ -2723,7 +2768,7 @@ class SketchApiClient {
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/polygons'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'center_point_id': centerPointId,
                 'first_vertex_point_id': firstVertexPointId,
                 'sides': sides,
@@ -2747,14 +2792,14 @@ class SketchApiClient {
     String sketchId,
     String center1PointId,
     String center2PointId,
-    double radius, {
+    double radius, {int? number, 
     bool construction = false,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/slots'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'center1_point_id': center1PointId,
                 'center2_point_id': center2PointId,
                 'radius': radius,
@@ -2773,7 +2818,7 @@ class SketchApiClient {
   /// client-only shortcut" fix `createSlot`/`createPolygon` already got.
   Future<RectangleDto> createRectangle(
     String sketchId,
-    List<String> cornerPointIds, {
+    List<String> cornerPointIds, {int? number, 
     bool axisAligned = true,
     bool construction = false,
   }) =>
@@ -2781,7 +2826,7 @@ class SketchApiClient {
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/rectangles'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'corner_point_ids': cornerPointIds,
                 'axis_aligned': axisAligned,
                 'construction': construction,
@@ -2794,12 +2839,12 @@ class SketchApiClient {
   /// the client creates Circle/Arc/Ellipse) - server-side, `Sketch.
   /// add_spline` creates the control-handle Points and tangent
   /// constraints, returning them all in the response.
-  Future<SplineDto> createSpline(String sketchId, List<String> throughPointIds, {bool construction = false}) =>
+  Future<SplineDto> createSpline(String sketchId, List<String> throughPointIds, {int? number, bool construction = false}) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/splines'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'through_point_ids': throughPointIds,
                 'construction': construction,
               }),
@@ -2815,7 +2860,7 @@ class SketchApiClient {
   Future<TextDto> createText(
     String sketchId,
     String content,
-    String anchorPointId, {
+    String anchorPointId, {int? number, 
     double size = 10.0,
     double rotationDegrees = 0,
     bool construction = false,
@@ -2824,7 +2869,7 @@ class SketchApiClient {
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/texts'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'content': content,
                 'anchor_point_id': anchorPointId,
                 'size': size,
@@ -3282,6 +3327,18 @@ class SketchApiClient {
         (_) {},
       );
 
+  /// Saves how a dimension is read (`PUT .../constraints/{id}/label` with only `show`): "radius" / "diameter" for a circle or arc size, "semi" / "full" for
+  /// an ellipse axis. The stored value never changes with it, and the placement the label has is left alone (F4, decision 10). Noted here at once, so
+  /// [showOf] answers without a reload.
+  Future<void> putConstraintShow(String sketchId, String constraintId, String show) => _send(
+        () => _httpClient.put(
+              _uri('/sketch/sketches/$sketchId/constraints/$constraintId/label'),
+              headers: _headers,
+              body: jsonEncode({'show': show}),
+            ),
+        (_) => _shows[constraintId] = show,
+      );
+
   /// Puts a dimension's label back in its default place (`DELETE .../constraints/{id}/label`).
   Future<void> deleteConstraintLabel(String sketchId, String constraintId) => _send(
         () => _httpClient.delete(
@@ -3298,14 +3355,14 @@ class SketchApiClient {
     String sketchId,
     String line1Id,
     String line2Id,
-    double angleDegrees, {
+    double angleDegrees, {int? number, 
     int? quadrant,
   }) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'angle',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
@@ -3343,7 +3400,7 @@ class SketchApiClient {
     String sketchId,
     String pointAId,
     String pointBId,
-    double distance, {
+    double distance, {int? number, 
     String orientation = 'linear',
     bool provisional = false,
   }) =>
@@ -3351,7 +3408,7 @@ class SketchApiClient {
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'point_a_id': pointAId,
                 'point_b_id': pointBId,
                 'distance': distance,
@@ -3362,20 +3419,20 @@ class SketchApiClient {
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<ConstraintDto> createVerticalConstraint(String sketchId, String lineId) => _send(
+  Future<ConstraintDto> createVerticalConstraint(String sketchId, String lineId, {int? number}) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({'type': 'vertical', 'line_id': lineId}),
+              body: jsonEncode({if (number != null) 'number': number, 'type': 'vertical', 'line_id': lineId}),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );
 
-  Future<ConstraintDto> createHorizontalConstraint(String sketchId, String lineId) => _send(
+  Future<ConstraintDto> createHorizontalConstraint(String sketchId, String lineId, {int? number}) => _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({'type': 'horizontal', 'line_id': lineId}),
+              body: jsonEncode({if (number != null) 'number': number, 'type': 'horizontal', 'line_id': lineId}),
             ),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );
@@ -3387,13 +3444,13 @@ class SketchApiClient {
   Future<ConstraintDto> createCoincidentConstraint(
     String sketchId,
     String pointAId,
-    String pointBId,
+    String pointBId, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'coincident',
                 'point_a_id': pointAId,
                 'point_b_id': pointBId,
@@ -3425,13 +3482,13 @@ class SketchApiClient {
   Future<ConstraintDto> createParallelConstraint(
     String sketchId,
     String line1Id,
-    String line2Id,
+    String line2Id, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'parallel',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
@@ -3443,13 +3500,13 @@ class SketchApiClient {
   Future<ConstraintDto> createPerpendicularConstraint(
     String sketchId,
     String line1Id,
-    String line2Id,
+    String line2Id, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'perpendicular',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
@@ -3461,13 +3518,13 @@ class SketchApiClient {
   Future<ConstraintDto> createEqualLengthConstraint(
     String sketchId,
     String line1Id,
-    String line2Id,
+    String line2Id, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'equal_length',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
@@ -3479,13 +3536,13 @@ class SketchApiClient {
   Future<ConstraintDto> createCollinearConstraint(
     String sketchId,
     String line1Id,
-    String line2Id,
+    String line2Id, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'collinear',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
@@ -3501,13 +3558,13 @@ class SketchApiClient {
     String sketchId,
     String line1Id,
     String line2Id,
-    double distance,
+    double distance, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'line_distance',
                 'line1_id': line1Id,
                 'line2_id': line2Id,
@@ -3523,13 +3580,13 @@ class SketchApiClient {
     String sketchId,
     String pointId,
     String lineId,
-    double distance,
+    double distance, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'point_line_distance',
                 'point_id': pointId,
                 'line_id': lineId,
@@ -3545,13 +3602,13 @@ class SketchApiClient {
   Future<ConstraintDto> createAtMidpointConstraint(
     String sketchId,
     String pointId,
-    String lineId,
+    String lineId, {int? number,}
   ) =>
       _send(
         () => _httpClient.post(
               _uri('/sketch/sketches/$sketchId/constraints'),
               headers: _headers,
-              body: jsonEncode({
+              body: jsonEncode({if (number != null) 'number': number, 
                 'type': 'at_midpoint',
                 'point_id': pointId,
                 'line_id': lineId,

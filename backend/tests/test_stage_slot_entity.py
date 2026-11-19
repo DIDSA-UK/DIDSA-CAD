@@ -266,7 +266,7 @@ def test_collapse_slot_removes_the_slot_specific_point_deletion_blocker():
 
     blocker = sketch._point_deletion_blocker(slot.a_point_id)
     assert blocker is not None
-    assert "slot" in blocker
+    assert "Slot" in blocker
 
     sketch.collapse_slot(slot.id)
 
