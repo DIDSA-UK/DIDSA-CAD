@@ -657,9 +657,42 @@ class ConvertEdgeResponse(BaseModel):
     spline: SplineResponse | None = None
     point: PointResponse | None = None
     more: list["ConvertEdgeResponse"] | None = None
+    # Plan part C2: on an item of `convert-entities/sketch`'s answer, the source Sketch entity (or loose Point) it was projected from.
+    source_entity_id: str | None = None
     start_point: PointResponse
     end_point: PointResponse
     center_point: PointResponse | None = None
+
+
+class ConvertSketchCreate(BaseModel):
+    """Bug report 2026-11-18 plan part C2: convert another Sketch's entities into this one, projected square onto its plane, each following its source.
+    `source_sketch_feature_id` must come EARLIER in the Part's feature list than this Sketch. `entity_ids` (entity or loose Point ids of the source; a
+    pattern / mirror instance's copy by its expanded id; a Polygon / Slot / Rectangle by its own id, meaning its Lines and Arcs) picks some; absent, the
+    whole Sketch is converted: every curve entity and every Point that belongs to no entity, its construction geometry only when `include_construction`.
+    `construction` and `reference` are as on `ConvertEdgeCreate` (what is made is construction geometry / a reference helper)."""
+
+    source_sketch_feature_id: str
+    entity_ids: list[str] | None = None
+    construction: bool = False
+    reference: bool = False
+    include_construction: bool = False
+
+
+class ConvertSketchSkipped(BaseModel):
+    """A source entity `convert-entities/sketch` did not convert, and why: `text` (a Text entity: its outlines are a font's, not sketch geometry),
+    `not_found` (no such entity or Point in the source), `degenerate` (a shape with no length or radius)."""
+
+    entity_id: str
+    reason: str
+    message: str = ""
+
+
+class ConvertSketchResponse(BaseModel):
+    """Everything `convert-entities/sketch` made, each item in `ConvertEdgeResponse`'s shapes with its `source_entity_id` (a closed free-form source makes two
+    items with the same source), plus what it skipped."""
+
+    items: list[ConvertEdgeResponse]
+    skipped: list[ConvertSketchSkipped] = []
 
 
 class ConvertFaceResponse(BaseModel):

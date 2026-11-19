@@ -73,7 +73,19 @@ from app.document.assembly_group import GroupSolveQuality
 from app.document.bevel_pair import resolve_member_profile_shifts
 from app.document.chamfer import resolve_chamfer
 from app.document.jobs import JobStatus, cancel_job, get_job
-from app.document.projected_curves import POINT_MATCH, PointPool, copy_point_ids, made_kind, make_projected_entity
+from app.document.projected_curves import (
+    CURVE_ENTITY_TYPES,
+    GROUP_ENTITY_TYPES,
+    POINT_MATCH,
+    PointPool,
+    _group_members,
+    copy_point_ids,
+    loose_point_ids,
+    made_kind,
+    make_projected_entity,
+    project_source_entity,
+    source_is_upstream,
+)
 from app.document.reference_history import history_for_part
 from app.document.reference_signature import measurer_for
 from app.document.subshape_identity import (
@@ -304,6 +316,9 @@ from app.document.schemas import (
     ChamferFeatureUpdate,
     ConvertEdgeCreate,
     ConvertEdgeResponse,
+    ConvertSketchCreate,
+    ConvertSketchResponse,
+    ConvertSketchSkipped,
     ConvertFaceCreate,
     ConvertFaceResponse,
     ConvertVertexCreate,
@@ -6578,6 +6593,105 @@ def _convert_body_edge(part_id: str, feature_id: str, payload: ConvertEdgeCreate
             id=end_point.id, x=end_point.x, y=end_point.y, is_locked=sketch.is_point_locked(end_point.id)
         ),
     )
+
+
+@router.post(
+    "/parts/{part_id}/features/sketch/{feature_id}/convert-entities/sketch",
+    response_model=ConvertSketchResponse,
+    status_code=201,
+)
+def convert_sketch_entities(part_id: str, feature_id: str, payload: ConvertSketchCreate) -> ConvertSketchResponse:
+    """Bug report 2026-11-18 plan part C2: another Sketch's entities (all of them, or `entity_ids`) projected square onto this Sketch's plane
+    (`project_edge_onto_sketch`, the same function a Body edge goes through), each a pinned copy with an `ExternalCurveReference` (`sketch_entity`) so it
+    follows its source on every refresh and is reported lost when the source entity is deleted. Pattern and mirror instances are expanded first; Text is
+    skipped (listed in `skipped`); Points that belong to no entity are projected as Points. Copies made by one call share the Points their sources shared,
+    so a closed chain stays closed. Only a Sketch EARLIER in the tree can be the source (`source_after_sketch` 422 otherwise; a rebuild could loop).
+    Idempotent per source entity: one already converted answers with its copy."""
+    from app.sketch.store import all_sketches
+
+    part = get_part_or_404(part_id)
+    sketch_feature = _get_sketch_feature_or_404(part, feature_id)
+    sketch = get_sketch_or_404(sketch_feature.sketch_id)
+    source_feature = part.get_feature(payload.source_sketch_feature_id)
+    if not isinstance(source_feature, SketchFeature):
+        raise HTTPException(status_code=404, detail={"type": "source_sketch_missing", "message": "No such sketch in this part."})
+    if source_feature.id == feature_id:
+        raise HTTPException(status_code=422, detail={"type": "source_is_this_sketch", "message": "A sketch cannot be converted into itself."})
+    if not source_is_upstream(part, feature_id, source_feature.id):
+        raise HTTPException(
+            status_code=422,
+            detail={"type": "source_after_sketch", "message": "Only a sketch earlier in the feature tree can be converted into this one."},
+        )
+    source = all_sketches().get(source_feature.sketch_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail={"type": "source_sketch_missing", "message": "No such sketch in this part."})
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    basis = basis_for_sketch(part, sketch, bodies, excluded)
+    expanded = source.expand_pattern_and_mirror_instances()
+
+    skipped: list[ConvertSketchSkipped] = []
+    wanted: list[tuple[str, bool]] = []  # (source id, the source is construction geometry)
+    if payload.entity_ids is None:
+        for entity_id, entity in expanded.entities.items():
+            if entity_id in source.reference_ids or (entity.construction and not payload.include_construction):
+                continue
+            if entity.type == "text":
+                skipped.append(ConvertSketchSkipped(entity_id=entity_id, reason="text", message="Text is not converted: its outlines are a font's, not sketch geometry."))
+            elif entity.type in CURVE_ENTITY_TYPES:
+                wanted.append((entity_id, entity.construction))
+        wanted += [(pid, False) for pid in loose_point_ids(expanded)]
+    else:
+        for entity_id in dict.fromkeys(payload.entity_ids):
+            entity = expanded.entities.get(entity_id)
+            if entity is None:
+                if entity_id in expanded.points:
+                    wanted.append((entity_id, False))
+                else:
+                    skipped.append(ConvertSketchSkipped(entity_id=entity_id, reason="not_found", message="No such entity or point in the source sketch."))
+            elif entity.type == "text":
+                skipped.append(ConvertSketchSkipped(entity_id=entity_id, reason="text", message="Text is not converted: its outlines are a font's, not sketch geometry."))
+            elif entity.type in GROUP_ENTITY_TYPES:
+                wanted += [(member, expanded.entities[member].construction) for member in _group_members(entity) if member in expanded.entities]
+            elif entity.type in CURVE_ENTITY_TYPES:
+                wanted.append((entity_id, entity.construction))
+        wanted = list(dict.fromkeys(wanted))
+
+    before_points, before_entities = set(sketch.points), set(sketch.entities)
+    existing: dict[str, dict[int, str]] = {}
+    for made_id, ref in sketch.external_curves.items():
+        if ref.source == "sketch_entity" and ref.source_sketch_feature_id == source_feature.id and made_kind(sketch, made_id) is not None:
+            existing.setdefault(ref.source_entity_id, {})[ref.piece] = made_id
+    # Ends are shared with what earlier converts of this source made, as the source's own entities share them.
+    pool = PointPool(sketch, [pid for made in existing.values() for made_id in made.values() for pid in copy_point_ids(sketch, made_id)])
+    source_cache: dict = {}  # the expanded source and its basis, filled by the first projection below
+    items: list[ConvertEdgeResponse] = []
+    for source_id, source_construction in wanted:
+        if source_id in existing:
+            made_ids = [existing[source_id][piece] for piece in sorted(existing[source_id])]
+        else:
+            reason, projected = project_source_entity(part, sketch, source_feature.id, source_id, basis, cache=source_cache)
+            if reason is not None:
+                skipped.append(ConvertSketchSkipped(entity_id=source_id, reason="degenerate", message="This entity has no length or radius to convert."))
+                continue
+            made_ids = []
+            for piece, entity in enumerate(projected):
+                made_id = make_projected_entity(sketch, entity, construction=payload.construction or source_construction, pool=pool)
+                sketch.external_curves[made_id] = ExternalCurveReference(
+                    source="sketch_entity",
+                    made_kind=entity.kind,
+                    source_sketch_feature_id=source_feature.id,
+                    source_entity_id=source_id,
+                    piece=piece,
+                    sampled_segments=0 if entity.exact or entity.kind != "spline" else sum(len(e.controls) // 2 for e in projected),
+                )
+                made_ids.append(made_id)
+        for made_id in made_ids:
+            item = _projected_copy_response(sketch, made_id)
+            item.source_entity_id = source_id
+            items.append(item)
+    _flag_converted_responses(sketch, payload.reference, before_points, before_entities, items)
+    return ConvertSketchResponse(items=items, skipped=skipped)
 
 
 @router.post(

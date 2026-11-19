@@ -903,6 +903,7 @@ def _refresh_external_curves(
 
     lost: list[str] = []
     sources: dict[tuple, object] = {}
+    source_cache: dict = {}
     for made_id, ref in list(sketch.external_curves.items()):
         if made_kind(sketch, made_id) is None:
             del sketch.external_curves[made_id]
@@ -916,7 +917,7 @@ def _refresh_external_curves(
         else:
             key = (ref.source_sketch_feature_id, ref.source_entity_id, ref.sampled_segments)
             if key not in sources:
-                sources[key] = _reproject_sketch_entity(part, sketch, ref, basis)
+                sources[key] = _reproject_sketch_entity(part, sketch, ref, basis, source_cache)
             reason, projected = sources[key]
         if reason is None and (projected is None or ref.piece >= len(projected) or not apply_projection(sketch, made_id, projected[ref.piece])):
             reason = "shape_changed"
@@ -949,11 +950,13 @@ def _reproject_body_edge(sketch: Sketch, made_id: str, ref, bodies, history, bas
     return None, project_edge_onto_sketch(edge, basis, sampled_segments=ref.sampled_segments or None)
 
 
-def _reproject_sketch_entity(part: Part, sketch: Sketch, ref, basis: ResolvedPlane):
+def _reproject_sketch_entity(part: Part, sketch: Sketch, ref, basis: ResolvedPlane, cache: dict):
     """(lost reason or None, the projection) for a copy of another Sketch's entity (plan part C2): see `app.document.projected_curves.project_source_entity`."""
     from app.document.projected_curves import project_source_entity
 
-    return project_source_entity(part, sketch, ref.source_sketch_feature_id, ref.source_entity_id, basis, sampled_segments=ref.sampled_segments or None)
+    return project_source_entity(
+        part, sketch, ref.source_sketch_feature_id, ref.source_entity_id, basis, sampled_segments=ref.sampled_segments or None, cache=cache
+    )
 
 
 def resolve_point_ref_position(

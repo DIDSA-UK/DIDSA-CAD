@@ -202,10 +202,23 @@ class ExternalReferenceStatusDto {
 /// [endPoint] carry no real information in that case (the backend sets
 /// both equal to [centerPoint], since a full circle has no distinct
 /// start/end of its own) and should be ignored by [circle]-branch callers.
+///
+/// Bug report 2026-11-18 part C: an edge that is not in the sketch plane is projected square onto it, so the answer can also be an [ellipse] (a
+/// whole circle seen at an angle, or an ellipse), an [ellipseArc] (an arc seen at an angle), a [spline] (a free-form edge; [startPoint] / [endPoint]
+/// are its first and last through points) or a lone [point] (a straight edge along the plane's normal; [startPoint] and [endPoint] are that same
+/// point). A closed free-form edge makes two splines: the first here, the rest in [more], each in this same shape. On an item of
+/// [ConvertSketchResultDto], [sourceEntityId] names the source sketch's entity (or loose point) it was projected from. Every one of these fields is
+/// absent from older answers and parses as null / empty.
 class ConvertEdgeResultDto {
   final LineDto? line;
   final ArcDto? arc;
   final CircleDto? circle;
+  final EllipseDto? ellipse;
+  final EllipseArcDto? ellipseArc;
+  final SplineDto? spline;
+  final PointDto? point;
+  final List<ConvertEdgeResultDto> more;
+  final String? sourceEntityId;
   final PointDto startPoint;
   final PointDto endPoint;
   final PointDto? centerPoint;
@@ -214,19 +227,66 @@ class ConvertEdgeResultDto {
     this.line,
     this.arc,
     this.circle,
+    this.ellipse,
+    this.ellipseArc,
+    this.spline,
+    this.point,
+    this.more = const [],
+    this.sourceEntityId,
     required this.startPoint,
     required this.endPoint,
     this.centerPoint,
   });
 
+  /// The id of the one entity this answer made (or reused), whatever its kind; for a lone [point], the point's id.
+  String get madeId => (line?.id ?? arc?.id ?? circle?.id ?? ellipse?.id ?? ellipseArc?.id ?? spline?.id ?? point?.id ?? startPoint.id);
+
+  static T? _optional<T>(Object? value, T Function(Map<String, dynamic>) parse) =>
+      value == null ? null : parse(value as Map<String, dynamic>);
+
   factory ConvertEdgeResultDto.fromJson(Map<String, dynamic> json) => ConvertEdgeResultDto(
-        line: json['line'] == null ? null : LineDto.fromJson(json['line'] as Map<String, dynamic>),
-        arc: json['arc'] == null ? null : ArcDto.fromJson(json['arc'] as Map<String, dynamic>),
-        circle: json['circle'] == null ? null : CircleDto.fromJson(json['circle'] as Map<String, dynamic>),
+        line: _optional(json['line'], LineDto.fromJson),
+        arc: _optional(json['arc'], ArcDto.fromJson),
+        circle: _optional(json['circle'], CircleDto.fromJson),
+        ellipse: _optional(json['ellipse'], EllipseDto.fromJson),
+        ellipseArc: _optional(json['ellipse_arc'], EllipseArcDto.fromJson),
+        spline: _optional(json['spline'], SplineDto.fromJson),
+        point: _optional(json['point'], PointDto.fromJson),
+        more: (json['more'] as List?)?.map((e) => ConvertEdgeResultDto.fromJson(e as Map<String, dynamic>)).toList() ?? const [],
+        sourceEntityId: json['source_entity_id'] as String?,
         startPoint: PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
         endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
-        centerPoint:
-            json['center_point'] == null ? null : PointDto.fromJson(json['center_point'] as Map<String, dynamic>),
+        centerPoint: _optional(json['center_point'], PointDto.fromJson),
+      );
+}
+
+/// Bug report 2026-11-18 part C2: the backend's answer to `convert-entities/sketch` ([SketchApiClient.convertSketchEntities]): every copy made (or
+/// already there), each in [ConvertEdgeResultDto]'s shape with its [ConvertEdgeResultDto.sourceEntityId], and the source entities [skipped] (Text,
+/// an id that is not in the source, a shape with no size).
+class ConvertSketchResultDto {
+  final List<ConvertEdgeResultDto> items;
+  final List<ConvertSketchSkippedDto> skipped;
+
+  ConvertSketchResultDto({required this.items, this.skipped = const []});
+
+  factory ConvertSketchResultDto.fromJson(Map<String, dynamic> json) => ConvertSketchResultDto(
+        items: (json['items'] as List).map((e) => ConvertEdgeResultDto.fromJson(e as Map<String, dynamic>)).toList(),
+        skipped: (json['skipped'] as List?)?.map((e) => ConvertSketchSkippedDto.fromJson(e as Map<String, dynamic>)).toList() ?? const [],
+      );
+}
+
+/// One source entity `convert-entities/sketch` did not convert: [reason] is `text`, `not_found` or `degenerate`; [message] says it in words.
+class ConvertSketchSkippedDto {
+  final String entityId;
+  final String reason;
+  final String message;
+
+  ConvertSketchSkippedDto({required this.entityId, required this.reason, this.message = ''});
+
+  factory ConvertSketchSkippedDto.fromJson(Map<String, dynamic> json) => ConvertSketchSkippedDto(
+        entityId: json['entity_id'] as String,
+        reason: json['reason'] as String,
+        message: json['message'] as String? ?? '',
       );
 }
 
@@ -526,6 +586,9 @@ class EllipseDto {
   final double rotation;
   final bool construction;
 
+  /// The backend's `is_reference`: a helper a reference convert made (drawn quietly, not offered for selection). Absent in older answers: false.
+  final bool isReference;
+
   /// [CircleDto.radiusConstraintId]'s Ellipse-shaped siblings -
   /// `majorRadius`/`minorRadius`'s own backing `DistanceConstraint` ids
   /// (`Sketch.add_ellipse`'s own doc comment). Nullable for the same
@@ -547,6 +610,7 @@ class EllipseDto {
     required this.minorRadius,
     required this.rotation,
     this.construction = false,
+    this.isReference = false,
     this.majorConstraintId,
     this.minorConstraintId,
   });
@@ -565,6 +629,7 @@ class EllipseDto {
         minorRadius: (json['minor_radius'] as num).toDouble(),
         rotation: (json['rotation'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
         majorConstraintId: json['major_constraint_id'] as String?,
         minorConstraintId: json['minor_constraint_id'] as String?,
       );
@@ -594,6 +659,9 @@ class EllipseArcDto {
   final double rotation;
   final bool construction;
 
+  /// See [EllipseDto.isReference].
+  final bool isReference;
+
   EllipseArcDto({
     this.structuralConstraintIds = const [],
     required this.id,
@@ -608,6 +676,7 @@ class EllipseArcDto {
     required this.minorRadius,
     required this.rotation,
     this.construction = false,
+    this.isReference = false,
   });
 
   factory EllipseArcDto.fromJson(Map<String, dynamic> json) => EllipseArcDto(
@@ -624,6 +693,7 @@ class EllipseArcDto {
         minorRadius: (json['minor_radius'] as num).toDouble(),
         rotation: (json['rotation'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
       );
 }
 
@@ -812,11 +882,15 @@ class SplineDto {
   final List<String> controlPointIds;
   final bool construction;
 
+  /// See [EllipseDto.isReference].
+  final bool isReference;
+
   SplineDto({
     required this.id,
     required this.throughPointIds,
     required this.controlPointIds,
     this.construction = false,
+    this.isReference = false,
   });
 
   factory SplineDto.fromJson(Map<String, dynamic> json) => SplineDto(
@@ -824,6 +898,7 @@ class SplineDto {
         throughPointIds: (json['through_point_ids'] as List).cast<String>(),
         controlPointIds: (json['control_point_ids'] as List).cast<String>(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
       );
 }
 
@@ -2345,6 +2420,34 @@ class SketchApiClient {
               }),
             ),
         (body) => ConvertEdgeResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Bug report 2026-11-18 part C2: converts another sketch's entities into this one, projected square onto its plane, each following its source
+  /// (`POST .../convert-entities/sketch`). [sourceSketchFeatureId] must be earlier in the feature tree than [sketchFeatureId] (a later one is a 422,
+  /// `source_after_sketch`). [entityIds] picks some (entity or loose-point ids of the source); null converts the whole sketch, its construction
+  /// geometry only with [includeConstruction]. [construction] / [reference] are as on [convertBodyEdge]. Text is skipped (listed in the answer).
+  Future<ConvertSketchResultDto> convertSketchEntities(
+    String partId,
+    String sketchFeatureId,
+    String sourceSketchFeatureId, {
+    List<String>? entityIds,
+    bool construction = false,
+    bool reference = false,
+    bool includeConstruction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/sketch'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_sketch_feature_id': sourceSketchFeatureId,
+                if (entityIds != null) 'entity_ids': entityIds,
+                'construction': construction,
+                if (reference) 'reference': true,
+                if (includeConstruction) 'include_construction': true,
+              }),
+            ),
+        (body) => ConvertSketchResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// DIDSA-VR plan, phase 2.2: a FACE of the part as something to dimension to (see the backend's `convert_body_face`): a flat face square to the sketch plane

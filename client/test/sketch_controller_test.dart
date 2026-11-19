@@ -907,6 +907,12 @@ class _FakeBackend {
       // real backend detected a coplanar circular edge" - returns an arc
       // instead of a line, exercising the client's own dispatch on
       // whichever of the two the response actually carries.
+      // Bug report 2026-11-18 part C1: edgeIndex 101 is this fake's sentinel for "a straight edge along the sketch plane's normal", which the real
+      // backend now answers with one Point and no line (`point`, start and end the same Point).
+      if (edgeIndex == 101) {
+        points.remove(endId);
+        return _json({'point': startPoint, 'start_point': startPoint, 'end_point': startPoint}, 201);
+      }
       if (edgeIndex == 99) {
         final centerId = _newId('point');
         final centerPoint = {'id': centerId, 'x': bodyId.length.toDouble() + 5, 'y': edgeIndex, 'is_locked': true};
@@ -9911,6 +9917,21 @@ void main() {
       // DistanceConstraint, which surfaced as an unwanted user-facing
       // dimension (reverted - see this method's own doc comment).
       expect(freshController.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+    });
+
+    test(
+        'bug report 2026-11-18 part C1: an answer with no line (a projected point here; also an ellipse, an elliptical arc or a spline) is read '
+        'back from the server instead of failing', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      // edgeIndex 101 is the fake backend's sentinel for "a straight edge along the normal": one Point, no line.
+      await freshController.pickConvertEntityEdge('body-1', 101);
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.lines, isEmpty);
+      final converted = freshController.points.values.where((p) => p.x == 'body-1'.length.toDouble() && p.y == 101.0);
+      expect(converted, hasLength(1));
+      freshController.exitToSelectMode();
+      expect(freshController.beginPointDrag(converted.single.id), isFalse);
     });
 
     test(

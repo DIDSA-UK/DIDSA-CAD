@@ -14931,7 +14931,18 @@ class SketchController extends ChangeNotifier {
       return SketchSelection(kind: SelectionKind.circle, id: circle.id);
     }
 
-    final line = result.line!;
+    // Bug report 2026-11-18 part C1: an edge that is not in the sketch plane is now projected onto it, so the answer can be an ellipse, an
+    // elliptical arc, a spline (or two) or a lone point, which this method does not build into the local picture by hand (that, and one-step undo
+    // for it, is plan part C3). Read the sketch back so whatever was made is drawn and its points are locked; no undo entry yet.
+    final line = result.line;
+    if (line == null) {
+      await _reloadLocalSketch();
+      await _solveAndTrackDof();
+      if (result.ellipse case final e?) return SketchSelection(kind: SelectionKind.ellipse, id: e.id);
+      if (result.ellipseArc case final e?) return SketchSelection(kind: SelectionKind.ellipseArc, id: e.id);
+      if (result.spline case final sp?) return SketchSelection(kind: SelectionKind.spline, id: sp.id);
+      return SketchSelection(kind: SelectionKind.point, id: result.startPoint.id);
+    }
     if (lines.containsKey(line.id)) return SketchSelection(kind: SelectionKind.line, id: line.id);
     // Implicit references (see [ensureReferenceEdge]): an edge is two pinned points plus ONE construction line, reused if present. The backend's
     // convert-entities/edge reuses the endpoint Points but always makes a new Line, so a second pick of the same edge (e.g. after reopening the sketch,
