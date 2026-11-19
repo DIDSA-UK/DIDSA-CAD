@@ -910,10 +910,11 @@ def _refresh_external_curves(
             continue
         reason = None
         projected = None
+        found = None  # a body edge's decision when it was found again (ok / followed / potentially moved)
         if basis is None:
             reason = "sketch_plane_unresolved"
         elif ref.source == "body_edge":
-            reason, projected = _reproject_body_edge(sketch, made_id, ref, bodies, history, basis)
+            reason, projected, found = _reproject_body_edge(sketch, made_id, ref, bodies, history, basis)
         else:
             key = (ref.source_sketch_feature_id, ref.source_entity_id, ref.sampled_segments)
             if key not in sources:
@@ -922,6 +923,11 @@ def _refresh_external_curves(
         if reason is None and (projected is None or ref.piece >= len(projected) or not apply_projection(sketch, made_id, projected[ref.piece])):
             reason = "shape_changed"
         if reason is None:
+            if found is not None and found.status in (ReferenceStatus.POTENTIALLY_MOVED, ReferenceStatus.FOLLOWED):
+                # Reported on the copy's own Points, as on a vertex reference's: "potentially moved" asks the user to confirm, "followed" is information.
+                for pid in copy_point_ids(sketch, made_id):
+                    if pid not in sketch.external_references:
+                        decisions.setdefault(pid, found)
             continue
         points = copy_point_ids(sketch, made_id)
         flagged = [pid for pid in points if pid not in sketch.external_references] or points
@@ -933,13 +939,14 @@ def _refresh_external_curves(
 
 
 def _reproject_body_edge(sketch: Sketch, made_id: str, ref, bodies, history, basis: ResolvedPlane):
-    """(lost reason or None, the projection) for a body-edge copy: the edge is re-found as a vertex reference is (signature, then OCCT history), and the
-    reference keeps the index and, unless the binding is only potentially right, the signature it was found by."""
+    """(lost reason or None, the projection, the decision) for a body-edge copy: the edge is re-found as a vertex reference is (signature, then OCCT
+    history), and the reference keeps the index and, unless the binding is only potentially right, the signature it was found by. A potentially-moved
+    binding is still followed, and reported on the copy's Points (`moved_reference_point_ids`) as a vertex reference's is."""
     from app.sketch.projection import project_edge_onto_sketch
 
     decision = _decide_subshape(ref.body_id, ref.edge_index, ref.signature, ref.lineage, "edge", bodies, history)
     if decision.status == ReferenceStatus.LOST or decision.index is None:
-        return decision.reason or "no_match", None
+        return decision.reason or "no_match", None, decision
     refreshed = replace(ref, edge_index=decision.index)
     if decision.status != ReferenceStatus.POTENTIALLY_MOVED:
         refreshed = replace(refreshed, signature=measurer_for(bodies[ref.body_id], "edge").signature(decision.index))
@@ -947,7 +954,7 @@ def _reproject_body_edge(sketch: Sketch, made_id: str, ref, bodies, history, bas
         refreshed = replace(refreshed, lineage=decision.lineage)
     sketch.external_curves[made_id] = refreshed
     edge = topods.Edge(resolve_subshape_from_bodies(bodies, SubShapeRef(body_id=ref.body_id, shape_type=SubShapeType.EDGE, index=decision.index)))
-    return None, project_edge_onto_sketch(edge, basis, sampled_segments=ref.sampled_segments or None)
+    return None, project_edge_onto_sketch(edge, basis, sampled_segments=ref.sampled_segments or None), decision
 
 
 def _reproject_sketch_entity(part: Part, sketch: Sketch, ref, basis: ResolvedPlane, cache: dict):

@@ -263,3 +263,48 @@ def test_a_sketch_without_projected_copies_is_saved_exactly_as_before():
     sketch = _json(client.post(f"/document/parts/{part_id}/features/sketch", json={"plane": "XY"}))
     _convert(part_id, sketch, extrude["id"], _edge(part_id, extrude["id"], _bottom_arc))
     assert "external_curves" not in sketch_to_dict(all_sketches()[sketch["sketch_id"]])
+
+
+# --- a body moved, and a binding that is only potentially right -------------------------------------------------------------
+
+
+def test_the_copy_follows_a_body_moved_by_a_move_body_feature():
+    part_id = _part()
+    _, extrude, _ = _half_disc(part_id)
+    move = _json(client.post(f"/document/parts/{part_id}/move-body-features", json={"body_id": extrude["id"], "delta": [0.0, 0.0, 0.0]}))
+    sketch = _tilted_sketch(part_id)
+    arc = _json(_convert(part_id, sketch, extrude["id"], _edge(part_id, extrude["id"], _bottom_arc)))["ellipse_arc"]
+    centre_before = _points(sketch)[arc["center_point_id"]]
+
+    _json(client.patch(f"/document/parts/{part_id}/move-body-features/{move['id']}", json={"delta": [3.0, 0.0, 2.0]}))
+    feature = _feature(part_id, sketch["id"])
+    assert not feature["has_lost_reference"], feature
+    points = _points(sketch)
+    # Moved 3 along x (shared) and 2 up, which the tilted sketch sees as + 2 sin 30 in y; the shape is the same.
+    assert (points[arc["center_point_id"]]["x"], points[arc["center_point_id"]]["y"]) == pytest.approx((centre_before["x"] + 3.0, centre_before["y"] + 1.0))
+    again = _ellipse_arcs(sketch)[arc["id"]]
+    assert again["major_radius"] == pytest.approx(5.0) and again["minor_radius"] == pytest.approx(5.0 * COS30)
+    ends = sorted((points[arc[k]]["x"], points[arc[k]]["y"]) for k in ("start_point_id", "end_point_id"))
+    assert ends == [pytest.approx((-2.0, 1.0)), pytest.approx((8.0, 1.0))]
+
+
+def test_a_potentially_moved_edge_is_flagged_on_the_copy_and_confirm_clears_it():
+    import dataclasses
+
+    part_id = _part()
+    _, extrude, _ = _half_disc(part_id)
+    sketch = _tilted_sketch(part_id)
+    arc = _json(_convert(part_id, sketch, extrude["id"], _edge(part_id, extrude["id"], _bottom_arc)))["ellipse_arc"]
+    obj = all_sketches()[sketch["sketch_id"]]
+    curve = obj.external_curves[arc["id"]]
+    # A stale fingerprint where the edge still is, and no history to settle it (an old file): the edge is followed but only potentially right.
+    stale = dataclasses.replace(curve.signature, face_kinds=("cone", "cone"), face_normals=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)))
+    obj.external_curves[arc["id"]] = dataclasses.replace(curve, signature=stale, lineage=None)
+    feature = _feature(part_id, sketch["id"])
+    assert not feature["has_lost_reference"]
+    assert arc["center_point_id"] in feature["moved_reference_point_ids"]
+    assert feature["reference_reasons"][arc["center_point_id"]] == "fingerprint_changed_in_place"
+
+    base = f"/document/parts/{part_id}/features/sketch/{sketch['id']}/external-references"
+    _json(client.post(f"{base}/{arc['center_point_id']}/confirm"))
+    assert _feature(part_id, sketch["id"])["moved_reference_point_ids"] == []

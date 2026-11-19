@@ -304,3 +304,72 @@ def test_sketch_references_survive_a_save_and_reopen_and_still_follow():
     finally:
         replace_document(saved_document)
         replace_all_sketches(saved_sketches)
+
+
+# --- planes moving ----------------------------------------------------------------------------------------------------------------
+
+
+def test_the_copy_follows_when_the_source_sketchs_plane_moves():
+    part_id = _part()
+    plane = _json(
+        client.post(f"/document/parts/{part_id}/create-plane-features", json={"plane_type": "offset_face", "face_refs": [{"fixed_plane": "XY"}], "offset": 5.0})
+    )
+    source = _sketch(part_id, plane_feature_id=plane["id"])
+    loose = _point(source, 4.0, 2.0)
+    target = _tilted_sketch(part_id)  # normal (0, -sin 30, cos 30): a point's height shows as + h sin 30 in the target's y
+    item = _json(_convert(part_id, target, source))["items"][0]
+    assert _xy(_points(target), item["point"]["id"]) == pytest.approx((4.0, 2.0 * COS30 + 5.0 * 0.5))
+
+    _json(client.patch(f"/document/parts/{part_id}/create-plane-features/{plane['id']}", json={"offset": 9.0}))
+    assert not _feature(part_id, target["id"])["has_lost_reference"]
+    assert _xy(_points(target), item["point"]["id"]) == pytest.approx((4.0, 2.0 * COS30 + 9.0 * 0.5))
+    assert loose["id"] == item["source_entity_id"]
+
+
+def test_the_copy_follows_when_the_target_sketchs_plane_tilts_further():
+    part_id = _part()
+    source, ids = _source(part_id)
+    # The target's plane is through the x axis and a Point of a YZ sketch; moving that Point tilts the plane from 30 to 60 degrees.
+    xy = _sketch(part_id)
+    yz = _sketch(part_id, plane="YZ")
+    a, b = _point(xy, 0.0, 0.0), _point(xy, 10.0, 0.0)
+    c = _point(yz, 10 * COS30, 5.0)
+
+    def ref(s, p):
+        return {"sketch_point_ref": {"sketch_id": s["sketch_id"], "entity_type": "point", "entity_id": p["id"]}}
+
+    plane = _json(client.post(f"/document/parts/{part_id}/create-plane-features", json={"plane_type": "three_points", "point_refs": [ref(xy, a), ref(xy, b), ref(yz, c)]}))
+    target = _sketch(part_id, plane_feature_id=plane["id"])
+    items = _by_source(_json(_convert(part_id, target, source))["items"])
+    assert items[ids["circle"]]["ellipse"]["minor_radius"] == pytest.approx(3.0 * COS30)
+
+    _json(client.patch(f"/sketch/sketches/{yz['sketch_id']}/points/{c['id']}", json={"x": 5.0, "y": 10 * COS30}))  # now 60 degrees
+    assert not _feature(part_id, target["id"])["has_lost_reference"]
+    ellipse = next(e for e in _json(client.get(f"/sketch/sketches/{target['sketch_id']}/ellipses")) if e["id"] == items[ids["circle"]]["ellipse"]["id"])
+    assert ellipse["major_radius"] == pytest.approx(3.0) and ellipse["minor_radius"] == pytest.approx(1.5)
+    assert _xy(_points(target), items[ids["right"]]["line"]["end_point_id"]) == pytest.approx((20.0, 5.0))
+
+
+def test_a_copy_that_would_change_kind_is_flagged_lost_and_kept():
+    # The same plane tilted back to flat: the circle's copy would have to become a circle again, which an ellipse cannot. Lost, not reshaped.
+    part_id = _part()
+    source, ids = _source(part_id)
+    xy = _sketch(part_id)
+    yz = _sketch(part_id, plane="YZ")
+    a, b = _point(xy, 0.0, 0.0), _point(xy, 10.0, 0.0)
+    c = _point(yz, 10 * COS30, 5.0)
+
+    def ref(s, p):
+        return {"sketch_point_ref": {"sketch_id": s["sketch_id"], "entity_type": "point", "entity_id": p["id"]}}
+
+    plane = _json(client.post(f"/document/parts/{part_id}/create-plane-features", json={"plane_type": "three_points", "point_refs": [ref(xy, a), ref(xy, b), ref(yz, c)]}))
+    target = _sketch(part_id, plane_feature_id=plane["id"])
+    items = _by_source(_json(_convert(part_id, target, source))["items"])
+    ellipse = items[ids["circle"]]["ellipse"]
+    before = _xy(_points(target), ellipse["center_point_id"])
+    _json(client.patch(f"/sketch/sketches/{yz['sketch_id']}/points/{c['id']}", json={"x": 10.0, "y": 0.0}))  # flat again
+    feature = _feature(part_id, target["id"])
+    assert feature["reference_reasons"][ellipse["center_point_id"]] == "shape_changed"
+    assert _xy(_points(target), ellipse["center_point_id"]) == pytest.approx(before)
+    # The lines are still lines: they followed.
+    assert _xy(_points(target), items[ids["right"]]["line"]["end_point_id"]) == pytest.approx((20.0, 10.0))

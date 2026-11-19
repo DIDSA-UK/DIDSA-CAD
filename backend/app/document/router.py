@@ -5921,6 +5921,12 @@ def confirm_external_reference(part_id: str, feature_id: str, point_id: str) -> 
     sketch_feature = _get_sketch_feature_or_404(part, feature_id)
     sketch = get_sketch_or_404(sketch_feature.sketch_id)
     ref = sketch.external_references.get(point_id)
+    if ref is None and point_id in sketch.points:
+        curve_id = next(
+            (made_id for made_id, c in sketch.external_curves.items() if c.source == "body_edge" and point_id in copy_point_ids(sketch, made_id)), None
+        )
+        if curve_id is not None:
+            return _confirm_curve_reference(part, feature_id, sketch, curve_id, point_id)
     if ref is None or point_id not in sketch.points:
         raise HTTPException(status_code=404, detail="point_id is not an external reference of this Sketch")
     excluded = excluded_feature_ids_after(part, feature_id)
@@ -5937,6 +5943,25 @@ def confirm_external_reference(part_id: str, feature_id: str, point_id: str) -> 
     )
     sketch.external_references[point_id] = confirmed
     sketch.external_reference_decisions.pop(point_id, None)
+    point = sketch.points[point_id]
+    return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
+
+
+def _confirm_curve_reference(part: Part, feature_id: str, sketch, curve_id: str, point_id: str) -> PointResponse:
+    """`confirm_external_reference` for a Point of a projected body-edge copy (plan part C): "yes, this is the right edge" - re-captures the edge's
+    signature where the copy's reference is bound now, so it stops being flagged potentially moved. 409 if the edge is lost."""
+    excluded = excluded_feature_ids_after(part, feature_id)
+    bodies = compute_part_bodies(part, excluded)
+    lost = refresh_external_references(part, sketch, bodies, excluded, history=history_for_part(part, excluded))
+    if point_id in lost:
+        raise HTTPException(status_code=409, detail={"type": "reference_lost", "point_id": point_id})
+    curve = sketch.external_curves[curve_id]
+    sketch.external_curves[curve_id] = dataclasses.replace(
+        curve, signature=measurer_for(bodies[curve.body_id], "edge").signature(curve.edge_index)
+    )
+    for pid in copy_point_ids(sketch, curve_id):
+        if pid not in sketch.external_references:
+            sketch.external_reference_decisions.pop(pid, None)
     point = sketch.points[point_id]
     return PointResponse(id=point.id, x=point.x, y=point.y, is_locked=True)
 
