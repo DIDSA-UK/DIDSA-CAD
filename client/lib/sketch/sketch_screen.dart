@@ -676,9 +676,21 @@ class _SketchScreenState extends State<SketchScreen> {
   Widget build(BuildContext context) {
     // Desktop input D3: the keyboard shortcuts, and the open sketch bar's
     // Enter / Esc (see [ToolPanelKeys]).
-    return CadShortcutScope(
-      bindings: () => _shortcutBindings,
-      child: ToolPanelKeyScope(registry: _toolPanelKeys, child: _buildScaffold(context)),
+    // The system back button / gesture (Android) goes back one dimension step (editor to preview, preview to picking) like Esc, and only leaves
+    // the sketch once there is nothing left to cancel.
+    return ListenableBuilder(
+      listenable: _controller,
+      builder: (context, child) => PopScope(
+        canPop: !_controller.canCancelDimensionStep,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _controller.cancelDimensionStep();
+        },
+        child: child!,
+      ),
+      child: CadShortcutScope(
+        bindings: () => _shortcutBindings,
+        child: ToolPanelKeyScope(registry: _toolPanelKeys, child: _buildScaffold(context)),
+      ),
     );
   }
 

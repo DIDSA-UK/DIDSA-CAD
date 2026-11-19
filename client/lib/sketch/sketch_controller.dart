@@ -12482,6 +12482,10 @@ class SketchController extends ChangeNotifier {
     return true;
   }
 
+  /// Whether [cancelDimensionStep] has something to cancel (the Android back button uses it to decide whether back leaves the sketch).
+  bool get canCancelDimensionStep =>
+      _mode == SketchMode.dimension && (_activeGhostKey != null || _dimensionSelection.isNotEmpty || _ghosts.isNotEmpty);
+
   /// Esc, right-click or back while a dimension is being placed: an open value editor goes back to the live preview; else the preview is
   /// dropped and the pick starts again (step 1). False when there was nothing to cancel.
   bool cancelDimensionStep() {
