@@ -460,9 +460,12 @@ def _sketch_external_reference_dependencies(feature: SketchFeature) -> tuple[str
     if sketch is None:
         return ()
     found = {base_feature_id(ref.body_id) for ref in sketch.external_references.values()}
-    # Plan part C: a projected copy depends on what it was projected from: the Body's Feature, or the source Sketch's own SketchFeature.
+    # Plan part C: a projected body edge depends on the Body's Feature, as a vertex reference does. A copy of another Sketch's entities does NOT depend
+    # on that Sketch (owner, 2026-11-19): deleting the source keeps the copies where they are, flagged as lost references (`source_sketch_missing`),
+    # instead of cascading the delete into this Sketch.
     for curve in sketch.external_curves.values():
-        found.add(base_feature_id(curve.body_id) if curve.source == "body_edge" else curve.source_sketch_feature_id)
+        if curve.source == "body_edge":
+            found.add(base_feature_id(curve.body_id))
     return tuple(found)
 
 

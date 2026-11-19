@@ -231,6 +231,21 @@ def test_a_deleted_source_entity_is_reported_lost():
     assert items[ids["bottom"]]["line"]["start_point_id"] not in feature["lost_reference_point_ids"]
 
 
+def test_deleting_the_source_sketch_keeps_the_copies_and_flags_them_lost():
+    part_id = _part()
+    source, ids = _source(part_id)
+    target = _offset_sketch(part_id)
+    items = _by_source(_json(_convert(part_id, target, source))["items"])
+    deleted = _json(client.delete(f"/document/parts/{part_id}/features/{source['id']}/cascade"))
+    assert target["id"] not in deleted["deleted_feature_ids"], deleted  # the converting sketch is not taken with it
+    feature = _feature(part_id, target["id"])
+    assert feature["has_lost_reference"] is True
+    centre = items[ids["circle"]]["circle"]["center_point_id"]
+    assert feature["reference_reasons"][centre] == "source_sketch_missing"
+    assert _xy(_points(target), centre) == pytest.approx((30, 5))  # kept where it was
+    assert len(all_sketches()[target["sketch_id"]].external_curves) == len(items)
+
+
 # --- pattern and text -----------------------------------------------------------------------------------------------------------
 
 
