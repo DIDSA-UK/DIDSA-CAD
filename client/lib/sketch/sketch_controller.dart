@@ -1965,18 +1965,24 @@ class SketchController extends ChangeNotifier {
     SelectionKind.arc: 'arc',
   };
 
-  /// Which kinds of reference dimension the Dimension tool's current picks can make: `distance` for two points, a point and a line, one line or two parallel
-  /// lines; `horizontal` / `vertical` for two points or a line; `radius` / `diameter` for a circle or an arc; `angle` for two lines. Empty for anything else.
+  /// Which kinds of reference dimension the Dimension tool's current picks can make (the `pinned` block of `docs/sketch-dimension-catalogue.json`, which
+  /// `sketch_dimension_catalogue_test.dart` holds this to): `distance` for two points, a point and a line, one line or two parallel lines; `horizontal` /
+  /// `vertical` for two points or a line; `horizontal_angle` for a line; `radius` / `diameter` for a circle or an arc, and `arc_length` for an arc; `angle`
+  /// for two lines; `point_angle` for three Points (the vertex picked first); `min_distance` / `max_distance` for a curve (circle or arc) with a Point, a line
+  /// or another curve, in either pick order. Empty for anything else.
   List<String> get referenceDimensionKinds {
     final types = [for (final s in _dimensionSelection) _referenceDimensionTypes[s.kind]];
     if (types.isEmpty || types.contains(null)) return const [];
     final shape = types.join('+');
+    if (types.length == 2 && types.any((t) => t == 'circle' || t == 'arc')) return const ['min_distance', 'max_distance'];
     return switch (shape) {
       'point+point' => const ['distance', 'horizontal', 'vertical'],
       'point+line' || 'line+point' => const ['distance'],
-      'line' => const ['distance', 'horizontal', 'vertical'],
+      'line' => const ['distance', 'horizontal', 'vertical', 'horizontal_angle'],
       'line+line' => const ['angle', 'distance'],
-      'circle' || 'arc' => const ['radius', 'diameter'],
+      'circle' => const ['radius', 'diameter'],
+      'arc' => const ['radius', 'diameter', 'arc_length'],
+      'point+point+point' => const ['point_angle'],
       _ => const [],
     };
   }
@@ -2046,6 +2052,11 @@ class SketchController extends ChangeNotifier {
         final e1 = ends(ids[0]);
         final e2 = ends(ids[1]);
         return e1 == null || e2 == null ? null : (mid(e1), mid(e2));
+      case 'point+point+point':
+        final v = at(ids[0]);
+        final a = at(ids[1]);
+        final b = at(ids[2]);
+        return v == null || a == null || b == null ? null : (v, ((a.$1 + b.$1) / 2, (a.$2 + b.$2) / 2));
       case 'circle':
         final circle = circles[ids[0]];
         final c = circle == null ? null : at(circle.centerPointId);
@@ -2056,6 +2067,36 @@ class SketchController extends ChangeNotifier {
         final c = arc == null ? null : at(arc.centerPointId);
         final r = arc == null ? null : at(arc.startPointId);
         return c == null || r == null ? null : (c, r);
+    }
+    // Minimum / maximum distance (part D): from a Point, a line's foot or another curve's centre to the curve's centre.
+    if (types.length == 2 && types.any((t) => t == 'circle' || t == 'arc')) {
+      (double, double)? centre(String type, String id) {
+        final centreId = type == 'circle' ? circles[id]?.centerPointId : arcs[id]?.centerPointId;
+        return centreId == null ? null : at(centreId);
+      }
+
+      (double, double)? anchor(int i, (double, double)? other) {
+        switch (types[i]) {
+          case 'point':
+            return at(ids[i]);
+          case 'line':
+            final e = ends(ids[i]);
+            if (e == null || other == null) return null;
+            final dx = e.$2.$1 - e.$1.$1;
+            final dy = e.$2.$2 - e.$1.$2;
+            final length2 = dx * dx + dy * dy;
+            final t = length2 < 1e-12 ? 0.0 : ((other.$1 - e.$1.$1) * dx + (other.$2 - e.$1.$2) * dy) / length2;
+            return (e.$1.$1 + dx * t, e.$1.$2 + dy * t);
+          default:
+            return centre(types[i], ids[i]);
+        }
+      }
+
+      final c0 = types[0] == 'line' ? null : anchor(0, null);
+      final c1 = types[1] == 'line' ? null : anchor(1, null);
+      final a = types[0] == 'line' ? anchor(0, c1) : c0;
+      final b = types[1] == 'line' ? anchor(1, c0) : c1;
+      return a == null || b == null ? null : (a, b);
     }
     return null;
   }
@@ -2068,7 +2109,8 @@ class SketchController extends ChangeNotifier {
     return switch (d.kind) {
       'radius' => '(R$number)',
       'diameter' => '(⌀$number)',
-      'angle' => '($number°)',
+      'angle' || 'horizontal_angle' || 'point_angle' => '($number°)',
+      'arc_length' => '(⌒$number)',
       _ => '($number)',
     };
   }
@@ -2865,6 +2907,7 @@ class SketchController extends ChangeNotifier {
   /// reporting `dof == 0`, which - trusted blindly - showed a visibly
   /// under-constrained sketch as "fully constrained".
   bool _lastSolveConverged = true;
+  String _lastSolveDetail = '';
 
   /// Whether the backend's own numbers say there's nothing left to solve -
   /// `dof <= 0` (a genuinely negative dof, e.g. from a redundant Constraint
@@ -3094,10 +3137,12 @@ class SketchController extends ChangeNotifier {
     // A Point an entity now uses is no longer a loose draw-tool Point to take
     // back if the tool is cancelled (see [_transientPointUndo]).
     _transientPointUndo.removeWhere((id, _) => !points.containsKey(id) || _pointOwnsEntities(id));
+    _unsolvedConstraintUndo.clear();
     final result =
         await _api.solveAndRefresh(_sketchId!, anchorPointIds: anchorPointIds, pointUpdates: pointUpdates);
     _dof = result.solve.dof;
     _lastSolveConverged = result.solve.converged;
+    _lastSolveDetail = result.solve.detail;
     _solverReportedFailedConstraintIds = result.solve.solverReportedFailedConstraintIds;
     final freshIds = result.points.map((p) => p.id).toSet();
     points
@@ -3145,6 +3190,52 @@ class SketchController extends ChangeNotifier {
         .where((loop) => loop.pointIds.length >= 2 || loop.isTextLoop)
         .toList();
     _profileBranchPointIds = result.profile.branchPointIds;
+  }
+
+  /// The conflict rule (DIDSA-VR parity plan 3.3, scope decision 1): solves after [madeIds] (constraints or dimensions the user just made) were created,
+  /// and when the solve does not converge takes them straight back out, solves again and puts the reason in [errorMessage]. Returns whether they were kept.
+  /// The caller pushes its undo entry only after a true answer, so a taken-back constraint leaves no undo step. [restore] puts back anything the creation
+  /// replaced (a linear dimension a horizontal one superseded). A conflict that appears later (a changed value, a moved reference) is not this method's:
+  /// it stays, and the failed ids colour the geometry red. A sketch that already failed to solve keeps a new constraint the solver does not blame.
+  /// Constraints a drawing path made (an inferred Horizontal, a snap onto a Point or curve, a tangent arc, a concentric tie) whose single finishing solve
+  /// has not run yet, each with the undo entry it pushed: [_solveKeeping] takes them back with their entries. Any other solve forgets them (kept).
+  final Map<String, Future<void> Function()> _unsolvedConstraintUndo = {};
+
+  /// [_pushUndo] for a constraint a drawing path just made, which that path's finishing [_solveKeeping] may still take back. [inverse] is the
+  /// entry when it is more than deleting the constraint.
+  void _pushConstraintUndo(String constraintId, [Future<void> Function()? inverse]) {
+    final entry = inverse ?? () async => _api.deleteConstraint(_sketchId!, constraintId);
+    _pushUndo(entry);
+    _unsolvedConstraintUndo[constraintId] = entry;
+  }
+
+  Future<bool> _solveKeeping(
+    Iterable<String> madeIds, {
+    String what = 'constraint',
+    Future<void> Function()? restore,
+    List<String> anchorPointIds = const [],
+    Map<String, (double, double)> pointUpdates = const {},
+  }) async {
+    final wasConverged = _lastSolveConverged;
+    final registered = Map.of(_unsolvedConstraintUndo);
+    await _solveAndTrackDof(anchorPointIds: anchorPointIds, pointUpdates: pointUpdates);
+    if (_lastSolveConverged) return true;
+    final made = [...madeIds, ...registered.keys];
+    if (made.isEmpty) return true;
+    if (!wasConverged && !_solverReportedFailedConstraintIds.any(made.contains)) return true;
+    final detail = _lastSolveDetail.trim();
+    for (final id in made) {
+      await _api.deleteConstraint(_sketchId!, id);
+      constraints.remove(id);
+    }
+    // The drawing paths pushed their undo entries as they went: a taken-back constraint leaves none.
+    registered.values.forEach(_undoStack.remove);
+    await restore?.call();
+    await _solveAndTrackDof();
+    errorMessage = detail.isEmpty
+        ? "The sketch can't satisfy that $what together with the rest, so it was not added."
+        : "The sketch can't satisfy that $what together with the rest, so it was not added ($detail).";
+    return false;
   }
 
   /// True when the cursor is close enough to the chain's start Point that
@@ -11335,12 +11426,15 @@ class SketchController extends ChangeNotifier {
       // the mutation below, since confirming this value is what would make
       // it no longer "first".
       final isFirstDimension = _isFirstDimension(existing?.id ?? '');
+      var solved = false;
       if (existing != null) {
         final oldValue = existing.distance;
         await _api.updateConstraintValue(_sketchId!, existing.id, value);
         _pushUndo(() async => _api.updateConstraintValue(_sketchId!, existing.id, oldValue));
       } else {
         final constraint = await _api.createDistanceConstraint(_sketchId!, pointAId, pointBId, value);
+        if (!await _solveKeeping([constraint.id], what: 'dimension')) return;
+        solved = true;
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       }
       // On-device feedback (bug fix): this used to only solve in the
@@ -11352,7 +11446,7 @@ class SketchController extends ChangeNotifier {
       // up, so it kept showing whatever the *previous* solve reported until
       // some later, unrelated mutation forced a fresh one - or the sketch
       // was closed and reopened, which does a full re-adopt.
-      await _solveAndTrackDof();
+      if (!solved) await _solveAndTrackDof();
       if (isFirstDimension) autoFitRequestToken++;
     });
   }
@@ -11660,12 +11754,12 @@ class SketchController extends ChangeNotifier {
       for (final target in targets) {
         created.add(await _api.createFixedConstraint(_sketchId!, target.id));
       }
+      if (!await _solveKeeping([for (final c in created) c.id])) return;
       _pushUndo(() async {
         for (final constraint in created.reversed) {
           await _api.deleteConstraint(_sketchId!, constraint.id);
         }
       });
-      await _solveAndTrackDof();
     });
   }
 
@@ -12157,8 +12251,8 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       final constraint = await _api.createVerticalConstraint(_sketchId!, current.id);
+      if (!await _solveKeeping([constraint.id])) return;
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-      await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -12171,8 +12265,8 @@ class SketchController extends ChangeNotifier {
 
     await _runGuarded(() async {
       final constraint = await _api.createHorizontalConstraint(_sketchId!, current.id);
+      if (!await _solveKeeping([constraint.id])) return;
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-      await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -16251,6 +16345,7 @@ class SketchController extends ChangeNotifier {
           }
         }
         final String constraintId;
+        var solved = false;
         if (existing != null) {
           final existingId = existing.id;
           constraintId = existingId;
@@ -16263,9 +16358,11 @@ class SketchController extends ChangeNotifier {
         } else {
           final constraint = await _api.createDimension(_sketchId!, dimensionCreateJson(template, value));
           constraintId = constraint.id;
+          if (!await _solveKeeping([constraint.id], what: 'dimension')) return;
+          solved = true;
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
-        await _solveAndTrackDof();
+        if (!solved) await _solveAndTrackDof();
         _keepDroppedPlacement(constraintId, target, droppedPlacement);
         _ghosts = [];
         _dimensionSelection.clear();
@@ -16279,6 +16376,7 @@ class SketchController extends ChangeNotifier {
       await _runGuarded(() async {
         final existing = _findPointLineDistanceConstraint(target.pointAId!, target.lineAId!);
         final String constraintId;
+        var solved = false;
         if (existing != null) {
           constraintId = existing.id;
           final oldValue = existing.distance;
@@ -16287,9 +16385,11 @@ class SketchController extends ChangeNotifier {
         } else {
           final constraint = await _api.createPointLineDistanceConstraint(_sketchId!, target.pointAId!, target.lineAId!, value);
           constraintId = constraint.id;
+          if (!await _solveKeeping([constraint.id], what: 'dimension')) return;
+          solved = true;
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
-        await _solveAndTrackDof();
+        if (!solved) await _solveAndTrackDof();
         _keepDroppedPlacement(constraintId, target, droppedPlacement);
         _ghosts = [];
         _dimensionSelection.clear();
@@ -16304,6 +16404,7 @@ class SketchController extends ChangeNotifier {
       await _runGuarded(() async {
         final existing = _findAngleConstraint(target.lineAId!, target.lineBId!);
         final String constraintId;
+        var solved = false;
         if (existing != null) {
           constraintId = existing.id;
           final oldValue = existing.angleDegrees;
@@ -16324,9 +16425,11 @@ class SketchController extends ChangeNotifier {
             quadrant: pickedQuadrant,
           );
           constraintId = constraint.id;
+          if (!await _solveKeeping([constraint.id], what: 'dimension')) return;
+          solved = true;
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
         }
-        await _solveAndTrackDof();
+        if (!solved) await _solveAndTrackDof();
         // The placement is laid out for the ghost's line order; an existing constraint with the lines the other way round keeps its own.
         final sameOrder = existing == null || existing.line1Id == target.lineAId;
         if (sameOrder) _keepDroppedPlacement(constraintId, target, droppedPlacement);
@@ -16347,6 +16450,7 @@ class SketchController extends ChangeNotifier {
       await _runGuarded(() async {
         final existing = _findLineDistanceConstraint(target.lineAId!, target.lineBId!);
         final String constraintId;
+        var solved = false;
         if (existing != null) {
           constraintId = existing.id;
           final oldValue = existing.distance;
@@ -16360,6 +16464,8 @@ class SketchController extends ChangeNotifier {
             value,
           );
           constraintId = constraint.id;
+          if (!await _solveKeeping([constraint.id], what: 'dimension')) return;
+          solved = true;
           _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
 
           // On-device feedback ("the user should get the feeling that the
@@ -16401,9 +16507,10 @@ class SketchController extends ChangeNotifier {
             _pushUndo(() async => _api.deleteConstraint(_sketchId!, parallel.id));
           } else {
             await _api.deleteConstraint(_sketchId!, parallel.id);
+            solved = false;
           }
         }
-        await _solveAndTrackDof();
+        if (!solved) await _solveAndTrackDof();
         _keepDroppedPlacement(constraintId, target, droppedPlacement);
         _ghosts = [];
         _dimensionSelection.clear();
@@ -16434,6 +16541,7 @@ class SketchController extends ChangeNotifier {
       // it can't itself change this read's answer).
       final isFirstDimension = _isFirstDimension(existing?.id ?? '');
       final String constraintId;
+      var solved = false;
       if (existing != null) {
         constraintId = existing.id;
         final oldValue = existing.distance;
@@ -16459,18 +16567,18 @@ class SketchController extends ChangeNotifier {
         // 'linear' constraint (which pins the same overall distance a more
         // specific orientation would) is genuinely superseded here.
         final mismatched = _findDistanceConstraint(pointAId, pointBId);
-        if (mismatched != null && mismatched.orientation == 'linear') {
-          await _api.deleteConstraint(_sketchId!, mismatched.id);
-          _pushUndo(() async {
-            await _api.createDistanceConstraint(
-              _sketchId!,
-              mismatched.pointAId,
-              mismatched.pointBId,
-              mismatched.distance,
-              orientation: mismatched.orientation,
-            );
-          });
+        Future<void> recreateMismatched() async {
+          await _api.createDistanceConstraint(
+            _sketchId!,
+            mismatched!.pointAId,
+            mismatched.pointBId,
+            mismatched.distance,
+            orientation: mismatched.orientation,
+          );
         }
+
+        final replaces = mismatched != null && mismatched.orientation == 'linear';
+        if (replaces) await _api.deleteConstraint(_sketchId!, mismatched.id);
         final constraint = await _api.createDistanceConstraint(
           _sketchId!,
           pointAId,
@@ -16479,6 +16587,10 @@ class SketchController extends ChangeNotifier {
           orientation: orientation,
         );
         constraintId = constraint.id;
+        // A refused dimension takes the linear one it would have replaced back with it.
+        if (!await _solveKeeping([constraint.id], what: 'dimension', restore: replaces ? recreateMismatched : null)) return;
+        solved = true;
+        if (replaces) _pushUndo(recreateMismatched);
         _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
       }
       if (target.kind == GhostKind.radius || target.kind == GhostKind.diameter) {
@@ -16490,7 +16602,7 @@ class SketchController extends ChangeNotifier {
       // *existing* dimension left dof/isFullyConstrained stale exactly the
       // way [setLineLength]/[updateSelectedConstraintValue]'s matching
       // fixes describe.
-      await _solveAndTrackDof();
+      if (!solved) await _solveAndTrackDof();
       if (isFirstDimension) autoFitRequestToken++;
       _keepDroppedPlacement(constraintId, target, droppedPlacement);
       _ghosts = [];
@@ -16537,12 +16649,12 @@ class SketchController extends ChangeNotifier {
       for (final targetId in targetIds) {
         created.add(await create(_sketchId!, referenceId, targetId));
       }
+      if (!await _solveKeeping([for (final c in created) c.id])) return;
       _pushUndo(() async {
         for (final constraint in created.reversed) {
           await _api.deleteConstraint(_sketchId!, constraint.id);
         }
       });
-      await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -16586,8 +16698,8 @@ class SketchController extends ChangeNotifier {
     final entityId = entitySel.first.id;
     await _runGuarded(() async {
       final constraint = await create(_sketchId!, pointId, entityId);
+      if (!await _solveKeeping([constraint.id])) return;
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-      await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -16638,8 +16750,8 @@ class SketchController extends ChangeNotifier {
     final curveId = curveSel.first.id;
     await _runGuarded(() async {
       final constraint = await _api.createTangentConstraint(_sketchId!, curveId, lineId);
+      if (!await _solveKeeping([constraint.id])) return;
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-      await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -16656,8 +16768,8 @@ class SketchController extends ChangeNotifier {
     if (shared == null) return;
     await _runGuarded(() async {
       final constraint = await _api.createCurveTangentConstraint(_sketchId!, a.id, b.id, shared);
+      if (!await _solveKeeping([constraint.id])) return;
       _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
-      await _solveAndTrackDof();
       _selectionSet.clear();
       _ribbonVisible = false;
     });
@@ -17214,19 +17326,19 @@ class SketchController extends ChangeNotifier {
 
         if (existingId != null) {
           final constraint = await _api.createCoincidentConstraint(_sketchId!, pointId, existingId);
-          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+          _pushConstraintUndo(constraint.id);
           _autoCoincidentIndicatorPointId = pointId;
         } else if (onCurveTarget != null) {
           final (target, _, _) = onCurveTarget;
           final constraint = await _pointOnCurveConstraintFor(pointId, target);
-          _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+          _pushConstraintUndo(constraint.id);
         }
       }
       // A midpoint-snapped or auto-coincident placement adds a new
       // Constraint, which a plain new Point never did before - solve and
       // refresh unconditionally, same as every other entity-placement
       // tool, so it's reflected immediately.
-      await _solveAndTrackDof();
+      await _solveKeeping(const []);
     });
   }
 
@@ -17293,7 +17405,7 @@ class SketchController extends ChangeNotifier {
 
       // One user action (this tap, now that the line is fully placed) = one
       // solve call - never on intermediate cursor movement.
-      await _solveAndTrackDof();
+      await _solveKeeping(const []);
 
       if (closingLoop) {
         _chainStartPointId = null;
@@ -17382,9 +17494,9 @@ class SketchController extends ChangeNotifier {
       final tangentConstraint = source.kind == SelectionKind.line
           ? await _api.createTangentConstraint(_sketchId!, arc.id, source.id)
           : await _api.createCurveTangentConstraint(_sketchId!, arc.id, source.id, startId);
-      _pushUndo(() async => _api.deleteConstraint(_sketchId!, tangentConstraint.id));
+      _pushConstraintUndo(tangentConstraint.id);
 
-      await _solveAndTrackDof();
+      await _solveKeeping(const []);
 
       _chainStartPointId = endPoint.id;
     });
@@ -17457,13 +17569,13 @@ class SketchController extends ChangeNotifier {
             anchorId == _originPointId ? await _createPointCoincidentWithExisting(anchorId) : anchorId;
         final midpointConstraint = await _api.createAtMidpointConstraint(_sketchId!, midpointPointId, line.id);
         constraints[midpointConstraint.id] = midpointConstraint;
-        _pushUndo(() async {
+        _pushConstraintUndo(midpointConstraint.id, () async {
           await _api.deleteConstraint(_sketchId!, midpointConstraint.id);
           constraints.remove(midpointConstraint.id);
         });
       }
 
-      await _solveAndTrackDof();
+      await _solveKeeping(const []);
       _midpointAnchorX = null;
       _midpointAnchorY = null;
       _midpointAnchorPointId = null;
@@ -17497,7 +17609,7 @@ class SketchController extends ChangeNotifier {
       LineInferenceKind.pointOnCurve => _pointOnCurveConstraintFor(endPointId, inference.target!),
       LineInferenceKind.collinear => _api.createCollinearConstraint(_sketchId!, inference.target!.id, lineId),
     });
-    _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+    _pushConstraintUndo(constraint.id);
   }
 
   /// The Line/Circle/Arc/Ellipse-specific `create*` call
@@ -17583,11 +17695,11 @@ class SketchController extends ChangeNotifier {
       final concentricTarget = _circleConcentricTarget;
       if (concentricTarget != null) {
         final constraint = await _api.createConcentricConstraint(_sketchId!, circle.id, concentricTarget.id);
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+        _pushConstraintUndo(constraint.id);
       }
 
       // Same rule as a completed Line: one finished entity = one solve call.
-      await _solveAndTrackDof();
+      await _solveKeeping(const []);
 
       _circleCenterPointId = null;
       _circleConcentricTarget = null;
@@ -17686,11 +17798,11 @@ class SketchController extends ChangeNotifier {
       final concentricTarget = _arcConcentricTarget;
       if (concentricTarget != null) {
         final constraint = await _api.createConcentricConstraint(_sketchId!, arc.id, concentricTarget.id);
-        _pushUndo(() async => _api.deleteConstraint(_sketchId!, constraint.id));
+        _pushConstraintUndo(constraint.id);
       }
 
       // Same rule as a completed Circle: one finished entity = one solve call.
-      await _solveAndTrackDof();
+      await _solveKeeping(const []);
 
       _arcCenterPointId = null;
       _arcStartPointId = null;
@@ -19828,6 +19940,10 @@ class SketchController extends ChangeNotifier {
   static const int _maxUndoStackEntries = 50;
 
   bool get canUndo => _undoStack.isNotEmpty;
+
+  /// How many undo steps are held (tests check that a taken-back constraint leaves none).
+  @visibleForTesting
+  int get undoDepth => _undoStack.length;
 
   void _pushUndo(Future<void> Function() inverse) {
     _undoStack.add(inverse);

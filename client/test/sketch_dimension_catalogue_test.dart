@@ -16,21 +16,6 @@ import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 
 const String _cataloguePath = '../docs/sketch-dimension-catalogue.json';
 
-/// The reference kinds the catalogue's `pinned` block lists that the flat app does not offer yet (`referenceDimensionKinds`). S1 of the
-/// parity plan adds them; it then empties this map, and the test holds the code to the whole block.
-const Map<String, List<String>> _pinnedKindsAwaitingS1 = {
-  'line': ['horizontal_angle'],
-  'arc': ['arc_length'],
-  'point+point+point': ['point_angle'],
-  'point+circle': ['min_distance', 'max_distance'],
-  'point+arc': ['min_distance', 'max_distance'],
-  'circle+circle': ['min_distance', 'max_distance'],
-  'circle+arc': ['min_distance', 'max_distance'],
-  'arc+arc': ['min_distance', 'max_distance'],
-  'line+circle': ['min_distance', 'max_distance'],
-  'line+arc': ['min_distance', 'max_distance'],
-};
-
 const _whenVocabulary = {
   'lines_parallel',
   'lines_not_parallel',
@@ -593,7 +578,6 @@ void main() {
       for (final list in kinds.values) {
         expect(referenceKinds.containsAll(list), isTrue, reason: '$list');
       }
-      expect(kinds.keys.toSet().containsAll(_pinnedKindsAwaitingS1.keys), isTrue);
     });
 
     for (final shape in kinds.keys) {
@@ -605,11 +589,7 @@ void main() {
         );
         final controller = await _sketch(f);
         await _pick(controller, f.taps);
-        final awaiting = _pinnedKindsAwaitingS1[shape] ?? const [];
-        expect(controller.referenceDimensionKinds, [
-          for (final k in kinds[shape]!)
-            if (!awaiting.contains(k)) k,
-        ]);
+        expect(controller.referenceDimensionKinds, kinds[shape]);
       });
     }
 

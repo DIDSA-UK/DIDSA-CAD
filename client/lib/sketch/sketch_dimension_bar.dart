@@ -46,7 +46,7 @@ class SketchDimensionBar extends StatelessWidget {
                                 child: ActionChip(
                                   key: ValueKey('reference-dimension-add-$kind'),
                                   avatar: const Icon(Icons.straighten, size: 16),
-                                  label: Text('Reference $kind'),
+                                  label: Text('Reference ${kind.replaceAll('_', ' ')}'),
                                   onPressed: () => controller.addReferenceDimension(kind),
                                 ),
                               ),

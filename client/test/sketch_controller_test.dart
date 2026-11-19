@@ -2997,7 +2997,18 @@ class _FakeBackend {
   bool converged = true;
   List<String> solverReportedFailedConstraintIds = [];
 
-  Map<String, dynamic> _solveResultBody() => {
+  /// When 0 or more, this many solves converge and every later one does not (a trial that only fails after the first answer).
+  int convergeFirst = -1;
+
+  Map<String, dynamic> _solveResultBody() {
+    if (convergeFirst > 0) {
+      convergeFirst--;
+      return _solveBody(true);
+    }
+    return _solveBody(convergeFirst == 0 ? false : converged);
+  }
+
+  Map<String, dynamic> _solveBody(bool converged) => {
         'converged': converged,
         'dof': dof,
         'result_code': converged ? 0 : 1,
@@ -12259,7 +12270,7 @@ void main() {
     // (e.g. a rectangle's own opposite Horizontal-constrained sides) - the
     // fake backend can't run a real solve, so this stands in for "adding
     // the trial Parallel constraint made the system fail to converge".
-    backend.converged = false;
+    backend.convergeFirst = 1;
 
     await controller.confirmGhostValue('lineDistance', 7.0);
 
@@ -13930,6 +13941,197 @@ void main() {
     // of decoupling it), unlike the origin's own real point, which never is.
     expect(controller.dragTargetPointIdAt(0, 0, 1), startId);
     expect(controller.dragTargetPointIdAt(0, 0, 1), isNot(controller.originPointId));
+  });
+
+  group('conflict rule (parity plan S1): a constraint the solve refuses is taken straight back out', () {
+    Future<void> twoLines({double endY = 6}) async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.finishChain();
+      await controller.handleCanvasTap(0, 5);
+      await controller.handleCanvasTap(10, endY);
+      controller.finishChain();
+    }
+
+    test('a relation (Parallel) the solve refuses is deleted again, with the reason, and leaves no undo step', () async {
+      await twoLines();
+      controller.exitToSelectMode();
+      await controller.handleCanvasTap(8, 0.1);
+      await controller.handleCanvasTap(8, 5.8);
+      final depth = controller.undoDepth;
+
+      backend.converged = false;
+      await controller.addParallelConstraint();
+
+      expect(controller.constraints.values.whereType<ParallelConstraintDto>(), isEmpty);
+      expect(backend.constraints.values.where((c) => c['type'] == 'parallel'), isEmpty);
+      expect(controller.errorMessage, contains("can't satisfy that constraint"));
+      expect(controller.undoDepth, depth);
+    });
+
+    test('a relation the solve accepts is kept, with its undo step', () async {
+      await twoLines();
+      controller.exitToSelectMode();
+      await controller.handleCanvasTap(8, 0.1);
+      await controller.handleCanvasTap(8, 5.8);
+      final depth = controller.undoDepth;
+
+      await controller.addParallelConstraint();
+
+      expect(controller.constraints.values.whereType<ParallelConstraintDto>(), hasLength(1));
+      expect(controller.errorMessage, isNull);
+      expect(controller.undoDepth, depth + 1);
+    });
+
+    test('Horizontal from the ribbon is taken back too', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 3);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      await controller.handleCanvasTap(8, 2.4);
+      final depth = controller.undoDepth;
+
+      backend.converged = false;
+      await controller.addHorizontalConstraint();
+
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isEmpty);
+      expect(controller.errorMessage, isNotNull);
+      expect(controller.undoDepth, depth);
+    });
+
+    test('a new dimension the solve refuses is deleted again and the message says dimension', () async {
+      await twoLines(endY: 5);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 0.1);
+      await controller.handleCanvasTap(8, 5.1);
+      final depth = controller.undoDepth;
+
+      backend.converged = false;
+      await controller.confirmGhostValue('lineDistance', 7.0);
+
+      expect(controller.constraints.values.whereType<LineDistanceConstraintDto>(), isEmpty);
+      expect(controller.errorMessage, contains("can't satisfy that dimension"));
+      expect(controller.undoDepth, depth);
+    });
+
+    test('a line length the solve refuses is deleted again', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.finishChain();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 0.1);
+      final depth = controller.undoDepth;
+
+      backend.converged = false;
+      await controller.confirmGhostValue('length', 25.0);
+
+      expect(controller.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+      expect(controller.errorMessage, isNotNull);
+      expect(controller.undoDepth, depth);
+    });
+
+    test('an inferred relation made while drawing is taken back, but the line stays', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      controller.moveCursorToSketchPoint(10, 0.1);
+      expect(controller.activeLineInference?.kind, LineInferenceKind.horizontal);
+      final depth = controller.undoDepth;
+
+      backend.converged = false;
+      await controller.handleCanvasTap(10, 0.1);
+
+      expect(controller.lines, hasLength(1));
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), isEmpty);
+      expect(controller.errorMessage, isNotNull);
+      final undoneConstraintEntries = controller.undoDepth - depth;
+      // The line's own steps are there; none of them is the (taken back) Horizontal's: undoing them all leaves nothing to delete twice.
+      while (controller.canUndo) {
+        await controller.undo();
+      }
+      expect(controller.errorMessage, isNull, reason: 'undoing never meets a stale delete ($undoneConstraintEntries steps)');
+      expect(controller.lines, isEmpty);
+    });
+
+    test('an inferred relation the solve accepts is kept', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      controller.moveCursorToSketchPoint(10, 0.1);
+      await controller.handleCanvasTap(10, 0.1);
+
+      expect(controller.constraints.values.whereType<HorizontalConstraintDto>(), hasLength(1));
+      expect(controller.errorMessage, isNull);
+    });
+
+    test('a conflict that appears later (a changed value) is kept, not taken back', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      controller.finishChain();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 0.1);
+      await controller.confirmGhostValue('length', 25.0);
+      final dimension = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+
+      backend.converged = false;
+      backend.solverReportedFailedConstraintIds = [dimension.id];
+      await controller.handleCanvasTap(8, 0.1);
+      await controller.confirmGhostValue('length', 30.0);
+
+      expect(controller.constraints.values.whereType<DistanceConstraintDto>(), hasLength(1));
+      expect(controller.errorMessage, isNull);
+      expect(controller.backendFlaggedOverConstrainedPointIds, isNotEmpty, reason: 'its geometry goes red');
+    });
+
+    test('a sketch that already fails keeps a new constraint the solver does not blame', () async {
+      await twoLines();
+      backend.converged = false;
+      backend.solverReportedFailedConstraintIds = ['somebody-else'];
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 20);
+      await controller.handleCanvasTap(10, 28);
+      controller.finishChain();
+      controller.exitToSelectMode();
+      await controller.handleCanvasTap(8, 0.1);
+      await controller.handleCanvasTap(8, 5.8);
+
+      await controller.addParallelConstraint();
+
+      expect(controller.constraints.values.whereType<ParallelConstraintDto>(), hasLength(1));
+      expect(controller.errorMessage, isNull);
+    });
+  });
+
+  group('reference dimensions of the part D kinds (parity plan S1)', () {
+    test('a line offers an angle to the horizontal, and adding it asks the backend for exactly that kind', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 3);
+      controller.finishChain();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 2.4);
+
+      expect(controller.referenceDimensionKinds, ['distance', 'horizontal', 'vertical', 'horizontal_angle']);
+      expect(await controller.addReferenceDimension('horizontal_angle'), isTrue);
+      expect(backend.referenceDimensions.values.single['kind'], 'horizontal_angle');
+    });
+
+    test('a circle and a Point offer minimum / maximum distance whichever was picked first', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      controller.selectDrawTool(SketchTool.point);
+      await controller.handleCanvasTap(20, 20);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(20, 20); // the Point
+      await controller.handleCanvasTap(-3.5355, 3.5355); // the circle's rim, away from its Points
+      expect(controller.referenceDimensionKinds, ['min_distance', 'max_distance']);
+      expect(await controller.addReferenceDimension('min_distance'), isTrue);
+      expect(backend.referenceDimensions.values.single['kind'], 'min_distance');
+      expect([for (final r in backend.referenceDimensions.values.single['refs'] as List) r['type']], ['point', 'circle']);
+    });
   });
 
   test('addParallelConstraint creates a ParallelConstraint between the two selected Lines and '
