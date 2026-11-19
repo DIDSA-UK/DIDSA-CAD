@@ -467,7 +467,8 @@ void main() {
           final options = controller.pendingDimensionOptions;
 
           if (f.expectNone) {
-            expect(options, isEmpty);
+            // No driving dimension; between pinned things the `pinned` block's reference previews (tested below) are all there is.
+            expect(options.where((o) => o.referenceKind == null), isEmpty);
             return;
           }
           final matched = _matching(catalogue, picks, f.facts);
@@ -593,12 +594,14 @@ void main() {
       });
     }
 
-    test('every Point of the picks pinned: no driving dimension is offered', () async {
+    test('every Point of the picks pinned: no driving dimension, the Dimension tool offers the reference kinds instead', () async {
       final f = _fixtures.firstWhere((f) => f.name == 'a line between two pinned Points');
       final controller = await _sketch(f);
       await _pick(controller, f.taps);
-      expect(controller.pendingDimensionOptions, isEmpty);
-      expect(controller.referenceDimensionKinds, isNotEmpty, reason: 'the reference kinds are still there for the bar');
+      final options = controller.pendingDimensionOptions;
+      expect(options.where((o) => o.referenceKind == null), isEmpty);
+      expect([for (final o in options) o.referenceKind], controller.referenceDimensionKinds);
+      expect(controller.dimensionOptionsAreReferences, isTrue, reason: 'the bar does not repeat them as its own chips');
     });
   });
 }

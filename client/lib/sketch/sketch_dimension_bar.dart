@@ -40,7 +40,8 @@ class SketchDimensionBar extends StatelessWidget {
                         scrollDirection: Axis.horizontal,
                         child: Row(
                           children: [
-                            for (final kind in controller.referenceDimensionKinds)
+                            // Between pinned things the drawer below already offers these (as reference previews), so they are not repeated here.
+                            for (final kind in controller.dimensionOptionsAreReferences ? const <String>[] : controller.referenceDimensionKinds)
                               Padding(
                                 padding: const EdgeInsets.only(right: 8),
                                 child: ActionChip(

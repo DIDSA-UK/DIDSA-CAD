@@ -9446,7 +9446,7 @@ void main() {
       expect(freshController.dimensionSelection.single.id, firstPointId);
     });
 
-    test('picking two different body vertices materializes two distinct Points - and offers nothing between two pinned things',
+    test('picking two different body vertices materializes two distinct Points - and offers reference dimensions between two pinned things',
         () async {
       final (freshController, freshBackend) = await adoptedController();
       freshController.enterDimensionMode();
@@ -9456,8 +9456,51 @@ void main() {
 
       expect(freshBackend.convertVertexRequestCount, 2);
       expect(freshController.dimensionSelection, hasLength(2));
-      // Both are pinned to the part (the design table's rule): a driving dimension between them could only over-constrain the sketch.
+      // Both are pinned to the part (the design table's rule): a driving dimension between them could only over-constrain the sketch, so the
+      // previews are reference dimensions (the catalogue's `pinned` block, scope decision 4).
+      expect({for (final g in freshController.pendingDimensionOptions) g.key: g.referenceKind}, {'linear': 'distance', 'h': 'horizontal', 'v': 'vertical'});
+      expect(freshController.pendingDimensionOptions.every((g) => g.displayLabel.startsWith('Reference ')), isTrue);
+      expect(freshController.dimensionOptionsAreReferences, isTrue);
+    });
+
+    test('a reference preview between two pinned things: the drop keeps it as a reference dimension, with no value and no constraint', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+      await freshController.pickReferenceGhostVertex('body-1', 0);
+      await freshController.pickReferenceGhostVertex('body-1', 1);
+      expect(freshController.selectPendingDimensionKind('h'), isTrue);
+
+      expect(freshController.dropPendingDimension(), isTrue);
+      for (var i = 0; i < 5; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+
+      expect(freshController.activeGhostKey, isNull); // no value editor
+      expect(freshBackend.referenceDimensions, hasLength(1));
+      expect(freshController.referenceDimensions.single.kind, 'horizontal');
+      expect(freshController.constraints, isEmpty); // nothing reached the solver
       expect(freshController.ghosts, isEmpty);
+      expect(freshController.dimensionSelection, isEmpty);
+    });
+
+    test('a reference preview tapped, or confirmed through the editor path, is kept the same way', () async {
+      final (freshController, freshBackend) = await adoptedController();
+      freshController.enterDimensionMode();
+      await freshController.pickReferenceGhostVertex('body-1', 0);
+      await freshController.pickReferenceGhostVertex('body-1', 1);
+      await freshController.confirmGhostValue('linear', 123);
+      expect(freshBackend.referenceDimensions, hasLength(1));
+      expect(freshController.referenceDimensions.single.kind, 'distance');
+      expect(freshController.constraints, isEmpty);
+
+      await freshController.pickReferenceGhostVertex('body-1', 0);
+      await freshController.pickReferenceGhostVertex('body-1', 2);
+      freshController.tapGhost('v');
+      expect(freshController.activeGhostKey, isNull);
+      for (var i = 0; i < 5; i++) {
+        await Future<void>.delayed(Duration.zero);
+      }
+      expect(freshBackend.referenceDimensions, hasLength(2));
     });
 
     test('a body vertex and a free sketch point still offer the distance ghosts', () async {
@@ -9509,8 +9552,9 @@ void main() {
       expect(line, isNotNull);
       expect(freshController.points.containsKey(line!.startPointId), isTrue);
       expect(freshController.points.containsKey(line.endPointId), isTrue);
-      // A body edge is pinned to the part (both its Points are), so its own length is not offered as a driving dimension.
-      expect(freshController.ghosts, isEmpty);
+      // A body edge is pinned to the part (both its Points are), so its own length is not offered as a driving dimension: reference ones instead.
+      expect({for (final g in freshController.pendingDimensionOptions) g.key: g.referenceKind},
+          {'length': 'distance', 'h': 'horizontal', 'v': 'vertical', 'horizontalAngle': 'horizontal_angle'});
       expect(freshController.errorMessage, isNull);
       // On-device feedback (bug fix): a materialized Body edge is a
       // reference to dimension against, not new solid geometry the user
@@ -9535,7 +9579,7 @@ void main() {
       expect(freshController.dimensionSelection.single.id, firstLineId);
     });
 
-    test('picking two different (parallel) body edges makes both references - and offers nothing between two pinned things', () async {
+    test('picking two different (parallel) body edges makes both references - and offers only a reference distance between them', () async {
       final (freshController, freshBackend) = await adoptedController();
       freshController.enterDimensionMode();
 
@@ -9544,7 +9588,7 @@ void main() {
 
       expect(freshBackend.convertEdgeRequestCount, 2);
       expect(freshController.dimensionSelection, hasLength(2));
-      expect(freshController.ghosts, isEmpty);
+      expect({for (final g in freshController.pendingDimensionOptions) g.key: g.referenceKind}, {'lineDistance': 'distance'});
     });
 
     test('a body edge and a free parallel line still offer the lineDistance ghost', () async {

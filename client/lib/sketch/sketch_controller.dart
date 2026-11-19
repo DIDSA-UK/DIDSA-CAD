@@ -1623,6 +1623,10 @@ class DimensionGhost {
   /// [GhostKind.typed] only: the constraint this ghost makes (its value is filled in from the geometry or the editor).
   final ConstraintDto? template;
 
+  /// Set when every Point of the pick is pinned (the catalogue's `pinned` block): the reference (driven) dimension kind this preview keeps, as
+  /// [SketchController.addReferenceDimension] takes it. A reference preview has no value to type; dropping or tapping it keeps it at once.
+  final String? referenceKind;
+
   const DimensionGhost({
     required this.key,
     required this.kind,
@@ -1632,7 +1636,21 @@ class DimensionGhost {
     this.lineBId,
     this.label,
     this.template,
+    this.referenceKind,
   });
+
+  /// This preview as the reference dimension of [kind]: same key, kind and anchors, labelled `Reference <its label>`.
+  DimensionGhost asReference(String kind) => DimensionGhost(
+        key: key,
+        kind: this.kind,
+        pointAId: pointAId,
+        pointBId: pointBId,
+        lineAId: lineAId,
+        lineBId: lineBId,
+        label: 'Reference ${displayLabel.toLowerCase()}',
+        template: template,
+        referenceKind: kind,
+      );
 
   /// What the dimension drawer calls this kind.
   String get displayLabel =>
@@ -1999,6 +2017,11 @@ class SketchController extends ChangeNotifier {
       final dimension = await _api.createReferenceDimension(sketchId, kind, refs);
       _referenceDimensions = [..._referenceDimensions.where((d) => d.id != dimension.id), dimension];
       _dimensionSelection.clear();
+      _ghosts = [];
+      _activeGhostKey = null;
+      _pendingKey = null;
+      _frozenPlacement = null;
+      _cursorChoosesKind = false;
       made = true;
     });
     if (made) notifyListeners();
@@ -12238,7 +12261,7 @@ class SketchController extends ChangeNotifier {
     _activeGhostKey = null;
     _rebuildDimensionGhosts();
     final key = diameter ? 'diameter' : 'radius';
-    if (_ghosts.any((g) => g.key == key)) {
+    if (_ghosts.any((g) => g.key == key && g.referenceKind == null)) {
       _activeGhostKey = key;
     }
     notifyListeners();
@@ -12566,6 +12589,11 @@ class SketchController extends ChangeNotifier {
     if (_activeGhostKey != null) return false;
     final ghost = pendingDimensionGhost;
     if (ghost == null) return false;
+    if (ghost.referenceKind != null) {
+      // A reference dimension measures: nothing to type, so the drop keeps it.
+      unawaited(keepReferenceGhost(ghost.key));
+      return true;
+    }
     final placement = _placementForGhostAt(ghost, (cursorX, cursorY));
     _tappedAngleGhost = ghost.kind == GhostKind.angle ? (key: ghost.key, quadrant: _angleQuadrantUnderCursor(ghost)) : null;
     final typed = ghost.kind == GhostKind.typed ? _typedGhostTemplate(ghost) : null;
@@ -15582,18 +15610,55 @@ class SketchController extends ChangeNotifier {
   /// [_buildLinePairGhosts]). Any other shape (a bare Point/Circle/Arc
   /// alone, or anything with more than two entities) shows no ghosts.
   void _rebuildDimensionGhosts() {
+    _rebuildDrivingDimensionGhosts();
+    // Between pinned things (a body corner or edge reference, the origin, a Fix) a driving dimension could only over-constrain the sketch, so the
+    // same previews are offered as reference dimensions instead (scope decision 4, the DIDSA-VR design table's rule): one per kind the catalogue's
+    // `pinned` block lists for this pick ([referenceDimensionKinds]), the first preview of each kind kept.
+    if (_dimensionSelection.isNotEmpty && _everyPointPinned(_dimensionSelection)) _ghosts = _referenceGhostsOf(_ghosts);
+  }
+
+  /// The reference (driven) dimension kind a preview of [key] measures, or null when it has none.
+  static String? _referenceKindOfGhostKey(String key) => switch (key) {
+        'length' || 'linear' || 'perpendicular' || 'lineDistance' => 'distance',
+        'h' => 'horizontal',
+        'v' => 'vertical',
+        'horizontalAngle' => 'horizontal_angle',
+        'angle' => 'angle',
+        'radius' => 'radius',
+        'diameter' => 'diameter',
+        'arcLength' => 'arc_length',
+        'pointAngle' => 'point_angle',
+        'minDistance' || 'tangentDistance' => 'min_distance',
+        'maxDistance' || 'farDistance' => 'max_distance',
+        _ => null,
+      };
+
+  List<DimensionGhost> _referenceGhostsOf(List<DimensionGhost> ghosts) {
+    final allowed = referenceDimensionKinds;
+    final seen = <String>{};
+    return [
+      for (final g in ghosts)
+        if (_referenceKindOfGhostKey(g.key) case final kind? when allowed.contains(kind) && seen.add(kind)) g.asReference(kind),
+    ];
+  }
+
+  /// Whether the drawer's options are all reference dimensions (the pick is pinned); the bar then leaves out its own reference chips, which would repeat them.
+  bool get dimensionOptionsAreReferences => _ghosts.isNotEmpty && _ghosts.every((g) => g.referenceKind != null);
+
+  /// Keeps the reference preview [key] as a reference dimension (see [addReferenceDimension]). False when [key] is not a reference preview or the backend refused.
+  Future<bool> keepReferenceGhost(String key) async {
+    final ghost = _ghosts.where((g) => g.key == key).firstOrNull;
+    final kind = ghost?.referenceKind;
+    if (kind == null) return false;
+    return addReferenceDimension(kind);
+  }
+
+  void _rebuildDrivingDimensionGhosts() {
     final sel = _dimensionSelection;
     // A new pick restarts the choice: the drawer's kind, a placement frozen by an earlier drop, and the cursor rule all start again.
     _pendingKey = null;
     _frozenPlacement = null;
     _cursorChoosesKind = false;
-
-    // Reference-identity overhaul (the DIDSA-VR design table's rule): nothing is offered between two pinned things. A driving dimension on geometry
-    // whose every Point is already pinned (a body corner or edge reference, the origin, a Fix) could only over-constrain the sketch.
-    if (_everyPointPinned(sel)) {
-      _ghosts = [];
-      return;
-    }
 
     if (sel.length == 1) {
       switch (sel.first.kind) {
@@ -16233,6 +16298,10 @@ class SketchController extends ChangeNotifier {
   void tapGhost(String key) {
     if (!_ghosts.any((g) => g.key == key)) return;
     final ghost = _ghosts.firstWhere((g) => g.key == key);
+    if (ghost.referenceKind != null) {
+      unawaited(keepReferenceGhost(key));
+      return;
+    }
     _tappedAngleGhost = ghost.kind == GhostKind.angle ? (key: key, quadrant: _angleQuadrantUnderCursor(ghost)) : null;
     final typed = ghost.kind == GhostKind.typed ? _typedGhostTemplate(ghost) : null;
     _frozenTypedTemplate = typed == null ? null : (key: key, template: typed);
@@ -16327,6 +16396,10 @@ class SketchController extends ChangeNotifier {
       }
     }
     if (ghost == null) return;
+    if (ghost.referenceKind != null) {
+      await addReferenceDimension(ghost.referenceKind!); // a reference dimension has no value: it measures
+      return;
+    }
     final target = ghost;
     // Where the user dropped it (null when it went straight to the editor): saved with the constraint, as a label drag would.
     final frozen = _frozenPlacement;
