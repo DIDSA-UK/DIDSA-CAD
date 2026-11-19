@@ -2941,6 +2941,60 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('bug report 2026-11-18 B: a sketch opened from the Part has the feature tree, read-mostly', (tester) async {
+    final backend = _FakeDocumentBackend(
+      seedFeatures: [
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true},
+        {'type': 'sketch', 'id': 'feature-2', 'sketch_id': 'sketch-2', 'locked': false},
+      ],
+    );
+    final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+    final sketchBackend = _FakeSketchBackend();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    await tester.tap(find.byTooltip('Feature tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('Sketch 2'));
+    await _pumpUntil(tester, () => find.byType(SketchScreen).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // The tree is closed until the sketcher's own button opens it.
+    expect(find.byKey(const ValueKey('sketch-tree-fab')), findsOneWidget);
+    expect(find.descendant(of: find.byType(SketchScreen), matching: find.text('Build Tree')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('sketch-tree-fab')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    final tree = find.descendant(of: find.byType(SketchScreen), matching: find.byType(FeatureTreePanel));
+    expect(tree, findsOneWidget);
+
+    // The sketch being edited is highlighted; another feature does not open (still one SketchScreen, same sketch).
+    final selected = tester
+        .widgetList<ListTile>(find.descendant(of: tree, matching: find.byType(ListTile)))
+        .where((t) => t.selected)
+        .map((t) => (t.title as Text).data)
+        .toList();
+    expect(selected, ['Sketch 2']);
+    await tester.tap(find.descendant(of: tree, matching: find.text('Sketch 1')));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(SketchScreen), findsOneWidget);
+    expect(find.descendant(of: tree, matching: find.byIcon(Icons.visibility)), findsOneWidget, reason: "Sketch 1's eye only");
+
+    // The eye works: the row goes dim (hidden) and offers Show.
+    await tester.tap(find.byKey(const ValueKey('tree-visibility-feature-1')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.descendant(of: tree, matching: find.byTooltip('Show')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('confirming the cascade-delete dialog deletes the Feature and everything after it', (tester) async {
     final backend = _FakeDocumentBackend(
       seedFeatures: [

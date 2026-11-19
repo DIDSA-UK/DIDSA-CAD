@@ -194,4 +194,20 @@ void main() {
       expect(old.quadrant, isNull);
     });
   });
+
+  group('angleExtensionLineStart (bug report 2026-11-18)', () {
+    test('no extension line when the arc lands on the drawn segment', () {
+      expect(angleExtensionLineStart(2, 10, 5), isNull);
+      expect(angleExtensionLineStart(10, 2, 2), isNull);
+    });
+    test('beyond the segment it starts at the farther end, short of it at the nearer end', () {
+      expect(angleExtensionLineStart(2, 10, 15), 1);
+      expect(angleExtensionLineStart(10, 2, 15), 0);
+      expect(angleExtensionLineStart(4, 10, 1), 0);
+      expect(angleExtensionLineStart(10, 4, 1), 1);
+    });
+    test('a flipped ray (segment behind the vertex) starts at the end nearer the vertex', () {
+      expect(angleExtensionLineStart(-10, -2, 3), 1);
+    });
+  });
 }

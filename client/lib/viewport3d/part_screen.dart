@@ -26442,10 +26442,23 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           ]
         : const <(String, int, (double, double), (double, double))>[];
 
+    // Bug report 2026-11-18, part B: the sketcher shows the feature tree and follows this screen's visibility changes through
+    // this object (see [_pingSketchSource]).
+    final source = SketchReferenceSource(
+      bodies: _visibleBodies,
+      otherSketchGeometries: _otherSketchGeometriesFor(feature),
+      earlierSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: true),
+      laterSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: false),
+    );
+    _sketchSource = source;
+    _sketchSourceFeature = feature;
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => SketchScreen(
           controller: SketchController(api: widget.sketchApiFactory?.call()),
+          referenceSource: source,
+          featureTreeBuilder: (context, onClose) =>
+              _buildSketchTreePanel(feature, onClose, docked: LayoutModeScope.isDesktop(context)),
           adoptSketchId: feature.sketchId,
           referenceGhostSegments: ghostSegments,
           referenceGhostVertices: ghostVertices,
@@ -26458,19 +26471,103 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // orbiting, same as bodies - this Sketch's own entry is excluded
           // since [SketchScreen] already renders it live from its own
           // controller, not from this static snapshot.
-          otherSketchGeometries: {
-            for (final entry in _visibleSketchGeometries.entries)
-              if (entry.key != feature.id) entry.key: entry.value,
-          },
+          otherSketchGeometries: _otherSketchGeometriesFor(feature),
         ),
       ),
     );
+    _sketchSource = null;
+    _sketchSourceFeature = null;
+    source.dispose();
     if (!mounted) return;
     await _runGuarded(() async {
       await _refreshFeatures();
       await _refreshSketchGeometries();
       await _refreshMesh();
     });
+  }
+
+  /// The other sketches' geometry the sketcher draws for context: this sketch's own entry is left out, since the sketcher
+  /// renders it live from its controller.
+  Map<String, SketchGeometry3D> _otherSketchGeometriesFor(FeatureDto sketchFeature) => {
+        for (final entry in _visibleSketchGeometries.entries)
+          if (entry.key != sketchFeature.id) entry.key: entry.value,
+      };
+
+  /// Bug report 2026-11-18 part C3: the sketch Features before ([earlier]) or after [sketchFeature] in the feature list. Convert Entities can take
+  /// only from an earlier one (the backend refuses a later one with 422 `source_after_sketch`).
+  Set<String> _sketchFeatureIdsRelativeTo(FeatureDto sketchFeature, {required bool earlier}) {
+    final index = _features.indexWhere((f) => f.id == sketchFeature.id);
+    if (index == -1) return {};
+    return {
+      for (var i = 0; i < _features.length; i++)
+        if (i != index && _features[i].type == 'sketch' && (i < index) == earlier) _features[i].id,
+    };
+  }
+
+  /// Bug report 2026-11-18, part B: set while a sketch is open over this screen ([_openSketch]).
+  SketchReferenceSource? _sketchSource;
+  FeatureDto? _sketchSourceFeature;
+  bool _sketchSourcePingScheduled = false;
+
+  /// While a sketch is open this screen still rebuilds (a visibility toggle in the sketcher's feature tree is a `setState`
+  /// here); after the frame the sketcher is handed the current bodies and sketch geometries and rebuilds its tree.
+  void _pingSketchSource() {
+    final source = _sketchSource;
+    final feature = _sketchSourceFeature;
+    if (source == null || feature == null || _sketchSourcePingScheduled) return;
+    _sketchSourcePingScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _sketchSourcePingScheduled = false;
+      if (!mounted || !identical(_sketchSource, source)) return;
+      source.update(
+        bodies: _visibleBodies,
+        otherSketchGeometries: _otherSketchGeometriesFor(feature),
+        earlierSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: true),
+        laterSketchFeatureIds: _sketchFeatureIdsRelativeTo(feature, earlier: false),
+      );
+    });
+  }
+
+  /// The feature tree as the sketcher shows it (read-mostly, see [FeatureTreePanel.lockedReason]): the sketch being edited is
+  /// highlighted, rows that would change the feature list say "Exit the sketch first", and the Hide / Show eyes work.
+  Widget _buildSketchTreePanel(FeatureDto sketchFeature, VoidCallback onClose, {required bool docked}) {
+    return FeatureTreePanel(
+      visible: true,
+      docked: docked,
+      features: _features,
+      selectedFeatureId: sketchFeature.id,
+      hiddenFeatureIds: {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds},
+      hiddenReferencePlanes: _hiddenReferencePlanes,
+      onReferencePlaneVisibility: _setReferencePlaneHidden,
+      onFeatureTap: (_) {},
+      onFeatureLongPress: (_) {},
+      onClose: onClose,
+      onBodyTap: (_) {},
+      lockedReason: 'Exit the sketch first',
+      onToggleVisibility: (id) {
+        final feature = _featureById(baseFeatureId(id));
+        if (feature == null || _busy) return;
+        unawaited(_toggleFeatureVisibility(feature));
+      },
+      bodyIds: _computedBodyIds,
+      bodyNames: _bodyNames,
+      hiddenBodyIds: {
+        for (final body in _bodies)
+          if (body.hidden && !body.isSurface && !body.isCurve) body.bodyId,
+      },
+      surfaceIds: _computedSurfaceIds,
+      surfaceNames: _surfaceNames,
+      hiddenSurfaceIds: {
+        for (final body in _bodies)
+          if (body.hidden && body.isSurface) body.bodyId,
+      },
+      curveIds: _computedCurveIds,
+      curveNames: _curveNames,
+      hiddenCurveIds: {
+        for (final body in _bodies)
+          if (body.hidden && body.isCurve) body.bodyId,
+      },
+    );
   }
 
   Future<void> _runGuarded(Future<void> Function() body) async {
@@ -26507,6 +26604,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // The quick column closes when a tool session takes the Start button away, so it is not sitting open when the
     // session ends (a plain field reset: nothing below reads it before this).
     if (!_startButtonVisible) _quickColumnOpen = false;
+    _pingSketchSource();
     // What a flow forces visible changes the sketch outlines and planes drawn: refresh them when it does.
     final forcedSignature = _forcedVisibleCategories.toList()..sort();
     if (forcedSignature.join(',') != _lastForcedSignature) {
@@ -29396,8 +29494,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                     child: SafeArea(
                       top: false,
                       child: SizedBox(
-                        width: math.min(MediaQuery.sizeOf(context).width - 88, 420),
+                        // Desktop (bug report 2026-11-18): wide enough for every button, its rows wrapping if the window is
+                        // narrower still - a mouse wheel cannot scroll a sideways row. The phone layout keeps the small swipeable panel.
+                        width: _desktopLayout
+                            ? math.min(MediaQuery.sizeOf(context).width - 16, 760)
+                            : math.min(MediaQuery.sizeOf(context).width - 88, 420),
                         child: VisibilityPanel(
+                          wrap: _desktopLayout,
                           chips: _visibilityChips(),
                           views: _visibilityViews(),
                           onClose: () => setState(() => _visibilityPanelOpen = false),

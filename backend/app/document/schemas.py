@@ -27,7 +27,7 @@ from app.document.models import (
     ThicknessDirection,
 )
 from app.sketch.models import Plane, SketchEntityType
-from app.sketch.schemas import ArcResponse, CircleResponse, EllipseResponse, LineResponse, PointResponse
+from app.sketch.schemas import ArcResponse, CircleResponse, EllipseArcResponse, EllipseResponse, LineResponse, PointResponse, SplineResponse
 
 
 class PartCreate(BaseModel):
@@ -648,9 +648,51 @@ class ConvertEdgeResponse(BaseModel):
     arc: ArcResponse | None = None
     circle: CircleResponse | None = None
     ellipse: EllipseResponse | None = None  # reference-overhaul R-F: a full elliptical edge lying in the sketch plane
+    # Bug report 2026-11-18 part C (all optional, additive): an edge not in the sketch plane is projected square onto it (`app.sketch.projection`), so it
+    # can also come back as an elliptical arc (a circle seen at an angle), a spline (a free-form edge), a lone `point` (a straight edge along the
+    # normal; `start_point` / `end_point` are that point too) or a whole `ellipse` / `circle` / `line` it did not before. `start_point` / `end_point`
+    # are the shape's ends (a spline's first and last through points; for an ellipse, its centre, as before). A closed free-form edge makes two splines:
+    # the first is here, the rest in `more`, each in this same shape.
+    ellipse_arc: EllipseArcResponse | None = None
+    spline: SplineResponse | None = None
+    point: PointResponse | None = None
+    more: list["ConvertEdgeResponse"] | None = None
+    # Plan part C2: on an item of `convert-entities/sketch`'s answer, the source Sketch entity (or loose Point) it was projected from.
+    source_entity_id: str | None = None
     start_point: PointResponse
     end_point: PointResponse
     center_point: PointResponse | None = None
+
+
+class ConvertSketchCreate(BaseModel):
+    """Bug report 2026-11-18 plan part C2: convert another Sketch's entities into this one, projected square onto its plane, each following its source.
+    `source_sketch_feature_id` must come EARLIER in the Part's feature list than this Sketch. `entity_ids` (entity or loose Point ids of the source; a
+    pattern / mirror instance's copy by its expanded id; a Polygon / Slot / Rectangle by its own id, meaning its Lines and Arcs) picks some; absent, the
+    whole Sketch is converted: every curve entity and every Point that belongs to no entity, its construction geometry only when `include_construction`.
+    `construction` and `reference` are as on `ConvertEdgeCreate` (what is made is construction geometry / a reference helper)."""
+
+    source_sketch_feature_id: str
+    entity_ids: list[str] | None = None
+    construction: bool = False
+    reference: bool = False
+    include_construction: bool = False
+
+
+class ConvertSketchSkipped(BaseModel):
+    """A source entity `convert-entities/sketch` did not convert, and why: `text` (a Text entity: its outlines are a font's, not sketch geometry),
+    `not_found` (no such entity or Point in the source), `degenerate` (a shape with no length or radius)."""
+
+    entity_id: str
+    reason: str
+    message: str = ""
+
+
+class ConvertSketchResponse(BaseModel):
+    """Everything `convert-entities/sketch` made, each item in `ConvertEdgeResponse`'s shapes with its `source_entity_id` (a closed free-form source makes two
+    items with the same source), plus what it skipped."""
+
+    items: list[ConvertEdgeResponse]
+    skipped: list[ConvertSketchSkipped] = []
 
 
 class ConvertFaceResponse(BaseModel):

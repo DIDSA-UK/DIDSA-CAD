@@ -27,6 +27,10 @@ from app.sketch.constraints import (
     EqualRadiusConstraint,
     FixedConstraint,
     HorizontalConstraint,
+    PointAngleConstraint,
+    PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     ParallelConstraint,
     PerpendicularConstraint,
     PointLineDistanceConstraint,
@@ -190,6 +194,23 @@ def _collapse(constraint: Constraint) -> str:
     if isinstance(constraint, (HorizontalConstraint, VerticalConstraint)):
         if constraint.point_a_id == constraint.point_b_id:
             raise MergeRefused("degenerate_constraint", f"This would break the {constraint.type} on them.", [constraint.id])
+        return _KEEP
+    if isinstance(constraint, LineCircleDistanceConstraint):
+        if constraint.center_point_id in (constraint.line_start_id, constraint.line_end_id):
+            raise MergeRefused("degenerate_constraint", "This would put the line's end on the circle's centre, which breaks the distance between them.", [constraint.id])
+        return _KEEP
+    if isinstance(constraint, CircleCircleDistanceConstraint):
+        if constraint.center1_point_id == constraint.center2_point_id:
+            raise MergeRefused("degenerate_constraint", "This would make the two circles concentric, which breaks the distance between them.", [constraint.id])
+        return _KEEP
+    if isinstance(constraint, PointCircleDistanceConstraint):
+        if constraint.point_id in (constraint.center_point_id, constraint.radius_point_id):
+            raise MergeRefused("degenerate_constraint", "This would break the distance to the circle on them.", [constraint.id])
+        return _KEEP
+    if isinstance(constraint, PointAngleConstraint):
+        # Bug report 2026-11-18 part D: a ray from the vertex to itself, or both rays to one Point, has no angle.
+        if len({constraint.vertex_point_id, constraint.point1_id, constraint.point2_id}) != 3:
+            raise MergeRefused("degenerate_constraint", "This would break the three-point angle on them.", [constraint.id])
         return _KEEP
     if isinstance(constraint, FixedConstraint):
         constraint.fixed_point_ids = list(dict.fromkeys(constraint.fixed_point_ids))

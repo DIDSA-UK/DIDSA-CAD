@@ -236,6 +236,14 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
   if (c is PointOnCircleConstraintDto) return ids([c.pointId, c.centerPointId, c.radiusPointId]);
   if (c is PointOnEllipseConstraintDto) return ids([c.pointId, c.centerPointId, c.majorPointId, c.minorPointId]);
   if (c is FixedConstraintDto) return const <String>[];
+  if (c is ArcLengthConstraintDto) return ids([c.centerPointId, c.startPointId, c.endPointId]);
+  if (c is HorizontalAngleConstraintDto) return ids([c.lineStartId, c.lineEndId]);
+  if (c is PointAngleConstraintDto) return ids([c.vertexPointId, c.point1Id, c.point2Id]);
+  if (c is PointCircleDistanceConstraintDto) return ids([c.pointId, c.centerPointId, c.radiusPointId]);
+  if (c is LineCircleDistanceConstraintDto) return ids([c.lineStartId, c.lineEndId, c.centerPointId, c.radiusPointId]);
+  if (c is CircleCircleDistanceConstraintDto) {
+    return ids([c.center1PointId, c.radius1PointId, c.center2PointId, c.radius2PointId]);
+  }
   return null;
 }
 
@@ -245,7 +253,24 @@ List<String>? _pointIdsOf(ConstraintDto c, LineEndpoints lines) {
 class _Branches {
   final bool Function(AngleConstraintDto) supplement;
   final double Function(DistanceConstraintDto) axisSign;
-  const _Branches(this.supplement, this.axisSign);
+
+  /// A part D angle with no quadrant: whether the solve is holding the value's supplement (the nearer of the two in the reference).
+  final bool Function(HorizontalAngleConstraintDto) horizontalSupplement;
+  final bool Function(PointAngleConstraintDto) pointAngleSupplement;
+
+  /// A minimum distance from a Point to a circle: +1 when the Point was outside the circle in the reference frame, -1 inside.
+  final double Function(PointCircleDistanceConstraintDto) pointOutside;
+
+  /// A line-to-circle distance: which side of the line the centre was on in the reference frame (+1 / -1).
+  final double Function(LineCircleDistanceConstraintDto) lineCircleSide;
+  const _Branches(
+    this.supplement,
+    this.axisSign,
+    this.horizontalSupplement,
+    this.pointAngleSupplement,
+    this.pointOutside,
+    this.lineCircleSide,
+  );
 }
 
 /// Residuals of [c] over the local points [p] (id -> position with derivatives).
@@ -356,7 +381,67 @@ List<_D>? _residuals(ConstraintDto c, LineEndpoints lines, _P Function(String) p
     return [f.sqrtMinusOne().scale((aa.v + bb.v) / 2)];
   }
   if (c is FixedConstraintDto) return const <_D>[];
+  if (c is ArcLengthConstraintDto) {
+    // radius (at the start) times the counter-clockwise sweep from start to end, minus the value. The sweep is atan2(cross, dot) of
+    // the two radii, moved into (0, 2 pi] - a constant shift, so the derivative is atan2's.
+    final center = a(c.centerPointId);
+    final u = _sub(a(c.startPointId), center), w = _sub(a(c.endPointId), center);
+    return [(_len(u) * _ccwSweep(u, w)).plus(-c.length)];
+  }
+  if (c is HorizontalAngleConstraintDto) {
+    // The line's direction (start to end) against +x. A quadrant flips the line's ray (bit 0) or the horizontal one (bit 1); one flip
+    // makes the start-to-end angle the value's supplement. With none, the side the reference frame was nearer to is kept.
+    final u = _sub(a(c.lineEndId), a(c.lineStartId));
+    final q = c.quadrant;
+    final supplement = q == null ? br.horizontalSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
+    final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
+    return [u.x - _len(u).scale(math.cos(target * math.pi / 180))];
+  }
+  if (c is LineCircleDistanceConstraintDto) {
+    // The centre's distance from the line (signed, kept on the side the reference frame had it), minus or plus the radius.
+    final center = a(c.centerPointId);
+    final off = _signedPointLine(center, a(c.lineStartId), a(c.lineEndId)).scale(br.lineCircleSide(c));
+    final r = _len(_sub(a(c.radiusPointId), center));
+    return [(c.side == 'max' ? off + r : off - r).plus(-c.distance)];
+  }
+  if (c is CircleCircleDistanceConstraintDto) {
+    // Along the centre line: the gap d - r1 - r2, or the overall size d + r1 + r2.
+    final c1 = a(c.center1PointId), c2 = a(c.center2PointId);
+    final d = _len(_sub(c2, c1));
+    final radii = _len(_sub(a(c.radius1PointId), c1)) + _len(_sub(a(c.radius2PointId), c2));
+    return [(c.side == 'max' ? d + radii : d - radii).plus(-c.distance)];
+  }
+  if (c is PointCircleDistanceConstraintDto) {
+    // d = |point - centre|, r = |rim - centre|. Maximum: d + r. Minimum: d - r outside the circle, r - d inside (the side the reference
+    // frame was on, so the drag cannot pass the point through the circle).
+    final center = a(c.centerPointId);
+    final d = _len(_sub(a(c.pointId), center)), r = _len(_sub(a(c.radiusPointId), center));
+    if (c.side == 'max') return [(d + r).plus(-c.distance)];
+    return [(d - r).scale(br.pointOutside(c)).plus(-c.distance)];
+  }
+  if (c is PointAngleConstraintDto) {
+    // The two rays from the vertex; one flipped ray makes it the supplement (the two-line angle's residual, without a division).
+    final v = a(c.vertexPointId);
+    final u = _sub(a(c.point1Id), v), w = _sub(a(c.point2Id), v);
+    final q = c.quadrant;
+    final supplement = q == null ? br.pointAngleSupplement(c) : ((q & 1) != 0) != ((q & 2) != 0);
+    final target = supplement ? 180 - c.angleDegrees : c.angleDegrees;
+    return [_dot(u, w) - (_len(u) * _len(w)).scale(math.cos(target * math.pi / 180))];
+  }
   return null;
+}
+
+/// The counter-clockwise angle from [u] to [w], in (0, 2 pi], with its derivative (that of atan2(u x w, u . w)).
+_D _ccwSweep(_P u, _P w) {
+  final y = _cross(u, w), x = _dot(u, w);
+  var angle = math.atan2(y.v, x.v);
+  if (angle <= 1e-12) angle += 2 * math.pi;
+  final r2 = math.max(x.v * x.v + y.v * y.v, _eps);
+  final out = Float64List(y.g.length);
+  for (var i = 0; i < out.length; i++) {
+    out[i] = (x.v * y.g[i] - y.v * x.g[i]) / r2;
+  }
+  return _D(angle, out);
 }
 
 extension on _D {
@@ -498,6 +583,36 @@ class _System {
         if (pa == null || pb == null) return 1.0;
         final d = c.orientation == 'horizontal' ? pb.$1 - pa.$1 : pb.$2 - pa.$2;
         return d < 0 ? -1.0 : 1.0;
+      },
+      (c) {
+        final a = ref[c.lineStartId], b = ref[c.lineEndId];
+        if (a == null || b == null) return false;
+        final dx = b.$1 - a.$1, dy = b.$2 - a.$2;
+        final length = math.sqrt(dx * dx + dy * dy);
+        if (length == 0) return false;
+        final current = math.acos((dx / length).clamp(-1.0, 1.0)) * 180 / math.pi;
+        return ((180.0 - c.angleDegrees) - current).abs() < (c.angleDegrees - current).abs();
+      },
+      (c) {
+        final v = ref[c.vertexPointId], p1 = ref[c.point1Id], p2 = ref[c.point2Id];
+        if (v == null || p1 == null || p2 == null) return false;
+        final ax = p1.$1 - v.$1, ay = p1.$2 - v.$2, bx = p2.$1 - v.$1, by = p2.$2 - v.$2;
+        final la = math.sqrt(ax * ax + ay * ay), lb = math.sqrt(bx * bx + by * by);
+        if (la == 0 || lb == 0) return false;
+        final current = math.acos(((ax * bx + ay * by) / (la * lb)).clamp(-1.0, 1.0)) * 180 / math.pi;
+        return ((180.0 - c.angleDegrees) - current).abs() < (c.angleDegrees - current).abs();
+      },
+      (c) {
+        final p = ref[c.pointId], center = ref[c.centerPointId], rim = ref[c.radiusPointId];
+        if (p == null || center == null || rim == null) return 1.0;
+        double dist((double, double) u, (double, double) v) => math.sqrt(math.pow(u.$1 - v.$1, 2) + math.pow(u.$2 - v.$2, 2));
+        return dist(p, center) >= dist(rim, center) ? 1.0 : -1.0;
+      },
+      (c) {
+        final s = ref[c.lineStartId], e = ref[c.lineEndId], center = ref[c.centerPointId];
+        if (s == null || e == null || center == null) return 1.0;
+        final cross = (center.$1 - s.$1) * (e.$2 - s.$2) - (center.$2 - s.$2) * (e.$1 - s.$1);
+        return cross < 0 ? -1.0 : 1.0;
       },
     );
 

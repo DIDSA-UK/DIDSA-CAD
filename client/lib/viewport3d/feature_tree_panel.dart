@@ -217,6 +217,44 @@ String _featureTypeAsset(String type, {String? curveType}) => switch (type) {
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
 
+/// Bug report 2026-11-18 part C3: what a locked tree ([FeatureTreePanel.lockedReason], the sketcher's) is told while the sketcher is in Convert
+/// Entities. Handed down with [TreeConvertPickScope] by the sketcher so the tree builder the Part screen supplies needs no new parameters.
+class TreeConvertPick {
+  /// The sketch Features that may be picked (the ones earlier in the tree than the sketch being edited): their rows act on a tap.
+  final Set<String> pickable;
+
+  /// The pickable sketches already staged (shown ticked).
+  final Set<String> picked;
+
+  /// The sketch Features that come LATER: they stay locked, and say why with [laterReason].
+  final Set<String> later;
+  final String laterReason;
+
+  /// A pickable row was tapped.
+  final void Function(FeatureDto feature) onPick;
+
+  const TreeConvertPick({
+    required this.pickable,
+    required this.picked,
+    required this.later,
+    required this.laterReason,
+    required this.onPick,
+  });
+}
+
+/// Carries a [TreeConvertPick] (null: not in Convert Entities) down to the [FeatureTreePanel] built inside it.
+class TreeConvertPickScope extends InheritedWidget {
+  final TreeConvertPick? pick;
+
+  const TreeConvertPickScope({super.key, required this.pick, required super.child});
+
+  static TreeConvertPick? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<TreeConvertPickScope>()?.pick;
+
+  @override
+  bool updateShouldNotify(TreeConvertPickScope oldWidget) => true;
+}
+
 /// The "Build Tree": a Part's currently-computed Bodies (top, collapsible)
 /// followed by its user-authored Features (Sketch/Extrude/etc, also
 /// collapsible), in creation order. B3 revision, off on-device feedback:
@@ -501,6 +539,17 @@ class FeatureTreePanel extends StatefulWidget {
   /// `onClose` calls `_exitMultiSelect`).
   final Widget? multiSelectHeader;
 
+  /// Bug report 2026-11-18, part B: non-null while the tree is shown inside the sketcher, where it is read-mostly. Every row
+  /// that would change the feature list (open a feature to edit or roll back, delete, reorder, a row's menu, multi-select)
+  /// is disabled and explains itself with this text as a tooltip ("Exit the sketch first"); a Hide / Show eye button on each
+  /// row (see [onToggleVisibility]) is the one thing that still works. The row of [selectedFeatureId] (the sketch being
+  /// edited) is highlighted and has no eye, so the sketch in hand cannot be hidden from under the user.
+  final String? lockedReason;
+
+  /// [lockedReason]'s one live action: hides or shows a row. The id is a Feature id, or a Body / Surface / Curve id (the
+  /// caller resolves it with `baseFeatureId`). Unused while [lockedReason] is null.
+  final void Function(String id)? onToggleVisibility;
+
   const FeatureTreePanel({
     super.key,
     required this.visible,
@@ -550,6 +599,8 @@ class FeatureTreePanel extends StatefulWidget {
     this.selectedMultiSelectIds = const {},
     this.onMultiSelectToggle,
     this.multiSelectHeader,
+    this.lockedReason,
+    this.onToggleVisibility,
   });
 
   @override
@@ -695,6 +746,18 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                                   ),
                                 ),
                               ),
+                            if (_locked)
+                              Container(
+                                width: double.infinity,
+                                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                child: Text(
+                                  'Sketching - hide or show only',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 13),
+                                ),
+                              ),
                             Expanded(child: _buildGroupedTree(context)),
                           ],
                         ),
@@ -716,10 +779,45 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
   /// active multi-select session's selection.
   bool _isMultiSelected(String key) => widget.isMultiSelectMode && widget.selectedMultiSelectIds.contains(key);
 
+  bool get _locked => widget.lockedReason != null;
+
+  /// While [FeatureTreePanel.lockedReason] is set, a row explains why it does nothing (the reason as its tooltip).
+  Widget _lockedTip(Widget row) => _locked ? Tooltip(message: widget.lockedReason!, child: row) : row;
+
+  /// [_lockedTip] for a Feature row, which in Convert Entities ([TreeConvertPickScope]) may instead be pickable (a tap converts that sketch) or a
+  /// later sketch (locked for its own reason).
+  Widget _lockedFeatureTip(BuildContext context, FeatureDto feature, Widget row) {
+    final convert = _locked ? TreeConvertPickScope.maybeOf(context) : null;
+    if (convert != null && convert.pickable.contains(feature.id)) {
+      return Tooltip(message: "Convert this sketch's entities into the sketch being edited", child: row);
+    }
+    if (convert != null && convert.later.contains(feature.id)) return Tooltip(message: convert.laterReason, child: row);
+    return _lockedTip(row);
+  }
+
+  /// The Hide / Show eye the locked tree's rows have ([FeatureTreePanel.onToggleVisibility]); null when it does not apply.
+  Widget? _lockedEye(String id, bool hidden) {
+    final toggle = widget.onToggleVisibility;
+    if (!_locked || toggle == null) return null;
+    return IconButton(
+      key: ValueKey('tree-visibility-$id'),
+      tooltip: hidden ? 'Show' : 'Hide',
+      icon: Icon(hidden ? Icons.visibility_off : Icons.visibility, size: 18),
+      visualDensity: VisualDensity.compact,
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(),
+      onPressed: () => toggle(id),
+    );
+  }
+
   /// Feature 1 (tree multi-select): the trailing indicator a Body/Surface/
   /// Plane row shows - a checkmark while multi-selected, otherwise the
   /// usual hidden-state eye-slash.
-  Widget? _simpleRowTrailing({required bool hidden, required String key}) {
+  Widget? _simpleRowTrailing({required bool hidden, required String key, String? id}) {
+    if (id != null) {
+      final eye = _lockedEye(id, hidden);
+      if (eye != null) return eye;
+    }
     if (widget.isMultiSelectMode) {
       return _isMultiSelected(key) ? const Icon(Icons.check_circle, size: 18) : null;
     }
@@ -804,7 +902,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       visualDensity: VisualDensity.compact,
       leading: const SvgIcon('assets/icons/viewport/selection_body.svg', size: 26),
       title: const Text('Bodies', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [for (final bodyId in orderedIds) _buildBodyTile(bodyId)],
+      children: [for (final bodyId in orderedIds) _lockedTip(_buildBodyTile(bodyId))],
     );
   }
 
@@ -820,7 +918,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
-        onOpen: widget.isMultiSelectMode || widget.onBodyContextMenu == null ? null : (at) => widget.onBodyContextMenu!(bodyId, at),
+        onOpen: widget.isMultiSelectMode || _locked || widget.onBodyContextMenu == null ? null : (at) => widget.onBodyContextMenu!(bodyId, at),
         child: ListTile(
           dense: true,
           visualDensity: VisualDensity.compact,
@@ -832,11 +930,15 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             overflow: TextOverflow.ellipsis,
             style: _rowTitleStyle,
           ),
-          trailing: _simpleRowTrailing(hidden: hidden, key: key),
-          onTap: widget.isMultiSelectMode
+          trailing: _simpleRowTrailing(hidden: hidden, key: key, id: bodyId),
+          onTap: _locked
+              ? null
+              : widget.isMultiSelectMode
               ? () => widget.onMultiSelectToggle?.call(key)
               : () => widget.onBodyTap(bodyId),
-          onLongPress: widget.isMultiSelectMode
+          onLongPress: _locked
+              ? null
+              : widget.isMultiSelectMode
               ? () => widget.onMultiSelectToggle?.call(key)
               : widget.onBodyLongPress == null
                   ? null
@@ -868,13 +970,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
         // The three default planes first, built in: hide / show only, never deletable.
         for (final plane in ReferencePlaneKind.values) _buildReferencePlaneTile(plane),
         for (final feature in planeFeatures)
-          Builder(builder: (context) {
+          _lockedTip(Builder(builder: (context) {
             final hidden = widget.hiddenFeatureIds.contains(feature.id);
             final key = TreeMultiSelectKeys.feature(feature.id);
             return Opacity(
               opacity: hidden ? 0.5 : 1.0,
               child: MouseContextMenuRegion(
-                onOpen: widget.isMultiSelectMode || widget.onFeatureContextMenu == null ? null : (at) => widget.onFeatureContextMenu!(feature, at),
+                onOpen: widget.isMultiSelectMode || _locked || widget.onFeatureContextMenu == null ? null : (at) => widget.onFeatureContextMenu!(feature, at),
                 child: ListTile(
                   dense: true,
                   visualDensity: VisualDensity.compact,
@@ -886,8 +988,10 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                     overflow: TextOverflow.ellipsis,
                     style: _rowTitleStyle,
                   ),
-                  trailing: _simpleRowTrailing(hidden: hidden, key: key),
-                  onTap: widget.isMultiSelectMode
+                  trailing: _simpleRowTrailing(hidden: hidden, key: key, id: feature.id == widget.selectedFeatureId ? null : feature.id),
+                  onTap: _locked
+                      ? null
+                      : widget.isMultiSelectMode
                       ? () => widget.onMultiSelectToggle?.call(key)
                       : () => widget.onFeatureTap(feature),
                   // Bug fix: this row (a shortcut into the same Feature the
@@ -896,13 +1000,15 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                   // FeatureContextMenuAction) was only reachable via that
                   // other row, not from here, despite this looking like an
                   // equally normal place to long-press for it.
-                  onLongPress: widget.isMultiSelectMode
+                  onLongPress: _locked
+                      ? null
+                      : widget.isMultiSelectMode
                       ? () => widget.onMultiSelectToggle?.call(key)
                       : () => widget.onFeatureLongPress(feature),
                 ),
               ),
             );
-          }),
+          })),
       ],
     );
   }
@@ -975,7 +1081,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       visualDensity: VisualDensity.compact,
       leading: const SvgIcon('assets/icons/feature/feature_surface.svg', size: 26),
       title: const Text('Surfaces', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [for (final surfaceId in orderedIds) _buildSurfaceTile(surfaceId)],
+      children: [for (final surfaceId in orderedIds) _lockedTip(_buildSurfaceTile(surfaceId))],
     );
   }
 
@@ -987,7 +1093,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
-        onOpen: widget.isMultiSelectMode || widget.onSurfaceContextMenu == null ? null : (at) => widget.onSurfaceContextMenu!(surfaceId, at),
+        onOpen: widget.isMultiSelectMode || _locked || widget.onSurfaceContextMenu == null ? null : (at) => widget.onSurfaceContextMenu!(surfaceId, at),
         child: ListTile(
           dense: true,
           visualDensity: VisualDensity.compact,
@@ -999,13 +1105,17 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             overflow: TextOverflow.ellipsis,
             style: _rowTitleStyle,
           ),
-          trailing: _simpleRowTrailing(hidden: hidden, key: key),
-          onTap: widget.isMultiSelectMode
+          trailing: _simpleRowTrailing(hidden: hidden, key: key, id: surfaceId),
+          onTap: _locked
+              ? null
+              : widget.isMultiSelectMode
               ? () => widget.onMultiSelectToggle?.call(key)
               : widget.onSurfaceTap == null
                   ? null
                   : () => widget.onSurfaceTap!(surfaceId),
-          onLongPress: widget.isMultiSelectMode
+          onLongPress: _locked
+              ? null
+              : widget.isMultiSelectMode
               ? () => widget.onMultiSelectToggle?.call(key)
               : widget.onSurfaceLongPress == null
                   ? null
@@ -1030,7 +1140,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       visualDensity: VisualDensity.compact,
       leading: const SvgIcon('assets/icons/viewport/selection_edge.svg', size: 26),
       title: const Text('Curves', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [for (final curveId in orderedIds) _buildCurveTile(curveId)],
+      children: [for (final curveId in orderedIds) _lockedTip(_buildCurveTile(curveId))],
     );
   }
 
@@ -1042,7 +1152,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     return Opacity(
       opacity: hidden ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
-        onOpen: widget.isMultiSelectMode || widget.onCurveContextMenu == null ? null : (at) => widget.onCurveContextMenu!(curveId, at),
+        onOpen: widget.isMultiSelectMode || _locked || widget.onCurveContextMenu == null ? null : (at) => widget.onCurveContextMenu!(curveId, at),
         child: ListTile(
           dense: true,
           visualDensity: VisualDensity.compact,
@@ -1054,13 +1164,17 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
             overflow: TextOverflow.ellipsis,
             style: _rowTitleStyle,
           ),
-          trailing: _simpleRowTrailing(hidden: hidden, key: key),
-          onTap: widget.isMultiSelectMode
+          trailing: _simpleRowTrailing(hidden: hidden, key: key, id: curveId),
+          onTap: _locked
+              ? null
+              : widget.isMultiSelectMode
               ? () => widget.onMultiSelectToggle?.call(key)
               : widget.onCurveTap == null
                   ? null
                   : () => widget.onCurveTap!(curveId),
-          onLongPress: widget.isMultiSelectMode
+          onLongPress: _locked
+              ? null
+              : widget.isMultiSelectMode
               ? () => widget.onMultiSelectToggle?.call(key)
               : widget.onCurveLongPress == null
                   ? null
@@ -1082,7 +1196,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
       visualDensity: VisualDensity.compact,
       leading: const SvgIcon('assets/icons/feature/feature_tree.svg', size: 26),
       title: const Text('Features', maxLines: 1, overflow: TextOverflow.ellipsis, style: _sectionTitleStyle),
-      children: [for (final feature in widget.features) _buildFeatureTile(context, feature)],
+      children: [for (final feature in widget.features) _lockedFeatureTip(context, feature, _buildFeatureTile(context, feature))],
     );
   }
 
@@ -1119,14 +1233,18 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
     // hide/delete-capable), so unlike the picker above nothing is dimmed.
     final multiSelectKey = TreeMultiSelectKeys.feature(feature.id);
     final multiSelected = _isMultiSelected(multiSelectKey);
+    // Convert Entities in the sketcher: an earlier sketch's row is pickable (bug report 2026-11-18 part C3).
+    final convert = _locked ? TreeConvertPickScope.maybeOf(context) : null;
+    final convertPickable = convert != null && isSketch && convert.pickable.contains(feature.id);
+    final convertPicked = convertPickable && convert.picked.contains(feature.id);
     return Opacity(
       opacity: hidden || pickerDimmed || featurePickerDimmed ? 0.5 : 1.0,
       child: MouseContextMenuRegion(
-        onOpen: widget.isSketchPickerMode || widget.isFeaturePickerMode || widget.isMultiSelectMode || widget.onFeatureContextMenu == null ? null : (at) => widget.onFeatureContextMenu!(feature, at),
+        onOpen: widget.isSketchPickerMode || widget.isFeaturePickerMode || widget.isMultiSelectMode || _locked || widget.onFeatureContextMenu == null ? null : (at) => widget.onFeatureContextMenu!(feature, at),
         child: ListTile(
           dense: true,
           visualDensity: VisualDensity.compact,
-          selected: widget.isMultiSelectMode ? multiSelected : selected || featurePickerSelected,
+          selected: widget.isMultiSelectMode ? multiSelected : selected || featurePickerSelected || convertPicked,
           // Sketcher-roadmap Phase 4.3 v1: hasLostReference is its own,
           // independent overlay badge - kept alongside (not instead of) the
           // type glyph below.
@@ -1212,7 +1330,13 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                 : widget.isMultiSelectMode
                     ? (multiSelected ? const Icon(Icons.check_circle, size: 18) : null)
                     : (hidden ? const Icon(Icons.visibility_off, size: 18) : null);
-            final children = [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
+            final eye = feature.id == widget.selectedFeatureId ? null : _lockedEye(feature.id, hidden);
+            final children = _locked
+                ? [
+                    if (convertPicked) const Icon(Icons.check_circle, key: ValueKey('tree-convert-picked'), size: 18),
+                    if (eye != null) eye else if (stateIcon != null) stateIcon,
+                  ]
+                : [if (pinIcon != null) pinIcon, if (stateIcon != null) stateIcon];
             // Bug fix (assembly testing, `assembly_tree_panel.dart`'s sibling
             // fix): scale down instead of overflowing on a narrow panel.
             return children.isEmpty
@@ -1222,7 +1346,9 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
                     child: Row(mainAxisSize: MainAxisSize.min, children: children),
                   );
           }(),
-          onTap: () {
+          onTap: _locked
+              ? (convertPickable ? () => convert.onPick(feature) : null)
+              : () {
             if (widget.isSketchPickerMode) {
               if (isSketch) widget.onSketchPicked?.call(feature);
             } else if (widget.isFeaturePickerMode) {
@@ -1233,7 +1359,7 @@ class _FeatureTreePanelState extends State<FeatureTreePanel> {
               widget.onFeatureTap(feature);
             }
           },
-          onLongPress: widget.isSketchPickerMode || widget.isFeaturePickerMode
+          onLongPress: _locked || widget.isSketchPickerMode || widget.isFeaturePickerMode
               ? null
               : widget.isMultiSelectMode
                   ? () => widget.onMultiSelectToggle?.call(multiSelectKey)

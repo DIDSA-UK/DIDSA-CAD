@@ -12,7 +12,13 @@ from app.sketch.constraints import (
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
+    ArcLengthConstraint,
     Constraint,
+    HorizontalAngleConstraint,
+    PointAngleConstraint,
+    PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     CurveTangentConstraint,
     DistanceConstraint,
     EqualLengthConstraint,
@@ -99,7 +105,49 @@ class ExternalVertexReference:
     kind: str = "vertex"
 
 
-REFERENCE_DIMENSION_KINDS = ("distance", "horizontal", "vertical", "radius", "diameter", "angle")
+EXTERNAL_CURVE_SOURCES = ("body_edge", "sketch_entity")
+
+
+@dataclass(frozen=True)
+class ExternalCurveReference:
+    """Convert Entities, real projection (bug report 2026-11-18, plan part C): what a projected copy in this Sketch was made from, so it follows its source.
+    Kept in `Sketch.external_curves`, keyed by the id of the entity it made (for a projected Point, the Point's id).
+
+    Two sources:
+
+    * `"body_edge"`: Body edge `edge_index` of `body_id` (plus its signature and, when OCCT history could say, its lineage, as for a vertex reference), for
+      an edge that is not in the Sketch's plane (an angled circle becomes an ellipse arc, a free-form edge a spline). The copy's end Points are still
+      ordinary live vertex references; this pins and moves the rest of its shape (an ellipse's centre and axis tips, a spline's inner points and handles).
+    * `"sketch_entity"`: entity (or loose Point) `source_entity_id` of the Sketch of SketchFeature `source_sketch_feature_id`, which must come earlier in the
+      Part's feature list. A pattern / mirror instance's copy is named by its expanded id (`Sketch.expand_pattern_and_mirror_instances`).
+
+    `made_kind` is the kind of entity made (`app.sketch.projection.KINDS`): a refresh that projects the source to another kind cannot reshape the copy, so
+    it reports it lost (`shape_changed`). `piece` picks one of several entities a source made (a closed free-form curve is split into two Splines).
+    `sampled_segments` is the segment count of a Spline that was sampled (0 when its points are the projected poles), so a refresh keeps the copy's
+    Points. Every Point of the copy that is not a vertex reference is pinned by a FixedConstraint where it was put; a refresh moves them.
+
+    A sibling of `ExternalVertexReference`, not a third `kind` of it: that type is keyed by ONE Point and every reader treats a kind it does not know as a
+    vertex (the measurer, confirm and reattach routes, the status list, the dependency graph); this one names a curve and a set of Points, and a
+    sketch-entity source has no body, index or signature at all."""
+
+    source: str
+    made_kind: str
+    body_id: str = ""
+    edge_index: int = -1
+    source_sketch_feature_id: str = ""
+    source_entity_id: str = ""
+    piece: int = 0
+    sampled_segments: int = 0
+    signature: ShapeSignature | None = field(default=None, compare=False)
+    lineage: LineageOrigin | None = field(default=None, compare=False)
+
+
+# Bug report 2026-11-18 part D adds "arc_length" (one arc) and "horizontal_angle" (one line: its angle to the horizontal, 0-180),
+# "point_angle" (three points, the vertex first: the angle at it, 0-180), "min_distance" / "max_distance" (a point and a circle or arc, either
+# order, two circles / arcs, or a line and a circle / arc: the nearest / farthest distance; for a line, the tangent and far sides).
+REFERENCE_DIMENSION_KINDS = (
+    "distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle", "min_distance", "max_distance"
+)
 
 
 @dataclass(frozen=True)
@@ -1090,6 +1138,26 @@ class NoIntersectionFoundError(ValueError):
     (invalid endpoint, Polygon-owned edge), which stay ordinary 400s."""
 
 
+def check_length_value(value: float) -> None:
+    """Raises ValueError unless `value` can be a part D distance: more than 0."""
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("A distance must be more than 0 (a point on the curve is a coincident constraint)")
+
+
+def check_angle_value(degrees: float) -> None:
+    """Raises ValueError unless `degrees` is an angle a part D angle dimension can hold: 0 to 180."""
+    if not math.isfinite(degrees) or degrees < 0 or degrees > 180:
+        raise ValueError("An angle must be from 0 to 180 degrees")
+
+
+def check_arc_length_value(length: float, radius: float) -> None:
+    """Raises ValueError unless `length` can be an arc length at `radius`: more than 0, less than a full turn (2 pi r)."""
+    if not math.isfinite(length) or length <= 0:
+        raise ValueError("An arc length must be more than 0")
+    if radius > 0 and length >= 2.0 * math.pi * radius:
+        raise ValueError(f"An arc of radius {radius:g} is shorter than {2.0 * math.pi * radius:g} (a full circle)")
+
+
 def _signed_point_line_distance(point: Point, line_start: Point, line_end: Point) -> float:
     """Perpendicular distance from `point` to the infinite line through
     `line_start`/`line_end`, signed by which side of that line `point`
@@ -1186,6 +1254,9 @@ class Sketch:
     # Transient (never persisted, recomputed by every `refresh_external_references`): Point id -> what that refresh decided about the reference
     # (ok / followed / potentially_moved / lost, and why). Read by the feature response and the external-references status route.
     external_reference_decisions: dict[str, ReferenceDecision] = field(default_factory=dict, repr=False, compare=False)
+    # Bug report 2026-11-18 part C: made entity id (or Point id) -> the curve its projected copy follows (see `ExternalCurveReference`). Refreshed by
+    # `app.document.create_plane.refresh_external_references` with the vertex references. Persisted (additive: written only when there are some).
+    external_curves: dict[str, ExternalCurveReference] = field(default_factory=dict)
     # DIDSA-VR plan, phase 2: ids of the Points / entities a client made only so the sketch can point at the part's own geometry (a corner, an edge, a hole's
     # centre): the convert-entities routes mark what they create when asked (`reference: true`). A client draws them quietly and does not offer them for selection
     # or deletion; `prune_unused_reference_helpers` removes them once nothing else depends on them. Persisted (additive: an older file has none, an older
@@ -4654,6 +4725,170 @@ class Sketch:
                 return entity.center_point_id, radius_point_id
             return entity.center_point_id, entity.start_point_id
         raise KeyError(entity_id)
+
+    def add_arc_length_constraint(self, arc_id: str, length: float) -> ArcLengthConstraint:
+        """Bug report 2026-11-18 part D: pins an Arc's length (see `ArcLengthConstraint`). The value must be more than 0 and less than a
+        full turn at the Arc's current radius."""
+        arc = self.entities.get(arc_id)
+        if not isinstance(arc, Arc):
+            raise KeyError(arc_id)
+        check_arc_length_value(length, arc.radius(self.points))
+        constraint = ArcLengthConstraint(
+            id=str(uuid.uuid4()),
+            arc_id=arc_id,
+            center_point_id=arc.center_point_id,
+            start_point_id=arc.start_point_id,
+            end_point_id=arc.end_point_id,
+            length=length,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_horizontal_angle_constraint(
+        self, line_id: str, angle_degrees: float, quadrant: int | None = None
+    ) -> HorizontalAngleConstraint:
+        """Bug report 2026-11-18 part D: a Line's angle to the horizontal (see `HorizontalAngleConstraint` for `quadrant`)."""
+        if quadrant is not None and quadrant not in (0, 1, 2, 3):
+            raise ValueError(f"quadrant must be 0-3, got {quadrant!r}")
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        check_angle_value(angle_degrees)
+        constraint = HorizontalAngleConstraint(
+            id=str(uuid.uuid4()),
+            line_id=line_id,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
+            angle_degrees=angle_degrees,
+            quadrant=quadrant,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_point_angle_constraint(
+        self, vertex_point_id: str, point1_id: str, point2_id: str, angle_degrees: float, quadrant: int | None = None
+    ) -> PointAngleConstraint:
+        """Bug report 2026-11-18 part D: the angle at `vertex_point_id` between the rays to the other two (see `PointAngleConstraint`)."""
+        if quadrant is not None and quadrant not in (0, 1, 2, 3):
+            raise ValueError(f"quadrant must be 0-3, got {quadrant!r}")
+        for point_id in (vertex_point_id, point1_id, point2_id):
+            if point_id not in self.points:
+                raise KeyError(point_id)
+        if len({vertex_point_id, point1_id, point2_id}) != 3:
+            raise ValueError("A three-point angle needs three different points")
+        check_angle_value(angle_degrees)
+        constraint = PointAngleConstraint(
+            id=str(uuid.uuid4()),
+            vertex_point_id=vertex_point_id,
+            point1_id=point1_id,
+            point2_id=point2_id,
+            angle_degrees=angle_degrees,
+            quadrant=quadrant,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def _circle_own_point_ids(self, circle_or_arc_id: str) -> set[str]:
+        entity = self.entities.get(circle_or_arc_id)
+        return set(self._entity_defining_point_ids(entity)) if entity is not None else set()
+
+    def add_point_circle_distance_constraint(
+        self, point_id: str, circle_or_arc_id: str, distance: float, side: str = "min"
+    ) -> PointCircleDistanceConstraint:
+        """Bug report 2026-11-18 part D: the nearest ("min") or farthest ("max") distance from a Point to a Circle or Arc (see
+        `PointCircleDistanceConstraint`). Refused for a Point of the circle itself, a Point on its centre, and a value not above 0."""
+        if side not in ("min", "max"):
+            raise ValueError(f"side must be 'min' or 'max', got {side!r}")
+        if point_id not in self.points:
+            raise KeyError(point_id)
+        center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
+        if point_id in self._circle_own_point_ids(circle_or_arc_id):
+            raise ValueError("That point belongs to the circle itself")
+        point, center = self.points[point_id], self.points[center_point_id]
+        if math.hypot(point.x - center.x, point.y - center.y) < 1e-9:
+            raise ValueError("The point is on the centre, so the nearest and farthest points of the circle are not defined")
+        check_length_value(distance)
+        constraint = PointCircleDistanceConstraint(
+            id=str(uuid.uuid4()),
+            point_id=point_id,
+            circle_or_arc_id=circle_or_arc_id,
+            center_point_id=center_point_id,
+            radius_point_id=radius_point_id,
+            distance=distance,
+            side=side,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_circle_circle_distance_constraint(
+        self, entity1_id: str, entity2_id: str, distance: float, side: str = "min"
+    ) -> CircleCircleDistanceConstraint:
+        """Bug report 2026-11-18 part D: the gap ("min") or overall size ("max") of two Circles / Arcs along their centre line (see
+        `CircleCircleDistanceConstraint`). Refused for one entity twice, concentric circles, a gap between circles that overlap now, and
+        a value not above 0."""
+        if side not in ("min", "max"):
+            raise ValueError(f"side must be 'min' or 'max', got {side!r}")
+        if entity1_id == entity2_id:
+            raise ValueError("A distance between circles needs two different circles")
+        center1_id, radius1_id = self._center_radius_point_ids(entity1_id)
+        center2_id, radius2_id = self._center_radius_point_ids(entity2_id)
+        c1, r1, c2, r2 = (self.points[i] for i in (center1_id, radius1_id, center2_id, radius2_id))
+        d = math.hypot(c2.x - c1.x, c2.y - c1.y)
+        if center1_id == center2_id or d < 1e-9:
+            raise ValueError("The circles are concentric, so there is no line between their centres to measure along")
+        if side == "min" and d < math.hypot(r1.x - c1.x, r1.y - c1.y) + math.hypot(r2.x - c2.x, r2.y - c2.y):
+            raise ValueError("The circles overlap, so there is no gap between them to dimension")
+        check_length_value(distance)
+        constraint = CircleCircleDistanceConstraint(
+            id=str(uuid.uuid4()),
+            entity1_id=entity1_id,
+            center1_point_id=center1_id,
+            radius1_point_id=radius1_id,
+            entity2_id=entity2_id,
+            center2_point_id=center2_id,
+            radius2_point_id=radius2_id,
+            distance=distance,
+            side=side,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
+
+    def add_line_circle_distance_constraint(
+        self, line_id: str, circle_or_arc_id: str, distance: float, side: str = "min"
+    ) -> LineCircleDistanceConstraint:
+        """Bug report 2026-11-18 part D: from a Line to a Circle's / Arc's tangent side ("min") or far side ("max") (see
+        `LineCircleDistanceConstraint`). Refused for a Line that cuts the circle now (tangent side only), a Line of no length, and a value
+        not above 0."""
+        if side not in ("min", "max"):
+            raise ValueError(f"side must be 'min' or 'max', got {side!r}")
+        line = self.entities.get(line_id)
+        if not isinstance(line, Line):
+            raise KeyError(line_id)
+        center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)
+        a, b = self.points[line.start_point_id], self.points[line.end_point_id]
+        c, r = self.points[center_point_id], self.points[radius_point_id]
+        length = math.hypot(b.x - a.x, b.y - a.y)
+        if length < 1e-9:
+            raise ValueError("The line has no length")
+        if center_point_id in (line.start_point_id, line.end_point_id):
+            raise ValueError("The line ends on the circle's centre")
+        centre_distance = abs((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)) / length
+        if side == "min" and centre_distance <= math.hypot(r.x - c.x, r.y - c.y):
+            raise ValueError("The line cuts the circle, so there is no tangent-side distance to dimension")
+        check_length_value(distance)
+        constraint = LineCircleDistanceConstraint(
+            id=str(uuid.uuid4()),
+            line_id=line_id,
+            line_start_id=line.start_point_id,
+            line_end_id=line.end_point_id,
+            circle_or_arc_id=circle_or_arc_id,
+            center_point_id=center_point_id,
+            radius_point_id=radius_point_id,
+            distance=distance,
+            side=side,
+        )
+        self.constraints[constraint.id] = constraint
+        return constraint
 
     def add_tangent_constraint(self, circle_or_arc_id: str, line_id: str) -> TangentConstraint:
         center_point_id, radius_point_id = self._center_radius_point_ids(circle_or_arc_id)

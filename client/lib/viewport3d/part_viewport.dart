@@ -609,6 +609,12 @@ class PartViewport extends StatefulWidget {
   /// The vertex counterpart of [preferEntityPickIncludesEdge] - false only while re-attaching a circle's centre, whose replacement is a circular edge.
   final bool preferEntityPickIncludesVertex;
 
+  /// Bug report 2026-11-18 part C3: whether [preferEntityPick]'s hit test also lands on the drawn geometry of OTHER sketches ([sketchGeometries]
+  /// without [activeSketchFeatureId]'s own entry): their Points, Lines, Circles, Arcs, Ellipses, elliptical Arcs, Splines and Text, reported through
+  /// [onSketchEntityTap] as `sketch*` entities tagged with that sketch's Feature id and the entity's id (a pattern / mirror copy by its expanded id).
+  /// Only Convert Entities sets it. A body face in front still hides them, as it hides a body edge behind it.
+  final bool preferEntityPickIncludesOtherSketches;
+
   /// P10: fired instead of [onSketchPlaneTap] when [preferEntityPick] is
   /// true and the tap resolves to a real Body vertex/edge (via
   /// [hitTestBodies]) rather than landing near an existing Sketch entity
@@ -1106,6 +1112,7 @@ class PartViewport extends StatefulWidget {
     this.preferEntityPickIncludesFace = false,
     this.preferEntityPickIncludesEdge = true,
     this.preferEntityPickIncludesVertex = true,
+    this.preferEntityPickIncludesOtherSketches = false,
     this.onSketchEntityTap,
     this.hasEntityNearSketchTap,
     this.sectionPlanes = const [],
@@ -4974,6 +4981,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ray: localRay,
               viewportSize: _viewportSize,
               bodies: widget.bodies,
+              sketchGeometries: _otherSketchPickGeometries,
               filter: SelectionFilterState(
                 vertex: widget.preferEntityPickIncludesVertex,
                 edge: widget.preferEntityPickIncludesEdge,
@@ -4998,6 +5006,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (setsPivot && _touchPivot != null) setState(() => _touchPivot = null);
     widget.onBackgroundTap();
   }
+
+  /// [PartViewport.preferEntityPickIncludesOtherSketches]'s geometry: every sketch but the one being edited (which the controller picks itself).
+  Map<String, SketchGeometry3D> get _otherSketchPickGeometries => !widget.preferEntityPickIncludesOtherSketches
+      ? const {}
+      : {
+          for (final entry in widget.sketchGeometries.entries)
+            if (entry.key != widget.activeSketchFeatureId) entry.key: entry.value,
+        };
 
   void _handlePointerSignal(PointerSignalEvent event) {
     if (event is PointerScrollEvent) {
@@ -6557,6 +6573,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
             ray: ray,
             viewportSize: _viewportSize,
             bodies: widget.bodies,
+            sketchGeometries: _otherSketchPickGeometries,
             filter: SelectionFilterState(
               vertex: widget.preferEntityPickIncludesVertex,
               edge: widget.preferEntityPickIncludesEdge,

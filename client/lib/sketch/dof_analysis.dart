@@ -179,6 +179,14 @@ const Map<String, int> dofCostByConstraintType = {
   // (the Point's own remaining freedom along the curve), same net cost as
   // point_on_line/point_on_circle above despite the construction's own
   // extra internal auxiliary points.
+  // Bug report 2026-11-18 part D. Each is one equation net. The backend's helper points or entities add exactly as many equations as
+  // unknowns; this table counts the dimension's own equation only.
+  'arc_length': 1, // radius * counter-clockwise sweep = value (the arc's own end-radius tie is counted by its equal_radius entry)
+  'horizontal_angle': 1, // angle(line, fixed horizontal) = value
+  'point_angle': 1, // angle(vertex->p1, vertex->p2) = value, on the existing points
+  'circle_distance': 1, // gap / overall size along the centre line = value (two helper points, each 2 unknowns and 2 equations)
+  'line_circle_distance': 1, // line to the tangent / far side, square to it = value (one helper point: 2 unknowns, 2 equations)
+  'point_circle_distance': 1, // |point - nearest/farthest point of the circle| = value (the backend's helper point: 2 unknowns, 2 equations)
 };
 
 /// Resolves a Constraint to its backend `type` discriminator string (the
@@ -321,6 +329,30 @@ const Map<String, int> dofCostByConstraintType = {
         constraint.segmentBP3,
       ],
     );
+  }
+  if (constraint is ArcLengthConstraintDto) {
+    return (type: 'arc_length', pointIds: [constraint.centerPointId, constraint.startPointId, constraint.endPointId]);
+  }
+  if (constraint is HorizontalAngleConstraintDto) {
+    return (type: 'horizontal_angle', pointIds: [constraint.lineStartId, constraint.lineEndId]);
+  }
+  if (constraint is PointAngleConstraintDto) {
+    return (type: 'point_angle', pointIds: [constraint.vertexPointId, constraint.point1Id, constraint.point2Id]);
+  }
+  if (constraint is LineCircleDistanceConstraintDto) {
+    return (
+      type: 'line_circle_distance',
+      pointIds: [constraint.lineStartId, constraint.lineEndId, constraint.centerPointId, constraint.radiusPointId],
+    );
+  }
+  if (constraint is CircleCircleDistanceConstraintDto) {
+    return (
+      type: 'circle_distance',
+      pointIds: [constraint.center1PointId, constraint.radius1PointId, constraint.center2PointId, constraint.radius2PointId],
+    );
+  }
+  if (constraint is PointCircleDistanceConstraintDto) {
+    return (type: 'point_circle_distance', pointIds: [constraint.pointId, constraint.centerPointId, constraint.radiusPointId]);
   }
   if (constraint is PointOnLineConstraintDto) {
     return (type: 'point_on_line', pointIds: ofLine(constraint.lineId, constraint.pointId));

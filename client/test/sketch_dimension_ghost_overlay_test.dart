@@ -1,4 +1,3 @@
-import 'package:didsa_cad_client/api/dimension_label_placement.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -17,26 +16,28 @@ void main() {
     expect(controller.dimensionGhostOverlayItems(), isEmpty);
   });
 
-  test('two picked Points produce vertical/horizontal/linear ghost items with "?" placeholder text',
+  test('two picked Points preview one linear dimension at a time (Part A); the drawer switches the kind, each with "?" text',
       () async {
     controller.enterDimensionMode();
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
 
-    final items = controller.dimensionGhostOverlayItems();
-    expect(items, hasLength(3));
-    final byOrientation = {
-      for (final item in items.cast<ConstraintLinearDimensionItem>()) item.orientation: item,
-    };
-    expect(byOrientation.keys.toSet(), {'vertical', 'horizontal', 'linear'});
-    for (final item in byOrientation.values) {
+    expect(controller.dimensionGhostOverlayItems(), hasLength(1));
+    final seen = <String?>{};
+    for (final key in ['linear', 'h', 'v']) {
+      controller.selectPendingDimensionKind(key);
+      final items = controller.dimensionGhostOverlayItems();
+      expect(items, hasLength(1));
+      final item = items.single as ConstraintLinearDimensionItem;
+      seen.add(item.orientation);
       expect(item.text, '?');
       expect(item.pointA, (0.0, 0.0));
       expect(item.pointB, (5.0, 0.0));
     }
+    expect(seen, {'linear', 'horizontal', 'vertical'});
   });
 
-  test('a picked Circle produces radius ("R?") and diameter ("⌀?") ghost items', () async {
+  test('a picked Circle previews its diameter ("⌀?") first; the drawer switches to the radius ("R?")', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 10, y: 10);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 14, y: 10);
     controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
@@ -44,38 +45,33 @@ void main() {
     // 45deg on the circle's own boundary (radius 4), away from its Points.
     await controller.handleCanvasTap(10 + 4 * 0.70710678, 10 + 4 * 0.70710678);
 
-    final items = controller.dimensionGhostOverlayItems();
-    expect(items, hasLength(2));
-    final radial = items.cast<ConstraintRadialDimensionItem>();
-    final radiusItem = radial.singleWhere((i) => !i.isDiameter);
-    final diameterItem = radial.singleWhere((i) => i.isDiameter);
-    expect(radiusItem.text, 'R?');
+    final diameterItem = controller.dimensionGhostOverlayItems().single as ConstraintRadialDimensionItem;
+    expect(diameterItem.isDiameter, isTrue);
     expect(diameterItem.text, '⌀?');
-    expect(radiusItem.radius, closeTo(4.0, 1e-9));
     expect(diameterItem.radius, closeTo(4.0, 1e-9));
+
+    controller.selectPendingDimensionKind('radius');
+    final radiusItem = controller.dimensionGhostOverlayItems().single as ConstraintRadialDimensionItem;
+    expect(radiusItem.isDiameter, isFalse);
+    expect(radiusItem.text, 'R?');
+    expect(radiusItem.radius, closeTo(4.0, 1e-9));
     expect(radiusItem.center, (10.0, 10.0));
     expect(radiusItem.rim, (14.0, 10.0));
   });
 
   test(
-      'P47 bug fix: radius and diameter ghosts get a distinct default leader angle, so their '
-      'computed label positions never collide and diameter never silently wins every hit-test',
-      () async {
+      'P47 bug fix (kept for the ribbon chips, which open the editor with no dropped placement): radius and diameter get a distinct '
+      'default leader angle, so they never sit on top of each other', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 10, y: 10);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 14, y: 10);
     controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
     controller.enterDimensionMode();
     await controller.handleCanvasTap(10 + 4 * 0.70710678, 10 + 4 * 0.70710678);
 
-    final items = controller.dimensionGhostOverlayItems();
-    final radial = items.cast<ConstraintRadialDimensionItem>();
-    final radiusItem = radial.singleWhere((i) => !i.isDiameter);
-    final diameterItem = radial.singleWhere((i) => i.isDiameter);
-    // Same center/rim (so the same base direction/radius) and the same
-    // (un-dragged) labelOffset, yet a different defaultAngleOffsetDegrees
-    // is enough on its own to guarantee a different final label position
-    // regardless of camera angle or circle size - see
-    // dimensionGhostOverlayItems' own P47 doc comment.
+    controller.tapGhost('radius');
+    final radiusItem = controller.dimensionGhostOverlayItems().single as ConstraintRadialDimensionItem;
+    controller.tapGhost('diameter');
+    final diameterItem = controller.dimensionGhostOverlayItems().single as ConstraintRadialDimensionItem;
     expect(radiusItem.center, diameterItem.center);
     expect(radiusItem.rim, diameterItem.rim);
     expect(radiusItem.labelOffset, diameterItem.labelOffset);
@@ -83,63 +79,61 @@ void main() {
   });
 
   test(
-      'P44f bug fix: once a ghost\'s leader angle has been set via setRadialAngleOffset (the '
-      'embedded 3D view\'s own camera-independent drag persistence), it wins over the P47 default '
-      'separation, and labelOffset stays zero (no screen-pixel component left to drift under orbit)',
-      () async {
+      'P44f (reworked for Part A): a radial ghost\'s leader angle and leg come from the cursor through the label-drag rule, in sketch '
+      'units, and labelOffset stays zero (no screen-pixel component left to drift under orbit)', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 10, y: 10);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 14, y: 10);
     controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
     controller.enterDimensionMode();
     await controller.handleCanvasTap(10 + 4 * 0.70710678, 10 + 4 * 0.70710678);
 
-    controller.setLabelPlacementForTesting('diameter', DimensionLabelPlacement(angle: 137.0));
-
-    final items = controller.dimensionGhostOverlayItems();
-    final diameterItem = items.cast<ConstraintRadialDimensionItem>().singleWhere((i) => i.isDiameter);
-
-    expect(diameterItem.defaultAngleOffsetDegrees, 137.0);
-    expect(diameterItem.labelOffset, Offset.zero);
-    expect(controller.labelPlacementFor('diameter')?.angle, 137.0);
-    expect(controller.labelPlacementFor('radius')?.angle, isNull, reason: 'radius was never dragged');
+    controller.moveCursorToSketchPoint(10, 20); // straight above the centre, 6 beyond the circle
+    final placement = controller.pendingPlacementFromCursor()!;
+    expect(placement.angle, closeTo(90.0, 1e-9)); // from the rim point's direction (east) to north
+    expect(placement.leg, closeTo(6.0, 1e-9));
+    final item = controller.dimensionGhostOverlayItems().single as ConstraintRadialDimensionItem;
+    expect(item.defaultAngleOffsetDegrees, placement.angle);
+    expect(item.sketchLocalLegLength, placement.leg);
+    expect(item.labelOffset, Offset.zero);
   });
 
   test(
-      'P52 bug fix: a linear ghost\'s sketchLocalOffsetDistance is null until '
-      'setLinearOffsetDistance is called, then flows through by ghost key, keyed independently '
-      'per orientation', () async {
+      'P52 (reworked for Part A): a linear ghost\'s sketchLocalOffsetDistance / along follow the cursor until a click drops it, then hold',
+      () async {
     controller.enterDimensionMode();
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(5, 0);
+    controller.selectPendingDimensionKind('h');
 
-    final beforeItems = controller.dimensionGhostOverlayItems().cast<ConstraintLinearDimensionItem>();
-    for (final item in beforeItems) {
-      expect(item.sketchLocalOffsetDistance, isNull);
-    }
-    expect(controller.labelPlacementFor('linear')?.offset, isNull);
+    controller.moveCursorToSketchPoint(1, 3);
+    var item = controller.dimensionGhostOverlayItems().single as ConstraintLinearDimensionItem;
+    expect(item.sketchLocalOffsetDistance, 3.0); // above the points (a horizontal dimension is measured from their larger y)
+    expect(item.sketchLocalAlongOffset, closeTo(-1.5, 1e-9)); // from the points' midpoint (2.5)
 
-    controller.setLabelPlacementForTesting('linear', DimensionLabelPlacement(offset: 2.5));
+    controller.moveCursorToSketchPoint(4, -2);
+    item = controller.dimensionGhostOverlayItems().single as ConstraintLinearDimensionItem;
+    expect(item.sketchLocalOffsetDistance, -2.0);
 
-    final afterItems = controller.dimensionGhostOverlayItems().cast<ConstraintLinearDimensionItem>();
-    final byOrientation = {for (final item in afterItems) item.orientation: item};
-    expect(byOrientation['linear']!.sketchLocalOffsetDistance, 2.5);
-    expect(byOrientation['vertical']!.sketchLocalOffsetDistance, isNull);
-    expect(byOrientation['horizontal']!.sketchLocalOffsetDistance, isNull);
-    expect(controller.labelPlacementFor('linear')?.offset, 2.5);
+    await controller.handleCanvasTap(4, -2); // empty space: drop
+    controller.moveCursorToSketchPoint(30, 30);
+    item = controller.dimensionGhostOverlayItems().single as ConstraintLinearDimensionItem;
+    expect(item.sketchLocalOffsetDistance, -2.0); // frozen where it was dropped
+    expect(item.selected, isTrue);
   });
 
-  test('the active ghost (tapGhost) is flagged selected; its siblings are not', () async {
+  test('the previewed ghost is not "selected"; the one whose editor is open (tapGhost) is', () async {
     controller.points['center'] = const SketchPointView(id: 'center', x: 0, y: 0);
     controller.points['rim'] = const SketchPointView(id: 'rim', x: 3, y: 0);
     controller.circles['circ'] = const SketchCircleView(id: 'circ', centerPointId: 'center', radiusPointId: 'rim');
     controller.enterDimensionMode();
     await controller.handleCanvasTap(2.121, 2.121); // 45deg on the circle's boundary
+    expect((controller.dimensionGhostOverlayItems().single as ConstraintRadialDimensionItem).selected, isFalse);
+
     controller.tapGhost('radius');
 
-    final items = controller.dimensionGhostOverlayItems();
-    final radial = items.cast<ConstraintRadialDimensionItem>();
-    expect(radial.singleWhere((i) => !i.isDiameter).selected, isTrue);
-    expect(radial.singleWhere((i) => i.isDiameter).selected, isFalse);
+    final item = controller.dimensionGhostOverlayItems().single as ConstraintRadialDimensionItem;
+    expect(item.isDiameter, isFalse);
+    expect(item.selected, isTrue);
   });
 
   test('two non-parallel Lines produce a single angle ghost label with "?" text', () async {
@@ -179,8 +173,8 @@ void main() {
   });
 
   test(
-      'P52 follow-up bug fix: a lineDistance ghost\'s sketchLocalOffsetDistance is null until '
-      'setLinearOffsetDistance is called, keyed by its own ghost key just like the point-to-point case',
+      'P52 follow-up (reworked for Part A): a lineDistance ghost\'s sketchLocalOffsetDistance comes from the cursor through the '
+      'line-distance rule, and holds once dropped',
       () async {
     controller.points['p2'] = const SketchPointView(id: 'p2', x: 0, y: 3);
     controller.points['p3'] = const SketchPointView(id: 'p3', x: 5, y: 3);
@@ -190,14 +184,15 @@ void main() {
     await controller.handleCanvasTap(1.5, 0);
     await controller.handleCanvasTap(1.5, 3);
 
-    final beforeItem =
-        controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;
-    expect(beforeItem.sketchLocalOffsetDistance, isNull);
+    controller.moveCursorToSketchPoint(4, 1.5);
+    final expected = controller.pendingPlacementFromCursor()!;
+    var item = controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;
+    expect(item.sketchLocalOffsetDistance, expected.offset);
+    expect(item.sketchLocalAlongOffset, expected.along);
 
-    controller.setLabelPlacementForTesting('lineDistance', DimensionLabelPlacement(offset: 1.75));
-
-    final afterItem =
-        controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;
-    expect(afterItem.sketchLocalOffsetDistance, 1.75);
+    await controller.handleCanvasTap(4, 1.5);
+    controller.moveCursorToSketchPoint(-8, -8);
+    item = controller.dimensionGhostOverlayItems().single as ConstraintLineDistanceDimensionItem;
+    expect(item.sketchLocalOffsetDistance, expected.offset);
   });
 }

@@ -16,7 +16,14 @@ from py_slvs import slvs
 
 from app.sketch.constraints import (
     AngleConstraint,
+    ArcLengthConstraint,
     AtMidpointConstraint,
+    HorizontalAngleConstraint,
+    MeasuredDimension,
+    PointAngleConstraint,
+    PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     CoincidentConstraint,
     CollinearConstraint,
     ConcentricConstraint,
@@ -37,7 +44,7 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Ellipse, EllipseArc, Point, Sketch
+from app.sketch.models import Arc, Ellipse, EllipseArc, Point, Sketch
 
 # Constraint types empirically confirmed to never need py-slvs's own
 # redundancy detection to distrust a converged solve - see `converged`'s
@@ -81,6 +88,16 @@ _REDUNDANCY_SAFE_CONSTRAINT_TYPES = (
     PointOnCircleConstraint,
     FixedConstraint,
     PointOnEllipseConstraint,
+    # Bug report 2026-11-18 part D: trusted here only together with `_measured_dimensions_hold`, which re-measures each of them on the
+    # solved Points whenever a solve is reported converged - a type trust that is checked afterwards, not a blind one. Needed for the
+    # ordinary arc redundancy (an Arc whose centre and end are both fixed, with its radius dimensioned, is result 5 with or without an
+    # arc length on it).
+    ArcLengthConstraint,
+    HorizontalAngleConstraint,
+    PointAngleConstraint,
+    PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
 )
 
 # CurveTangentConstraint is deliberately NOT in the allowlist above -
@@ -199,6 +216,14 @@ _RESIDUAL_CHECKABLE_CONSTRAINT_TYPES = (
     PerpendicularConstraint,
     PointOnLineConstraint,
     CollinearConstraint,
+    # Bug report 2026-11-18 part D: the residual is the dimension's own value measured on the solved Points (the exact condition the
+    # solver enforced, not a weaker proxy), so a stacked-redundancy solve with one of these can be verified like the rest.
+    ArcLengthConstraint,
+    HorizontalAngleConstraint,
+    PointAngleConstraint,
+    PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
 )
 
 _RESIDUAL_TOLERANCE = 1e-4
@@ -514,8 +539,67 @@ def _residual_verified_convergence(sketch: Sketch) -> bool | None:
                 return False
             if _point_line_distance(points[constraint.line2_end_id], line1_start, line1_end) > tolerance:
                 return False
+        elif isinstance(constraint, MeasuredDimension):
+            if not _dimension_holds(constraint, points, tolerance):
+                return False
 
     return True
+
+
+def _dimension_holds(constraint: MeasuredDimension, points: dict[str, Point], tolerance: float) -> bool:
+    measured = constraint.measured_value(points)
+    if measured is None:
+        return False
+    if constraint.angular():
+        return abs(measured - constraint.value()) <= 1e-2
+    return abs(measured - constraint.value()) <= tolerance
+
+
+def _measured_dimensions_hold(sketch: Sketch) -> bool:
+    """Every part D dimension measures its own value on the solved Points (see `MeasuredDimension`). False also when the solve put a
+    helper point on the other side (a minimum distance solved as the maximum measures wrong here)."""
+    dimensions = [c for c in sketch.constraints.values() if isinstance(c, MeasuredDimension)]
+    if not dimensions:
+        return True
+    xs = [p.x for p in sketch.points.values()]
+    ys = [p.y for p in sketch.points.values()]
+    tolerance = max(math.hypot(max(xs) - min(xs), max(ys) - min(ys)) * _RESIDUAL_TOLERANCE, 1e-6)
+    return all(_dimension_holds(c, sketch.points, tolerance) for c in dimensions)
+
+
+def arc_entity_replaced_constraint_ids(sketch: Sketch) -> frozenset[str]:
+    """The constraints the solver leaves out because a py-slvs ArcOfCircle entity already states them: for each Arc carrying an
+    ArcLengthConstraint, the Arc's own end-radius EqualRadiusConstraint (end on the start's circle). Sending both makes the system
+    redundant (py-slvs result 5). Only an EqualRadius that ties exactly this Arc's end to its start about its centre is left out."""
+    arc_points = {
+        (c.center_point_id, c.start_point_id, c.end_point_id) for c in sketch.constraints.values() if isinstance(c, ArcLengthConstraint)
+    }
+    if not arc_points:
+        return frozenset()
+    replaced: set[str] = set()
+    for entity in sketch.entities.values():
+        if not isinstance(entity, Arc) or (entity.center_point_id, entity.start_point_id, entity.end_point_id) not in arc_points:
+            continue
+        own = sketch.constraints.get(entity.end_radius_constraint_id)
+        if (
+            isinstance(own, EqualRadiusConstraint)
+            and own.center1_point_id == own.center2_point_id == entity.center_point_id
+            and {own.radius1_point_id, own.radius2_point_id} == {entity.start_point_id, entity.end_point_id}
+        ):
+            replaced.add(own.id)
+    return frozenset(replaced)
+
+
+def _solver_constraints(sketch: Sketch):
+    """The constraints sent to py-slvs: all but the provisional dimensions (see `DistanceConstraint.provisional`) and those a solver
+    entity already states (`arc_entity_replaced_constraint_ids`)."""
+    replaced = arc_entity_replaced_constraint_ids(sketch)
+    for constraint in sketch.constraints.values():
+        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
+            continue
+        if constraint.id in replaced:
+            continue
+        yield constraint
 
 
 def _ellipse_owned_at_midpoint_constraint_ids(sketch: Sketch) -> frozenset[str]:
@@ -610,6 +694,7 @@ class _PySlvsBuilder:
         self._line_handles: dict[tuple[int, int], int] = {}
         self._cubic_handles: dict[tuple[int, int, int, int], int] = {}
         self._horizontal_ref_line: int | None = None
+        self._arc_handles: dict[tuple[int, int, int], int] = {}
         self._vertical_ref_line: int | None = None
         # The Sketch's origin Point (see Sketch.origin_point) is real,
         # addressable geometry - snappable and referenceable like any other
@@ -907,6 +992,105 @@ class _PySlvsBuilder:
             point_handle, line_handle, wrkpln=self._workplane, group=_SOLVE_GROUP
         )
 
+    def arc_of_circle(self, center_handle: int, start_handle: int, end_handle: int) -> int:
+        key = (center_handle, start_handle, end_handle)
+        if key not in self._arc_handles:
+            self._arc_handles[key] = self._system.addArcOfCircle(
+                self._workplane, center_handle, start_handle, end_handle, group=_SOLVE_GROUP
+            )
+        return self._arc_handles[key]
+
+    def horizontal_angle(self, line_start_id: str, line_end_id: str, degrees: float, quadrant: int | None) -> int:
+        start, end = self._points[line_start_id], self._points[line_end_id]
+        dx, dy = end.x - start.x, end.y - start.y
+        if quadrant is not None:
+            # The Line's own direction is start to end and the reference runs +x; each flipped ray turns the angle into its supplement.
+            supplement = bool(quadrant & 1) != bool(quadrant & 2)
+        else:
+            length = math.hypot(dx, dy)
+            current = math.degrees(math.acos(max(-1.0, min(1.0, dx / length)))) if length > 0 else degrees
+            supplement = abs((180.0 - degrees) - current) < abs(degrees - current)
+        line = self.line_segment(self.point2d(line_start_id), self.point2d(line_end_id))
+        return self._system.addAngle(
+            degrees, supplement, self._horizontal_ref_line_handle(), line, wrkpln=self._workplane, group=_SOLVE_GROUP
+        )
+
+    def point_angle(self, vertex_id: str, point1_id: str, point2_id: str, degrees: float, quadrant: int | None) -> int:
+        v, a, b = self._points[vertex_id], self._points[point1_id], self._points[point2_id]
+        if quadrant is not None:
+            # The segments run from the vertex, so they are the rays themselves: one flipped ray makes it the supplement.
+            supplement = bool(quadrant & 1) != bool(quadrant & 2)
+        else:
+            ax, ay, bx, by = a.x - v.x, a.y - v.y, b.x - v.x, b.y - v.y
+            na, nb = math.hypot(ax, ay), math.hypot(bx, by)
+            if na > 0 and nb > 0:
+                current = math.degrees(math.acos(max(-1.0, min(1.0, (ax * bx + ay * by) / (na * nb)))))
+                supplement = abs((180.0 - degrees) - current) < abs(degrees - current)
+            else:
+                supplement = False
+        vertex = self.point2d(vertex_id)
+        line1 = self.line_segment(vertex, self.point2d(point1_id))
+        line2 = self.line_segment(vertex, self.point2d(point2_id))
+        return self._system.addAngle(degrees, supplement, line1, line2, wrkpln=self._workplane, group=_SOLVE_GROUP)
+
+    def _point_on_circle_helper(self, center_id: str, radius_point_id: str, through_id: str, toward: float) -> int:
+        """A solver-only point H on the line through `center_id` and `through_id`, at the circle's radius from the centre: two
+        equations for its two unknowns. Seeded at centre + toward * radius along centre-to-`through` (toward +1: on `through`'s side,
+        -1: the far side), which is the solution on that side when the shape is already right."""
+        cx, cy = self.seed_xy(center_id)
+        tx, ty = self.seed_xy(through_id)
+        rx, ry = self.seed_xy(radius_point_id)
+        radius = math.hypot(rx - cx, ry - cy)
+        d = math.hypot(tx - cx, ty - cy)
+        ux, uy = ((tx - cx) / d, (ty - cy) / d) if d > 1e-12 else (1.0, 0.0)
+        helper = self.ephemeral_point2d_at(cx + toward * radius * ux, cy + toward * radius * uy)
+        center = self.point2d(center_id)
+        self.point_on_line(helper, self.line_segment(center, self.point2d(through_id)))
+        self.equal_length(self.line_segment(center, helper), self.line_segment(center, self.point2d(radius_point_id)))
+        return helper
+
+    def point_circle_distance(self, point_id: str, center_id: str, radius_point_id: str, value: float, side: str) -> int:
+        helper = self._point_on_circle_helper(center_id, radius_point_id, point_id, 1.0 if side == "min" else -1.0)
+        return self.distance(self.point2d(point_id), helper, value)
+
+    def circle_circle_distance(
+        self, center1_id: str, radius1_id: str, center2_id: str, radius2_id: str, value: float, side: str
+    ) -> int:
+        toward = 1.0 if side == "min" else -1.0
+        helper1 = self._point_on_circle_helper(center1_id, radius1_id, center2_id, toward)
+        helper2 = self._point_on_circle_helper(center2_id, radius2_id, center1_id, toward)
+        return self.distance(helper1, helper2, value)
+
+    def line_circle_distance(
+        self, line_start_id: str, line_end_id: str, center_id: str, radius_point_id: str, value: float, side: str
+    ) -> int:
+        sx, sy = self.seed_xy(line_start_id)
+        ex, ey = self.seed_xy(line_end_id)
+        cx, cy = self.seed_xy(center_id)
+        rx, ry = self.seed_xy(radius_point_id)
+        dx, dy = ex - sx, ey - sy
+        length = math.hypot(dx, dy) or 1.0
+        # The centre's signed distance from the line, in `point_line_distance`'s own convention ((p - s) x (e - s) / |e - s|).
+        signed = ((cx - sx) * dy - (cy - sy) * dx) / length
+        side_sign = -1.0 if signed < 0 else 1.0
+        # Unit normal from the centre towards the line: the signed distance falls along (dy, -dx) / length.
+        nx, ny = -side_sign * dy / length, side_sign * dx / length
+        toward = 1.0 if side == "min" else -1.0
+        radius = math.hypot(rx - cx, ry - cy)
+        helper = self.ephemeral_point2d_at(cx + toward * radius * nx, cy + toward * radius * ny)
+        center = self.point2d(center_id)
+        line = self.line_segment(self.point2d(line_start_id), self.point2d(line_end_id))
+        self.perpendicular(self.line_segment(center, helper), line)
+        self.equal_length(self.line_segment(center, helper), self.line_segment(center, self.point2d(radius_point_id)))
+        # Both sides of the circle are on the centre's side of the line while the line does not cut it: the value is signed alike.
+        return self.point_line_distance(helper, line, side_sign * abs(value))
+
+    def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
+        helper = self._system.addLineSegment(
+            self._fixed_ref_point(0.0, 0.0), self._fixed_ref_point(length, 0.0), group=_FIXED_GROUP
+        )
+        return self._system.addEqualLineArcLength(helper, arc_handle, wrkpln=self._workplane, group=_SOLVE_GROUP)
+
     def where_dragged(self, point_handle: int) -> int:
         return self._system.addWhereDragged(point_handle, wrkpln=self._workplane, group=_SOLVE_GROUP)
 
@@ -1072,9 +1256,7 @@ def _has_free_motion(sketch: Sketch, anchor_point_ids: frozenset[str]) -> bool:
         origin_point_id=sketch.origin_point_id,
         anchor_point_ids=anchor_point_ids,
     )
-    for constraint in sketch.constraints.values():
-        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
-            continue
+    for constraint in _solver_constraints(sketch):
         constraint.add_to_solver(builder)
     for point_id in sketch.points:
         builder.point2d(point_id)
@@ -1125,12 +1307,9 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
     )
 
     constraint_id_by_handle: dict[int, str] = {}
-    for constraint in sketch.constraints.values():
-        if isinstance(constraint, DistanceConstraint) and constraint.provisional:
-            # Not yet confirmed by the user - contributes zero DOF-removal,
-            # exactly as if it didn't exist, until confirmed (see
-            # DistanceConstraint.provisional's own doc comment).
-            continue
+    # A provisional dimension is not yet confirmed by the user and contributes zero DOF-removal, exactly as if it didn't exist, until
+    # confirmed (see DistanceConstraint.provisional's own doc comment); see `_solver_constraints` for the other ones left out.
+    for constraint in _solver_constraints(sketch):
         handle = constraint.add_to_solver(builder)
         constraint_id_by_handle[handle] = constraint.id
 
@@ -1285,6 +1464,9 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         # own doc comment for why only *these* are safe to trust, unlike an
         # arbitrary user-created AtMidpointConstraint elsewhere).
         converged = True
+
+    if converged and not _measured_dimensions_hold(sketch):
+        converged = False
 
     # On-device feedback: a freshly-drawn Slot (2 Arcs tied together via
     # Tangent/EqualRadius, arc1's own radius DistanceConstraint still

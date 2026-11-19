@@ -202,10 +202,23 @@ class ExternalReferenceStatusDto {
 /// [endPoint] carry no real information in that case (the backend sets
 /// both equal to [centerPoint], since a full circle has no distinct
 /// start/end of its own) and should be ignored by [circle]-branch callers.
+///
+/// Bug report 2026-11-18 part C: an edge that is not in the sketch plane is projected square onto it, so the answer can also be an [ellipse] (a
+/// whole circle seen at an angle, or an ellipse), an [ellipseArc] (an arc seen at an angle), a [spline] (a free-form edge; [startPoint] / [endPoint]
+/// are its first and last through points) or a lone [point] (a straight edge along the plane's normal; [startPoint] and [endPoint] are that same
+/// point). A closed free-form edge makes two splines: the first here, the rest in [more], each in this same shape. On an item of
+/// [ConvertSketchResultDto], [sourceEntityId] names the source sketch's entity (or loose point) it was projected from. Every one of these fields is
+/// absent from older answers and parses as null / empty.
 class ConvertEdgeResultDto {
   final LineDto? line;
   final ArcDto? arc;
   final CircleDto? circle;
+  final EllipseDto? ellipse;
+  final EllipseArcDto? ellipseArc;
+  final SplineDto? spline;
+  final PointDto? point;
+  final List<ConvertEdgeResultDto> more;
+  final String? sourceEntityId;
   final PointDto startPoint;
   final PointDto endPoint;
   final PointDto? centerPoint;
@@ -214,19 +227,66 @@ class ConvertEdgeResultDto {
     this.line,
     this.arc,
     this.circle,
+    this.ellipse,
+    this.ellipseArc,
+    this.spline,
+    this.point,
+    this.more = const [],
+    this.sourceEntityId,
     required this.startPoint,
     required this.endPoint,
     this.centerPoint,
   });
 
+  /// The id of the one entity this answer made (or reused), whatever its kind; for a lone [point], the point's id.
+  String get madeId => (line?.id ?? arc?.id ?? circle?.id ?? ellipse?.id ?? ellipseArc?.id ?? spline?.id ?? point?.id ?? startPoint.id);
+
+  static T? _optional<T>(Object? value, T Function(Map<String, dynamic>) parse) =>
+      value == null ? null : parse(value as Map<String, dynamic>);
+
   factory ConvertEdgeResultDto.fromJson(Map<String, dynamic> json) => ConvertEdgeResultDto(
-        line: json['line'] == null ? null : LineDto.fromJson(json['line'] as Map<String, dynamic>),
-        arc: json['arc'] == null ? null : ArcDto.fromJson(json['arc'] as Map<String, dynamic>),
-        circle: json['circle'] == null ? null : CircleDto.fromJson(json['circle'] as Map<String, dynamic>),
+        line: _optional(json['line'], LineDto.fromJson),
+        arc: _optional(json['arc'], ArcDto.fromJson),
+        circle: _optional(json['circle'], CircleDto.fromJson),
+        ellipse: _optional(json['ellipse'], EllipseDto.fromJson),
+        ellipseArc: _optional(json['ellipse_arc'], EllipseArcDto.fromJson),
+        spline: _optional(json['spline'], SplineDto.fromJson),
+        point: _optional(json['point'], PointDto.fromJson),
+        more: (json['more'] as List?)?.map((e) => ConvertEdgeResultDto.fromJson(e as Map<String, dynamic>)).toList() ?? const [],
+        sourceEntityId: json['source_entity_id'] as String?,
         startPoint: PointDto.fromJson(json['start_point'] as Map<String, dynamic>),
         endPoint: PointDto.fromJson(json['end_point'] as Map<String, dynamic>),
-        centerPoint:
-            json['center_point'] == null ? null : PointDto.fromJson(json['center_point'] as Map<String, dynamic>),
+        centerPoint: _optional(json['center_point'], PointDto.fromJson),
+      );
+}
+
+/// Bug report 2026-11-18 part C2: the backend's answer to `convert-entities/sketch` ([SketchApiClient.convertSketchEntities]): every copy made (or
+/// already there), each in [ConvertEdgeResultDto]'s shape with its [ConvertEdgeResultDto.sourceEntityId], and the source entities [skipped] (Text,
+/// an id that is not in the source, a shape with no size).
+class ConvertSketchResultDto {
+  final List<ConvertEdgeResultDto> items;
+  final List<ConvertSketchSkippedDto> skipped;
+
+  ConvertSketchResultDto({required this.items, this.skipped = const []});
+
+  factory ConvertSketchResultDto.fromJson(Map<String, dynamic> json) => ConvertSketchResultDto(
+        items: (json['items'] as List).map((e) => ConvertEdgeResultDto.fromJson(e as Map<String, dynamic>)).toList(),
+        skipped: (json['skipped'] as List?)?.map((e) => ConvertSketchSkippedDto.fromJson(e as Map<String, dynamic>)).toList() ?? const [],
+      );
+}
+
+/// One source entity `convert-entities/sketch` did not convert: [reason] is `text`, `not_found` or `degenerate`; [message] says it in words.
+class ConvertSketchSkippedDto {
+  final String entityId;
+  final String reason;
+  final String message;
+
+  ConvertSketchSkippedDto({required this.entityId, required this.reason, this.message = ''});
+
+  factory ConvertSketchSkippedDto.fromJson(Map<String, dynamic> json) => ConvertSketchSkippedDto(
+        entityId: json['entity_id'] as String,
+        reason: json['reason'] as String,
+        message: json['message'] as String? ?? '',
       );
 }
 
@@ -526,6 +586,9 @@ class EllipseDto {
   final double rotation;
   final bool construction;
 
+  /// The backend's `is_reference`: a helper a reference convert made (drawn quietly, not offered for selection). Absent in older answers: false.
+  final bool isReference;
+
   /// [CircleDto.radiusConstraintId]'s Ellipse-shaped siblings -
   /// `majorRadius`/`minorRadius`'s own backing `DistanceConstraint` ids
   /// (`Sketch.add_ellipse`'s own doc comment). Nullable for the same
@@ -547,6 +610,7 @@ class EllipseDto {
     required this.minorRadius,
     required this.rotation,
     this.construction = false,
+    this.isReference = false,
     this.majorConstraintId,
     this.minorConstraintId,
   });
@@ -565,6 +629,7 @@ class EllipseDto {
         minorRadius: (json['minor_radius'] as num).toDouble(),
         rotation: (json['rotation'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
         majorConstraintId: json['major_constraint_id'] as String?,
         minorConstraintId: json['minor_constraint_id'] as String?,
       );
@@ -594,6 +659,9 @@ class EllipseArcDto {
   final double rotation;
   final bool construction;
 
+  /// See [EllipseDto.isReference].
+  final bool isReference;
+
   EllipseArcDto({
     this.structuralConstraintIds = const [],
     required this.id,
@@ -608,6 +676,7 @@ class EllipseArcDto {
     required this.minorRadius,
     required this.rotation,
     this.construction = false,
+    this.isReference = false,
   });
 
   factory EllipseArcDto.fromJson(Map<String, dynamic> json) => EllipseArcDto(
@@ -624,6 +693,7 @@ class EllipseArcDto {
         minorRadius: (json['minor_radius'] as num).toDouble(),
         rotation: (json['rotation'] as num).toDouble(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
       );
 }
 
@@ -812,11 +882,15 @@ class SplineDto {
   final List<String> controlPointIds;
   final bool construction;
 
+  /// See [EllipseDto.isReference].
+  final bool isReference;
+
   SplineDto({
     required this.id,
     required this.throughPointIds,
     required this.controlPointIds,
     this.construction = false,
+    this.isReference = false,
   });
 
   factory SplineDto.fromJson(Map<String, dynamic> json) => SplineDto(
@@ -824,6 +898,7 @@ class SplineDto {
         throughPointIds: (json['through_point_ids'] as List).cast<String>(),
         controlPointIds: (json['control_point_ids'] as List).cast<String>(),
         construction: json['construction'] as bool? ?? false,
+        isReference: json['is_reference'] as bool? ?? false,
       );
 }
 
@@ -940,6 +1015,18 @@ abstract class ConstraintDto {
         return PointOnEllipseConstraintDto.fromJson(json);
       case 'fixed':
         return FixedConstraintDto.fromJson(json);
+      case 'arc_length':
+        return ArcLengthConstraintDto.fromJson(json);
+      case 'horizontal_angle':
+        return HorizontalAngleConstraintDto.fromJson(json);
+      case 'point_angle':
+        return PointAngleConstraintDto.fromJson(json);
+      case 'point_circle_distance':
+        return PointCircleDistanceConstraintDto.fromJson(json);
+      case 'circle_distance':
+        return CircleCircleDistanceConstraintDto.fromJson(json);
+      case 'line_circle_distance':
+        return LineCircleDistanceConstraintDto.fromJson(json);
       default:
         return DistanceConstraintDto.fromJson(json);
     }
@@ -1505,6 +1592,209 @@ class FixedConstraintDto extends ConstraintDto {
         id: json['id'] as String,
         label: DimensionLabelPlacement.fromJson(json['label']),
         pointIds: (json['point_ids'] as List<dynamic>).cast<String>(),
+      );
+}
+
+/// Bug report 2026-11-18 part D: an Arc's length (the backend's `ArcLengthConstraint`): the radius times the counter-clockwise sweep
+/// from [startPointId] to [endPointId] about [centerPointId]. The Point ids are the Arc's own, captured when it was made.
+class ArcLengthConstraintDto extends ConstraintDto {
+  final String arcId;
+  final String centerPointId;
+  final String startPointId;
+  final String endPointId;
+  final double length;
+
+  const ArcLengthConstraintDto({
+    required super.id,
+    super.label,
+    required this.arcId,
+    required this.centerPointId,
+    required this.startPointId,
+    required this.endPointId,
+    required this.length,
+  });
+
+  factory ArcLengthConstraintDto.fromJson(Map<String, dynamic> json) => ArcLengthConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        arcId: json['arc_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        startPointId: json['start_point_id'] as String,
+        endPointId: json['end_point_id'] as String,
+        length: (json['length'] as num).toDouble(),
+      );
+}
+
+/// Bug report 2026-11-18 part D: a Line's angle to the horizontal (the backend's `HorizontalAngleConstraint`). [quadrant] bit 0 picks
+/// the end it is drawn at (clear: the start, the ray running to the end; set: the end, running back to the start), bit 1 the horizontal
+/// ray (+x or -x); the value is the angle between those two rays. Null: the backend's nearest-side rule.
+class HorizontalAngleConstraintDto extends ConstraintDto {
+  final String lineId;
+  final String lineStartId;
+  final String lineEndId;
+  final double angleDegrees;
+  final int? quadrant;
+
+  const HorizontalAngleConstraintDto({
+    required super.id,
+    super.label,
+    required this.lineId,
+    required this.lineStartId,
+    required this.lineEndId,
+    required this.angleDegrees,
+    this.quadrant,
+  });
+
+  factory HorizontalAngleConstraintDto.fromJson(Map<String, dynamic> json) => HorizontalAngleConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        lineId: json['line_id'] as String,
+        lineStartId: json['line_start_id'] as String,
+        lineEndId: json['line_end_id'] as String,
+        angleDegrees: (json['angle_degrees'] as num).toDouble(),
+        quadrant: json['quadrant'] as int?,
+      );
+}
+
+/// Bug report 2026-11-18 part D: the angle at [vertexPointId] between the rays to [point1Id] and [point2Id] (the backend's
+/// `PointAngleConstraint`). [quadrant] bit 0 flips the ray to [point1Id], bit 1 the ray to [point2Id]; null: the nearest-side rule.
+class PointAngleConstraintDto extends ConstraintDto {
+  final String vertexPointId;
+  final String point1Id;
+  final String point2Id;
+  final double angleDegrees;
+  final int? quadrant;
+
+  const PointAngleConstraintDto({
+    required super.id,
+    super.label,
+    required this.vertexPointId,
+    required this.point1Id,
+    required this.point2Id,
+    required this.angleDegrees,
+    this.quadrant,
+  });
+
+  factory PointAngleConstraintDto.fromJson(Map<String, dynamic> json) => PointAngleConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        vertexPointId: json['vertex_point_id'] as String,
+        point1Id: json['point1_id'] as String,
+        point2Id: json['point2_id'] as String,
+        angleDegrees: (json['angle_degrees'] as num).toDouble(),
+        quadrant: json['quadrant'] as int?,
+      );
+}
+
+/// Bug report 2026-11-18 part D: the nearest ([side] "min") or farthest ("max") distance from [pointId] to a Circle or Arc (the
+/// backend's `PointCircleDistanceConstraint`); [radiusPointId] is the rim Point carrying the radius (a Circle's radius Point, an Arc's
+/// start).
+class PointCircleDistanceConstraintDto extends ConstraintDto {
+  final String pointId;
+  final String circleOrArcId;
+  final String centerPointId;
+  final String radiusPointId;
+  final double distance;
+  final String side;
+
+  const PointCircleDistanceConstraintDto({
+    required super.id,
+    super.label,
+    required this.pointId,
+    required this.circleOrArcId,
+    required this.centerPointId,
+    required this.radiusPointId,
+    required this.distance,
+    this.side = 'min',
+  });
+
+  factory PointCircleDistanceConstraintDto.fromJson(Map<String, dynamic> json) => PointCircleDistanceConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        pointId: json['point_id'] as String,
+        circleOrArcId: json['circle_or_arc_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+        side: json['side'] as String? ?? 'min',
+      );
+}
+
+/// Bug report 2026-11-18 part D: the gap ([side] "min") or overall size ("max") of two Circles / Arcs along their centre line (the
+/// backend's `CircleCircleDistanceConstraint`). Each radius Point is the rim Point carrying that circle's radius.
+class CircleCircleDistanceConstraintDto extends ConstraintDto {
+  final String entity1Id;
+  final String center1PointId;
+  final String radius1PointId;
+  final String entity2Id;
+  final String center2PointId;
+  final String radius2PointId;
+  final double distance;
+  final String side;
+
+  const CircleCircleDistanceConstraintDto({
+    required super.id,
+    super.label,
+    required this.entity1Id,
+    required this.center1PointId,
+    required this.radius1PointId,
+    required this.entity2Id,
+    required this.center2PointId,
+    required this.radius2PointId,
+    required this.distance,
+    this.side = 'min',
+  });
+
+  factory CircleCircleDistanceConstraintDto.fromJson(Map<String, dynamic> json) => CircleCircleDistanceConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        entity1Id: json['entity1_id'] as String,
+        center1PointId: json['center1_point_id'] as String,
+        radius1PointId: json['radius1_point_id'] as String,
+        entity2Id: json['entity2_id'] as String,
+        center2PointId: json['center2_point_id'] as String,
+        radius2PointId: json['radius2_point_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+        side: json['side'] as String? ?? 'min',
+      );
+}
+
+/// Bug report 2026-11-18 part D: from a Line (its infinite extension) to a Circle's / Arc's tangent side ([side] "min") or far side
+/// ("max"), square to the line (the backend's `LineCircleDistanceConstraint`).
+class LineCircleDistanceConstraintDto extends ConstraintDto {
+  final String lineId;
+  final String lineStartId;
+  final String lineEndId;
+  final String circleOrArcId;
+  final String centerPointId;
+  final String radiusPointId;
+  final double distance;
+  final String side;
+
+  const LineCircleDistanceConstraintDto({
+    required super.id,
+    super.label,
+    required this.lineId,
+    required this.lineStartId,
+    required this.lineEndId,
+    required this.circleOrArcId,
+    required this.centerPointId,
+    required this.radiusPointId,
+    required this.distance,
+    this.side = 'min',
+  });
+
+  factory LineCircleDistanceConstraintDto.fromJson(Map<String, dynamic> json) => LineCircleDistanceConstraintDto(
+        id: json['id'] as String,
+        label: DimensionLabelPlacement.fromJson(json['label']),
+        lineId: json['line_id'] as String,
+        lineStartId: json['line_start_id'] as String,
+        lineEndId: json['line_end_id'] as String,
+        circleOrArcId: json['circle_or_arc_id'] as String,
+        centerPointId: json['center_point_id'] as String,
+        radiusPointId: json['radius_point_id'] as String,
+        distance: (json['distance'] as num).toDouble(),
+        side: json['side'] as String? ?? 'min',
       );
 }
 
@@ -2130,6 +2420,34 @@ class SketchApiClient {
               }),
             ),
         (body) => ConvertEdgeResultDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Bug report 2026-11-18 part C2: converts another sketch's entities into this one, projected square onto its plane, each following its source
+  /// (`POST .../convert-entities/sketch`). [sourceSketchFeatureId] must be earlier in the feature tree than [sketchFeatureId] (a later one is a 422,
+  /// `source_after_sketch`). [entityIds] picks some (entity or loose-point ids of the source); null converts the whole sketch, its construction
+  /// geometry only with [includeConstruction]. [construction] / [reference] are as on [convertBodyEdge]. Text is skipped (listed in the answer).
+  Future<ConvertSketchResultDto> convertSketchEntities(
+    String partId,
+    String sketchFeatureId,
+    String sourceSketchFeatureId, {
+    List<String>? entityIds,
+    bool construction = false,
+    bool reference = false,
+    bool includeConstruction = false,
+  }) =>
+      _send(
+        () => _httpClient.post(
+              _uri('/document/parts/$partId/features/sketch/$sketchFeatureId/convert-entities/sketch'),
+              headers: _headers,
+              body: jsonEncode({
+                'source_sketch_feature_id': sourceSketchFeatureId,
+                if (entityIds != null) 'entity_ids': entityIds,
+                'construction': construction,
+                if (reference) 'reference': true,
+                if (includeConstruction) 'include_construction': true,
+              }),
+            ),
+        (body) => ConvertSketchResultDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// DIDSA-VR plan, phase 2.2: a FACE of the part as something to dimension to (see the backend's `convert_body_face`): a flat face square to the sketch plane
@@ -3415,6 +3733,24 @@ class SketchApiClient {
                 'entity_id': entityId,
               }),
             ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Bug report 2026-11-18 part D: pins an Arc's length (see [ArcLengthConstraintDto]). The backend refuses (400) a value that is not
+  /// more than 0 and less than a full turn at the Arc's current radius.
+  Future<ConstraintDto> createArcLengthConstraint(String sketchId, String arcId, double length) => _send(
+        () => _httpClient.post(
+              _uri('/sketch/sketches/$sketchId/constraints'),
+              headers: _headers,
+              body: jsonEncode({'type': 'arc_length', 'arc_id': arcId, 'length': length}),
+            ),
+        (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
+      );
+
+  /// Bug report 2026-11-18 part D: makes any of the new dimension types from its `POST .../constraints` body (see
+  /// `dimension_types.dart`'s `dimensionCreateJson`).
+  Future<ConstraintDto> createDimension(String sketchId, Map<String, Object?> body) => _send(
+        () => _httpClient.post(_uri('/sketch/sketches/$sketchId/constraints'), headers: _headers, body: jsonEncode(body)),
         (body) => ConstraintDto.fromJson(body as Map<String, dynamic>),
       );
 

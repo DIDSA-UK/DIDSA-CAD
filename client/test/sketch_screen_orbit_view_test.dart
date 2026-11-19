@@ -136,13 +136,13 @@ void main() {
   });
 
   testWidgets(
-      'a standalone SketchScreen\'s hamburger menu offers Save/Open/Exit for this Sketch\'s own file, '
+      'a standalone SketchScreen\'s File button offers Save/Open/Exit for this Sketch\'s own file, '
       'unlike an ordinary (Part-anchored) SketchScreen, which has none of them', (tester) async {
     final controller = await _freshController();
 
     await tester.pumpWidget(MaterialApp(home: SketchScreen(controller: controller, standalone: true)));
     await tester.pump();
-    await tester.tap(find.byTooltip('Menu'));
+    await tester.tap(find.byTooltip('File'));
     await tester.pump();
     expect(find.text('Save'), findsOneWidget);
     expect(find.text('Open'), findsOneWidget);
@@ -155,12 +155,15 @@ void main() {
     expect(find.widgetWithIcon(ListTile, Icons.exit_to_app), findsOneWidget);
   });
 
-  testWidgets('an ordinary (Part-anchored) SketchScreen\'s hamburger menu has no Save/Open/Exit entries',
+  testWidgets('an ordinary (Part-anchored) SketchScreen has no File button, and its Visibility menu no Save/Open/Exit entries',
       (tester) async {
     final controller = await _freshController();
     await _openInOrbitView(tester, controller);
+    expect(find.byTooltip('File'), findsNothing);
+    // Bug report 2026-11-18: no top-left hamburger any more; the view options are under Visibility, in the top-right FAB column.
+    expect(find.byKey(const ValueKey('sketch-menu-fab')), findsNothing);
 
-    await tester.tap(find.byTooltip('Menu'));
+    await tester.tap(find.byTooltip('Visibility'));
     await tester.pump();
     expect(find.text('Save'), findsNothing);
     expect(find.text('Open'), findsNothing);
@@ -217,7 +220,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(SketchScreen), findsOneWidget);
 
-    await tester.tap(find.byTooltip('Menu'));
+    await tester.tap(find.byTooltip('File'));
     await tester.pump();
     // Not find.text('Exit') - see the hamburger-menu test above for why
     // that's ambiguous.
@@ -329,7 +332,7 @@ void main() {
     final controller = await _freshController();
     await _openInOrbitView(tester, controller);
 
-    await tester.tap(find.byTooltip('Menu'));
+    await tester.tap(find.byTooltip('Visibility'));
     await tester.pump();
 
     expect(find.text('3D View'), findsOneWidget);

@@ -7,6 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.sketch.constraints import (
     AngleConstraint,
+    ArcLengthConstraint,
+    HorizontalAngleConstraint,
+    PointAngleConstraint,
+    PointCircleDistanceConstraint,
+    CircleCircleDistanceConstraint,
+    LineCircleDistanceConstraint,
     AtMidpointConstraint,
     CoincidentConstraint,
     CollinearConstraint,
@@ -48,10 +54,26 @@ from app.sketch.models import (
     Spline,
     TextEntity,
     _signed_point_line_distance,
+    check_angle_value,
+    check_length_value,
+    check_arc_length_value,
 )
 from app.sketch.point_merge import MergeRefused, merge_points
 from app.sketch.profile import OpenChainStatus, Profile, ProfileStatus, detect_open_chain, detect_profile
+from app.sketch.dimension_geometry import ccw_sweep, rotate_about
 from app.sketch.schemas import (
+    ArcLengthConstraintCreate,
+    ArcLengthConstraintResponse,
+    HorizontalAngleConstraintCreate,
+    HorizontalAngleConstraintResponse,
+    PointAngleConstraintCreate,
+    PointAngleConstraintResponse,
+    PointCircleDistanceConstraintCreate,
+    PointCircleDistanceConstraintResponse,
+    CircleCircleDistanceConstraintCreate,
+    CircleCircleDistanceConstraintResponse,
+    LineCircleDistanceConstraintCreate,
+    LineCircleDistanceConstraintResponse,
     MergePointsRequest,
     MergePointsResponse,
     ReferenceDimensionCreate,
@@ -639,7 +661,22 @@ def _constraint_response(constraint: Constraint) -> ConstraintResponse:
             id=constraint.id,
             point_ids=list(constraint.fixed_point_ids),
         )
+    response_type = _FIELD_COPY_RESPONSES.get(type(constraint))
+    if response_type is not None:
+        return response_type(**dataclasses.asdict(constraint))
     raise NotImplementedError(f"No response mapping for constraint type: {constraint.type}")
+
+
+# Bug report 2026-11-18 part D: constraint types whose response is exactly their own fields (every Point id they hold included, so a client
+# can draw and model one without looking its entities up).
+_FIELD_COPY_RESPONSES: dict[type, type] = {
+    ArcLengthConstraint: ArcLengthConstraintResponse,
+    HorizontalAngleConstraint: HorizontalAngleConstraintResponse,
+    PointAngleConstraint: PointAngleConstraintResponse,
+    PointCircleDistanceConstraint: PointCircleDistanceConstraintResponse,
+    CircleCircleDistanceConstraint: CircleCircleDistanceConstraintResponse,
+    LineCircleDistanceConstraint: LineCircleDistanceConstraintResponse,
+}
 
 
 def _solve_result_response(result: SolveResult) -> SolveResultResponse:
@@ -1707,6 +1744,26 @@ def create_constraint(sketch_id: str, payload: ConstraintCreate) -> ConstraintRe
             constraint = sketch.add_point_on_ellipse_constraint(payload.point_id, payload.ellipse_id)
         elif isinstance(payload, FixedConstraintCreate):
             constraint = sketch.add_fixed_constraint(payload.entity_id)
+        elif isinstance(payload, ArcLengthConstraintCreate):
+            constraint = sketch.add_arc_length_constraint(payload.arc_id, payload.length)
+        elif isinstance(payload, HorizontalAngleConstraintCreate):
+            constraint = sketch.add_horizontal_angle_constraint(payload.line_id, payload.angle_degrees, payload.quadrant)
+        elif isinstance(payload, LineCircleDistanceConstraintCreate):
+            constraint = sketch.add_line_circle_distance_constraint(
+                payload.line_id, payload.circle_or_arc_id, payload.distance, payload.side
+            )
+        elif isinstance(payload, CircleCircleDistanceConstraintCreate):
+            constraint = sketch.add_circle_circle_distance_constraint(
+                payload.entity1_id, payload.entity2_id, payload.distance, payload.side
+            )
+        elif isinstance(payload, PointCircleDistanceConstraintCreate):
+            constraint = sketch.add_point_circle_distance_constraint(
+                payload.point_id, payload.circle_or_arc_id, payload.distance, payload.side
+            )
+        elif isinstance(payload, PointAngleConstraintCreate):
+            constraint = sketch.add_point_angle_constraint(
+                payload.vertex_point_id, payload.point1_id, payload.point2_id, payload.angle_degrees, payload.quadrant
+            )
         else:
             raise NotImplementedError(f"No constraint creation mapping for payload: {payload}")
     except KeyError as exc:
@@ -1760,7 +1817,7 @@ def _is_length_dimension(constraint: Constraint) -> bool:
     not a user-confirmed dimension)."""
     if isinstance(constraint, DistanceConstraint):
         return not constraint.provisional
-    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint))
+    return isinstance(constraint, (LineDistanceConstraint, PointLineDistanceConstraint, ArcLengthConstraint, PointCircleDistanceConstraint, CircleCircleDistanceConstraint, LineCircleDistanceConstraint))
 
 
 def _scale_sketch_for_first_dimension(
@@ -2015,6 +2072,22 @@ def update_constraint_value(
         constraint.angle_degrees = payload.value
         if payload.quadrant is not None:
             constraint.quadrant = payload.quadrant
+    elif isinstance(constraint, ArcLengthConstraint):
+        _update_arc_length(sketch, constraint, payload.value)
+    elif isinstance(constraint, (PointCircleDistanceConstraint, CircleCircleDistanceConstraint, LineCircleDistanceConstraint)):
+        try:
+            check_length_value(payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        constraint.distance = payload.value
+    elif isinstance(constraint, (HorizontalAngleConstraint, PointAngleConstraint)):
+        try:
+            check_angle_value(payload.value)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        constraint.angle_degrees = payload.value
+        if payload.quadrant is not None:
+            constraint.quadrant = payload.quadrant
     else:
         raise HTTPException(
             status_code=422,
@@ -2022,6 +2095,27 @@ def update_constraint_value(
         )
     result = solve_sketch(sketch)
     return _solve_result_response(result)
+
+
+def _update_arc_length(sketch: Sketch, constraint: ArcLengthConstraint, value: float) -> None:
+    """A new arc length: checked against the Arc's current radius (400 when it cannot be one), then the Arc's free end is turned about the
+    centre to the new sweep before the solve. py-slvs only follows a small change in sweep from the old shape (a quarter arc asked for
+    three quarters did not converge when probed), so the solve starts from a shape that already has the length, as a distance edit's
+    reseed does. The end is turned unless it is held in place, then the start (backwards); with both held nothing is moved."""
+    center, start, end = (sketch.points[constraint.center_point_id], sketch.points[constraint.start_point_id], sketch.points[constraint.end_point_id])
+    radius = math.hypot(start.x - center.x, start.y - center.y)
+    try:
+        check_arc_length_value(value, radius)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    constraint.length = value
+    if radius <= 0:
+        return
+    turn = value / radius - ccw_sweep((center.x, center.y), (start.x, start.y), (end.x, end.y))
+    if not sketch.is_point_locked(end.id):
+        end.x, end.y = rotate_about((center.x, center.y), (end.x, end.y), turn)
+    elif not sketch.is_point_locked(start.id):
+        start.x, start.y = rotate_about((center.x, center.y), (start.x, start.y), -turn)
 
 
 def _apply_point_updates(sketch: Sketch, payload: SolveRequest | None) -> None:

@@ -6,6 +6,7 @@ from __future__ import annotations
 import math
 import uuid
 
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, circle_circle_distance, line_circle_distance, point_circle_distance
 from app.sketch.models import REFERENCE_DIMENSION_KINDS, Arc, Circle, Line, ReferenceDimension, Sketch
 
 _ENTITY_TYPES = ("point", "line", "circle", "arc")
@@ -38,6 +39,21 @@ def _round(sketch: Sketch, kind: str, entity_id: str):
     raise ReferenceDimensionError(f"{kind.capitalize()} not found: {entity_id}")
 
 
+def _center_and_rim(sketch: Sketch, shape):
+    """A Circle's or Arc's centre and the rim Point that carries its radius, as (x, y)."""
+    rim_id = shape.radius_point_id if isinstance(shape, Circle) else shape.start_point_id
+    center, rim = _point(sketch, shape.center_point_id), _point(sketch, rim_id)
+    return (center.x, center.y), (rim.x, rim.y)
+
+
+# Bug report 2026-11-18 part D: what a minimum / maximum distance measures (more pairs come with the circle-circle and line-circle types).
+_CURVE_DISTANCE_REFS = [
+    ["point", "circle"], ["circle", "point"], ["point", "arc"], ["arc", "point"],
+    ["circle", "circle"], ["circle", "arc"], ["arc", "circle"], ["arc", "arc"],
+    ["line", "circle"], ["circle", "line"], ["line", "arc"], ["arc", "line"],
+]
+
+
 def _ends(sketch: Sketch, line: Line):
     return _point(sketch, line.start_point_id), _point(sketch, line.end_point_id)
 
@@ -57,12 +73,19 @@ def check_refs(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> None:
         "radius": [["circle"], ["arc"]],
         "diameter": [["circle"], ["arc"]],
         "angle": [["line", "line"]],
+        "arc_length": [["arc"]],
+        "horizontal_angle": [["line"]],
+        "point_angle": [["point", "point", "point"]],
+        "min_distance": _CURVE_DISTANCE_REFS,
+        "max_distance": _CURVE_DISTANCE_REFS,
     }[kind]
     if types not in allowed:
         raise ReferenceDimensionError(f"A {kind} dimension measures {' or '.join(' + '.join(a) for a in allowed)}, not {' + '.join(types) or 'nothing'}")
     value = measure(sketch, kind, refs)
     if value is None:
-        raise ReferenceDimensionError("Those two lines are not parallel, so there is no distance between them")
+        if kind == "distance":
+            raise ReferenceDimensionError("Those two lines are not parallel, so there is no distance between them")
+        raise ReferenceDimensionError(f"That geometry has no {kind.replace('_', ' ')} as it is now")
 
 
 def measure(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> float | None:
@@ -75,6 +98,36 @@ def measure(sketch: Sketch, kind: str, refs: list[tuple[str, str]]) -> float | N
         far = shape.radius_point_id if isinstance(shape, Circle) else shape.start_point_id
         radius = math.dist((_point(sketch, shape.center_point_id).x, _point(sketch, shape.center_point_id).y), (_point(sketch, far).x, _point(sketch, far).y))
         return radius if kind == "radius" else 2.0 * radius
+    if kind == "arc_length":
+        arc = _round(sketch, "arc", ids[0])
+        center, start, end = (_point(sketch, arc.center_point_id), _point(sketch, arc.start_point_id), _point(sketch, arc.end_point_id))
+        return arc_length((center.x, center.y), (start.x, start.y), (end.x, end.y))
+    if kind == "horizontal_angle":
+        start, end = _ends(sketch, _line(sketch, ids[0]))
+        return angle_between_degrees((end.x - start.x, end.y - start.y), (1.0, 0.0))
+    if kind in ("min_distance", "max_distance"):
+        side = "min" if kind == "min_distance" else "max"
+        if "point" in types:
+            point = _point(sketch, ids[types.index("point")])
+            other = 1 - types.index("point")
+            center, rim = _center_and_rim(sketch, _round(sketch, types[other], ids[other]))
+            return point_circle_distance((point.x, point.y), center, rim, side)
+        if "line" in types:
+            start, end = _ends(sketch, _line(sketch, ids[types.index("line")]))
+            other = 1 - types.index("line")
+            center, rim = _center_and_rim(sketch, _round(sketch, types[other], ids[other]))
+            value = line_circle_distance((start.x, start.y), (end.x, end.y), center, rim, side)
+            return None if value is None or value < 0 else value
+        if all(t in ("circle", "arc") for t in types):
+            if ids[0] == ids[1]:
+                return None
+            c1, r1 = _center_and_rim(sketch, _round(sketch, types[0], ids[0]))
+            c2, r2 = _center_and_rim(sketch, _round(sketch, types[1], ids[1]))
+            value = circle_circle_distance(c1, r1, c2, r2, side)
+            return None if value is None or value < 0 else value
+    if kind == "point_angle":
+        v, a, b = (_point(sketch, i) for i in ids)
+        return angle_between_degrees((a.x - v.x, a.y - v.y), (b.x - v.x, b.y - v.y))
     if kind == "angle":
         a1, b1 = _ends(sketch, _line(sketch, ids[0]))
         a2, b2 = _ends(sketch, _line(sketch, ids[1]))

@@ -93,10 +93,21 @@ def _square_body() -> tuple[dict, dict, str]:
     return part, new_feature, body["body_id"]
 
 
+def _horizontal_edge(part_id: str, body_id: str) -> int:
+    """A straight edge not along z: a vertical one (edge 0 of the box) is seen end-on from the XY sketch and becomes one Point (bug report
+    2026-11-18 part C1), so it has no line to carry the flag."""
+    from app.document.extrude import compute_part_bodies
+    from app.document.reference_signature import BodyEdgeMeasurer
+    from app.document.router import get_part_or_404
+
+    body = compute_part_bodies(get_part_or_404(part_id))[body_id]
+    return next(i for i, sig in enumerate(BodyEdgeMeasurer(body).all()) if sig.curve_kind == "line" and abs(sig.direction[2]) < 1e-6)
+
+
 def test_convert_body_edge_defaults_to_non_construction_line():
     part, feature, body_id = _square_body()
 
-    response = _convert_edge(part["id"], feature["id"], body_id, 0)
+    response = _convert_edge(part["id"], feature["id"], body_id, _horizontal_edge(part["id"], body_id))
 
     assert response.status_code == 201, response.text
     data = response.json()
@@ -107,7 +118,7 @@ def test_convert_body_edge_defaults_to_non_construction_line():
 def test_convert_body_edge_construction_true_creates_a_construction_line():
     part, feature, body_id = _square_body()
 
-    response = _convert_edge(part["id"], feature["id"], body_id, 0, construction=True)
+    response = _convert_edge(part["id"], feature["id"], body_id, _horizontal_edge(part["id"], body_id), construction=True)
 
     assert response.status_code == 201, response.text
     data = response.json()

@@ -13,6 +13,7 @@ import 'package:didsa_cad_client/api/dimension_label_placement.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
 import 'support/slvs_reference/slvs_bindings.dart';
 import 'support/slvs_reference/solvespace_clamp.dart';
+import 'package:didsa_cad_client/sketch/label_drag_resolver.dart';
 import 'package:didsa_cad_client/sketch/sketch_canvas.dart' show dimensionLabelAt, dimensionLabelCenterScreen;
 import 'package:didsa_cad_client/sketch/sketch_controller.dart';
 import 'package:didsa_cad_client/sketch/view_transform.dart';
@@ -56,6 +57,16 @@ void _blockLocalClamp(SketchController controller, String pointId) {
 /// creation, constraints, get, solve) good enough to exercise the
 /// controller's chaining and dimension-ghost-confirmation logic without any
 /// real network call.
+/// Bug report 2026-11-18 part D: the value field of each new dimension type, for the fake's value PATCH.
+const _valueFieldOfType = {
+  'arc_length': 'length',
+  'horizontal_angle': 'angle_degrees',
+  'point_angle': 'angle_degrees',
+  'point_circle_distance': 'distance',
+  'circle_distance': 'distance',
+  'line_circle_distance': 'distance',
+};
+
 class _FakeBackend {
   int _nextId = 1;
 
@@ -113,6 +124,11 @@ class _FakeBackend {
 
   /// P48's edge-shaped sibling to [convertVertexRequestCount].
   int convertEdgeRequestCount = 0;
+
+  /// Bug report 2026-11-18 part C3: the bodies of the `convert-entities/sketch` calls the fake has seen, and the status to answer with instead of
+  /// converting (a test sets it to simulate the real route's 422 `source_after_sketch`).
+  final List<Map<String, dynamic>> convertSketchRequests = [];
+  int? convertSketchFailStatus;
 
   /// DIDSA-VR plan, phase 2.2: how many `convert-entities/face` calls the fake has seen.
   int convertFaceRequestCount = 0;
@@ -207,6 +223,129 @@ class _FakeBackend {
   (double, double)? curveTrimTargetPoint;
 
   String _newId(String prefix) => '$prefix-${_nextId++}';
+
+  /// Bug report 2026-11-18 part C3: one converted shape as the real routes answer it (`ConvertEdgeResponse`), with its server-side state added to this
+  /// fake: [kind] is `line`, `arc`, `circle`, `ellipse`, `ellipse_arc`, `spline` or `point`. Only the start / end / centre Points are in the answer; the
+  /// rest (an ellipse's axes, a spline's points, a circle's cardinals) are only in the fake's lists, as on the real server.
+  Map<String, dynamic> convertShapeItem(String kind, {bool construction = false, bool reference = false}) {
+    final n = _nextId;
+    Map<String, dynamic> pointAt(double x, double y) {
+      final id = _newId('point');
+      final point = {'id': id, 'x': x, 'y': y, 'is_locked': true, if (reference) 'is_reference': true};
+      points[id] = point;
+      return point;
+    }
+
+    Map<String, dynamic> lineBetween(Map<String, dynamic> a, Map<String, dynamic> b) {
+      final id = _newId('line');
+      final line = {
+        'id': id,
+        'start_point_id': a['id'],
+        'end_point_id': b['id'],
+        'length': 1.0,
+        'construction': true,
+        if (reference) 'is_reference': true,
+      };
+      lines[id] = line;
+      return line;
+    }
+
+    Map<String, dynamic> flags(Map<String, dynamic> shape) => {...shape, 'construction': construction, if (reference) 'is_reference': true};
+    final x = n.toDouble();
+    switch (kind) {
+      case 'point':
+        final p = pointAt(x, 0);
+        return {'point': p, 'start_point': p, 'end_point': p};
+      case 'line':
+        final a = pointAt(x, 0);
+        final b = pointAt(x + 10, 0);
+        final id = _newId('line');
+        final line = flags({'id': id, 'start_point_id': a['id'], 'end_point_id': b['id'], 'length': 10.0});
+        lines[id] = line;
+        return {'line': line, 'start_point': a, 'end_point': b};
+      case 'arc':
+        final c = pointAt(x, 0);
+        final a = pointAt(x + 5, 0);
+        final b = pointAt(x, 5);
+        final id = _newId('arc');
+        final arc = flags({'id': id, 'center_point_id': c['id'], 'start_point_id': a['id'], 'end_point_id': b['id'], 'radius': 5.0});
+        arcs[id] = arc;
+        return {'arc': arc, 'start_point': a, 'end_point': b, 'center_point': c};
+      case 'circle':
+        final c = pointAt(x, 0);
+        final cardinals = [pointAt(x, 5), pointAt(x + 5, 0), pointAt(x, -5), pointAt(x - 5, 0)];
+        final id = _newId('circle');
+        final circle = flags({
+          'id': id,
+          'center_point_id': c['id'],
+          'radius_point_id': cardinals.first['id'],
+          'radius': 5.0,
+          'cardinal_point_ids': [for (final p in cardinals) p['id']],
+        });
+        circles[id] = circle;
+        return {'circle': circle, 'start_point': c, 'end_point': c, 'center_point': c};
+      case 'ellipse':
+        final c = pointAt(x, 0);
+        final major = pointAt(x + 6, 0);
+        final majorNeg = pointAt(x - 6, 0);
+        final minor = pointAt(x, 3);
+        final minorNeg = pointAt(x, -3);
+        final majorLine = lineBetween(majorNeg, major);
+        final minorLine = lineBetween(minorNeg, minor);
+        final id = _newId('ellipse');
+        final ellipse = flags({
+          'id': id,
+          'center_point_id': c['id'],
+          'major_point_id': major['id'],
+          'major_point_neg_id': majorNeg['id'],
+          'minor_point_id': minor['id'],
+          'minor_point_neg_id': minorNeg['id'],
+          'major_axis_line_id': majorLine['id'],
+          'minor_axis_line_id': minorLine['id'],
+          'major_radius': 6.0,
+          'minor_radius': 3.0,
+          'rotation': 0.0,
+        });
+        ellipses[id] = ellipse;
+        return {'ellipse': ellipse, 'start_point': c, 'end_point': c, 'center_point': c};
+      case 'ellipse_arc':
+        final c = pointAt(x, 0);
+        final major = pointAt(x + 6, 0);
+        final minor = pointAt(x, 3);
+        final start = pointAt(x + 6, 0.5);
+        final end = pointAt(x, 3.5);
+        final majorLine = lineBetween(c, major);
+        final minorLine = lineBetween(c, minor);
+        final id = _newId('ellipse-arc');
+        final ellipseArc = flags({
+          'id': id,
+          'center_point_id': c['id'],
+          'major_point_id': major['id'],
+          'minor_point_id': minor['id'],
+          'start_point_id': start['id'],
+          'end_point_id': end['id'],
+          'major_axis_line_id': majorLine['id'],
+          'minor_axis_line_id': minorLine['id'],
+          'major_radius': 6.0,
+          'minor_radius': 3.0,
+          'rotation': 0.0,
+        });
+        ellipseArcs[id] = ellipseArc;
+        return {'ellipse_arc': ellipseArc, 'start_point': start, 'end_point': end, 'center_point': c};
+      case 'spline':
+        final through = [pointAt(x, 0), pointAt(x + 5, 2), pointAt(x + 10, 0)];
+        final controls = [pointAt(x + 2, 1), pointAt(x + 3, 2), pointAt(x + 7, 2), pointAt(x + 8, 1)];
+        final id = _newId('spline');
+        final spline = flags({
+          'id': id,
+          'through_point_ids': [for (final p in through) p['id']],
+          'control_point_ids': [for (final p in controls) p['id']],
+        });
+        splines[id] = spline;
+        return {'spline': spline, 'start_point': through.first, 'end_point': through.last};
+    }
+    throw ArgumentError('unknown shape $kind');
+  }
 
   /// How many times `PUT .../state` was hit, and the last merge refusal to answer with (a test sets it to simulate a server-side refusal).
   int restoreCount = 0;
@@ -417,12 +556,18 @@ class _FakeBackend {
 
     final arcDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/arcs/(.+)$').firstMatch(path);
     if (arcDeleteMatch != null && request.method == 'DELETE') {
+      arcs.remove(arcDeleteMatch.group(1));
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
     final ellipseDeleteMatch = RegExp(r'^/sketch/sketches/[^/]+/ellipses/(.+)$').firstMatch(path);
     if (ellipseDeleteMatch != null && request.method == 'DELETE') {
-      ellipses.remove(ellipseDeleteMatch.group(1));
+      final ellipse = ellipses.remove(ellipseDeleteMatch.group(1));
+      if (ellipse != null) {
+        // Mirrors the real backend's Sketch.delete_ellipse, which also removes the two axis Lines.
+        lines.remove(ellipse['major_axis_line_id']);
+        lines.remove(ellipse['minor_axis_line_id']);
+      }
       return _json({'pruned_point_ids': _reportAndApplyPrunedPoints()}, 200);
     }
 
@@ -650,6 +795,9 @@ class _FakeBackend {
       if (constraint['type'] == 'angle') {
         constraint['angle_degrees'] = value;
         if (body['quadrant'] != null) constraint['quadrant'] = body['quadrant'];
+      } else if (_valueFieldOfType.containsKey(constraint['type'])) {
+        constraint[_valueFieldOfType[constraint['type']]!] = value;
+        if (body['quadrant'] != null) constraint['quadrant'] = body['quadrant'];
       } else {
         constraint['distance'] = value;
         // Mirrors the real backend: any explicit value PATCH confirms the
@@ -852,6 +1000,37 @@ class _FakeBackend {
       return _json(point, 201);
     }
 
+    // Bug report 2026-11-18 part C3: `convert-entities/sketch`. The entity ids ARE the shape kinds (`line`, `arc`, `circle`, `ellipse`, `ellipse_arc`,
+    // `spline`, `point`, `closed` = a closed free-form curve: a spline with a second one in `more`, `text` = skipped as Text, `gone` = not in the source);
+    // no ids = the whole sketch, one of each shape and a Text. A real answer lists items in the order asked.
+    final convertSketchMatch = RegExp(
+      r'^/document/parts/[^/]+/features/sketch/[^/]+/convert-entities/sketch$',
+    ).hasMatch(path);
+    if (convertSketchMatch && request.method == 'POST') {
+      convertSketchRequests.add(body);
+      final failStatus = convertSketchFailStatus;
+      if (failStatus != null) {
+        return _json({'detail': {'type': 'source_after_sketch', 'message': 'Only a sketch earlier in the feature tree can be converted into this one.'}}, failStatus);
+      }
+      final ids = (body['entity_ids'] as List?)?.cast<String>() ??
+          const ['line', 'arc', 'circle', 'ellipse', 'ellipse_arc', 'spline', 'point', 'text'];
+      final items = <Map<String, dynamic>>[];
+      final skipped = <Map<String, dynamic>>[];
+      for (final id in ids) {
+        if (id == 'text') {
+          skipped.add({'entity_id': id, 'reason': 'text', 'message': 'Text is not converted.'});
+        } else if (id == 'gone') {
+          skipped.add({'entity_id': id, 'reason': 'not_found', 'message': 'No such entity or point in the source sketch.'});
+        } else if (id == 'closed') {
+          final first = convertShapeItem('spline');
+          items.add({...first, 'more': [convertShapeItem('spline')], 'source_entity_id': id});
+        } else {
+          items.add({...convertShapeItem(id, construction: body['construction'] == true, reference: body['reference'] == true), 'source_entity_id': id});
+        }
+      }
+      return _json({'items': items, 'skipped': skipped}, 201);
+    }
+
     // P48's edge-shaped sibling to the vertex route above.
     final convertEdgeMatch = RegExp(
       r'^/document/parts/[^/]+/features/sketch/[^/]+/convert-entities/edge$',
@@ -893,6 +1072,23 @@ class _FakeBackend {
       // real backend detected a coplanar circular edge" - returns an arc
       // instead of a line, exercising the client's own dispatch on
       // whichever of the two the response actually carries.
+      // Bug report 2026-11-18 part C1: edgeIndex 101 is this fake's sentinel for "a straight edge along the sketch plane's normal", which the real
+      // backend now answers with one Point and no line (`point`, start and end the same Point).
+      if (edgeIndex == 101) {
+        points.remove(endId);
+        return _json({'point': startPoint, 'start_point': startPoint, 'end_point': startPoint}, 201);
+      }
+      // Bug report 2026-11-18 part C3: 102 an ellipse, 103 an elliptical arc, 104 a spline, 105 a closed free-form edge (a spline with a second in
+      // `more`), 106 an elliptical arc with a `more` spline: what the real route answers for an edge seen at an angle.
+      if (edgeIndex >= 102 && edgeIndex <= 106) {
+        points.remove(startId);
+        points.remove(endId);
+        final kind = const {102: 'ellipse', 103: 'ellipse_arc', 104: 'spline', 105: 'spline', 106: 'ellipse_arc'}[edgeIndex.toInt()]!;
+        final item = convertShapeItem(kind, construction: construction, reference: asReference);
+        if (edgeIndex == 105) item['more'] = [convertShapeItem('spline', construction: construction, reference: asReference)];
+        if (edgeIndex == 106) item['more'] = [convertShapeItem('spline', construction: construction, reference: asReference)];
+        return _json(item, 201);
+      }
       if (edgeIndex == 99) {
         final centerId = _newId('point');
         final centerPoint = {'id': centerId, 'x': bodyId.length.toDouble() + 5, 'y': edgeIndex, 'is_locked': true};
@@ -2353,6 +2549,15 @@ class _FakeBackend {
             'distance': (body['distance'] as num).toDouble(),
           };
           break;
+        case 'point_line_distance':
+          constraint = {
+            'id': id,
+            'type': 'point_line_distance',
+            'point_id': body['point_id'],
+            'line_id': body['line_id'],
+            'distance': (body['distance'] as num).toDouble(),
+          };
+          break;
         case 'at_midpoint':
           constraint = {
             'id': id,
@@ -2460,6 +2665,101 @@ class _FakeBackend {
             'id': id,
             'type': 'fixed',
             'point_ids': fixedPointIds,
+          };
+          break;
+        case 'line_circle_distance':
+          final line = lines[body['line_id']];
+          final circle = circles[body['circle_or_arc_id']];
+          final arc = arcs[body['circle_or_arc_id']];
+          if (line == null || (circle == null && arc == null)) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'line_circle_distance',
+            'line_id': body['line_id'],
+            'line_start_id': line['start_point_id'],
+            'line_end_id': line['end_point_id'],
+            'circle_or_arc_id': body['circle_or_arc_id'],
+            'center_point_id': (circle ?? arc)!['center_point_id'],
+            'radius_point_id': circle != null ? circle['radius_point_id'] : arc!['start_point_id'],
+            'distance': (body['distance'] as num).toDouble(),
+            'side': body['side'] ?? 'min',
+          };
+          break;
+        case 'circle_distance':
+          (String, String)? curve(Object? id) {
+            final circle = circles[id];
+            if (circle != null) return (circle['center_point_id'] as String, circle['radius_point_id'] as String);
+            final arc = arcs[id];
+            if (arc != null) return (arc['center_point_id'] as String, arc['start_point_id'] as String);
+            return null;
+          }
+          final one = curve(body['entity1_id']), two = curve(body['entity2_id']);
+          if (one == null || two == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'circle_distance',
+            'entity1_id': body['entity1_id'],
+            'center1_point_id': one.$1,
+            'radius1_point_id': one.$2,
+            'entity2_id': body['entity2_id'],
+            'center2_point_id': two.$1,
+            'radius2_point_id': two.$2,
+            'distance': (body['distance'] as num).toDouble(),
+            'side': body['side'] ?? 'min',
+          };
+          break;
+        case 'point_circle_distance':
+          final curveId = body['circle_or_arc_id'];
+          final circle = circles[curveId];
+          final arc = arcs[curveId];
+          if (circle == null && arc == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'point_circle_distance',
+            'point_id': body['point_id'],
+            'circle_or_arc_id': curveId,
+            'center_point_id': (circle ?? arc)!['center_point_id'],
+            'radius_point_id': circle != null ? circle['radius_point_id'] : arc!['start_point_id'],
+            'distance': (body['distance'] as num).toDouble(),
+            'side': body['side'] ?? 'min',
+          };
+          break;
+        case 'point_angle':
+          constraint = {
+            'id': id,
+            'type': 'point_angle',
+            'vertex_point_id': body['vertex_point_id'],
+            'point1_id': body['point1_id'],
+            'point2_id': body['point2_id'],
+            'angle_degrees': (body['angle_degrees'] as num).toDouble(),
+            if (body['quadrant'] != null) 'quadrant': body['quadrant'],
+          };
+          break;
+        case 'horizontal_angle':
+          final line = lines[body['line_id']];
+          if (line == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'horizontal_angle',
+            'line_id': body['line_id'],
+            'line_start_id': line['start_point_id'],
+            'line_end_id': line['end_point_id'],
+            'angle_degrees': (body['angle_degrees'] as num).toDouble(),
+            if (body['quadrant'] != null) 'quadrant': body['quadrant'],
+          };
+          break;
+        case 'arc_length':
+          // Bug report 2026-11-18 part D: echoes the body with the Arc's own Point ids, as the backend's response carries them.
+          final arc = arcs[body['arc_id']];
+          if (arc == null) return http.Response('not found', 404);
+          constraint = {
+            'id': id,
+            'type': 'arc_length',
+            'arc_id': body['arc_id'],
+            'center_point_id': arc['center_point_id'],
+            'start_point_id': arc['start_point_id'],
+            'end_point_id': arc['end_point_id'],
+            'length': (body['length'] as num).toDouble(),
           };
           break;
         default:
@@ -4053,7 +4353,8 @@ void main() {
 
     expect(controller.dimensionSelection.single.kind, SelectionKind.arc);
     expect(controller.dimensionSelection.single.id, arcId);
-    expect(controller.ghosts.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
+    // Part A: the kinds are the drawer's options now; one of them (Radius for an arc) is previewed.
+    expect(controller.pendingDimensionOptions.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
   });
 
   test('confirming a new radius for an Arc updates its one real DistanceConstraint - feedback round: '
@@ -7488,8 +7789,8 @@ void main() {
 
     expect(controller.dimensionSelection.single.kind, SelectionKind.ellipse);
     expect(controller.dimensionSelection.single.id, ellipseId);
-    expect(controller.ghosts.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
-    expect(controller.ghosts.map((g) => g.key), containsAll(['majorradius', 'majordiameter', 'minorradius', 'minordiameter']));
+    expect(controller.pendingDimensionOptions.map((g) => g.kind), containsAll([GhostKind.radius, GhostKind.diameter]));
+    expect(controller.pendingDimensionOptions.map((g) => g.key), containsAll(['majorradius', 'majordiameter', 'minorradius', 'minordiameter']));
   });
 
   test('confirming the minor-axis radius ghost PATCHes its DistanceConstraint, feedback round: the '
@@ -9158,7 +9459,7 @@ void main() {
       await freshController.handleCanvasTap(20, 20);
 
       expect(freshController.dimensionSelection, hasLength(2));
-      expect(freshController.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+      expect(freshController.pendingDimensionOptions.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
     });
 
     test('is a no-op without a documentPartId/sketchFeatureId (e.g. a bare, non-Part sketch)', () async {
@@ -9795,6 +10096,21 @@ void main() {
     });
 
     test(
+        'bug report 2026-11-18 part C1: an answer with no line (a projected point here; also an ellipse, an elliptical arc or a spline) is read '
+        'back from the server instead of failing', () async {
+      final (freshController, _) = await adoptedController();
+      freshController.enterConvertEntitiesMode();
+      // edgeIndex 101 is the fake backend's sentinel for "a straight edge along the normal": one Point, no line.
+      await freshController.pickConvertEntityEdge('body-1', 101);
+      expect(freshController.errorMessage, isNull);
+      expect(freshController.lines, isEmpty);
+      final converted = freshController.points.values.where((p) => p.x == 'body-1'.length.toDouble() && p.y == 101.0);
+      expect(converted, hasLength(1));
+      freshController.exitToSelectMode();
+      expect(freshController.beginPointDrag(converted.single.id), isFalse);
+    });
+
+    test(
         'converting a full circular edge into a Circle locks its centre AND all four cardinal '
         'Points too', () async {
       final (freshController, _) = await adoptedController();
@@ -9810,6 +10126,269 @@ void main() {
         expect(freshController.beginPointDrag(cardinalId), isFalse);
       }
       expect(freshController.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+    });
+  });
+
+  group('Convert Entities from another sketch, every shape drawn, one-step undo (bug report 2026-11-18 plan part C3)', () {
+    Future<(SketchController, _FakeBackend)> adoptedController({Set<String>? sources = const {'src-1', 'src-2'}}) async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final mockClient = MockClient((request) async => freshBackend.handle(request));
+      final freshController = SketchController(api: SketchApiClient(httpClient: mockClient));
+      await freshController.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      freshController.convertSourceSketchFeatureIds = sources;
+      freshController.enterConvertEntitiesMode();
+      return (freshController, freshBackend);
+    }
+
+    /// Everything the fake holds other than the sketch's origin, as one count (entities and points).
+    int serverCount(_FakeBackend b) =>
+        b.lines.length + b.arcs.length + b.circles.length + b.ellipses.length + b.ellipseArcs.length + b.splines.length + b.points.length;
+
+    test('a sketch picked in the tree is staged whole, and a second pick un-stages it', () async {
+      final (c, _) = await adoptedController();
+      expect(c.stageConvertSketch('src-1'), isTrue);
+      expect(c.pendingConvertSketches, ['src-1']);
+      expect(c.hasPendingConvertSelection, isTrue);
+      expect(c.pendingConvertCount, 1);
+      expect(c.stageConvertSketch('src-1'), isTrue);
+      expect(c.pendingConvertSketches, isEmpty);
+      expect(c.hasPendingConvertSelection, isFalse);
+    });
+
+    test("another sketch's entities are staged by their ids (pattern copies by their expanded id), a second pick un-stages, Exit discards", () async {
+      final (c, _) = await adoptedController();
+      expect(c.stageConvertSketchEntity('src-1', 'line-a'), isTrue);
+      expect(c.stageConvertSketchEntity('src-1', 'inst-1#2#line-a'), isTrue);
+      expect(c.stageConvertSketchEntity('src-2', 'point-x'), isTrue);
+      expect(c.pendingConvertSketchEntities, [('src-1', 'line-a'), ('src-1', 'inst-1#2#line-a'), ('src-2', 'point-x')]);
+      c.stageConvertSketchEntity('src-1', 'line-a');
+      expect(c.pendingConvertSketchEntities, hasLength(2));
+      c.discardPendingConvertSelection();
+      expect(c.hasPendingConvertSelection, isFalse);
+    });
+
+    test('staging a whole sketch takes over that sketch\'s staged entities, and entity picks of a staged sketch are ignored', () async {
+      final (c, _) = await adoptedController();
+      c.stageConvertSketchEntity('src-1', 'line-a');
+      c.stageConvertSketchEntity('src-2', 'line-b');
+      c.stageConvertSketch('src-1');
+      expect(c.pendingConvertSketchEntities, [('src-2', 'line-b')]);
+      expect(c.stageConvertSketchEntity('src-1', 'line-c'), isTrue);
+      expect(c.pendingConvertSketchEntities, [('src-2', 'line-b')]);
+    });
+
+    test('a sketch LATER in the tree (or this one) is refused with a message and nothing is staged', () async {
+      final (c, _) = await adoptedController();
+      expect(c.stageConvertSketch('later-1'), isFalse);
+      expect(c.errorMessage, SketchController.convertSourceAfterSketchMessage);
+      expect(c.stageConvertSketchEntity('later-1', 'line-a'), isFalse);
+      expect(c.stageConvertSketch('sketch-feat-1'), isFalse);
+      expect(c.hasPendingConvertSelection, isFalse);
+      // A staged earlier sketch clears the message again.
+      expect(c.stageConvertSketch('src-1'), isTrue);
+      expect(c.errorMessage, isNull);
+    });
+
+    test('with no list of earlier sketches known, nothing is refused here (the backend decides)', () async {
+      final (c, _) = await adoptedController(sources: null);
+      expect(c.stageConvertSketch('anything'), isTrue);
+    });
+
+    test('the Tick converts a staged whole sketch through convertSketchEntities (entity_ids absent) and draws every shape', () async {
+      final (c, b) = await adoptedController();
+      c.stageConvertSketch('src-1');
+      await c.confirmConvertSelection();
+
+      expect(b.convertSketchRequests, hasLength(1));
+      expect(b.convertSketchRequests.single['source_sketch_feature_id'], 'src-1');
+      expect(b.convertSketchRequests.single.containsKey('entity_ids'), isFalse);
+      expect(c.hasPendingConvertSelection, isFalse);
+      expect(c.lines.values.where((l) => !l.construction), hasLength(1)); // the line (the axis lines of the two ellipses are construction)
+      expect(c.arcs, hasLength(1));
+      expect(c.circles, hasLength(1));
+      expect(c.ellipses, hasLength(1));
+      expect(c.ellipseArcs, hasLength(1));
+      expect(c.splines, hasLength(1));
+      // Every Point any new shape stands on is in the local picture (the answer carried only start / end / centre; the rest was read back).
+      for (final id in [
+        ...c.circles.values.single.cardinalPointIds,
+        c.ellipses.values.single.majorPointNegId,
+        c.ellipses.values.single.minorPointNegId,
+        c.ellipseArcs.values.single.startPointId,
+        ...c.splines.values.single.throughPointIds,
+        ...c.splines.values.single.controlPointIds,
+      ]) {
+        expect(c.points.containsKey(id), isTrue, reason: id);
+      }
+      // The ellipses' axis Lines too, so the picture matches a reloaded sketch.
+      expect(c.lines.containsKey(c.ellipses.values.single.majorAxisLineId), isTrue);
+      expect(c.lines.containsKey(c.ellipseArcs.values.single.minorAxisLineId), isTrue);
+    });
+
+    test('staged entities of one source go in ONE call, in the order picked; a second source is a second call', () async {
+      final (c, b) = await adoptedController();
+      c.stageConvertSketchEntity('src-1', 'spline');
+      c.stageConvertSketchEntity('src-2', 'circle');
+      c.stageConvertSketchEntity('src-1', 'ellipse');
+      await c.confirmConvertSelection();
+
+      expect(b.convertSketchRequests.map((r) => '${r['source_sketch_feature_id']}: ${(r['entity_ids'] as List).join(', ')}'), [
+        'src-1: spline, ellipse',
+        'src-2: circle',
+      ]);
+      expect(c.splines, hasLength(1));
+      expect(c.ellipses, hasLength(1));
+      expect(c.circles, hasLength(1));
+    });
+
+    test('a lone Point, a line, an arc and the two ellipse shapes are each drawn into the local picture', () async {
+      final (c, _) = await adoptedController();
+      for (final kind in ['point', 'line', 'arc', 'ellipse_arc']) {
+        c.stageConvertSketchEntity('src-1', kind);
+      }
+      await c.confirmConvertSelection();
+      expect(c.arcs, hasLength(1));
+      expect(c.ellipseArcs, hasLength(1));
+      expect(c.lines.values.where((l) => !l.construction), hasLength(1));
+      final arc = c.arcs.values.single;
+      expect([arc.centerPointId, arc.startPointId, arc.endPointId].every(c.points.containsKey), isTrue);
+      final ellipseArc = c.ellipseArcs.values.single;
+      expect([ellipseArc.centerPointId, ellipseArc.majorPointId, ellipseArc.minorPointId, ellipseArc.endPointId].every(c.points.containsKey), isTrue);
+    });
+
+    test('what the backend skipped (Text, an id that is gone) is reported in one short message', () async {
+      final (c, _) = await adoptedController();
+      c.stageConvertSketchEntity('src-1', 'line');
+      c.stageConvertSketchEntity('src-1', 'text');
+      c.stageConvertSketchEntity('src-1', 'gone');
+      await c.confirmConvertSelection();
+      expect(c.lines.values.where((l) => !l.construction), hasLength(1));
+      expect(c.errorMessage, contains('Text is not converted'));
+      expect(c.errorMessage, contains('no longer in the source sketch'));
+    });
+
+    test('a refusal from the backend (a later sketch) draws nothing, says why and leaves no undo step', () async {
+      final (c, b) = await adoptedController();
+      b.convertSketchFailStatus = 422;
+      c.stageConvertSketch('src-1');
+      await c.confirmConvertSelection();
+      expect(c.errorMessage, isNotNull);
+      expect(c.lines, isEmpty);
+      expect(c.canUndo, isFalse);
+    });
+
+    test('one Tick is ONE undo step that deletes every entity it made, then the Points that were new', () async {
+      final (c, b) = await adoptedController();
+      final before = serverCount(b);
+      c.stageConvertSketch('src-1');
+      await c.confirmConvertSelection();
+      expect(serverCount(b), greaterThan(before + 10));
+      b.requestLog.clear();
+
+      await c.undo();
+
+      expect(c.canUndo, isFalse); // one step took it all
+      expect(serverCount(b), before);
+      expect(c.lines, isEmpty);
+      expect(c.arcs, isEmpty);
+      expect(c.circles, isEmpty);
+      expect(c.ellipses, isEmpty);
+      expect(c.ellipseArcs, isEmpty);
+      expect(c.splines, isEmpty);
+      expect(c.points.keys, ['origin-99']);
+      final deletes = b.requestLog.where((r) => r.startsWith('DELETE')).toList();
+      final lastEntity = deletes.lastIndexWhere((r) => !r.contains('/points/'));
+      final firstPoint = deletes.indexWhere((r) => r.contains('/points/'));
+      expect(lastEntity, lessThan(firstPoint), reason: 'every entity before any Point: $deletes');
+    });
+
+    test('a Tick of body picks and a sketch together is still ONE undo step', () async {
+      final (c, b) = await adoptedController();
+      final before = serverCount(b);
+      c.stageConvertVertex('body-1', 3);
+      c.stageConvertEdge('body-1', 0);
+      c.stageConvertSketchEntity('src-1', 'circle');
+      c.stageConvertSketchEntity('src-1', 'spline');
+      await c.confirmConvertSelection();
+      expect(c.lines, hasLength(1));
+      expect(c.circles, hasLength(1));
+
+      await c.undo();
+
+      expect(c.canUndo, isFalse);
+      expect(serverCount(b), before);
+      expect(c.lines, isEmpty);
+      expect(c.circles, isEmpty);
+      expect(c.splines, isEmpty);
+      expect(c.points.keys, ['origin-99']);
+    });
+
+    test('an edge whose answer carries `more` (a closed free-form edge) draws every piece and ONE undo removes them all', () async {
+      final (c, b) = await adoptedController();
+      final before = serverCount(b);
+      await c.pickConvertEntityEdge('body-1', 105);
+      expect(c.splines, hasLength(2));
+      expect(c.errorMessage, isNull);
+
+      await c.undo();
+
+      expect(c.splines, isEmpty);
+      expect(c.canUndo, isFalse);
+      expect(serverCount(b), before);
+      expect(c.points.keys, ['origin-99']);
+    });
+
+    test('an angled edge answers with an ellipse, an elliptical arc or a spline: each is drawn (no reload) and undone in one step', () async {
+      for (final (edge, check) in <(int, bool Function(SketchController))>[
+        (102, (c) => c.ellipses.length == 1),
+        (103, (c) => c.ellipseArcs.length == 1),
+        (104, (c) => c.splines.length == 1),
+        (106, (c) => c.ellipseArcs.length == 1 && c.splines.length == 1),
+      ]) {
+        final (c, b) = await adoptedController();
+        final before = serverCount(b);
+        b.requestLog.clear();
+        await c.pickConvertEntityEdge('body-1', edge);
+        expect(check(c), isTrue, reason: 'edge $edge');
+        // Drawn from the answer plus one read of the Points (and axis Lines), not a reload of the whole sketch.
+        expect(b.requestLog.where((r) => r.endsWith('/ellipses') || r.endsWith('/splines') || r.endsWith('/circles')), isEmpty, reason: 'edge $edge');
+        await c.undo();
+        expect(c.canUndo, isFalse, reason: 'edge $edge');
+        expect(serverCount(b), before, reason: 'edge $edge');
+        expect(c.points.keys, ['origin-99'], reason: 'edge $edge');
+      }
+    });
+
+    test('a straight edge along the normal (one Point) is one undo step that deletes the Point', () async {
+      final (c, b) = await adoptedController();
+      await c.pickConvertEntityEdge('body-1', 101);
+      expect(c.points.length, 2);
+      await c.undo();
+      expect(c.points.keys, ['origin-99']);
+      expect(b.points.length, 1);
+    });
+
+    test('an implicit reference of an angled edge is flagged as a reference helper and leaves no undo entry', () async {
+      final (c, _) = await adoptedController();
+      final selection = await c.ensureReferenceEdge('body-1', 102);
+      expect(selection?.kind, SelectionKind.ellipse);
+      expect(c.isReferenceHelper(selection!.id), isTrue);
+      expect(c.canUndo, isFalse);
+    });
+
+    test('a spline, ellipse or elliptical arc flagged as a reference helper stays marked when the sketch is read back', () async {
+      final freshBackend = _FakeBackend();
+      freshBackend.seedSketch('sketch-99', 'origin-99');
+      final ids = <String>[
+        for (final kind in ['spline', 'ellipse', 'ellipse_arc'])
+          ((freshBackend.convertShapeItem(kind, reference: true)[kind] as Map<String, dynamic>)['id'] as String),
+      ];
+      final c = SketchController(api: SketchApiClient(httpClient: MockClient((request) async => freshBackend.handle(request))));
+      await c.adoptSketch('sketch-99', partId: 'part-1', sketchFeatureId: 'sketch-feat-1');
+      for (final id in ids) {
+        expect(c.isReferenceHelper(id), isTrue, reason: id);
+      }
     });
   });
 
@@ -10651,7 +11230,7 @@ void main() {
     expect(controller.ghosts, isNotEmpty);
   });
 
-  test('tapping two distinct points in dimension mode shows simultaneous V, H, and linear ghosts', () async {
+  test('tapping two distinct points in dimension mode offers V, H, and linear (aligned) in the drawer, previewing one', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
@@ -10661,7 +11240,8 @@ void main() {
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
 
-    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    expect(controller.ghosts, hasLength(1));
   });
 
   test('confirming a vertical/horizontal/linear ghost creates a DistanceConstraint with the '
@@ -10823,7 +11403,8 @@ void main() {
     // so a diagonal spot is the only genuinely empty-space point on it.
     await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
 
-    expect(controller.ghosts.map((g) => g.key).toSet(), {'radius', 'diameter'});
+    expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'radius', 'diameter'});
+    expect(controller.pendingDimensionKey, 'diameter'); // a circle's default
 
     await controller.confirmGhostValue('diameter', 40.0);
 
@@ -11046,7 +11627,8 @@ void main() {
     expect(controller.mode, SketchMode.select);
   });
 
-  test('tapping empty canvas after a pick in dimension mode clears the pick but stays in dimension mode', () async {
+  test('tapping empty canvas after a pick in dimension mode drops the previewed dimension (part A); cancelling clears the '
+      'pick but stays in dimension mode', () async {
     controller.selectDrawTool(SketchTool.line);
     await controller.handleCanvasTap(0, 0);
     await controller.handleCanvasTap(10, 0);
@@ -11056,6 +11638,10 @@ void main() {
     expect(controller.ghosts, isNotEmpty);
 
     await controller.handleCanvasTap(50, 50);
+    expect(controller.activeGhostKey, 'length'); // dropped, its value editor is open
+
+    expect(controller.cancelDimensionStep(), isTrue); // the editor goes back to the preview
+    expect(controller.cancelDimensionStep(), isTrue); // the preview goes back to picking
 
     expect(controller.mode, SketchMode.dimension);
     expect(controller.ghosts, isEmpty);
@@ -11810,8 +12396,8 @@ void main() {
       await controller.handleCanvasTap(25, 0); // arc2's apex
 
       expect(controller.points.length, pointCountBefore + 2);
-      expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
-      final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
+      expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+      final linearGhost = controller.pendingDimensionOptions.firstWhere((g) => g.key == 'linear');
       expect(controller.currentGhostValue(linearGhost), closeTo(30.0, 1e-6));
     });
 
@@ -12070,6 +12656,21 @@ void main() {
         expect(controller.angleGhostQuadrant(ghost), q, reason: '$p');
       });
     });
+
+    test('bug report 2026-11-18: a chosen sector stays while the pointer crosses a line on its way to the "?" flag', () async {
+      await pickTwoLines();
+      final ghost = controller.ghosts.single;
+      controller.moveCursorToSketchPoint(-3, 4);
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      // Onto line 1's extension behind the vertex, and onto the vertex itself: the flag sits this close to the lines.
+      controller.moveCursorToSketchPoint(-3, 0.01);
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      controller.moveCursorToSketchPoint(0, 0);
+      expect(controller.angleGhostQuadrant(ghost), 1);
+      controller.tapGhost('angle');
+      await controller.confirmGhostValue('angle', 120.0);
+      expect(controller.constraints.values.whereType<AngleConstraintDto>().single.quadrant, 1);
+    });
   });
 
   test('confirming an angle ghost creates an AngleConstraint between the two Lines', () async {
@@ -12136,11 +12737,12 @@ void main() {
     await controller.handleCanvasTap(0, 5); // the point
     await controller.handleCanvasTap(8, 0.1); // the line, away from its midpoint (nearer to its end)
 
-    expect(controller.ghosts.map((g) => g.key).toSet(), {'v', 'h', 'linear'});
+    // Part A: the perpendicular distance is the default now; the point-distance kinds stay as options, to the nearer end.
+    expect(controller.pendingDimensionOptions.map((g) => g.key).toSet(), {'perpendicular', 'v', 'h', 'linear'});
     // The line's start point (0, 0) is nearer to (0, 5) than its end point
     // (10, 0) is - distance 5 vs sqrt(125) - so the ghost set is built
     // against the start point, giving a linear distance of 5.
-    final linearGhost = controller.ghosts.firstWhere((g) => g.key == 'linear');
+    final linearGhost = controller.pendingDimensionOptions.firstWhere((g) => g.key == 'linear');
     expect(controller.currentGhostValue(linearGhost), closeTo(5.0, 1e-9));
   });
 
@@ -15725,6 +16327,647 @@ void main() {
       expect(merging.selectionSet.single.id, 'lone');
       await merging.handleCanvasTap(60, 60, 2.0);
       expect(merging.selectionSet.single.id, 'lone');
+    });
+  });
+
+  // --- Part A of docs/bug-report-2026-11-18-plan.md: one dimension previewed at the cursor, chosen in a drawer, dropped by a click ------
+
+  group('dimension preview at the cursor (bug report 2026-11-18, part A)', () {
+    Future<void> drawLine(double x1, double y1, double x2, double y2) async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(x1, y1);
+      await controller.handleCanvasTap(x2, y2);
+      controller.finishChain();
+    }
+
+    Future<void> drawPoint(double x, double y) async {
+      controller.selectDrawTool(SketchTool.point);
+      await controller.handleCanvasTap(x, y);
+    }
+
+    Future<void> drawCircle(double cx, double cy, double r) async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(cx, cy);
+      await controller.handleCanvasTap(cx + r, cy);
+    }
+
+    List<String> optionKeys() => controller.pendingDimensionOptions.map((g) => g.key).toList();
+
+    test('one line: Length (default), Horizontal length, Vertical length; the cursor does not change the kind', () async {
+      await drawLine(2, 2, 12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10, 6); // on the line, away from its midpoint
+
+      // Part D added the angle to horizontal.
+      expect(optionKeys(), ['length', 'h', 'v', 'horizontalAngle']);
+      expect(controller.pendingDimensionKind, GhostKind.length);
+      expect(controller.ghosts.length, 1);
+      controller.moveCursorToSketchPoint(7, 30); // above the line's box: a point pair would go horizontal, a line does not
+      expect(controller.pendingDimensionKey, 'length');
+      expect(
+        controller.pendingDimensionOptions.map((g) => g.displayLabel),
+        ['Length', 'Horizontal length', 'Vertical length', 'Angle to horizontal'],
+      );
+    });
+
+    test('the preview is laid out from the cursor by the label-drag rules, and follows it', () async {
+      await drawLine(2, 2, 12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10, 6);
+
+      controller.moveCursorToSketchPoint(4, 12);
+      final first = controller.pendingPlacementFromCursor();
+      expect(first, LabelDragResolver.linear(a: (2, 2), b: (12, 7), p: (4, 12)));
+      controller.moveCursorToSketchPoint(9, -3);
+      expect(controller.pendingPlacementFromCursor(), isNot(first));
+
+      // The overlay item the 3D view draws carries that placement, and a "?" for the value.
+      final item = controller.dimensionGhostOverlayItems().whereType<ConstraintLinearDimensionItem>().single;
+      expect(item.text, '?');
+      expect(item.sketchLocalOffsetDistance, controller.pendingPlacementFromCursor()!.offset);
+      expect(item.sketchLocalAlongOffset, controller.pendingPlacementFromCursor()!.along);
+    });
+
+    test('horizontal / vertical length of a line: the drawer picks it, it stays, and confirm saves orientation and placement', () async {
+      await drawLine(2, 2, 12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10, 6);
+
+      expect(controller.selectPendingDimensionKind('h'), isTrue);
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      controller.moveCursorToSketchPoint(7, -9);
+      expect(controller.pendingDimensionKey, 'h');
+      expect(controller.pendingPlacementFromCursor(), LabelDragResolver.linear(a: (2, 2), b: (12, 7), orientation: 'horizontal', p: (7, -9)));
+
+      await controller.handleCanvasTap(7, -9); // empty space: drops it
+      expect(controller.activeGhostKey, 'h');
+      await controller.confirmGhostValue('h', 12.0);
+
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.orientation, 'horizontal');
+      expect(saved.distance, 12.0);
+      final placement = controller.labelPlacementFor(saved.id)!;
+      expect(placement, LabelDragResolver.linear(a: (2, 2), b: (12, 7), orientation: 'horizontal', p: (7, -9)));
+      await Future<void>.delayed(Duration.zero);
+      expect(backend.labelWrites.single['id'], saved.id);
+      expect(backend.labelWrites.single['offset'], placement.offset);
+    });
+
+    test('a circle: Diameter first (the default), then Radius', () async {
+      await drawCircle(0, 0, 10);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 10 * math.sin(math.pi / 4));
+
+      expect(optionKeys(), ['diameter', 'radius']);
+      expect(controller.pendingDimensionKind, GhostKind.diameter);
+      // The preview is a radial dimension placed by the radial rule.
+      controller.moveCursorToSketchPoint(-20, 5);
+      final placement = controller.pendingPlacementFromCursor()!;
+      expect(placement.angle, isNotNull);
+      expect(placement.leg, isNotNull);
+      final item = controller.dimensionGhostOverlayItems().whereType<ConstraintRadialDimensionItem>().single;
+      expect(item.isDiameter, isTrue);
+      expect(item.text, '⌀?');
+
+      await controller.handleCanvasTap(-20, 5);
+      await controller.confirmGhostValue('diameter', 40.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.distance, 20.0);
+      expect(controller.labelPlacementFor(saved.id), placement);
+    });
+
+    test('an arc: Radius (the default), then Diameter', () async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      await controller.handleCanvasTap(0, 5);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(5 * math.sqrt(0.5), 5 * math.sqrt(0.5));
+
+      expect(optionKeys(), ['radius', 'diameter', 'arcLength']); // part D added the arc length
+      expect(controller.pendingDimensionKind, GhostKind.radius);
+    });
+
+    test('two points: the kind follows the cursor (above / below: horizontal, left / right: vertical, else aligned) until the drawer picks', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+
+      expect(optionKeys().toSet(), {'linear', 'h', 'v'});
+      controller.moveCursorToSketchPoint(7, 20); // above the pair's box
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      controller.moveCursorToSketchPoint(7, -20); // below
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      controller.moveCursorToSketchPoint(30, 4); // right of it
+      expect(controller.pendingDimensionKind, GhostKind.vertical);
+      controller.moveCursorToSketchPoint(-30, 4); // left of it
+      expect(controller.pendingDimensionKind, GhostKind.vertical);
+      controller.moveCursorToSketchPoint(7, 4); // inside the box
+      expect(controller.pendingDimensionKind, GhostKind.linear);
+      controller.moveCursorToSketchPoint(30, 30); // a corner region
+      expect(controller.pendingDimensionKind, GhostKind.linear);
+
+      expect(controller.pendingKindChosenInDrawer, isFalse);
+      controller.selectPendingDimensionKind('v');
+      controller.moveCursorToSketchPoint(7, 20); // would be horizontal by the cursor rule; the drawer's choice stays
+      expect(controller.pendingDimensionKind, GhostKind.vertical);
+    });
+
+    test('dropping freezes the kind and placement: later cursor moves do not change them, and confirm uses the frozen kind', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+
+      controller.moveCursorToSketchPoint(7, 20);
+      final atDrop = controller.pendingPlacementFromCursor();
+      await controller.handleCanvasTap(7, 20); // empty space
+      expect(controller.activeGhostKey, 'h');
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+
+      controller.moveCursorToSketchPoint(50, 4); // would be vertical now
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      expect(controller.ghostPlacement(controller.pendingDimensionGhost!), atDrop);
+
+      await controller.confirmGhostValue('h', 10.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.orientation, 'horizontal');
+      expect(controller.labelPlacementFor(saved.id), atDrop);
+      expect(controller.ghosts, isEmpty);
+    });
+
+    test('a click on another entity changes the pick instead of dropping', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      await drawPoint(20, 3);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+      expect(controller.pendingDimensionGhost, isNotNull);
+
+      // A third point changes the pick (part D: three Points make a three-point angle), it does not drop.
+      await controller.handleCanvasTap(20, 3);
+      expect(controller.activeGhostKey, isNull);
+      expect(controller.dimensionSelection, hasLength(3));
+      expect(controller.pendingDimensionKey, 'pointAngle');
+      expect(controller.constraints.values.whereType<DistanceConstraintDto>(), isEmpty);
+    });
+
+    test('Esc / right-click / back: an open editor goes back to the preview, then the preview back to picking', () async {
+      await drawPoint(2, 2);
+      await drawPoint(12, 7);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 7);
+      controller.moveCursorToSketchPoint(7, 20);
+      await controller.handleCanvasTap(7, 20);
+      expect(controller.activeGhostKey, isNotNull);
+
+      expect(controller.cancelDimensionStep(), isTrue);
+      expect(controller.activeGhostKey, isNull);
+      expect(controller.pendingDimensionGhost, isNotNull); // the preview is back
+
+      expect(controller.cancelDimensionStep(), isTrue);
+      expect(controller.dimensionSelection, isEmpty);
+      expect(controller.ghosts, isEmpty);
+      expect(controller.mode, SketchMode.dimension); // still in the tool
+
+      expect(controller.cancelDimensionStep(), isFalse); // nothing left to cancel
+    });
+
+    test('a tap on empty space with nothing picked still leaves the tool, and with no preview still clears the pick', () async {
+      await drawPoint(2, 2);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2); // a lone point: nothing to dimension
+      expect(controller.dimensionSelection, hasLength(1));
+      expect(controller.pendingDimensionOptions, isEmpty);
+      await controller.handleCanvasTap(40, 40);
+      expect(controller.dimensionSelection, isEmpty);
+      await controller.handleCanvasTap(40, 40);
+      expect(controller.mode, SketchMode.select);
+    });
+
+    test('point + line: Perpendicular is the default (a PointLineDistanceConstraint), then Horizontal, Vertical, Aligned to the nearer end', () async {
+      await drawLine(0, 10, 20, 10);
+      await drawPoint(8, 3);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 3);
+      await controller.handleCanvasTap(4, 10.05); // on the line, off its midpoint
+
+      expect(optionKeys(), ['perpendicular', 'h', 'v', 'linear']);
+      expect(controller.pendingDimensionKind, GhostKind.pointLine);
+      controller.moveCursorToSketchPoint(14, 6);
+      expect(controller.pendingDimensionKind, GhostKind.pointLine); // the cursor does not change it
+      final ghost = controller.pendingDimensionGhost!;
+      expect(controller.currentGhostValue(ghost), closeTo(7.0, 1e-9));
+      expect(controller.pendingPlacementFromCursor(), LabelDragResolver.linear(a: (8, 3), b: (8, 10), p: (14, 6)));
+
+      await controller.handleCanvasTap(14, 6);
+      expect(controller.activeGhostKey, 'perpendicular');
+      await controller.confirmGhostValue('perpendicular', 5.0);
+
+      final saved = controller.constraints.values.whereType<PointLineDistanceConstraintDto>().single;
+      expect(saved.distance, 5.0);
+      expect(controller.labelPlacementFor(saved.id), LabelDragResolver.linear(a: (8, 3), b: (8, 10), p: (14, 6)));
+      expect(controller.constraints.values.whereType<DistanceConstraintDto>().where((c) => !c.provisional), isEmpty);
+    });
+
+    test('point + line: the Horizontal option measures to the line\'s nearer end', () async {
+      await drawLine(0, 10, 20, 10);
+      await drawPoint(8, 3);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 3);
+      await controller.handleCanvasTap(4, 10.05);
+      final lineStart = controller.points.values.firstWhere((p) => p.x == 0 && p.y == 10);
+
+      controller.selectPendingDimensionKind('h');
+      final ghost = controller.pendingDimensionGhost!;
+      expect(ghost.kind, GhostKind.horizontal);
+      expect(ghost.pointBId, lineStart.id);
+      expect(controller.currentGhostValue(ghost), closeTo(8.0, 1e-9));
+    });
+
+    test('a point that is an end of the line offers no dimension to it', () async {
+      await drawLine(0, 10, 20, 10);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(20, 10); // the line's end point
+      await controller.handleCanvasTap(4, 10.05); // the line
+      expect(controller.pendingDimensionOptions, isEmpty);
+    });
+
+    test('two parallel lines: Distance; two other lines: Angle', () async {
+      await drawLine(0, 0, 10, 0);
+      await drawLine(0, 6, 10, 6);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(8, 0.05);
+      await controller.handleCanvasTap(8, 6.05);
+      expect(optionKeys(), ['lineDistance']);
+      expect(controller.pendingDimensionKind, GhostKind.lineDistance);
+      controller.moveCursorToSketchPoint(5, 3);
+      final ghost = controller.pendingDimensionGhost!;
+      expect(
+        controller.pendingPlacementFromCursor(),
+        LabelDragResolver.lineDistance(line1Start: (0, 0), line1End: (10, 0), line2Start: (0, 6), p: (5, 3)),
+      );
+      expect(controller.ghostAsConstraint(ghost), isA<LineDistanceConstraintDto>());
+    });
+
+    test('point + circle: the centre distance, by cursor (Aligned / Horizontal / Vertical), to the centre Point', () async {
+      await drawCircle(20, 20, 4);
+      await drawPoint(2, 2);
+      final circle = controller.circles.values.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 20 + 4 * math.sin(math.pi / 4)); // on the rim, off the cardinals
+
+      // Part D added the minimum and maximum distances (offered after the centre distances, chosen in the drawer).
+      expect(optionKeys().toSet(), {'linear', 'h', 'v', 'minDistance', 'maxDistance'});
+      expect(controller.pendingDimensionGhost!.pointBId, circle.centerPointId);
+      controller.moveCursorToSketchPoint(10, 40); // above the box of the point and the centre
+      expect(controller.pendingDimensionKind, GhostKind.horizontal);
+      await controller.handleCanvasTap(10, 40);
+      await controller.confirmGhostValue('h', 18.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().where((c) => !c.provisional && c.orientation == 'horizontal').single;
+      expect({saved.pointAId, saved.pointBId}, contains(circle.centerPointId));
+      expect(saved.distance, 18.0);
+    });
+
+    test('two circles: the centre distance by cursor', () async {
+      await drawCircle(0, 0, 3);
+      await drawCircle(30, 10, 4);
+      final centres = controller.circles.values.map((c) => c.centerPointId).toSet();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4));
+      await controller.handleCanvasTap(30 + 4 * math.cos(math.pi / 4), 10 + 4 * math.sin(math.pi / 4));
+
+      expect(optionKeys().toSet(), {'linear', 'h', 'v', 'minDistance', 'maxDistance'}); // part D added the gap and the overall size
+      final ghost = controller.pendingDimensionGhost!;
+      expect({ghost.pointAId, ghost.pointBId}, centres);
+      controller.moveCursorToSketchPoint(15, 5); // inside the centres' box
+      expect(controller.pendingDimensionKind, GhostKind.linear);
+    });
+
+    test('line + circle: the perpendicular distance from the centre (a PointLineDistanceConstraint on the centre)', () async {
+      await drawLine(0, 0, 40, 0);
+      await drawCircle(20, 15, 4);
+      final circle = controller.circles.values.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(5, 0.05);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 15 + 4 * math.sin(math.pi / 4));
+
+      // Part D added the tangent-side and far-side distances.
+      expect(optionKeys(), ['perpendicular', 'tangentDistance', 'farDistance']);
+      expect(controller.pendingDimensionOptions.first.displayLabel, 'Perpendicular from centre');
+      expect(controller.pendingDimensionKey, 'perpendicular'); // still the default
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(15.0, 1e-9));
+      controller.moveCursorToSketchPoint(30, 8);
+      await controller.handleCanvasTap(30, 8);
+      await controller.confirmGhostValue('perpendicular', 12.0);
+      final saved = controller.constraints.values.whereType<PointLineDistanceConstraintDto>().single;
+      expect(saved.pointId, circle.centerPointId);
+      expect(saved.distance, 12.0);
+    });
+
+    test('the ribbon chips still jump straight to the editor, with no dropped placement', () async {
+      await drawCircle(0, 0, 10);
+      final circleId = controller.circles.keys.single;
+      await controller.addRadiusDimensionFor(SketchSelection(kind: SelectionKind.circle, id: circleId), diameter: true);
+      expect(controller.activeGhostKey, 'diameter');
+      await controller.confirmGhostValue('diameter', 30.0);
+      final saved = controller.constraints.values.whereType<DistanceConstraintDto>().single;
+      expect(saved.distance, 15.0);
+      expect(controller.labelPlacementFor(saved.id), isNull);
+    });
+
+    test('an ellipse: Major radius first, then the other axis; the preview is a tip-to-tip length like the confirmed one', () async {
+      controller.selectDrawTool(SketchTool.ellipse);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 0);
+      await controller.handleCanvasTap(5, 4);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(10 * math.cos(math.pi / 4), 4 * math.sin(math.pi / 4)); // on the boundary
+
+      expect(optionKeys(), ['majorradius', 'majordiameter', 'minorradius', 'minordiameter']);
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Major radius', 'Major diameter', 'Minor radius', 'Minor diameter']);
+      controller.moveCursorToSketchPoint(0, -15);
+      final item = controller.dimensionGhostOverlayItems().whereType<ConstraintLinearDimensionItem>().single;
+      expect(item.sketchLocalOffsetDistance, isNotNull);
+      await controller.handleCanvasTap(0, -15);
+      await controller.confirmGhostValue('majorradius', 12.0);
+      expect(controller.errorMessage, isNull);
+    });
+  });
+
+
+  // Bug report 2026-11-18 part D: the new dimension types through the dimension tool (offered for the pick, previewed, dropped,
+  // confirmed into the constraint, label placed and drawn).
+  group('part D dimension types', () {
+    Future<String> drawQuarterArc() async {
+      controller.selectDrawTool(SketchTool.arc);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(5, 0);
+      await controller.handleCanvasTap(0, 5);
+      return controller.arcs.keys.single;
+    }
+
+    test('an arc offers Arc length after Radius and Diameter; confirming makes an arc_length constraint where it was dropped', () async {
+      final arcId = await drawQuarterArc();
+      controller.enterDimensionMode();
+      final onRim = 5 * math.sqrt(0.5);
+      await controller.handleCanvasTap(onRim, onRim);
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Radius', 'Diameter', 'Arc length']);
+      expect(controller.selectPendingDimensionKind('arcLength'), isTrue);
+      final ghost = controller.pendingDimensionGhost!;
+      expect(ghost.kind, GhostKind.typed);
+      // The preview's value is the arc's length now: a quarter of a radius-5 circle.
+      expect(controller.currentGhostValue(ghost), closeTo(5 * math.pi / 2, 1e-9));
+      final preview = controller.ghostAsConstraint(ghost);
+      expect(preview, isA<ArcLengthConstraintDto>());
+      // The preview is laid out in the 3D overlay as well (the flat canvas paints the same layout).
+      expect(controller.dimensionGhostOverlayItems().whereType<ConstraintLaidOutDimensionItem>(), hasLength(1));
+
+      // Drop it outside the arc, then confirm.
+      controller.cursorX = 6;
+      controller.cursorY = 6;
+      expect(controller.dropPendingDimension(), isTrue);
+      final dropped = controller.ghostPlacement(controller.pendingDimensionGhost!);
+      expect(dropped?.leg, closeTo(6 * math.sqrt(2) - 5, 1e-9));
+      await controller.confirmGhostValue('arcLength', 6.0);
+
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<ArcLengthConstraintDto>().single;
+      expect(made.arcId, arcId);
+      expect(made.length, 6.0);
+      expect(controller.labelPlacementFor(made.id)?.leg, closeTo(dropped!.leg!, 1e-9));
+      final posted = backend.requestLog.where((r) => r.startsWith('POST') && r.endsWith('/constraints'));
+      expect(posted, isNotEmpty);
+      // Drawn as a laid-out dimension with its value, and its value is editable from the ribbon.
+      final item = controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single;
+      expect(item.text, '⌒6.00');
+      controller.selectConstraint(made.id);
+      expect(controller.selectedConstraintValue, 6.0);
+      expect(controller.selectedConstraintIsAngle, isFalse);
+    });
+
+    test('a second Arc length on the same arc edits the first instead of adding one', () async {
+      await drawQuarterArc();
+      controller.enterDimensionMode();
+      final onRim = 5 * math.sqrt(0.5);
+      await controller.handleCanvasTap(onRim, onRim);
+      controller.selectPendingDimensionKind('arcLength');
+      await controller.confirmGhostValue('arcLength', 6.0);
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(onRim, onRim);
+      controller.selectPendingDimensionKind('arcLength');
+      await controller.confirmGhostValue('arcLength', 7.0);
+      final all = controller.constraints.values.whereType<ArcLengthConstraintDto>();
+      expect(all, hasLength(1));
+      expect(all.single.length, 7.0);
+    });
+
+    test('deleting the arc takes its arc length with it', () async {
+      final arcId = await drawQuarterArc();
+      controller.enterDimensionMode();
+      final onRim = 5 * math.sqrt(0.5);
+      await controller.handleCanvasTap(onRim, onRim);
+      controller.selectPendingDimensionKind('arcLength');
+      await controller.confirmGhostValue('arcLength', 6.0);
+      final made = controller.constraints.values.whereType<ArcLengthConstraintDto>().single;
+      final arc = controller.arcs[arcId]!;
+      final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.point, id: arc.endPointId)]);
+      expect(cascade.constraints, contains(made.id));
+    });
+
+    test('a line offers Angle to horizontal; the pointer picks the end and the side, the drop freezes them, confirm sends them', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(10, 3);
+      controller.exitToSelectMode();
+      final lineId = controller.lines.keys.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 0.6); // on the line, away from its midpoint snap
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), contains('Angle to horizontal'));
+      expect(controller.selectPendingDimensionKind('horizontalAngle'), isTrue);
+      final ghost = controller.pendingDimensionGhost!;
+      // Near the start, right of it: the angle at the start against +x, about 16.7 degrees.
+      controller.cursorX = 3;
+      controller.cursorY = -1;
+      var preview = controller.ghostAsConstraint(ghost) as HorizontalAngleConstraintDto;
+      expect(preview.quadrant, 0);
+      expect(controller.currentGhostValue(ghost), closeTo(math.atan2(3, 10) * 180 / math.pi, 1e-9));
+      // Near the end, left of it: the angle at the end against -x - the same 16.7, drawn at the other end.
+      controller.cursorX = 8;
+      controller.cursorY = 5;
+      preview = controller.ghostAsConstraint(ghost) as HorizontalAngleConstraintDto;
+      expect(preview.quadrant, 3);
+      expect(controller.dropPendingDimension(), isTrue);
+      // The pointer going elsewhere no longer changes which angle it is.
+      controller.cursorX = 12;
+      controller.cursorY = 5;
+      expect((controller.ghostAsConstraint(ghost) as HorizontalAngleConstraintDto).quadrant, 3);
+      await controller.confirmGhostValue('horizontalAngle', 30.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<HorizontalAngleConstraintDto>().single;
+      expect(made.lineId, lineId);
+      expect(made.quadrant, 3);
+      expect(made.angleDegrees, 30.0);
+      final item = controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single;
+      expect(item.text, '30.0°');
+      controller.selectConstraint(made.id);
+      expect(controller.selectedConstraintIsAngle, isTrue);
+      expect(controller.selectedConstraintValue, 30.0);
+
+      // Dimensioning it again on the other side edits the same constraint, value and quadrant.
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 0.6); // on the line, away from its midpoint snap
+      controller.selectPendingDimensionKind('horizontalAngle');
+      controller.cursorX = 3;
+      controller.cursorY = -1;
+      controller.dropPendingDimension();
+      await controller.confirmGhostValue('horizontalAngle', 40.0);
+      final edited = controller.constraints.values.whereType<HorizontalAngleConstraintDto>().single;
+      expect(edited.id, made.id);
+      expect(edited.angleDegrees, 40.0);
+      expect(edited.quadrant, 0);
+    });
+
+    test('three Points picked (vertex first) make a three-point angle; the pointer picks the sector', () async {
+      controller.selectDrawTool(SketchTool.point);
+      for (final (x, y) in [(2.0, 2.0), (12.0, 2.0), (8.0, 10.0)]) {
+        await controller.handleCanvasTap(x, y);
+      }
+      final ids = controller.points.keys.where((id) => id != controller.originPointId).toList();
+      expect(ids, hasLength(3));
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 2);
+      expect(controller.dimensionSelection, hasLength(2)); // two Points: the point-pair dimensions
+      await controller.handleCanvasTap(8, 10);
+      expect(controller.dimensionSelection, hasLength(3));
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel), ['Angle']);
+      final ghost = controller.pendingDimensionGhost!;
+      // Inside the angle: quadrant 0, the angle itself (atan2(8, 6), about 53.1 degrees).
+      controller.cursorX = 6;
+      controller.cursorY = 4;
+      expect((controller.ghostAsConstraint(ghost) as PointAngleConstraintDto).quadrant, 0);
+      expect(controller.currentGhostValue(ghost), closeTo(math.atan2(8, 6) * 180 / math.pi, 1e-9));
+      // Behind the first ray: its supplement.
+      controller.cursorX = -2;
+      controller.cursorY = 5;
+      expect((controller.ghostAsConstraint(ghost) as PointAngleConstraintDto).quadrant, 1);
+      expect(controller.currentGhostValue(ghost), closeTo(180 - math.atan2(8, 6) * 180 / math.pi, 1e-9));
+      expect(controller.dropPendingDimension(), isTrue);
+      await controller.confirmGhostValue('pointAngle', 120.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<PointAngleConstraintDto>().single;
+      expect((made.vertexPointId, made.quadrant, made.angleDegrees), (ids[0], 1, 120.0));
+      expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single.text, '120.0°');
+    });
+
+    test('a third pick that is not a Point (or a fourth) starts the pick again', () async {
+      controller.selectDrawTool(SketchTool.point);
+      for (final (x, y) in [(2.0, 2.0), (12.0, 2.0), (8.0, 10.0), (20.0, 20.0)]) {
+        await controller.handleCanvasTap(x, y);
+      }
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(30, 0);
+      await controller.handleCanvasTap(40, 0);
+      controller.exitToSelectMode();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(12, 2);
+      await controller.handleCanvasTap(32, 0); // a line
+      expect(controller.dimensionSelection.single.kind, SelectionKind.line);
+      await controller.handleCanvasTap(2, 2);
+      expect(controller.dimensionSelection, hasLength(2)); // a line and a Point
+      await controller.handleCanvasTap(12, 2);
+      expect(controller.dimensionSelection.single.kind, SelectionKind.point); // not three Points: the pick starts again
+      controller.exitToSelectMode();
+      controller.enterDimensionMode();
+      for (final (x, y) in [(2.0, 2.0), (12.0, 2.0), (8.0, 10.0), (20.0, 20.0)]) {
+        await controller.handleCanvasTap(x, y);
+      }
+      expect(controller.dimensionSelection, hasLength(1));
+    });
+
+    test('a Point and a circle offer the minimum and maximum distances; confirming makes one with its side', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 20);
+      await controller.handleCanvasTap(24, 20);
+      controller.selectDrawTool(SketchTool.point);
+      await controller.handleCanvasTap(2, 2);
+      final circle = controller.circles.values.single;
+      final pointId = controller.points.values.firstWhere((p) => p.x == 2 && p.y == 2).id;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(2, 2);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 20 + 4 * math.sin(math.pi / 4));
+      final labels = controller.pendingDimensionOptions.map((g) => g.displayLabel).toList();
+      expect(labels.sublist(labels.length - 2), ['Minimum distance', 'Maximum distance']);
+      expect(controller.selectPendingDimensionKind('maxDistance'), isTrue);
+      final ghost = controller.pendingDimensionGhost!;
+      final centreGap = math.sqrt(18 * 18 * 2);
+      expect(controller.currentGhostValue(ghost), closeTo(centreGap + 4, 1e-9));
+      controller.selectPendingDimensionKind('minDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(centreGap - 4, 1e-9));
+      await controller.confirmGhostValue('minDistance', 10.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<PointCircleDistanceConstraintDto>().single;
+      expect((made.pointId, made.circleOrArcId, made.side, made.distance), (pointId, circle.id, 'min', 10.0));
+      expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>().single.text, '10.00');
+    });
+
+    test('two circles offer the gap and the overall size (the gap only while they do not overlap)', () async {
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(3, 0);
+      await controller.handleCanvasTap(30, 10);
+      await controller.handleCanvasTap(34, 10);
+      final ids = controller.circles.keys.toList();
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(3 * math.cos(math.pi / 4), 3 * math.sin(math.pi / 4));
+      await controller.handleCanvasTap(30 + 4 * math.cos(math.pi / 4), 10 + 4 * math.sin(math.pi / 4));
+      expect(controller.selectPendingDimensionKind('minDistance'), isTrue);
+      final apart = math.sqrt(30 * 30 + 10 * 10);
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(apart - 7, 1e-9));
+      controller.selectPendingDimensionKind('maxDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(apart + 7, 1e-9));
+      await controller.confirmGhostValue('maxDistance', 40.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<CircleCircleDistanceConstraintDto>().single;
+      expect({made.entity1Id, made.entity2Id}, ids.toSet());
+      expect((made.side, made.distance), ('max', 40.0));
+      expect(controller.constraintOverlayItems().whereType<ConstraintLaidOutDimensionItem>(), hasLength(1));
+    });
+
+    test('a line and a circle offer the tangent-side and far-side distances (tangent only while the line misses the circle)', () async {
+      controller.selectDrawTool(SketchTool.line);
+      await controller.handleCanvasTap(0, 0);
+      await controller.handleCanvasTap(40, 0);
+      controller.selectDrawTool(SketchTool.circle);
+      await controller.handleCanvasTap(20, 15);
+      await controller.handleCanvasTap(24, 15);
+      controller.exitToSelectMode();
+      final lineId = controller.lines.keys.single;
+      final circle = controller.circles.values.single;
+      controller.enterDimensionMode();
+      await controller.handleCanvasTap(5, 0.05);
+      await controller.handleCanvasTap(20 + 4 * math.cos(math.pi / 4), 15 + 4 * math.sin(math.pi / 4));
+      expect(controller.pendingDimensionOptions.map((g) => g.displayLabel),
+          ['Perpendicular from centre', 'Tangent distance', 'Far-side distance']);
+      controller.selectPendingDimensionKind('tangentDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(11, 1e-9));
+      controller.selectPendingDimensionKind('farDistance');
+      expect(controller.currentGhostValue(controller.pendingDimensionGhost!), closeTo(19, 1e-9));
+      await controller.confirmGhostValue('farDistance', 25.0);
+      expect(controller.errorMessage, isNull);
+      final made = controller.constraints.values.whereType<LineCircleDistanceConstraintDto>().single;
+      expect((made.lineId, made.circleOrArcId, made.side, made.distance), (lineId, circle.id, 'max', 25.0));
+      // Deleting the line takes the dimension with it.
+      final cascade = controller.computeDeleteCascade([SketchSelection(kind: SelectionKind.line, id: lineId)]);
+      expect(cascade.constraints, contains(made.id));
     });
   });
 }

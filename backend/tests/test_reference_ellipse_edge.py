@@ -1,5 +1,5 @@
 """Reference-overhaul R-F: a full ELLIPTICAL Body edge lying in the sketch plane converts (`convert-entities/edge`) to a real, pinned Ellipse; mesh edge kinds name an ellipse; the same edge converted
-again answers with the ellipse already made; a reference-flagged convert marks the ellipse and its points as helpers; a sketch plane the ellipse does not lie in refuses it as before.
+again answers with the ellipse already made; a reference-flagged convert marks the ellipse and its points as helpers; an ellipse on a parallel plane is projected (bug report 2026-11-18 part C1).
 Needs a real pythonocc-core environment."""
 
 import math
@@ -95,11 +95,13 @@ def test_the_pinned_ellipse_solves_without_redundancy_and_keeps_its_size():
     assert abs(ellipses[0]["major_radius"] - 20.0) < 1e-3 and abs(ellipses[0]["minor_radius"] - 10.0) < 1e-3
 
 
-def test_an_elliptical_edge_not_in_the_sketch_plane_is_refused_as_degenerate():
+def test_an_elliptical_edge_on_a_parallel_plane_is_projected_onto_the_sketch():
+    # Bug report 2026-11-18 part C1 changed this: a closed elliptical edge off the sketch plane used to be refused (`degenerate_edge`, nothing to make a
+    # chord from); it is now projected square onto the plane, which for a parallel plane is the same ellipse.
     part_id, body = _elliptical_plate()
     edge = _elliptical_edge(part_id, body, 8.0)  # the top rim, 8 mm above the XY sketch plane
     sketch = _sketch_on_top(part_id)
     response = _convert_edge(part_id, sketch, body, edge)
-    # (a closed elliptical edge off the plane has no two distinct vertices to make a chord from: the existing 422)
-    assert response.status_code == 422
-    assert response.json()["detail"]["type"] == "degenerate_edge"
+    assert response.status_code == 201, response.text
+    ellipse = response.json()["ellipse"]
+    assert abs(ellipse["major_radius"] - 20.0) < 1e-6 and abs(ellipse["minor_radius"] - 10.0) < 1e-6

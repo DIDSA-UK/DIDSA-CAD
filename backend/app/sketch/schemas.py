@@ -55,14 +55,14 @@ class ReferenceDimensionRef(BaseModel):
 class ReferenceDimensionCreate(BaseModel):
     """DIDSA-VR plan, phase 3: `POST .../reference-dimensions`. See `app.sketch.models.ReferenceDimension` for which kinds take which entities."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"]
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle", "min_distance", "max_distance"]
     refs: list[ReferenceDimensionRef]
 
 
 class ReferenceDimensionUpdate(BaseModel):
     """`PATCH .../reference-dimensions/{id}`: a new kind and / or new entities (what is not sent stays)."""
 
-    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle"] | None = None
+    kind: Literal["distance", "horizontal", "vertical", "radius", "diameter", "angle", "arc_length", "horizontal_angle", "point_angle", "min_distance", "max_distance"] | None = None
     refs: list[ReferenceDimensionRef] | None = None
 
 
@@ -562,6 +562,7 @@ class EllipseArcResponse(BaseModel):
     minor_radius: float
     rotation: float
     construction: bool = False
+    is_reference: bool = False  # a helper made by a reference convert (bug report 2026-11-18 part C)
 
 
 class EllipseTrimRequest(BaseModel):
@@ -779,6 +780,7 @@ class SplineResponse(BaseModel):
     through_point_ids: list[str]
     control_point_ids: list[str]
     construction: bool = False
+    is_reference: bool = False  # a helper made by a reference convert (bug report 2026-11-18 part C)
 
 
 class SplineUpdate(BaseModel):
@@ -1085,6 +1087,64 @@ class PointOnEllipseConstraintCreate(BaseModel):
     ellipse_id: str
 
 
+class ArcLengthConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: an Arc's length (see `ArcLengthConstraint`)."""
+
+    type: Literal["arc_length"]
+    arc_id: str
+    length: float
+
+
+class HorizontalAngleConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: a Line's angle to the horizontal (see `HorizontalAngleConstraint`)."""
+
+    type: Literal["horizontal_angle"]
+    line_id: str
+    angle_degrees: float
+    quadrant: int | None = Field(default=None, ge=0, le=3)
+
+
+class PointAngleConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: the angle at a vertex Point between the rays to two others (see `PointAngleConstraint`)."""
+
+    type: Literal["point_angle"]
+    vertex_point_id: str
+    point1_id: str
+    point2_id: str
+    angle_degrees: float
+    quadrant: int | None = Field(default=None, ge=0, le=3)
+
+
+class PointCircleDistanceConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: the nearest or farthest distance from a Point to a Circle or Arc."""
+
+    type: Literal["point_circle_distance"]
+    point_id: str
+    circle_or_arc_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
+class CircleCircleDistanceConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: the gap ("min") or overall size ("max") of two Circles / Arcs along their centre line."""
+
+    type: Literal["circle_distance"]
+    entity1_id: str
+    entity2_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
+class LineCircleDistanceConstraintCreate(BaseModel):
+    """Bug report 2026-11-18 part D: from a Line to a Circle's / Arc's tangent side ("min") or far side ("max")."""
+
+    type: Literal["line_circle_distance"]
+    line_id: str
+    circle_or_arc_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
 class FixedConstraintCreate(BaseModel):
     """The sketcher's "Fix" constraint - deployable to any entity, not just
     a Point (see Sketch.add_fixed_constraint, which resolves entity_id to
@@ -1116,6 +1176,12 @@ ConstraintCreate = Union[
     PointOnCircleConstraintCreate,
     PointOnEllipseConstraintCreate,
     FixedConstraintCreate,
+    ArcLengthConstraintCreate,
+    HorizontalAngleConstraintCreate,
+    PointAngleConstraintCreate,
+    PointCircleDistanceConstraintCreate,
+    CircleCircleDistanceConstraintCreate,
+    LineCircleDistanceConstraintCreate,
 ]
 
 
@@ -1334,6 +1400,74 @@ class FixedConstraintResponse(_ConstraintResponseBase):
     point_ids: list[str]
 
 
+class ArcLengthConstraintResponse(_ConstraintResponseBase):
+    type: Literal["arc_length"] = "arc_length"
+    id: str
+    arc_id: str
+    # Captured at creation, so a client can draw and model it without looking the Arc up.
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str
+    length: float
+
+
+class HorizontalAngleConstraintResponse(_ConstraintResponseBase):
+    type: Literal["horizontal_angle"] = "horizontal_angle"
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+
+class PointAngleConstraintResponse(_ConstraintResponseBase):
+    type: Literal["point_angle"] = "point_angle"
+    id: str
+    vertex_point_id: str
+    point1_id: str
+    point2_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+
+class PointCircleDistanceConstraintResponse(_ConstraintResponseBase):
+    type: Literal["point_circle_distance"] = "point_circle_distance"
+    id: str
+    point_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
+class CircleCircleDistanceConstraintResponse(_ConstraintResponseBase):
+    type: Literal["circle_distance"] = "circle_distance"
+    id: str
+    entity1_id: str
+    center1_point_id: str
+    radius1_point_id: str
+    entity2_id: str
+    center2_point_id: str
+    radius2_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
+class LineCircleDistanceConstraintResponse(_ConstraintResponseBase):
+    type: Literal["line_circle_distance"] = "line_circle_distance"
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+
 ConstraintResponse = Union[
     DistanceConstraintResponse,
     VerticalConstraintResponse,
@@ -1356,6 +1490,12 @@ ConstraintResponse = Union[
     PointOnCircleConstraintResponse,
     PointOnEllipseConstraintResponse,
     FixedConstraintResponse,
+    ArcLengthConstraintResponse,
+    HorizontalAngleConstraintResponse,
+    PointAngleConstraintResponse,
+    PointCircleDistanceConstraintResponse,
+    CircleCircleDistanceConstraintResponse,
+    LineCircleDistanceConstraintResponse,
 ]
 
 

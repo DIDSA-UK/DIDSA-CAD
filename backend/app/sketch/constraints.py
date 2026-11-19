@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
+from app.sketch.dimension_geometry import angle_between_degrees, arc_length, horizontal_angle_rays, point_circle_distance, circle_circle_distance, line_circle_distance
+
 
 class SolverBuilder(Protocol):
     """What a Constraint needs from the solver-integration layer (solver.py)
@@ -207,6 +209,52 @@ class SolverBuilder(Protocol):
         always calls this with the earlier segment as curve1 (at its own
         end) and the later segment as curve2 (at its own start), matching
         that verified combination."""
+        ...
+
+    def arc_of_circle(self, center_handle: int, start_handle: int, end_handle: int) -> int:
+        """A py-slvs ArcOfCircle entity (counter-clockwise from start to end, the sketch Arc's own convention) on three point handles,
+        cached per point triple. The entity itself carries the equation "end on start's circle", so an Arc given one must not also send
+        its own end-radius EqualRadiusConstraint (the solver leaves that out, see `solver.arc_entity_replaced_constraint_ids`)."""
+        ...
+
+    def horizontal_angle(self, line_start_id: str, line_end_id: str, degrees: float, quadrant: int | None) -> int:
+        """Pins the angle between a Line (start to end) and the fixed horizontal reference line of the workplane (`addAngle` against
+        `_horizontal_ref_line_handle`), choosing the value or its supplement by the quadrant (see `HorizontalAngleConstraint`) or, with
+        none, by whichever is nearer the current shape - the two-line angle's rules."""
+        ...
+
+    def point_angle(self, vertex_id: str, point1_id: str, point2_id: str, degrees: float, quadrant: int | None) -> int:
+        """Pins the angle at `vertex_id` between the rays to `point1_id` and `point2_id` (`addAngle` between two solver-only line
+        segments on those existing Points: no new unknowns), value or supplement by the quadrant or, with none, the nearer one."""
+        ...
+
+    def point_circle_distance(self, point_id: str, center_id: str, radius_point_id: str, value: float, side: str) -> int:
+        """Pins the nearest ("min") or farthest ("max") distance from a Point to a circle. One solver-only helper point H on the line
+        through the Point and the centre (`point_on_line`) at the radius from the centre (`equal_length` with the centre-to-rim
+        segment), seeded on the Point's side for "min" and the far side for "max"; then `distance(Point, H) = value`. H's two unknowns
+        are taken by its two equations, so the net is the one equation of the value."""
+        ...
+
+    def circle_circle_distance(
+        self, center1_id: str, radius1_id: str, center2_id: str, radius2_id: str, value: float, side: str
+    ) -> int:
+        """Pins the gap ("min") or the overall size ("max") of two circles along their centre line: a helper point on each circle on
+        that line (as `point_circle_distance`'s, seeded facing the other circle for "min", facing away for "max"), then
+        `distance(H1, H2) = value`. Each helper's two unknowns are taken by its two equations."""
+        ...
+
+    def line_circle_distance(
+        self, line_start_id: str, line_end_id: str, center_id: str, radius_point_id: str, value: float, side: str
+    ) -> int:
+        """Pins the distance from a Line to a circle's tangent side ("min") or far side ("max"), square to the line. One helper point
+        H on the circle where its radius is square to the line (`perpendicular` of centre-to-H with the line, `equal_length` with the
+        centre-to-rim segment: two equations for H's two unknowns), seeded towards the line for "min" and away for "max"; then the
+        signed `point_line_distance(H, line)` = value on the centre's side of the line."""
+        ...
+
+    def equal_line_arc_length(self, arc_handle: int, length: float) -> int:
+        """Pins an ArcOfCircle's length to `length` (py-slvs addEqualLineArcLength against a helper line between two points of the
+        fixed group, which is never solved, so the helper adds no unknowns)."""
         ...
 
     def where_dragged(self, point_handle: int) -> int:
@@ -1225,3 +1273,280 @@ class PointOnEllipseConstraint(Constraint):
         trammel_line = builder.line_segment(trammel_major, trammel_minor)
         builder.point_on_line(target, trammel_line)
         return handle
+
+
+class MeasuredDimension(Constraint):
+    """A part D dimension (bug report 2026-11-18): its value can be measured on the solved Points. The solver checks every one after a
+    solve it would call converged (`solver._measured_dimensions_hold`): a helper point that settled on the wrong side, or a redundancy
+    override that trusted a result code, still has to produce the asked value on the sketch's own Points."""
+
+    @abstractmethod
+    def value(self) -> float:
+        ...
+
+    @abstractmethod
+    def measured_value(self, points) -> float | None:
+        """The value on `points` (id -> object with x, y); None where the geometry has none."""
+        ...
+
+    def angular(self) -> bool:
+        return False
+
+
+@dataclass
+class ArcLengthConstraint(MeasuredDimension):
+    """Pins the length of an Arc (bug report 2026-11-18, part D): radius times the counter-clockwise sweep from start to end.
+
+    Solved with py-slvs's own ArcOfCircle entity on the Arc's three Points and `addEqualLineArcLength` against a helper line whose two
+    points are in the fixed group (so the helper has no unknowns). The ArcOfCircle entity already keeps the end on the start's circle,
+    which is exactly the equation the Arc's own end-radius EqualRadiusConstraint states, so the solver leaves that one out for an Arc
+    carrying an arc length (`solver.arc_entity_replaced_constraint_ids`): the net change is the one equation of the length. Probed against
+    the installed py-slvs: a fixed-centre Arc with a confirmed radius goes from 2 DOF to 1 and meets the length exactly; keeping the
+    EqualRadius as well gives result 5 (redundant).
+
+    `point_ids` are the Arc's centre, start and end (the delete cascade and Point Merge find it by them); the helper line is not a Sketch
+    Point. The Arc's id is kept for display and API purposes, the Point ids are captured at creation, as for TangentConstraint."""
+
+    id: str
+    arc_id: str
+    center_point_id: str
+    start_point_id: str
+    end_point_id: str
+    length: float
+
+    @property
+    def type(self) -> str:
+        return "arc_length"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.center_point_id, self.start_point_id, self.end_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        arc = builder.arc_of_circle(
+            builder.point2d(self.center_point_id),
+            builder.point2d(self.start_point_id),
+            builder.point2d(self.end_point_id),
+        )
+        return builder.equal_line_arc_length(arc, self.length)
+
+    def value(self) -> float:
+        return self.length
+
+    def measured_value(self, points) -> float | None:
+        c, a, b = points[self.center_point_id], points[self.start_point_id], points[self.end_point_id]
+        return arc_length((c.x, c.y), (a.x, a.y), (b.x, b.y))
+
+
+
+@dataclass
+class HorizontalAngleConstraint(MeasuredDimension):
+    """The angle between one Line and the sketch's horizontal (bug report 2026-11-18, part D, "angle to horizontal").
+
+    Solved as py-slvs `addAngle` between the Line and the fixed horizontal reference line the horizontal distances already use (never
+    solved, so it adds no unknowns): one equation. Which of the four angles it is follows the two-line angle's quadrant idea, with the
+    vertex on the Line itself (`dimension_geometry.horizontal_angle_rays`): bit 0 picks the end the angle is drawn at (clear: the start,
+    the ray running to the end; set: the end, the ray running back to the start), bit 1 the horizontal ray (+x or -x). The value is the
+    angle between those two rays, 0-180. No quadrant: the value or its supplement, whichever is nearer the current shape.
+
+    `point_ids` are the Line's two Points."""
+
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+    @property
+    def type(self) -> str:
+        return "horizontal_angle"
+
+    def point_ids(self) -> tuple[str, str]:
+        return (self.line_start_id, self.line_end_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.horizontal_angle(self.line_start_id, self.line_end_id, self.angle_degrees, self.quadrant)
+
+    def value(self) -> float:
+        return self.angle_degrees
+
+    def angular(self) -> bool:
+        return True
+
+    def measured_value(self, points) -> float | None:
+        a, b = points[self.line_start_id], points[self.line_end_id]
+        _, ray, horizontal = horizontal_angle_rays((a.x, a.y), (b.x, b.y), self.quadrant)
+        measured = angle_between_degrees(ray, horizontal)
+        if measured is None or self.quadrant is not None:
+            return measured
+        # No quadrant: either side is the dimension (the nearer one was solved for).
+        return measured if abs(measured - self.angle_degrees) <= abs(180.0 - measured - self.angle_degrees) else 180.0 - measured
+
+
+
+@dataclass
+class PointAngleConstraint(MeasuredDimension):
+    """The angle at a vertex Point between the rays to two other Points (bug report 2026-11-18, part D, "three-point angle").
+
+    Solved as py-slvs `addAngle` between two solver-only line segments, vertex to each Point, on the existing Points: no helper Points,
+    one equation. `quadrant` as for the two-line angle, with the rays given: bit 0 flips the ray to `point1_id`, bit 1 the ray to
+    `point2_id`, and the value is the angle between the resulting rays (0 and 3 the angle itself, 1 and 2 its supplement). No quadrant:
+    the value or its supplement, whichever is nearer the current shape.
+
+    `point_ids` are the three Points."""
+
+    id: str
+    vertex_point_id: str
+    point1_id: str
+    point2_id: str
+    angle_degrees: float
+    quadrant: int | None = None
+
+    @property
+    def type(self) -> str:
+        return "point_angle"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.vertex_point_id, self.point1_id, self.point2_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.point_angle(self.vertex_point_id, self.point1_id, self.point2_id, self.angle_degrees, self.quadrant)
+
+    def value(self) -> float:
+        return self.angle_degrees
+
+    def angular(self) -> bool:
+        return True
+
+    def measured_value(self, points) -> float | None:
+        v, a, b = points[self.vertex_point_id], points[self.point1_id], points[self.point2_id]
+        q = self.quadrant or 0
+        s1 = -1.0 if q & 1 else 1.0
+        s2 = -1.0 if q & 2 else 1.0
+        measured = angle_between_degrees((s1 * (a.x - v.x), s1 * (a.y - v.y)), (s2 * (b.x - v.x), s2 * (b.y - v.y)))
+        if measured is None or self.quadrant is not None:
+            return measured
+        return measured if abs(measured - self.angle_degrees) <= abs(180.0 - measured - self.angle_degrees) else 180.0 - measured
+
+
+
+@dataclass
+class PointCircleDistanceConstraint(MeasuredDimension):
+    """The minimum or maximum distance from a Point to a Circle or Arc (bug report 2026-11-18, part D).
+
+    `side` is "min" (to the nearest point of the circle) or "max" (to the farthest). Solved with one solver-only helper point (see
+    `SolverBuilder.point_circle_distance`): zero net DOF from the helper, one equation for the value. An Arc is measured as its whole
+    circle. After a solve the value is measured on the sketch's own Points (`MeasuredDimension`), so a helper that settled on the other
+    side reads as not converged.
+
+    `point_ids` are the Point, the centre and the rim Point that carries the radius (a Circle's radius Point, an Arc's start)."""
+
+    id: str
+    point_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+    @property
+    def type(self) -> str:
+        return "point_circle_distance"
+
+    def point_ids(self) -> tuple[str, str, str]:
+        return (self.point_id, self.center_point_id, self.radius_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.point_circle_distance(self.point_id, self.center_point_id, self.radius_point_id, self.distance, self.side)
+
+    def value(self) -> float:
+        return self.distance
+
+    def measured_value(self, points) -> float | None:
+        p, c, r = points[self.point_id], points[self.center_point_id], points[self.radius_point_id]
+        return point_circle_distance((p.x, p.y), (c.x, c.y), (r.x, r.y), self.side)
+
+
+
+@dataclass
+class CircleCircleDistanceConstraint(MeasuredDimension):
+    """The minimum or maximum distance between two Circles / Arcs (bug report 2026-11-18, part D), measured along their centre line:
+    "min" the gap between them, "max" from the far side of one to the far side of the other. Arcs are measured as their circles.
+
+    One solver-only helper point per circle (see `SolverBuilder.circle_circle_distance`): zero net DOF from the helpers, one equation for
+    the value. The re-measure after a solve (`MeasuredDimension`) catches a helper on the wrong side, and circles that overlap where a
+    gap was asked for (the gap reads negative).
+
+    `point_ids` are both centres and both rim Points carrying the radii."""
+
+    id: str
+    entity1_id: str
+    center1_point_id: str
+    radius1_point_id: str
+    entity2_id: str
+    center2_point_id: str
+    radius2_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+    @property
+    def type(self) -> str:
+        return "circle_distance"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.center1_point_id, self.radius1_point_id, self.center2_point_id, self.radius2_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.circle_circle_distance(
+            self.center1_point_id, self.radius1_point_id, self.center2_point_id, self.radius2_point_id, self.distance, self.side
+        )
+
+    def value(self) -> float:
+        return self.distance
+
+    def measured_value(self, points) -> float | None:
+        c1, r1, c2, r2 = (points[i] for i in self.point_ids())
+        return circle_circle_distance((c1.x, c1.y), (r1.x, r1.y), (c2.x, c2.y), (r2.x, r2.y), self.side)
+
+
+
+@dataclass
+class LineCircleDistanceConstraint(MeasuredDimension):
+    """The distance from a Line to a Circle / Arc, square to the line (bug report 2026-11-18, part D): "min" to the tangent side (the
+    circle's nearest point), "max" to the far side. The Line is measured as its infinite extension, an Arc as its circle.
+
+    One solver-only helper point (see `SolverBuilder.line_circle_distance`): zero net DOF from it, one equation for the value. The plan
+    sketched a foot point on the line as well; one point on the circle with its radius square to the line says the same with one helper
+    fewer, and it has no zero-length segment when the centre lies on the line. The re-measure after a solve (`MeasuredDimension`)
+    catches the helper on the wrong side and a line that has come to cut the circle where the tangent side was asked for.
+
+    `point_ids` are the Line's two Points, the centre and the rim Point carrying the radius."""
+
+    id: str
+    line_id: str
+    line_start_id: str
+    line_end_id: str
+    circle_or_arc_id: str
+    center_point_id: str
+    radius_point_id: str
+    distance: float
+    side: Literal["min", "max"] = "min"
+
+    @property
+    def type(self) -> str:
+        return "line_circle_distance"
+
+    def point_ids(self) -> tuple[str, str, str, str]:
+        return (self.line_start_id, self.line_end_id, self.center_point_id, self.radius_point_id)
+
+    def add_to_solver(self, builder: SolverBuilder) -> int:
+        return builder.line_circle_distance(
+            self.line_start_id, self.line_end_id, self.center_point_id, self.radius_point_id, self.distance, self.side
+        )
+
+    def value(self) -> float:
+        return self.distance
+
+    def measured_value(self, points) -> float | None:
+        a, b, c, r = (points[i] for i in self.point_ids())
+        return line_circle_distance((a.x, a.y), (b.x, b.y), (c.x, c.y), (r.x, r.y), self.side)
