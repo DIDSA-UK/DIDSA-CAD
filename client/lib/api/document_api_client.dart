@@ -1987,18 +1987,24 @@ class AssemblyTreeConstraintDto {
     this.nearMates = 0,
   });
 
-  factory AssemblyTreeConstraintDto.fromJson(Map<String, dynamic> json) => AssemblyTreeConstraintDto(
-        status: switch (json['status'] as String?) {
-          'fixed' => ConstraintState.fixed,
-          'fully_constrained' => ConstraintState.fullyConstrained,
-          'over_constrained' => ConstraintState.overConstrained,
-          _ => ConstraintState.underConstrained,
-        },
-        dof: (json['dof'] as num?)?.toInt() ?? 0,
-        rigidSet: json['rigid_set'] as String?,
-        brokenMates: (json['broken_mates'] as num?)?.toInt() ?? 0,
-        nearMates: (json['near_mates'] as num?)?.toInt() ?? 0,
-      );
+  /// Null for a status this client does not know (or none): the row then has no constraint state rather than a made-up one.
+  static AssemblyTreeConstraintDto? tryFromJson(Map<String, dynamic> json) {
+    final status = switch (json['status']) {
+      'fixed' => ConstraintState.fixed,
+      'fully_constrained' => ConstraintState.fullyConstrained,
+      'over_constrained' => ConstraintState.overConstrained,
+      'under_constrained' => ConstraintState.underConstrained,
+      _ => null,
+    };
+    if (status == null) return null;
+    return AssemblyTreeConstraintDto(
+      status: status,
+      dof: (json['dof'] as num?)?.toInt() ?? 0,
+      rigidSet: json['rigid_set'] as String?,
+      brokenMates: (json['broken_mates'] as num?)?.toInt() ?? 0,
+      nearMates: (json['near_mates'] as num?)?.toInt() ?? 0,
+    );
+  }
 }
 
 /// `mates` on an assembly level. [broken] / [near] / [held] / [lost] are null without `status=true` (and when the level's status failed).
@@ -2133,7 +2139,7 @@ class AssemblyTreeNodeDto {
       hidden: json['hidden'] as bool? ?? false,
       suppressed: json['suppressed'] as bool? ?? false,
       color: json['color'] as String?,
-      constraint: constraint == null ? null : AssemblyTreeConstraintDto.fromJson(constraint),
+      constraint: constraint == null ? null : AssemblyTreeConstraintDto.tryFromJson(constraint),
       featureCount: (json['feature_count'] as num?)?.toInt(),
       placements: (json['placements'] as num?)?.toInt(),
       cycle: json['cycle'] as bool? ?? false,
@@ -6190,11 +6196,15 @@ class DocumentApiClient {
   /// [maxNodes] are sent only when given (the server's defaults are 32 and 10000).
   Future<AssemblyTreeResponseDto> getAssemblyTree(String partId, {bool status = false, int? maxDepth, int? maxNodes}) => _send(
         () => _httpClient.get(
-          _uri('/document/parts/$partId/assembly-tree').replace(queryParameters: {
-            if (status) 'status': 'true',
-            if (maxDepth != null) 'max_depth': '$maxDepth',
-            if (maxNodes != null) 'max_nodes': '$maxNodes',
-          }),
+          _uri('/document/parts/$partId/assembly-tree').replace(
+            queryParameters: (status || maxDepth != null || maxNodes != null)
+                ? {
+                    if (status) 'status': 'true',
+                    if (maxDepth != null) 'max_depth': '$maxDepth',
+                    if (maxNodes != null) 'max_nodes': '$maxNodes',
+                  }
+                : null,
+          ),
           headers: _headers,
         ),
         (body) => AssemblyTreeResponseDto.fromJson(body as Map<String, dynamic>),

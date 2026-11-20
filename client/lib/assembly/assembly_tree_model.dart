@@ -258,7 +258,12 @@ class AssemblyTreeModel {
   String? selectedKey;
 
   /// The selected node's path, when the selection is an occurrence row.
-  List<String>? get selectedPath => selectedKey == null ? null : _byKey[selectedKey]?.dto.path;
+  List<String>? get selectedPath {
+    final k = selectedKey;
+    if (k == null) return null;
+    if (k.isEmpty) return const [];
+    return _byKey[k]?.dto.path;
+  }
 
   // ----- Features (lazy, under a part row) -----
 
@@ -350,7 +355,7 @@ class AssemblyTreeModel {
 
   bool _rowKeyExists(String key) {
     if (_byKey.containsKey(key)) return true;
-    if (_grouping && _groupsByKey.containsKey(key)) return true;
+    if (_groupsByKey.containsKey(key)) return true; // whatever the grouping switch says: it may be turned back on
     final t = _tree;
     if (t == null) return false;
     if (key == '#mates') return (t.mates?.count ?? 0) > 0;
