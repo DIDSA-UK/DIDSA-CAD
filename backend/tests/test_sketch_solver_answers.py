@@ -1,29 +1,31 @@
-"""Parity follow-ups F4 / C8: the answers the real solver gives to a redundant or contradicting constraint, pinned.
+"""The take-back contract: what `solve-and-refresh` must say for both apps to keep or take back a just-made constraint correctly.
 
-Both apps decide whether to take a just-made constraint back from `solve-and-refresh`'s flags (`converged`, `solver_reported_failed_constraint_ids`): the
-VR sketcher (`SketchSession._taken_back`) and the flat app (`SketchController`'s take-back). They keep a constraint that is redundant but consistent; after a
-converged sketch they take back any constraint that stops it converging; on a sketch that was already not converged they take one back only when the failed
-list names it. So a change in py-slvs or in `solver.py` that moves `converged` or drops the new constraint from the failed list must show up here first.
+Both sketchers decide from two fields of the solve, never from py-slvs's raw `result_code`:
 
-Each case after a `solve-and-refresh`, as seen in CI (py-slvs 1.0.6's prebuilt wheel for each architecture; arm64 is the Pi 5 server's), 2026-11-19/20:
+- VR: `SketchSession._taken_back` (DIDSA-VR `scripts/design_table/sketch_session.gd`).
+- Flat app: the take-back in `SketchController` (`client/lib/sketch/sketch_controller.dart`, the `wasConverged` rule).
 
-| Case | converged | result_code amd64 / arm64 | failed ids amd64 / arm64 |
-|---|---|---|---|
-| a second Horizontal on the same line | true | 0 / 0 | [] / [] |
-| the same distance twice (two free points) | true | 5 / 1 | [] / [] |
-| Horizontal + horizontal distance + aligned distance of the same length | true | 5, once 1 / 5 | [] / [] |
-| distance 10, then 12 between the same points | false | 1 / 1 | [the 12] / [the 10, the 12] |
+The rule in both:
 
-`result_code` is py-slvs's: 0 okay, 1 inconsistent, 5 "redundant, okay" (the solve converged with a redundant equation). Neither app reads it. Its verdict
-on a redundant equation is not stable: arm64 gave 1 for the duplicate distance in every run, and amd64 gave 1 once for the Horizontal triple (PR #386's
-pull_request run, 44725693905) where it gave 5 in seven other runs of the same code (`solver.py`'s residual check reports both converged either way).
-arm64's failed list also names every constraint of the conflict, not only the newest. Why is not known: an amd64 machine with the same wheels (cp311 and
-cp313) gave the table's amd64 answers in every one of over 2 000 solves (repeated, in fresh processes, after larger solves, through the routes). So no
-redundant case pins a code (the stable 0 and 1 stay pinned), and the contradiction's failed list must name the 12 and nothing outside the conflict. The DOF
-the solver reports for the duplicate-distance case is not pinned: it was seen to fall below the true figure (3 to 1) once, which is the solver's own count
-with a redundant row.
+1. If the solve converged, the constraint is kept.
+2. If the sketch had converged before the constraint was added and no longer does, it is taken back.
+3. If the sketch was already not converged (a conflict the user kept), the constraint is kept unless
+   `solver_reported_failed_constraint_ids` names it.
+
+So the backend owes the apps four answers, one test each below:
+
+- A redundant but consistent constraint converges and names nothing (kept).
+- A contradiction added to a converged sketch does not converge and names the new constraint (taken back).
+- While a conflict is kept, a constraint on unrelated geometry is not named (kept), and a further contradiction is (taken back).
+- Deleting the refused constraint, which is what a take-back does, leaves the sketch converged again.
+
+Nothing here pins `result_code` or the whole failed list: py-slvs gives different codes for the same redundant sketch on amd64 and arm64,
+and once on amd64 between two runs of the same code; arm64 also names every constraint of a conflict where amd64 names only the newest
+(DIDSA-CAD `docs/status.md`, 2026-11-20). The redundant cases converge only because `solver.py`'s own checks accept what py-slvs reports
+as code 1 or 5, so these tests also guard those checks. Every test runs on both CI architectures; arm64 is the Pi 5 server's.
 """
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -31,8 +33,6 @@ from tests.conftest import TEST_API_KEY
 
 client = TestClient(app)
 client.headers.update({"X-API-Key": TEST_API_KEY})
-
-INCONSISTENT = 1
 
 
 def _sketch() -> str:
@@ -43,10 +43,21 @@ def _point(sketch_id: str, x: float, y: float) -> str:
     return client.post(f"/sketch/sketches/{sketch_id}/points", json={"x": x, "y": y}).json()["id"]
 
 
+def _line(sketch_id: str, a: str, b: str) -> str:
+    response = client.post(f"/sketch/sketches/{sketch_id}/lines", json={"start_point_id": a, "end_point_id": b})
+    assert response.status_code == 201, response.text
+    return response.json()["id"]
+
+
 def _add(sketch_id: str, **body) -> str:
     response = client.post(f"/sketch/sketches/{sketch_id}/constraints", json=body)
     assert response.status_code == 201, response.text
     return response.json()["id"]
+
+
+def _delete(sketch_id: str, constraint_id: str) -> None:
+    response = client.delete(f"/sketch/sketches/{sketch_id}/constraints/{constraint_id}")
+    assert response.status_code == 204, response.text
 
 
 def _solve(sketch_id: str) -> dict:
@@ -55,60 +66,102 @@ def _solve(sketch_id: str) -> dict:
     return response.json()["solve"]
 
 
-def test_a_second_horizontal_on_the_same_line_converges_and_names_nothing():
+def _failed(solve: dict) -> list[str]:
+    return solve["solver_reported_failed_constraint_ids"]
+
+
+# Each builds a sketch that converges, then returns (sketch id, the body of a constraint that restates what is already there).
+def _second_horizontal():
     sketch_id = _sketch()
-    a, b = _point(sketch_id, 0, 0), _point(sketch_id, 10, 0.5)
-    line = client.post(f"/sketch/sketches/{sketch_id}/lines", json={"start_point_id": a, "end_point_id": b}).json()["id"]
+    line = _line(sketch_id, _point(sketch_id, 0, 0), _point(sketch_id, 10, 0.5))
     _add(sketch_id, type="horizontal", line_id=line)
-    first = _solve(sketch_id)
-    assert first["converged"] is True and first["solver_reported_failed_constraint_ids"] == []
-
-    _add(sketch_id, type="horizontal", line_id=line)
-    solve = _solve(sketch_id)
-    assert solve["converged"] is True
-    assert solve["result_code"] == 0
-    assert solve["solver_reported_failed_constraint_ids"] == []
+    return sketch_id, {"type": "horizontal", "line_id": line}
 
 
-def test_the_same_distance_twice_is_redundant_but_consistent():
+def _same_distance_twice():
     sketch_id = _sketch()
     a, b = _point(sketch_id, 0, 0), _point(sketch_id, 10, 3)
     _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=10)
-    assert _solve(sketch_id)["converged"] is True
-
-    _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=10)
-    solve = _solve(sketch_id)
-    # No result_code: 5 on amd64, 1 on arm64 (see the module docstring). Both apps read only these two.
-    assert solve["converged"] is True
-    assert solve["solver_reported_failed_constraint_ids"] == []
+    return sketch_id, {"type": "distance", "point_a_id": a, "point_b_id": b, "distance": 10}
 
 
-def test_horizontal_plus_horizontal_distance_plus_aligned_distance_of_one_length_is_redundant_but_consistent():
+def _aligned_distance_over_horizontal_and_horizontal_distance():
     sketch_id = _sketch()
     a, b = _point(sketch_id, 0, 0), _point(sketch_id, 10, 0)
-    line = client.post(f"/sketch/sketches/{sketch_id}/lines", json={"start_point_id": a, "end_point_id": b}).json()["id"]
+    line = _line(sketch_id, a, b)
     _add(sketch_id, type="horizontal", line_id=line)
     _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=10, orientation="horizontal")
+    return sketch_id, {"type": "distance", "point_a_id": a, "point_b_id": b, "distance": 10}
+
+
+@pytest.mark.parametrize(
+    "build",
+    [_second_horizontal, _same_distance_twice, _aligned_distance_over_horizontal_and_horizontal_distance],
+    ids=["second-horizontal", "same-distance-twice", "aligned-over-horizontal-and-horizontal-distance"],
+)
+def test_a_redundant_but_consistent_constraint_converges_and_is_not_named(build):
+    sketch_id, restatement = build()
     assert _solve(sketch_id)["converged"] is True
 
-    _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=10)
+    _add(sketch_id, **restatement)
     solve = _solve(sketch_id)
-    # No result_code: 5 in all but one run, 1 once on amd64 (see the module docstring). Both apps read only these two.
-    assert solve["converged"] is True
-    assert solve["solver_reported_failed_constraint_ids"] == []
+    assert solve["converged"] is True, "rule 1: a redundant but consistent constraint must be kept"
+    assert _failed(solve) == []
 
 
-def test_a_contradicting_distance_fails_and_the_failed_list_names_it():
-    sketch_id = _sketch()
+def _converged_ten(sketch_id: str) -> tuple[str, str, str]:
     a, b = _point(sketch_id, 0, 0), _point(sketch_id, 10, 3)
     ten = _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=10)
     assert _solve(sketch_id)["converged"] is True
+    return a, b, ten
+
+
+def test_a_contradiction_added_to_a_converged_sketch_does_not_converge_and_names_the_new_constraint():
+    sketch_id = _sketch()
+    a, b, _ten = _converged_ten(sketch_id)
 
     twelve = _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=12)
     solve = _solve(sketch_id)
+    assert solve["converged"] is False, "rule 2: the contradiction must be taken back"
+    assert twelve in _failed(solve)
+
+
+def _kept_conflict() -> tuple[str, str, str, str]:
+    """A sketch holding a conflict the user kept (10 and 12 between the same two points), plus a separate line with no constraints."""
+    sketch_id = _sketch()
+    a, b, _ten = _converged_ten(sketch_id)
+    _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=12)
+    c, d = _point(sketch_id, 30, 0), _point(sketch_id, 40, 2)
+    unrelated_line = _line(sketch_id, c, d)
+    assert _solve(sketch_id)["converged"] is False
+    return sketch_id, a, b, unrelated_line
+
+
+def test_while_a_conflict_is_kept_a_constraint_on_unrelated_geometry_is_not_named():
+    sketch_id, _a, _b, unrelated_line = _kept_conflict()
+
+    horizontal = _add(sketch_id, type="horizontal", line_id=unrelated_line)
+    solve = _solve(sketch_id)
     assert solve["converged"] is False
-    assert solve["result_code"] == INCONSISTENT
-    failed = solve["solver_reported_failed_constraint_ids"]
-    # amd64 names only the 12; arm64 names the 10 as well (see the module docstring). Both name the new one, which is what the take-back reads.
-    assert twelve in failed
-    assert set(failed) <= {ten, twelve}
+    assert horizontal not in _failed(solve), "rule 3: an unrelated constraint must be kept while a conflict is"
+
+
+def test_while_a_conflict_is_kept_a_further_contradiction_is_named():
+    sketch_id, a, b, _unrelated_line = _kept_conflict()
+
+    fifteen = _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=15)
+    solve = _solve(sketch_id)
+    assert solve["converged"] is False
+    assert fifteen in _failed(solve), "rule 3: a further contradiction must be taken back"
+
+
+def test_taking_back_the_contradiction_leaves_the_sketch_converged():
+    sketch_id = _sketch()
+    a, b, _ten = _converged_ten(sketch_id)
+    twelve = _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=12)
+    assert _solve(sketch_id)["converged"] is False
+
+    _delete(sketch_id, twelve)
+    solve = _solve(sketch_id)
+    assert solve["converged"] is True
+    assert _failed(solve) == []
