@@ -404,7 +404,7 @@ Also: the old panel's tests are moved or retired (say which), `flutter analyze` 
 | A2 Flutter logic | merged 20 Nov | #389 | mid-tier | One send-back (refresh lost open groups while grouping was off; small API/model nits); all fixed. 36/36 vectors. |
 | A3 Flutter widget | merged 20 Nov | #390 | mid-tier | One send-back (late tree / hidden pane lost reveals and root features; eye rules; repeat feature requests); all fixed. A4 must call `forgetFeaturesRequest` on a failed fetch. |
 | A4 Flutter integration | not started | | | |
-| A5 VR adoption | merged 20 Nov | VR #96 | mid-tier | One send-back (a Part-not-found 404 forced the old per-level reads for good; Fix/Float icon stale; null children crashed); all fixed. 36/36 vectors. Render check (Xvfb/Mesa, 8 scenarios) as expected; found an intermittent stale tree after Float and clipped state hints: follow-up A5.1. Headset check pending (owner). |
+| A5 VR adoption | merged 20 Nov | VR #96 | mid-tier | One send-back (a Part-not-found 404 forced the old per-level reads for good; Fix/Float icon stale; null children crashed); all fixed. 36/36 vectors. Render check (Xvfb/Mesa, 8 scenarios) as expected; found an intermittent stale tree after Float and clipped state hints: follow-up A5.1 (VR #98, merged 20 Nov after one send-back), render check script in VR `tools/assembly_tree_render_check/` (VR #97). Headset check pending (owner). |
 
 ## Sources
 
