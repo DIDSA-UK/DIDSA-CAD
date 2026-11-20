@@ -5,6 +5,8 @@ The prompt was that sub-assemblies and parts don't expand: you cannot see the ch
 leading CAD products do, what ours do today, a ranked list of what's missing and how to add it, and how the tree should treat
 the upstream assembly in Make Focus and Edit Alone, on desktop and on a phone.
 
+**Status:** scoped; the owner answered every question on 20 Nov (section 8). Nothing built.
+
 **Visual concepts** (desktop, Focus, Edit Alone, phone sheet, deep nesting on a phone, VR room tree) are in the published page
 <https://claude.ai/artifact/9bvc9fbpAnC2uhoq5vxpBW> (private to the owner until shared). This file is the text of record.
 
@@ -118,9 +120,9 @@ Size: S under 2 days, M up to a week, L more.
 | 6 | **Declutter phone rows; selection bar** | 1 | Section 3 rules 1-3, the bar in section 5; desktop keeps right-click, adds hover eye | Flutter | S-M |
 | 7 | Mates folder per assembly level; the selection's mates in the selection panel | 2 | Collapsed "Mates (n)" under each assembly row with a health bubble; the component drawer / desktop selection section lists the selected component's mates | Both | M |
 | 8 | Search and filter | 2 | Name filter keeping ancestors of matches; tokens `:missing :errors :hidden :fixed :unsaved :mates` | Both | S-M |
-| 9 | Phone portrait sheet | 2 | Section 5 (Q2) | Flutter | M |
+| 9 | Phone portrait sheet | 2 | Section 5 (decided, section 8) | Flutter | M |
 | 10 | Collapse all, expand to selection, remembered state | 2 | Header buttons; expanded paths per document in view preferences | Both | S |
-| 11 | One instance-name format in both clients; fold repeats | 2 | Q4. Fold more than 3 identical siblings into "Bolt M4 x4", expanding to the instances. A shared spec with golden JSON vectors (names, state icon, bubbles, actions per row kind) both clients test against, as the solver vectors are shared | Both | S |
+| 11 | One instance-name format in both clients; fold repeats | 2 | `Bolt <2>` (section 8). Fold (on by default, can be switched off) more than 3 identical siblings into "Bolt M4 x4", expanding to the instances. A shared spec with golden JSON vectors (names, state icon, bubbles, actions per row kind) both clients test against, as the solver vectors are shared | Both | S |
 | 12 | Hover linking | 2 | Row hover lights the part (existing highlight override); part hover lights the row. Desktop and VR laser | Flutter desktop, VR | S |
 | 13 | Edit a feature in context from the tree | 2 | Double-click a feature under a nested part: focus its path, Part lens, open the feature panel (builds on assembly-scope section 5 item 10) | Flutter | M |
 | 14 | Flyout tree over the viewport | 3 | While a docked tool panel holds the pane, a translucent pick-only tree top-left (SOLIDWORKS) | Flutter desktop | S-M |
@@ -139,7 +141,7 @@ Edit Alone; two trees side by side on a phone.
 | Phase | Contents | Notes |
 |---|---|---|
 | A, foundation | #2, #1, #3, #4, #6, the shared spec and vectors (#11) | The headline fix. VR can adopt the endpoint and bubbles at the same time |
-| B, context | #5, #9, #10, #8 | After Q2 and Q3 |
+| B, context | #5, #9, #10, #8 | Q2 and Q3 answered (section 8) |
 | C, depth | #7, #13, #12, #14, #15; VR T2 | |
 | D, power | #16, #17, #18; VR T3 | Backend work |
 
@@ -147,15 +149,17 @@ Edit Alone; two trees side by side on a phone.
 row kind); a widget test that a viewport pick under the second placement of a sub-assembly opens the second branch; a scroll
 test at 2,000 rows. Not testable headless: feel, the sheet's heights, readability on a device.
 
-## 8. Questions for the owner
+## 8. Owner's answers (20 Nov 2026)
 
-1. **One tree with features under parts, or keep the lens split?** Recommended: one tree (the lens still switches toolbars;
-   a part opened on its own shows the same tree with the part at the root).
-2. **Phone portrait: bottom sheet or today's side panel?** Recommended: sheet in portrait, side panel in landscape.
-3. **Upstream rows in Focus:** dimmed in place on desktop and reduced to pinned ancestors on a phone, or the same on both?
-4. **Instance name format:** `Bolt<2>`, `Bolt <2>` (VR) or `bolt:2` (Flutter)? Recommended `Bolt <2>` in both.
-5. **Add `GET /parts/{id}/assembly-tree`?** Recommended: yes (removes per-level fetches in VR; needed for bubbles).
-6. **Fold repeated parts** ("Bolt M4 x4") by default, or only from a header toggle?
+1. **One tree**, with features under parts. The Part / Assembly lens still switches the toolbars; a part opened on its own shows
+   the same tree with the part at the root.
+2. **Phone portrait: a bottom sheet** with three heights; phone landscape and tablets keep the side panel.
+3. **Focus upstream rows differ by layout:** dimmed in place on desktop (and tablet / landscape side panel); reduced to the
+   pinned ancestor chain on a phone in portrait.
+4. **Instance names `Bolt <2>`** in both clients (Flutter changes from `bolt:2`; VR already uses it).
+5. **Yes, add `GET /parts/{id}/assembly-tree`** (the whole hierarchy in one call, with rolled-up problem counts).
+6. **Repeated parts are grouped by default** ("Bolt M4 x4", more than 3 identical siblings), with a switch to turn grouping off
+   (a header / Columns-menu toggle, remembered in view preferences).
 
 ## Sources
 
