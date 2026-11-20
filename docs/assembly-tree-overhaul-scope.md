@@ -400,11 +400,11 @@ Also: the old panel's tests are moved or retired (say which), `flutter analyze` 
 
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
-| A1 contract | not started | | | |
-| A2 Flutter logic | not started | | | |
+| A1 contract | merged 20 Nov | #388 | strongest | One send-back (suppressed mates counted, one failing level failed the call, GET wrote mate refs); all fixed. Added states `cycle`, `near`; `status` off by default; `status_failed` / `status_incomplete`. |
+| A2 Flutter logic | in progress | | mid-tier | |
 | A3 Flutter widget | not started | | | |
 | A4 Flutter integration | not started | | | |
-| A5 VR adoption | not started | | | |
+| A5 VR adoption | in progress | | mid-tier | |
 
 ## Sources
 
