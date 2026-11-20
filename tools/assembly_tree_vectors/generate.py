@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Golden vectors for the assembly tree (DIDSA-CAD `docs/assembly-tree/spec.md`).
 
-    python tools/assembly_tree_vectors/generate.py            # (re)writes docs/assembly-tree/vectors.json
-    python tools/assembly_tree_vectors/generate.py --check    # exits 1 if the committed file differs
+    python tools/assembly_tree_vectors/generate.py            # (re)writes docs/assembly-tree/vectors.json and the backend copy
+    python tools/assembly_tree_vectors/generate.py --check    # exits 1 if a committed file differs
 
 Never edit vectors.json by hand: change the models or cases here (or the rules in reference.py) and regenerate.
 `test_reference.py` fails when the committed file is not what this script writes.
@@ -26,6 +26,9 @@ import reference as ref  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "docs" / "assembly-tree" / "vectors.json"
+# The backend's copy of a few models as native documents, with the trees the reference builds for them (no status): the
+# endpoint must answer exactly these (backend/tests/test_assembly_tree.py). The CI image holds backend/ only, hence a copy.
+BACKEND_OUT = REPO / "backend" / "tests" / "data" / "assembly_tree_rollup_vectors.json"
 VERSION = 1
 
 
@@ -129,6 +132,24 @@ NAMES = {
         "plate_b": part("Plate"),
         "pin": part("Pin"),
         "dotfile": part("occ_0123456789abcdef"),
+    }
+}
+
+# ---- one Part (its name generated) placed through different files: the first placement's file names them all -------------
+REFS = {
+    "parts": {
+        "root": part(
+            "Refs",
+            [
+                occ("r1", "arm", external_ref="parts/left_arm.didsa"),
+                occ("r2", "arm", external_ref="parts/arm_copy.didsa"),
+                occ("r3", "arm", external_ref="parts/left_arm.didsa"),
+                occ("r4", "arm", external_ref="parts/0f8e2a1c-9b7d-4e3f-8a6b-5c4d3e2f1a0b.didsa"),
+                occ("r5", "arm", external_ref="parts/spare_arm.didsa", name_override="Spare"),
+            ],
+            feature_count=0,
+        ),
+        "arm": part("4b1d0c2e-5f6a-4b7c-8d9e-0f1a2b3c4d5e"),
     }
 }
 
@@ -247,6 +268,7 @@ TREES = {
     "rover": ref.build_tree(ROVER, "rover", status=True),
     "rover_no_status": ref.build_tree(ROVER, "rover", status=False),
     "names": ref.build_tree(NAMES, "root", status=True),
+    "refs": ref.build_tree(REFS, "root", status=False),
     "states": ref.build_tree(STATES, "root", status=True),
     "states_no_status": ref.build_tree(STATES, "root", status=False),
     "cycle": ref.build_tree(CYCLE, "top", status=False),
@@ -314,6 +336,14 @@ CASES = [
     # --- names
     rows_case("names", "Every name fallback: override, Part name, file name, Component N; generated names skipped; numbering per Part (or per file when missing).", "names"),
     rows_case("names_grouping_off", "Names do not depend on grouping when nothing reaches four.", "names", grouping=False),
+    rows_case(
+        "names_one_part_through_different_files",
+        "A Part with a generated name placed through different files: the first placement's file name names every placement of it "
+        "(a generated file name included); a renamed placement keeps its own name.",
+        "refs",
+        grouping=False,
+    ),
+    rows_case("names_one_part_through_different_files_grouped", "...and the group takes the same name.", "refs", ["#group:r1"]),
     # --- states
     rows_case("states", "One row per state slot, and the precedence between them.", "states", unsaved=["p_unsaved"]),
     rows_case("states_no_status", "The same rows without status: the fixed flag is the only constraint information left.", "states_no_status", unsaved=["p_unsaved"]),
@@ -346,6 +376,62 @@ def expected(case: dict) -> object:
     return ref.visible_rows(tree, set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"])
 
 
+def native_document(model: dict, root_id: str) -> dict:
+    """`model` as a `POST /document/import/native` payload: featureless Parts (so `feature_count` is 0), no mates."""
+    parts = []
+    for part_id, p in model["parts"].items():
+        occurrences = [
+            {
+                "id": o["id"],
+                "external_ref": o.get("external_ref", f"parts/{o['part']}.didsa" if o["part"] else None),
+                "resolved_part_id": o["part"],
+                "ref_part_id": o.get("ref_part_id", o["part"]),
+                "name_override": o.get("name_override"),
+                "transform": {"translation": [0.0, 0.0, 0.0], "rotation_axis": [0.0, 0.0, 1.0], "rotation_angle_degrees": 0.0},
+                "suppressed": o.get("suppressed", False),
+                "hidden": o.get("hidden", False),
+                "fixed": o.get("fixed", False),
+                "color": o.get("color"),
+            }
+            for o in p["occurrences"]
+        ]
+        parts.append({"id": part_id, "name": p["name"], "features": [], "occurrences": occurrences, "mates": [], "component_patterns": []})
+    return {"schema_version": 1, "document": {"id": "rollup", "root_part_id": root_id, "parts": parts}, "sketches": []}
+
+
+def featureless(model: dict) -> dict:
+    return {"parts": {pid: {**p, "feature_count": 0} for pid, p in model["parts"].items()}}
+
+
+# (name, model, root, caps): models with no mates or patterns, so a native document reproduces them exactly.
+BACKEND_MODELS = [
+    ("names", NAMES, "root", {}),
+    ("refs", REFS, "root", {}),
+    ("repeats", REPEATS, "root", {}),
+    ("cycle", CYCLE, "top", {}),
+    ("deep_capped", DEEP, "d0", {"max_depth": 3}),
+    ("wide_capped", WIDE, "w", {"max_nodes": 3}),
+]
+
+
+def build_backend() -> dict:
+    return {
+        "version": VERSION,
+        "about": "Generated by tools/assembly_tree_vectors/generate.py; never edit by hand. Each case: import `document`, GET "
+        "/parts/{root}/assembly-tree with `params`, expect `expected` (the reference's tree, no status).",
+        "cases": [
+            {
+                "name": name,
+                "root": root,
+                "params": caps,
+                "document": native_document(model, root),
+                "expected": ref.build_tree(featureless(model), root, status=False, **caps),
+            }
+            for name, model, root, caps in BACKEND_MODELS
+        ],
+    }
+
+
 def build() -> dict:
     return {
         "version": VERSION,
@@ -364,17 +450,23 @@ def dumps(doc: dict) -> str:
     return json.dumps(doc, indent=1, sort_keys=True, ensure_ascii=False) + "\n"
 
 
+def outputs() -> dict[Path, str]:
+    return {OUT: dumps(build()), BACKEND_OUT: dumps(build_backend())}
+
+
 def main() -> int:
-    text = dumps(build())
+    files = outputs()
     if "--check" in sys.argv:
-        if not OUT.exists() or OUT.read_text() != text:
-            print(f"{OUT.relative_to(REPO)} is stale: run python tools/assembly_tree_vectors/generate.py")
+        stale = [str(p.relative_to(REPO)) for p, text in files.items() if not p.exists() or p.read_text() != text]
+        if stale:
+            print(f"stale: {', '.join(stale)}: run python tools/assembly_tree_vectors/generate.py")
             return 1
-        print(f"{OUT.relative_to(REPO)} is up to date ({len(CASES)} cases)")
+        print(f"up to date ({len(CASES)} cases; {len(BACKEND_MODELS)} backend roll-up cases)")
         return 0
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(text)
-    print(f"wrote {len(CASES)} cases to {OUT.relative_to(REPO)}")
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    print(f"wrote {len(CASES)} cases to {OUT.relative_to(REPO)} and {len(BACKEND_MODELS)} to {BACKEND_OUT.relative_to(REPO)}")
     return 0
 
 

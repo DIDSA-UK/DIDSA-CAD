@@ -9,11 +9,16 @@ on:
     paths:
       - "tools/assembly_tree_vectors/**"
       - "docs/assembly-tree/**"
+      - "backend/app/document/assembly_tree.py"
+      - "backend/tests/data/assembly_tree_rollup_vectors.json"
       - ".github/workflows/assembly-tree-vectors.yml"
   pull_request:
     paths:
       - "tools/assembly_tree_vectors/**"
       - "docs/assembly-tree/**"
+      - "backend/app/document/assembly_tree.py"
+      - "backend/tests/data/assembly_tree_rollup_vectors.json"
+      - ".github/workflows/assembly-tree-vectors.yml"
 
 jobs:
   test:

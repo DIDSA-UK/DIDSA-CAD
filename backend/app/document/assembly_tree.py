@@ -5,7 +5,9 @@ needs and problem counts rolled up to every assembly level. The response and eve
 No geometry is sent. Without `status` the walk reads the model only (names, flags, missing files: a few milliseconds even
 for thousands of rows). With `status` it also asks, once per distinct assembly Part (not once per placement), what
 `GET /parts/{id}/constraint-status` and `GET /parts/{id}/mates` would answer: both need the placed Parts' bodies, so
-that is where the time goes on a cold document.
+that is where the time goes on a cold document. The walk never writes to the document (unlike `GET /mates`, it does not
+persist re-found mate reference indices). A level whose status raises is logged and reported without status
+(`status_failed` on its nodes, `status_incomplete` on the response); the other levels are unaffected.
 
 Guards: a Part placed inside itself (directly or further down) is a node marked `cycle` with no children; the walk stops
 at `max_depth` levels and after `max_nodes` occurrence nodes, marking the node it stopped under `truncated` and saying so
@@ -17,10 +19,11 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import HTTPException
-
 from app.document.assembly import mate_tops
+from app.document.assembly_group import constraint_report
+from app.document.mate_status import mate_status_details
 from app.document.models import Document, Part
+from app.document.subshape_identity import refresh_mate_references
 
 logger = logging.getLogger(__name__)
 
@@ -40,33 +43,34 @@ class _Level:
     mates: dict[str, Any] = field(default_factory=dict)
     broken_by_occurrence: dict[str, int] = field(default_factory=dict)
     near_by_occurrence: dict[str, int] = field(default_factory=dict)
+    failed: bool = False  # status was asked for and could not be computed for this level
 
 
 def _structure_level(part: Part) -> _Level:
     return _Level(mates={"count": len(part.mates), "suppressed": sum(1 for m in part.mates if m.suppressed), "broken": None, "near": None, "held": None, "lost": None})
 
 
-def _status_level(document: Document, part: Part) -> _Level:
-    """`constraint-status` and the `mates` listing's status for `part`'s own level (the same functions those endpoints call)."""
-    # Imported here: these pull in the solver and OCCT-backed modules, which a structure-only call never needs.
-    from app.document.assembly_group import constraint_report
-    from app.document.mate_status import mate_status_details
-    from app.document.subshape_identity import refresh_mate_references
+def _status_level(document: Document, part: Part, bodies: dict[str, dict]) -> _Level:
+    """`constraint-status` and the `mates` listing's status for `part`'s own level (the functions those endpoints call), read-only:
+    the mate references are re-checked without writing a re-found index or signature back (`persist=False`). `bodies` (target
+    Part id -> its bodies) is shared by every level of one walk, so each placed Part is tessellated once.
 
+    A mate touching a suppressed occurrence of this level is left out of `broken` / `near` / `held` / `lost` and of the rows'
+    `broken_mates` / `near_mates`: a suppressed occurrence is out of the model (spec section 6)."""
     level = _structure_level(part)
     if part.occurrences:
         sets: dict[str, str] = {}
-        try:
-            report = constraint_report(document, part, rigid_set_ids=sets)
-        except HTTPException:
-            logger.warning("assembly-tree: no constraint status for Part %s", part.id)
-            report = {}
+        report = constraint_report(document, part, rigid_set_ids=sets, free_motions=False)
         level.constraint = {oid: {"status": status, "dof": dof, "rigid_set": sets.get(oid)} for oid, (status, dof, _motions) in report.items()}
+    broken = near = held = lost = 0
     if part.mates:
-        states = refresh_mate_references(document, part)
-        statuses = mate_status_details(document, part, states)
-        broken = near = held = lost = 0
+        off = {o.id for o in part.occurrences if o.suppressed}
+        states = refresh_mate_references(document, part, persist=False, cache=bodies)
+        statuses = mate_status_details(document, part, states, cache=bodies)
         for mate in part.mates:
+            tops = mate_tops(mate)
+            if off.intersection(tops):
+                continue
             status = statuses[mate.id].status
             state = states.get(mate.id)
             broken += status == "broken"
@@ -76,11 +80,9 @@ def _status_level(document: Document, part: Part) -> _Level:
             if mate.suppressed or status == "ok":
                 continue
             counter = level.broken_by_occurrence if status == "broken" else level.near_by_occurrence
-            for top in mate_tops(mate):
+            for top in tops:
                 counter[top] = counter.get(top, 0) + 1
-        level.mates.update(broken=broken, near=near, held=held, lost=lost)
-    else:
-        level.mates.update(broken=0, near=0, held=0, lost=0)
+    level.mates.update(broken=broken, near=near, held=held, lost=lost)
     return level
 
 
@@ -99,6 +101,8 @@ class _Walk:
     max_depth: int
     max_nodes: int
     levels: dict[str, _Level] = field(default_factory=dict)
+    bodies: dict[str, dict] = field(default_factory=dict)  # one tessellation per placed Part for the whole walk
+    status_failed: bool = False
     node_count: int = 0
     truncated_depth: bool = False
     truncated_nodes: bool = False
@@ -107,7 +111,16 @@ class _Walk:
     def level(self, part: Part) -> _Level:
         cached = self.levels.get(part.id)
         if cached is None:
-            cached = _status_level(self.document, part) if self.status else _structure_level(part)
+            if not self.status:
+                cached = _structure_level(part)
+            else:
+                try:
+                    cached = _status_level(self.document, part, self.bodies)
+                except Exception:  # noqa: BLE001 - one level that cannot be analysed must not fail the whole tree
+                    logger.exception("assembly-tree: status failed for Part %s; its level is reported without it", part.id)
+                    cached = _structure_level(part)
+                    cached.failed = True
+                    self.status_failed = True
             self.levels[part.id] = cached
         return cached
 
@@ -115,13 +128,15 @@ class _Walk:
         """Fill `children`, `mates`, `patterns` and `problems` of the node (or root) standing for assembly Part `part`."""
         level = self.level(part)
         node["mates"] = dict(level.mates)
+        node["status_failed"] = level.failed
         node["patterns"] = {"count": len(part.component_patterns), "suppressed": sum(1 for p in part.component_patterns if p.suppressed)}
         problems = {
             "missing": 0,
             "cycles": 0,
-            "broken": level.mates["broken"],
+            # With status, a level whose status failed adds nothing of its own (its node says `status_failed`).
+            "broken": (level.mates["broken"] or 0) if self.status else None,
             "over_constrained": 0 if self.status else None,
-            "near": level.mates["near"],
+            "near": (level.mates["near"] or 0) if self.status else None,
         }
         for occurrence in part.occurrences:
             if self.node_count >= self.max_nodes:
@@ -181,6 +196,7 @@ class _Walk:
             "placements": None,
             "cycle": False,
             "truncated": False,
+            "status_failed": False,
             "mates": None,
             "patterns": None,
             "problems": None,
@@ -211,6 +227,7 @@ def build_assembly_tree(document: Document, root: Part, *, status: bool, max_dep
         "feature_count": len(root.features),
         "status_included": status,
         "truncated": False,
+        "status_failed": False,
         "mates": None,
         "patterns": None,
         "problems": None,
@@ -229,5 +246,6 @@ def build_assembly_tree(document: Document, root: Part, *, status: bool, max_dep
         max_nodes=max_nodes,
         truncated_depth=walk.truncated_depth,
         truncated_nodes=walk.truncated_nodes,
+        status_incomplete=walk.status_failed,
     )
     return response

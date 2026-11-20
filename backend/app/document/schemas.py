@@ -4056,6 +4056,9 @@ class AssemblyTreeNode(BaseModel):
     placements: int | None = None
     cycle: bool = False
     truncated: bool = False
+    # With `status`: this assembly level's status could not be computed (logged on the server); its `mates` status counts and
+    # its children's `constraint` are null, and it adds nothing of its own to `problems`. Always false without `status`.
+    status_failed: bool = False
     mates: AssemblyTreeMates | None = None
     patterns: AssemblyTreePatterns | None = None
     problems: AssemblyTreeProblems | None = None
@@ -4071,6 +4074,7 @@ class AssemblyTreeResponse(BaseModel):
     feature_count: int
     status_included: bool
     truncated: bool = False
+    status_failed: bool = False  # the root's own level (as on a node)
     mates: AssemblyTreeMates | None = None
     patterns: AssemblyTreePatterns | None = None
     problems: AssemblyTreeProblems | None = None
@@ -4080,6 +4084,7 @@ class AssemblyTreeResponse(BaseModel):
     max_nodes: int
     truncated_depth: bool = False
     truncated_nodes: bool = False
+    status_incomplete: bool = False  # some level anywhere has `status_failed`
 
 
 class MateMotionQuality(BaseModel):

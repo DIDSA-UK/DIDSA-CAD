@@ -9,12 +9,15 @@ mates read `broken`, so they need the real pythonocc-core environment and take a
 
 import copy
 import json
+import pickle
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from app.document import assembly_tree
 from app.document.models import Occurrence
-from app.document.store import get_part_or_404
+from app.document.store import get_document, get_part_or_404
 from app.main import app
 from tests.conftest import TEST_API_KEY
 from tests.gear_train_demo_motion_source import DATA, DEMO
@@ -24,12 +27,12 @@ client.headers.update({"X-API-Key": TEST_API_KEY})
 
 NODE_FIELDS = {
     "occurrence_id", "path", "external_ref", "ref_part_id", "resolved_part_id", "part_name", "name_override", "kind", "fixed",
-    "hidden", "suppressed", "color", "constraint", "feature_count", "placements", "cycle", "truncated", "mates", "patterns",
-    "problems", "children",
+    "hidden", "suppressed", "color", "constraint", "feature_count", "placements", "cycle", "truncated", "status_failed", "mates",
+    "patterns", "problems", "children",
 }  # fmt: skip
 RESPONSE_FIELDS = {
-    "part_id", "part_name", "kind", "feature_count", "status_included", "truncated", "mates", "patterns", "problems", "children",
-    "node_count", "max_depth", "max_nodes", "truncated_depth", "truncated_nodes",
+    "part_id", "part_name", "kind", "feature_count", "status_included", "truncated", "status_failed", "mates", "patterns", "problems",
+    "children", "node_count", "max_depth", "max_nodes", "truncated_depth", "truncated_nodes", "status_incomplete",
 }  # fmt: skip
 
 
@@ -236,10 +239,13 @@ def demo_twice():
 
 
 def _agrees_level_by_level(node, part_id):
-    """Children against `/occurrences`, constraint against `/constraint-status`, mates against `/mates`, then recurse."""
+    """Children against `/occurrences`, constraint against `/constraint-status`, mates against `/mates` (leaving out mates that
+    touch a suppressed occurrence, spec section 6), then recurse. Call after the tree: `/mates` writes re-found references."""
     occurrences = client.get(f"/document/parts/{part_id}/occurrences").json()
     status = client.get(f"/document/parts/{part_id}/constraint-status").json()
-    mates = client.get(f"/document/parts/{part_id}/mates").json()
+    off = {o["id"] for o in occurrences if o["suppressed"]}
+    all_mates = client.get(f"/document/parts/{part_id}/mates").json()
+    mates = [m for m in all_mates if not off.intersection(r["occurrence_id"].split("/")[0] for r in m["references"])]
     assert [c["occurrence_id"] for c in node["children"]] == [o["id"] for o in occurrences]
     for child, occurrence in zip(node["children"], occurrences):
         for field, listed in (("external_ref", "external_ref"), ("resolved_part_id", "resolved_part_id"), ("ref_part_id", "ref_part_id"), ("name_override", "name_override"), ("fixed", "fixed"), ("hidden", "hidden"), ("suppressed", "suppressed"), ("color", "color")):
@@ -252,9 +258,10 @@ def _agrees_level_by_level(node, part_id):
             touching = [m for m in mates if not m["suppressed"] and any(r["occurrence_id"].split("/")[0] == occurrence["id"] for r in m["references"])]
             assert child["constraint"]["broken_mates"] == sum(m["status"] == "broken" for m in touching)
             assert child["constraint"]["near_mates"] == sum(m["status"] == "near" for m in touching)
+    assert node["status_failed"] is False
     assert node["mates"] == {
-        "count": len(mates),
-        "suppressed": sum(m["suppressed"] for m in mates),
+        "count": len(all_mates),
+        "suppressed": sum(m["suppressed"] for m in all_mates),
         "broken": sum(m["status"] == "broken" for m in mates),
         "near": sum(m["status"] == "near" for m in mates),
         "held": sum(m["held"] for m in mates),
@@ -305,3 +312,94 @@ def test_problem_roll_up_with_broken_mates():
     assert tree["problems"] == {"missing": 0, "cycles": 0, "broken": 2 * broken, "over_constrained": 2 * over, "near": 2 * near}  # "off" is suppressed
     assert any(c["constraint"] and c["constraint"]["broken_mates"] > 0 for c in one["children"])
     _agrees_level_by_level(tree, root)
+
+
+def _one_broken_mate(suppress: bool):
+    """The demo's old version cut down to one broken mate and the two occurrences it joins, under a new root; `suppress`
+    suppresses the second of them."""
+    doc = json.loads((DATA / "gear_train_demo_old_bevel_indices.didsa").read_text())["document"]
+    _import(doc["root_part_id"], doc["parts"])
+    broken_id = next(m["id"] for m in client.get(f"/document/parts/{doc['root_part_id']}/mates").json() if m["status"] == "broken")
+    parts = copy.deepcopy(doc["parts"])
+    old = next(p for p in parts if p["id"] == doc["root_part_id"])
+    mate = next(m for m in old["mates"] if m["id"] == broken_id)
+    tops = []
+    for ref in mate["references"]:
+        top = ref["occurrence_id"].split("/")[0]
+        if top not in tops:
+            tops.append(top)
+    old["mates"] = [mate]
+    old["component_patterns"] = []
+    old["occurrences"] = [o for o in old["occurrences"] if o["id"] in tops]
+    old["occurrences"][1]["suppressed"] = suppress
+    _import(old["id"], parts)
+    return old["id"]
+
+
+def test_a_mate_touching_a_suppressed_occurrence_is_not_counted():
+    """Spec section 6: a suppressed occurrence adds nothing, and that includes the mates that touch it."""
+    live = _tree(_one_broken_mate(suppress=False), status="true")
+    assert live["problems"]["broken"] == 1 and live["mates"]["broken"] == 1  # the case does bite
+    assert sum(c["constraint"]["broken_mates"] for c in live["children"] if c["constraint"]) == 2
+    root = _one_broken_mate(suppress=True)
+    tree = _tree(root, status="true")
+    assert tree["problems"]["broken"] == 0
+    assert (tree["mates"]["count"], tree["mates"]["broken"], tree["mates"]["near"]) == (1, 0, 0)
+    assert all(c["constraint"] is None or c["constraint"]["broken_mates"] == 0 for c in tree["children"])
+    assert client.get(f"/document/parts/{root}/mates").json()[0]["status"] == "broken"  # the listing itself still says broken
+
+
+def test_one_level_failing_does_not_fail_the_tree(monkeypatch):
+    """A level whose status raises is reported without status (`status_failed`); the other levels keep theirs."""
+    real = assembly_tree.constraint_report
+
+    def flaky(document, part, *args, **kwargs):
+        if part.id == "wheel":
+            raise RuntimeError("boom")
+        return real(document, part, *args, **kwargs)
+
+    monkeypatch.setattr(assembly_tree, "constraint_report", flaky)
+    tree = _tree(_rover(), status="true")
+    assert tree["status_incomplete"] and not tree["status_failed"]
+    by_id = {c["occurrence_id"]: c for c in tree["children"]}
+    assert by_id["chassis"]["constraint"]["status"] == "fixed"  # the root's level is fine
+    for wheel in (by_id["wheel_l"], by_id["wheel_r"]):
+        assert wheel["status_failed"]
+        assert wheel["constraint"] is not None  # its own row is the root's level
+        assert all(c["constraint"] is None for c in wheel["children"])
+        assert wheel["mates"]["broken"] is None and wheel["mates"]["count"] == 0
+        assert wheel["problems"] == {"missing": 0, "cycles": 0, "broken": 0, "over_constrained": 0, "near": 0}
+    # without status nothing is attempted, so nothing fails
+    plain = _tree("rover")
+    assert not plain["status_incomplete"] and not any(n["status_failed"] for n in _walk(plain))
+
+
+def _snapshot() -> bytes:
+    """Everything stored, signatures included (they are `compare=False`, so `==` would not see them)."""
+    return pickle.dumps(get_document().parts)
+
+
+def test_get_with_status_does_not_write():
+    """The demo's references are unsigned in the file: `GET /mates` adopts (writes) signatures, the tree must not."""
+    _import(*_demo_document())
+    before = _snapshot()
+    _tree(json.loads(DEMO.read_text())["document"]["root_part_id"], status="true")
+    assert _snapshot() == before
+    client.get(f"/document/parts/{json.loads(DEMO.read_text())['document']['root_part_id']}/mates")
+    assert _snapshot() != before  # the check can see a write
+
+
+def _demo_document():
+    doc = json.loads(DEMO.read_text())["document"]
+    return doc["root_part_id"], doc["parts"]
+
+
+ROLLUP = json.loads((Path(__file__).parent / "data" / "assembly_tree_rollup_vectors.json").read_text())
+
+
+@pytest.mark.parametrize("case", ROLLUP["cases"], ids=[c["name"] for c in ROLLUP["cases"]])
+def test_endpoint_matches_the_reference_build_tree(case):
+    """`tests/data/assembly_tree_rollup_vectors.json` is written by tools/assembly_tree_vectors/generate.py from the reference
+    (`reference.build_tree`): the endpoint must give the same tree, roll-up included, so the two cannot drift apart."""
+    assert client.post("/document/import/native", json=case["document"]).status_code == 200
+    assert _tree(case["root"], **case["params"]) == case["expected"]

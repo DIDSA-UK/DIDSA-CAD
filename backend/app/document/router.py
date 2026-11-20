@@ -3980,7 +3980,8 @@ def get_assembly_tree(
     """Assembly tree overhaul A1 (`docs/assembly-tree/spec.md`): the whole hierarchy below `part_id` in one call - every placed
     occurrence at every depth with its names, flags and kind, mate / pattern summaries and rolled-up problem counts per assembly.
     No geometry. `status=true` adds what `constraint-status` and the `mates` listing report, level by level (computed once per
-    distinct assembly Part; that is the slow part, so it is off by default). Cycles stop at a `cycle` node; the walk stops at
+    distinct assembly Part; that is the slow part, so it is off by default; read-only, and a level that fails is reported
+    without status instead of failing the call). Cycles stop at a `cycle` node; the walk stops at
     `max_depth` levels / `max_nodes` occurrence nodes and says so (`truncated_*`)."""
     part = get_part_or_404(part_id)
     return build_assembly_tree(get_document(), part, status=status, max_depth=max_depth, max_nodes=max_nodes)

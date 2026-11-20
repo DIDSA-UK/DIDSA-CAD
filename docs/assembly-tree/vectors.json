@@ -3836,6 +3836,234 @@
      "hidden": false,
      "key": "",
      "kind": "root",
+     "label": "Refs",
+     "open": true,
+     "path": [],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 1,
+     "expandable": true,
+     "hidden": false,
+     "key": "r1",
+     "kind": "part",
+     "label": "left_arm <1>",
+     "open": false,
+     "path": [
+      "r1"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 1,
+     "expandable": true,
+     "hidden": false,
+     "key": "r2",
+     "kind": "part",
+     "label": "left_arm <2>",
+     "open": false,
+     "path": [
+      "r2"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 1,
+     "expandable": true,
+     "hidden": false,
+     "key": "r3",
+     "kind": "part",
+     "label": "left_arm <3>",
+     "open": false,
+     "path": [
+      "r3"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 1,
+     "expandable": true,
+     "hidden": false,
+     "key": "r4",
+     "kind": "part",
+     "label": "left_arm <4>",
+     "open": false,
+     "path": [
+      "r4"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 1,
+     "expandable": true,
+     "hidden": false,
+     "key": "r5",
+     "kind": "part",
+     "label": "Spare",
+     "open": false,
+     "path": [
+      "r5"
+     ],
+     "state": "none",
+     "suppressed": false
+    }
+   ],
+   "features": {},
+   "grouping": false,
+   "kind": "rows",
+   "name": "names_one_part_through_different_files",
+   "open": [],
+   "tree": "refs",
+   "unsaved_part_ids": [],
+   "why": "A Part with a generated name placed through different files: the first placement's file name names every placement of it (a generated file name included); a renamed placement keeps its own name."
+  },
+  {
+   "expected": [
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 0,
+     "expandable": false,
+     "hidden": false,
+     "key": "",
+     "kind": "root",
+     "label": "Refs",
+     "open": true,
+     "path": [],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": 4,
+     "depth": 1,
+     "expandable": true,
+     "hidden": false,
+     "key": "#group:r1",
+     "kind": "group",
+     "label": "left_arm x4",
+     "open": true,
+     "path": null,
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 2,
+     "expandable": true,
+     "hidden": false,
+     "key": "r1",
+     "kind": "part",
+     "label": "left_arm <1>",
+     "open": false,
+     "path": [
+      "r1"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 2,
+     "expandable": true,
+     "hidden": false,
+     "key": "r2",
+     "kind": "part",
+     "label": "left_arm <2>",
+     "open": false,
+     "path": [
+      "r2"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 2,
+     "expandable": true,
+     "hidden": false,
+     "key": "r3",
+     "kind": "part",
+     "label": "left_arm <3>",
+     "open": false,
+     "path": [
+      "r3"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 2,
+     "expandable": true,
+     "hidden": false,
+     "key": "r4",
+     "kind": "part",
+     "label": "left_arm <4>",
+     "open": false,
+     "path": [
+      "r4"
+     ],
+     "state": "none",
+     "suppressed": false
+    },
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 1,
+     "expandable": true,
+     "hidden": false,
+     "key": "r5",
+     "kind": "part",
+     "label": "Spare",
+     "open": false,
+     "path": [
+      "r5"
+     ],
+     "state": "none",
+     "suppressed": false
+    }
+   ],
+   "features": {},
+   "grouping": true,
+   "kind": "rows",
+   "name": "names_one_part_through_different_files_grouped",
+   "open": [
+    "#group:r1"
+   ],
+   "tree": "refs",
+   "unsaved_part_ids": [],
+   "why": "...and the group takes the same name."
+  },
+  {
+   "expected": [
+    {
+     "bubble": null,
+     "count": null,
+     "depth": 0,
+     "expandable": false,
+     "hidden": false,
+     "key": "",
+     "kind": "root",
      "label": "States",
      "open": true,
      "path": [],
@@ -5634,6 +5862,7 @@
          "problems": null,
          "ref_part_id": "loop_a",
          "resolved_part_id": "loop_a",
+         "status_failed": false,
          "suppressed": false,
          "truncated": false
         },
@@ -5661,6 +5890,7 @@
          "problems": null,
          "ref_part_id": "leaf",
          "resolved_part_id": "leaf",
+         "status_failed": false,
          "suppressed": false,
          "truncated": false
         }
@@ -5702,6 +5932,7 @@
        },
        "ref_part_id": "loop_b",
        "resolved_part_id": "loop_b",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -5742,6 +5973,7 @@
      },
      "ref_part_id": "loop_a",
      "resolved_part_id": "loop_a",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -5767,6 +5999,7 @@
      "problems": null,
      "ref_part_id": "top",
      "resolved_part_id": "top",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -5797,7 +6030,9 @@
     "near": null,
     "over_constrained": null
    },
+   "status_failed": false,
    "status_included": false,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -5832,6 +6067,7 @@
          "problems": null,
          "ref_part_id": "d3",
          "resolved_part_id": "d3",
+         "status_failed": false,
          "suppressed": false,
          "truncated": true
         }
@@ -5873,6 +6109,7 @@
        },
        "ref_part_id": "d2",
        "resolved_part_id": "d2",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -5913,6 +6150,7 @@
      },
      "ref_part_id": "d1",
      "resolved_part_id": "d1",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -5943,7 +6181,9 @@
     "near": null,
     "over_constrained": null
    },
+   "status_failed": false,
    "status_included": false,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": true,
    "truncated_nodes": false
@@ -5972,6 +6212,7 @@
      "problems": null,
      "ref_part_id": "bracket",
      "resolved_part_id": "bracket",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -5997,6 +6238,7 @@
      "problems": null,
      "ref_part_id": "bracket",
      "resolved_part_id": "bracket",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6022,6 +6264,7 @@
      "problems": null,
      "ref_part_id": "bracket",
      "resolved_part_id": "bracket",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6047,6 +6290,7 @@
      "problems": null,
      "ref_part_id": "uuid_named",
      "resolved_part_id": "uuid_named",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6072,6 +6316,7 @@
      "problems": null,
      "ref_part_id": "uuid_named",
      "resolved_part_id": "uuid_named",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6097,6 +6342,7 @@
      "problems": null,
      "ref_part_id": "anon",
      "resolved_part_id": "anon",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6122,6 +6368,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6147,6 +6394,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6172,6 +6420,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6197,6 +6446,7 @@
      "problems": null,
      "ref_part_id": "plate_a",
      "resolved_part_id": "plate_a",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6222,6 +6472,7 @@
      "problems": null,
      "ref_part_id": "plate_b",
      "resolved_part_id": "plate_b",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6247,6 +6498,7 @@
      "problems": null,
      "ref_part_id": "pin",
      "resolved_part_id": "pin",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6272,6 +6524,7 @@
      "problems": null,
      "ref_part_id": "dotfile",
      "resolved_part_id": "dotfile",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -6302,7 +6555,175 @@
     "near": 0,
     "over_constrained": 0
    },
+   "status_failed": false,
    "status_included": true,
+   "status_incomplete": false,
+   "truncated": false,
+   "truncated_depth": false,
+   "truncated_nodes": false
+  },
+  "refs": {
+   "children": [
+    {
+     "children": [],
+     "color": null,
+     "constraint": null,
+     "cycle": false,
+     "external_ref": "parts/left_arm.didsa",
+     "feature_count": 1,
+     "fixed": false,
+     "hidden": false,
+     "kind": "part",
+     "mates": null,
+     "name_override": null,
+     "occurrence_id": "r1",
+     "part_name": "4b1d0c2e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+     "path": [
+      "r1"
+     ],
+     "patterns": null,
+     "placements": 5,
+     "problems": null,
+     "ref_part_id": "arm",
+     "resolved_part_id": "arm",
+     "status_failed": false,
+     "suppressed": false,
+     "truncated": false
+    },
+    {
+     "children": [],
+     "color": null,
+     "constraint": null,
+     "cycle": false,
+     "external_ref": "parts/arm_copy.didsa",
+     "feature_count": 1,
+     "fixed": false,
+     "hidden": false,
+     "kind": "part",
+     "mates": null,
+     "name_override": null,
+     "occurrence_id": "r2",
+     "part_name": "4b1d0c2e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+     "path": [
+      "r2"
+     ],
+     "patterns": null,
+     "placements": 5,
+     "problems": null,
+     "ref_part_id": "arm",
+     "resolved_part_id": "arm",
+     "status_failed": false,
+     "suppressed": false,
+     "truncated": false
+    },
+    {
+     "children": [],
+     "color": null,
+     "constraint": null,
+     "cycle": false,
+     "external_ref": "parts/left_arm.didsa",
+     "feature_count": 1,
+     "fixed": false,
+     "hidden": false,
+     "kind": "part",
+     "mates": null,
+     "name_override": null,
+     "occurrence_id": "r3",
+     "part_name": "4b1d0c2e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+     "path": [
+      "r3"
+     ],
+     "patterns": null,
+     "placements": 5,
+     "problems": null,
+     "ref_part_id": "arm",
+     "resolved_part_id": "arm",
+     "status_failed": false,
+     "suppressed": false,
+     "truncated": false
+    },
+    {
+     "children": [],
+     "color": null,
+     "constraint": null,
+     "cycle": false,
+     "external_ref": "parts/0f8e2a1c-9b7d-4e3f-8a6b-5c4d3e2f1a0b.didsa",
+     "feature_count": 1,
+     "fixed": false,
+     "hidden": false,
+     "kind": "part",
+     "mates": null,
+     "name_override": null,
+     "occurrence_id": "r4",
+     "part_name": "4b1d0c2e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+     "path": [
+      "r4"
+     ],
+     "patterns": null,
+     "placements": 5,
+     "problems": null,
+     "ref_part_id": "arm",
+     "resolved_part_id": "arm",
+     "status_failed": false,
+     "suppressed": false,
+     "truncated": false
+    },
+    {
+     "children": [],
+     "color": null,
+     "constraint": null,
+     "cycle": false,
+     "external_ref": "parts/spare_arm.didsa",
+     "feature_count": 1,
+     "fixed": false,
+     "hidden": false,
+     "kind": "part",
+     "mates": null,
+     "name_override": "Spare",
+     "occurrence_id": "r5",
+     "part_name": "4b1d0c2e-5f6a-4b7c-8d9e-0f1a2b3c4d5e",
+     "path": [
+      "r5"
+     ],
+     "patterns": null,
+     "placements": 5,
+     "problems": null,
+     "ref_part_id": "arm",
+     "resolved_part_id": "arm",
+     "status_failed": false,
+     "suppressed": false,
+     "truncated": false
+    }
+   ],
+   "feature_count": 0,
+   "kind": "assembly",
+   "mates": {
+    "broken": null,
+    "count": 0,
+    "held": null,
+    "lost": null,
+    "near": null,
+    "suppressed": 0
+   },
+   "max_depth": 32,
+   "max_nodes": 10000,
+   "node_count": 5,
+   "part_id": "root",
+   "part_name": "Refs",
+   "patterns": {
+    "count": 0,
+    "suppressed": 0
+   },
+   "problems": {
+    "broken": null,
+    "cycles": 0,
+    "missing": 0,
+    "near": null,
+    "over_constrained": null
+   },
+   "status_failed": false,
+   "status_included": false,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -6331,6 +6752,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6362,6 +6784,7 @@
      "problems": null,
      "ref_part_id": "washer",
      "resolved_part_id": "washer",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6387,6 +6810,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6412,6 +6836,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6443,6 +6868,7 @@
      "problems": null,
      "ref_part_id": "washer",
      "resolved_part_id": "washer",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6468,6 +6894,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6499,6 +6926,7 @@
      "problems": null,
      "ref_part_id": "washer",
      "resolved_part_id": "washer",
+     "status_failed": false,
      "suppressed": true,
      "truncated": false
     },
@@ -6530,6 +6958,7 @@
      "problems": null,
      "ref_part_id": "washer",
      "resolved_part_id": "washer",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6564,6 +6993,7 @@
        "problems": null,
        "ref_part_id": "pin",
        "resolved_part_id": "pin",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -6590,6 +7020,7 @@
        "problems": null,
        "ref_part_id": null,
        "resolved_part_id": null,
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -6636,6 +7067,7 @@
      },
      "ref_part_id": "kit",
      "resolved_part_id": "kit",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6670,6 +7102,7 @@
        "problems": null,
        "ref_part_id": "pin",
        "resolved_part_id": "pin",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -6696,6 +7129,7 @@
        "problems": null,
        "ref_part_id": null,
        "resolved_part_id": null,
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -6742,6 +7176,7 @@
      },
      "ref_part_id": "kit",
      "resolved_part_id": "kit",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6776,6 +7211,7 @@
        "problems": null,
        "ref_part_id": "pin",
        "resolved_part_id": "pin",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -6802,6 +7238,7 @@
        "problems": null,
        "ref_part_id": null,
        "resolved_part_id": null,
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -6848,6 +7285,7 @@
      },
      "ref_part_id": "kit",
      "resolved_part_id": "kit",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -6882,6 +7320,7 @@
        "problems": null,
        "ref_part_id": "pin",
        "resolved_part_id": "pin",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -6908,6 +7347,7 @@
        "problems": null,
        "ref_part_id": null,
        "resolved_part_id": null,
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -6954,6 +7394,7 @@
      },
      "ref_part_id": "kit",
      "resolved_part_id": "kit",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -6984,7 +7425,9 @@
     "near": 0,
     "over_constrained": 0
    },
+   "status_failed": false,
    "status_included": true,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -7019,6 +7462,7 @@
      "problems": null,
      "ref_part_id": "chassis",
      "resolved_part_id": "chassis",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7053,6 +7497,7 @@
        "problems": null,
        "ref_part_id": "hub",
        "resolved_part_id": "hub",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7085,6 +7530,7 @@
        "problems": null,
        "ref_part_id": "tyre",
        "resolved_part_id": "tyre",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7117,6 +7563,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7149,6 +7596,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7181,6 +7629,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7213,6 +7662,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -7259,6 +7709,7 @@
      },
      "ref_part_id": "wheel",
      "resolved_part_id": "wheel",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7293,6 +7744,7 @@
        "problems": null,
        "ref_part_id": "hub",
        "resolved_part_id": "hub",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7325,6 +7777,7 @@
        "problems": null,
        "ref_part_id": "tyre",
        "resolved_part_id": "tyre",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7357,6 +7810,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7389,6 +7843,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7421,6 +7876,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7453,6 +7909,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -7499,6 +7956,7 @@
      },
      "ref_part_id": "wheel",
      "resolved_part_id": "wheel",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7533,6 +7991,7 @@
        "problems": null,
        "ref_part_id": "mast_base",
        "resolved_part_id": "mast_base",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -7568,6 +8027,7 @@
          "problems": null,
          "ref_part_id": "segment",
          "resolved_part_id": "segment",
+         "status_failed": false,
          "suppressed": false,
          "truncated": false
         },
@@ -7604,6 +8064,7 @@
            "problems": null,
            "ref_part_id": "lens",
            "resolved_part_id": "lens",
+           "status_failed": false,
            "suppressed": false,
            "truncated": false
           },
@@ -7632,6 +8093,7 @@
            "problems": null,
            "ref_part_id": null,
            "resolved_part_id": null,
+           "status_failed": false,
            "suppressed": false,
            "truncated": false
           }
@@ -7680,6 +8142,7 @@
          },
          "ref_part_id": "head",
          "resolved_part_id": "head",
+         "status_failed": false,
          "suppressed": false,
          "truncated": false
         }
@@ -7727,6 +8190,7 @@
        },
        "ref_part_id": "arm",
        "resolved_part_id": "arm",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -7773,6 +8237,7 @@
      },
      "ref_part_id": "mast",
      "resolved_part_id": "mast",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7804,6 +8269,7 @@
      "problems": null,
      "ref_part_id": "camera",
      "resolved_part_id": "camera",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7829,6 +8295,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7860,6 +8327,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7891,6 +8359,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7922,6 +8391,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7953,6 +8423,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -7984,6 +8455,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8015,6 +8487,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -8045,7 +8518,9 @@
     "near": 4,
     "over_constrained": 0
    },
+   "status_failed": false,
    "status_included": true,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -8074,6 +8549,7 @@
      "problems": null,
      "ref_part_id": "chassis",
      "resolved_part_id": "chassis",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8102,6 +8578,7 @@
        "problems": null,
        "ref_part_id": "hub",
        "resolved_part_id": "hub",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8128,6 +8605,7 @@
        "problems": null,
        "ref_part_id": "tyre",
        "resolved_part_id": "tyre",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8154,6 +8632,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8180,6 +8659,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8206,6 +8686,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8232,6 +8713,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -8272,6 +8754,7 @@
      },
      "ref_part_id": "wheel",
      "resolved_part_id": "wheel",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8300,6 +8783,7 @@
        "problems": null,
        "ref_part_id": "hub",
        "resolved_part_id": "hub",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8326,6 +8810,7 @@
        "problems": null,
        "ref_part_id": "tyre",
        "resolved_part_id": "tyre",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8352,6 +8837,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8378,6 +8864,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8404,6 +8891,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8430,6 +8918,7 @@
        "problems": null,
        "ref_part_id": "bolt",
        "resolved_part_id": "bolt",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -8470,6 +8959,7 @@
      },
      "ref_part_id": "wheel",
      "resolved_part_id": "wheel",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8498,6 +8988,7 @@
        "problems": null,
        "ref_part_id": "mast_base",
        "resolved_part_id": "mast_base",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -8527,6 +9018,7 @@
          "problems": null,
          "ref_part_id": "segment",
          "resolved_part_id": "segment",
+         "status_failed": false,
          "suppressed": false,
          "truncated": false
         },
@@ -8557,6 +9049,7 @@
            "problems": null,
            "ref_part_id": "lens",
            "resolved_part_id": "lens",
+           "status_failed": false,
            "suppressed": false,
            "truncated": false
           },
@@ -8585,6 +9078,7 @@
            "problems": null,
            "ref_part_id": null,
            "resolved_part_id": null,
+           "status_failed": false,
            "suppressed": false,
            "truncated": false
           }
@@ -8627,6 +9121,7 @@
          },
          "ref_part_id": "head",
          "resolved_part_id": "head",
+         "status_failed": false,
          "suppressed": false,
          "truncated": false
         }
@@ -8668,6 +9163,7 @@
        },
        "ref_part_id": "arm",
        "resolved_part_id": "arm",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -8708,6 +9204,7 @@
      },
      "ref_part_id": "mast",
      "resolved_part_id": "mast",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8733,6 +9230,7 @@
      "problems": null,
      "ref_part_id": "camera",
      "resolved_part_id": "camera",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8758,6 +9256,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8783,6 +9282,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8808,6 +9308,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8833,6 +9334,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8858,6 +9360,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8883,6 +9386,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -8908,6 +9412,7 @@
      "problems": null,
      "ref_part_id": "screw",
      "resolved_part_id": "screw",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -8938,7 +9443,9 @@
     "near": null,
     "over_constrained": null
    },
+   "status_failed": false,
    "status_included": false,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -8955,7 +9462,9 @@
    "part_name": "Bracket",
    "patterns": null,
    "problems": null,
+   "status_failed": false,
    "status_included": true,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -8984,6 +9493,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9015,6 +9525,7 @@
      "problems": null,
      "ref_part_id": "p_broken",
      "resolved_part_id": "p_broken",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9046,6 +9557,7 @@
      "problems": null,
      "ref_part_id": "p_broken_under",
      "resolved_part_id": "p_broken_under",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9077,6 +9589,7 @@
      "problems": null,
      "ref_part_id": "p_over",
      "resolved_part_id": "p_over",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9108,6 +9621,7 @@
      "problems": null,
      "ref_part_id": "p_near",
      "resolved_part_id": "p_near",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9139,6 +9653,7 @@
      "problems": null,
      "ref_part_id": "p_unsaved",
      "resolved_part_id": "p_unsaved",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9170,6 +9685,7 @@
      "problems": null,
      "ref_part_id": "p_unsaved",
      "resolved_part_id": "p_unsaved",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9201,6 +9717,7 @@
      "problems": null,
      "ref_part_id": "p_under",
      "resolved_part_id": "p_under",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9232,6 +9749,7 @@
      "problems": null,
      "ref_part_id": "p_fixed",
      "resolved_part_id": "p_fixed",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9257,6 +9775,7 @@
      "problems": null,
      "ref_part_id": "p_fixed_flag",
      "resolved_part_id": "p_fixed_flag",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9288,6 +9807,7 @@
      "problems": null,
      "ref_part_id": "p_full",
      "resolved_part_id": "p_full",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9313,6 +9833,7 @@
      "problems": null,
      "ref_part_id": "p_free",
      "resolved_part_id": "p_free",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -9343,7 +9864,9 @@
     "near": 1,
     "over_constrained": 1
    },
+   "status_failed": false,
    "status_included": true,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -9372,6 +9895,7 @@
      "problems": null,
      "ref_part_id": null,
      "resolved_part_id": null,
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9397,6 +9921,7 @@
      "problems": null,
      "ref_part_id": "p_broken",
      "resolved_part_id": "p_broken",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9422,6 +9947,7 @@
      "problems": null,
      "ref_part_id": "p_broken_under",
      "resolved_part_id": "p_broken_under",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9447,6 +9973,7 @@
      "problems": null,
      "ref_part_id": "p_over",
      "resolved_part_id": "p_over",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9472,6 +9999,7 @@
      "problems": null,
      "ref_part_id": "p_near",
      "resolved_part_id": "p_near",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9497,6 +10025,7 @@
      "problems": null,
      "ref_part_id": "p_unsaved",
      "resolved_part_id": "p_unsaved",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9522,6 +10051,7 @@
      "problems": null,
      "ref_part_id": "p_unsaved",
      "resolved_part_id": "p_unsaved",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9547,6 +10077,7 @@
      "problems": null,
      "ref_part_id": "p_under",
      "resolved_part_id": "p_under",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9572,6 +10103,7 @@
      "problems": null,
      "ref_part_id": "p_fixed",
      "resolved_part_id": "p_fixed",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9597,6 +10129,7 @@
      "problems": null,
      "ref_part_id": "p_fixed_flag",
      "resolved_part_id": "p_fixed_flag",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9622,6 +10155,7 @@
      "problems": null,
      "ref_part_id": "p_full",
      "resolved_part_id": "p_full",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -9647,6 +10181,7 @@
      "problems": null,
      "ref_part_id": "p_free",
      "resolved_part_id": "p_free",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -9677,7 +10212,9 @@
     "near": null,
     "over_constrained": null
    },
+   "status_failed": false,
    "status_included": false,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -9709,6 +10246,7 @@
        "problems": null,
        "ref_part_id": null,
        "resolved_part_id": null,
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -9741,6 +10279,7 @@
        "problems": null,
        "ref_part_id": "frame",
        "resolved_part_id": "frame",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -9781,6 +10320,7 @@
      },
      "ref_part_id": "sub",
      "resolved_part_id": "sub",
+     "status_failed": false,
      "suppressed": true,
      "truncated": false
     },
@@ -9812,6 +10352,7 @@
      "problems": null,
      "ref_part_id": "frame",
      "resolved_part_id": "frame",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -9842,7 +10383,9 @@
     "near": 0,
     "over_constrained": 0
    },
+   "status_failed": false,
    "status_included": true,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -9880,6 +10423,7 @@
        "problems": null,
        "ref_part_id": "bolt_u",
        "resolved_part_id": "bolt_u",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -9912,6 +10456,7 @@
        "problems": null,
        "ref_part_id": "bolt_u",
        "resolved_part_id": "bolt_u",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -9944,6 +10489,7 @@
        "problems": null,
        "ref_part_id": "plate_u",
        "resolved_part_id": "plate_u",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -9990,6 +10536,7 @@
      },
      "ref_part_id": "frame_asm",
      "resolved_part_id": "frame_asm",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -10024,6 +10571,7 @@
        "problems": null,
        "ref_part_id": "bolt_u",
        "resolved_part_id": "bolt_u",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -10056,6 +10604,7 @@
        "problems": null,
        "ref_part_id": "bolt_u",
        "resolved_part_id": "bolt_u",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       },
@@ -10088,6 +10637,7 @@
        "problems": null,
        "ref_part_id": "plate_u",
        "resolved_part_id": "plate_u",
+       "status_failed": false,
        "suppressed": false,
        "truncated": false
       }
@@ -10128,6 +10678,7 @@
      },
      "ref_part_id": "frame_asm",
      "resolved_part_id": "frame_asm",
+     "status_failed": false,
      "suppressed": true,
      "truncated": false
     }
@@ -10158,7 +10709,9 @@
     "near": 0,
     "over_constrained": 0
    },
+   "status_failed": false,
    "status_included": true,
+   "status_incomplete": false,
    "truncated": false,
    "truncated_depth": false,
    "truncated_nodes": false
@@ -10187,6 +10740,7 @@
      "problems": null,
      "ref_part_id": "cube",
      "resolved_part_id": "cube",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -10212,6 +10766,7 @@
      "problems": null,
      "ref_part_id": "cube",
      "resolved_part_id": "cube",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     },
@@ -10237,6 +10792,7 @@
      "problems": null,
      "ref_part_id": "cube",
      "resolved_part_id": "cube",
+     "status_failed": false,
      "suppressed": false,
      "truncated": false
     }
@@ -10267,7 +10823,9 @@
     "near": null,
     "over_constrained": null
    },
+   "status_failed": false,
    "status_included": false,
+   "status_incomplete": false,
    "truncated": true,
    "truncated_depth": false,
    "truncated_nodes": true

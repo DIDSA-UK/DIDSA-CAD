@@ -52,11 +52,8 @@ def case(name):
 
 class CheckedIn(unittest.TestCase):
     def test_checked_in_vectors_are_what_the_generator_writes(self):
-        self.assertEqual(
-            generate.OUT.read_text(),
-            generate.dumps(generate.build()),
-            "docs/assembly-tree/vectors.json is stale or was edited by hand: run python tools/assembly_tree_vectors/generate.py",
-        )
+        for path, text in generate.outputs().items():
+            self.assertEqual(path.read_text(), text, f"{path} is stale or was edited by hand: run python tools/assembly_tree_vectors/generate.py")
 
     def test_vectors_are_self_contained(self):
         """DIDSA-VR copies the file as-is: no machine paths, every case's tree is in the file."""
@@ -86,6 +83,12 @@ class DisplayNames(unittest.TestCase):
         self.assertEqual(ref.file_base_name("lib/v1.2/clip.step.didsa"), "clip.step")
         self.assertEqual(ref.file_base_name("parts/.washer"), ".washer")
         self.assertIsNone(ref.file_base_name(None))
+
+    def test_one_part_through_different_files_takes_the_first_name(self):
+        rows = {r["key"]: r["label"] for r in case("names_one_part_through_different_files")["expected"]}
+        self.assertEqual([rows[k] for k in ("r1", "r2", "r3", "r4", "r5")], ["left_arm <1>", "left_arm <2>", "left_arm <3>", "left_arm <4>", "Spare"])
+        grouped = {r["key"]: r["label"] for r in case("names_one_part_through_different_files_grouped")["expected"]}
+        self.assertEqual(grouped["#group:r1"], "left_arm x4")
 
     def test_instance_numbers(self):
         """Owner, 11 and 20 Nov: `Bolt <2>`. Numbered per Part among unnamed siblings; a renamed placement is not counted."""

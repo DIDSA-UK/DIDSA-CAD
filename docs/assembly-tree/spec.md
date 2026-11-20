@@ -38,6 +38,8 @@ A part id that does not exist is a 404; a value out of range is a 422.
 | `node_count` | int | Occurrence nodes listed (the root is not one) |
 | `max_depth`, `max_nodes` | int | The caps used |
 | `truncated_depth`, `truncated_nodes` | bool | A cap was hit somewhere: the tree is incomplete, and problem counts cover only what is listed |
+| `status_failed` | bool | The root's own level: as on a node (section 2) |
+| `status_incomplete` | bool | With `status`: some level anywhere has `status_failed` (section 2). Always false without `status` |
 
 **Node** (`AssemblyTreeNode`, one placed occurrence; every field is always present):
 
@@ -58,6 +60,7 @@ A part id that does not exist is a 404; a value out of range is a 422.
 | `placements` | int / null | How many nodes in this whole response place the same Part (suppressed ones included): "used N x". `null` when missing |
 | `cycle` | bool | The Part is already open above this node (placed inside itself): no children, see section 5 |
 | `truncated` | bool | The walk did not list (all of) this node's children because of a cap |
+| `status_failed` | bool | With `status`: this assembly level's status could not be computed (section 2). Always false without `status` and on non-assembly nodes |
 | `mates`, `patterns`, `problems` | object / null | On assembly nodes that were walked; `null` on parts, missing, cycle and depth-truncated nodes |
 | `children` | node[] | The placed Part's occurrences, in order (empty for parts, missing, cycle, depth-truncated) |
 
@@ -69,14 +72,15 @@ parent Part, plus the parent's mates touching it.
 | `status` | `fixed` / `fully_constrained` / `under_constrained` / `over_constrained` |
 | `dof` | Its own remaining degrees of freedom (0 for fixed / fully constrained) |
 | `rigid_set` | The rigid set it moves with (the set lead's occurrence id), or `null` |
-| `broken_mates` | Unsuppressed mates of the parent touching it (by the mate's top-level occurrences) whose status is `broken` |
+| `broken_mates` | Unsuppressed mates of the parent touching it (by the mate's top-level occurrences) whose status is `broken`, leaving out mates that also touch a suppressed occurrence |
 | `near_mates` | ... whose status is `near` |
 
 `free_motions` from `constraint-status` are not included.
 
 `mates` (`AssemblyTreeMates`, one assembly level's own mates): `count`, `suppressed`, and with `status` also `broken`, `near`
 (the `/mates` listing's `status`), `held` (its `held`) and `lost` (mates with `lost_references`); those four are `null`
-without `status`.
+without `status`, and leave out every mate touching a suppressed occurrence of this level (`count` and `suppressed` count
+every mate).
 
 `patterns` (`AssemblyTreePatterns`): `count`, `suppressed`. Pattern copies are not nodes.
 
@@ -92,19 +96,40 @@ the same `occurrence_id`s below it. A suppressed occurrence is listed, with its 
 model has loaded (the viewport's `assembly-mesh` fetch builds the same bodies), or in the background, and merges the answer
 (section 8).
 
+**Read-only.** The call never changes the document. (`GET /mates` writes re-found mate reference indices and adopted
+signatures back; this call checks the references the same way but writes nothing, so its status is what `/mates` would
+report.)
+
+**A level that fails.** Status is computed per distinct assembly Part. If that raises for one Part, the server logs it and
+every node of that Part (each placement, and the root when it is that Part) has `status_failed: true`, and
+`status_incomplete` is true on the response. On such a node: `mates.broken` / `near` / `held` / `lost` are `null`; its
+children's `constraint` is `null`; it adds 0 of its own to `problems` (counts from the levels below it still roll up).
+The node's own `constraint` belongs to its parent's level and is unaffected. The other levels are filled in as usual. So:
+
+| `status_included` | `status_failed` | Meaning of a `null` status field on that level |
+|---|---|---|
+| false | false | Status was not requested |
+| true | true | Status was requested and failed for this level (show "status unavailable", do not show it as healthy) |
+| true | false | Requested and computed: a `null` `constraint` is an occurrence `constraint-status` leaves out |
+
 Measured on this repo's dev container (4 vCPU Xeon 2.1 GHz, one process, `tests/bench_assembly_tree.py`; CI and the Pi will differ):
 
 | Tree | Occurrences | No `status` | `status=true`, cold | `status=true`, warm | Size (no status / status) |
 |---|---|---|---|---|---|
-| Gear-train demo (DIDSA-VR `demo/assemblies/gear_train`, 18 mates) | 9 | 5 ms (2 ms warm) | 5,459 ms | 21 ms | 5 / 6 kB |
-| ... after an `assembly-mesh` fetch | 9 | 6 ms | 93 ms | 20 ms | |
-| The demo placed 222 times under one root | 2,220 | 51 ms | 6,110 ms | 533 ms | 1,256 / 1,448 kB |
-| 40 sub-assemblies x 49 distinct parts, no mates | 2,000 | 34-169 ms | 1,537 ms | 1,600 ms | 896 / 1,079 kB |
+| Gear-train demo (DIDSA-VR `demo/assemblies/gear_train`, 18 mates) | 9 | 5 ms (3 ms warm) | 5,863 ms | 47 ms | 6 / 6 kB |
+| ... after an `assembly-mesh` fetch | 9 | 5 ms | 88 ms | 37 ms | |
+| The demo placed 222 times under one root | 2,220 | 72-74 ms | 6,594 ms | 527 ms | 1,310 / 1,501 kB |
+| 40 sub-assemblies x 49 distinct parts, no mates | 2,000 | 42-175 ms | 990 ms | 1,036 ms | 944 / 1,127 kB |
 
 - The cold `status` time is building the placed Parts' bodies (OCCT), which the first `assembly-mesh` fetch pays as well.
-- Status is computed once per distinct assembly Part, not per placement. Warm, it costs what `constraint-status` costs on a
-  wide level: about 0.75 ms per occurrence (a group model and free motions for each unmated occurrence), the same as calling
-  `constraint-status` for every assembly today.
+- Status is computed once per distinct assembly Part, not per placement. One body cache is shared by every level's mate
+  checks, and the constraint analysis skips free motions (`constraint_report(..., free_motions=False)`), which took the
+  distinct-parts tree from 1.6 s to 1.0 s warm.
+- What is left on wide levels is `constraint_report`'s own per-occurrence cost (a group model per unmated occurrence; its
+  cache key is built from the whole level each time), about 0.5 ms per occurrence: the same as `constraint-status` costs
+  today. Not changed here.
+- Being read-only costs the demo about 20 ms warm: references a `/mates` call would have signed once are checked again on
+  every call until something saves them.
 - Without `status`, a typical tree is well under the 300 ms target at any size measured. With it, a typical tree (the demo) is
   under 300 ms once the viewport has loaded, but a 2,000-occurrence tree is not, hence the default.
 
@@ -121,11 +146,14 @@ For each node, among its siblings:
 2. **Looks generated**: empty or only spaces; a UUID with or without dashes; or 16+ hex digits with an optional 1-6 letter
    prefix and `-` / `_` (`part-3f2a...`, `occ_ab12...`). Regexes: `^[0-9a-fA-F]{8}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{4}-?[0-9a-fA-F]{12}$`
    and `^(?:[A-Za-z]{1,6}[-_])?[0-9a-fA-F]{16,}$`, on the trimmed name.
-3. **Instance numbers**: siblings whose base name came from the Part name or the file name are "the same thing placed again"
-   when they place the same Part (`resolved_part_id`), or, when missing, the same `external_ref`. When two or more siblings
-   share that, each is named `Base <n>`, n = 1, 2, ... in sibling order among them. A renamed placement or a `Component N`
-   is never numbered and is not counted. One placement keeps the plain base name. Two different Parts with the same name are
-   not numbered.
+3. **Instance groups and numbers**: siblings without a name override that place the same Part (`resolved_part_id`), or,
+   when missing, the same `external_ref`, form one instance group (the **instance key**). The whole group takes one base
+   name: the Part's name unless it looks generated, else the file name of the **first member, in sibling order, whose file
+   name does not look generated** (so one Part placed through `parts/left_arm.didsa` and `parts/arm_copy.didsa` is
+   `left_arm` throughout, a member placed through a generated file name included). A group with neither has no instance
+   key: its members are each `Component N` (rule 1.4) and are neither numbered nor grouped. When a group has two or more
+   members, each is named `Base <n>`, n = 1, 2, ... in sibling order. A renamed placement is never numbered and is not
+   counted. One placement keeps the plain base name. Two different Parts with the same name are not numbered.
 4. Numbers are display-time only: they renumber after a delete.
 
 The root row's name is `part_name`. Group rows and folders: sections 4 and 7.
@@ -173,7 +201,8 @@ including its own:
 
 - `missing`: rows in state `missing`; `cycles`: rows in state `cycle`;
 - `over_constrained`: rows in state `over_constrained` (a row whose state is `broken` or `near` is not counted: its mates are);
-- `broken`, `near`: mates with that status, at this level and every level below.
+- `broken`, `near`: mates with that status, at this level and every level below, leaving out mates that touch a suppressed
+  occurrence of their level.
 
 Counted once per placement (a sub-assembly placed twice counts twice). A suppressed occurrence adds nothing (neither its own
 row nor its subtree) to the counts above it; its own `problems` are still filled in. Under a cap, counts cover what is listed.
@@ -260,6 +289,11 @@ what the generator writes; CI: `.github/workflows/assembly-tree-vectors.yml`). F
 
 A client passes when, for every case, its rows (or keys) equal `expected` exactly.
 
+The generator also writes `backend/tests/data/assembly_tree_rollup_vectors.json`: a few of the models as native documents
+(no features, no mates) with the tree `reference.build_tree` builds for them. `backend/tests/test_assembly_tree.py`
+imports each and requires the endpoint to answer exactly that tree, so the backend walk and the reference cannot drift
+apart.
+
 ## 10. Where the clients differed, and what this spec chose
 
 Settled by the owner (scope section 8): instance names `Bolt <2>` (Flutter had `bolt:2`); repeats grouped by default with a
@@ -268,7 +302,7 @@ switch. Chosen here where they differed and section 8 did not say:
 | Topic | Flutter (Nov 2026) | VR (Nov 2026) | This spec |
 |---|---|---|---|
 | Base name | override, file name, `Component N` (never the Part's name) | override, the Part's name (fetched), placeholder `Occurrence <id>` | override, Part name, file name, `Component N` (as 9.2 lists); generated names skipped at each step |
-| Which siblings are numbered | same `resolvedPartId ?? externalRef`, renamed ones still counted (gaps) | same Part, renamed and missing ones left out | same Part (missing: same file); renamed and `Component N` left out, no gaps |
+| Which siblings are numbered | same `resolvedPartId ?? externalRef`, renamed ones still counted (gaps) | same Part, renamed and missing ones left out | same Part (missing: same file), named after the Part or the first member's usable file name; renamed and `Component N` left out, no gaps |
 | Missing file state | red link-off in the trailing cluster | `warning` | `missing`, its own state, the most severe |
 | Over-constrained by `near` mates only | amber warning | (not handled) | `near`, amber |
 | A broken mate on a row | only as "red, not amber" on an over-constrained row; otherwise on the mate row | not on the row | `broken` state on every row it touches |

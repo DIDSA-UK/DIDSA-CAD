@@ -39,7 +39,7 @@ def file_base_name(external_ref: str | None) -> str | None:
 def base_name(node: dict[str, Any], sibling_index: int) -> tuple[str, str]:
     """(name, source): the name override, else the Part's name, else the file name, else `Component N` (N = 1-based place
     among the siblings). A Part name or file name that looks generated is skipped. `source` is `override`, `part`, `file`
-    or `ordinal`; only `part` and `file` names take instance numbers and group."""
+    or `ordinal`. For a single node; `sibling_names` names placements of the same Part alike."""
     override = node.get("name_override")
     if override is not None and override.strip() != "":
         return override, "override"
@@ -52,9 +52,15 @@ def base_name(node: dict[str, Any], sibling_index: int) -> tuple[str, str]:
     return f"Component {sibling_index + 1}", "ordinal"
 
 
-def instance_key(node: dict[str, Any], source: str) -> str | None:
-    """Which siblings count as "the same thing placed again": the resolved Part, or for a missing file its `external_ref`."""
-    if source not in ("part", "file"):
+def _has_override(node: dict[str, Any]) -> bool:
+    override = node.get("name_override")
+    return override is not None and override.strip() != ""
+
+
+def instance_key(node: dict[str, Any]) -> str | None:
+    """Which siblings are "the same thing placed again": unnamed placements of the same resolved Part, or, for a missing file,
+    of the same `external_ref`. A renamed placement has no key."""
+    if _has_override(node):
         return None
     if node.get("resolved_part_id"):
         return "part:" + node["resolved_part_id"]
@@ -64,18 +70,37 @@ def instance_key(node: dict[str, Any], source: str) -> str | None:
 
 
 def sibling_names(children: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Per child, in order: {name, base, key}. Siblings sharing an instance key are numbered `Base <1>`, `Base <2>`... in
-    sibling order; a key used once keeps the plain base name."""
-    bases = [base_name(child, i) for i, child in enumerate(children)]
-    keys = [instance_key(child, source) for child, (_, source) in zip(children, bases)]
+    """Per child, in order: {name, base, key}. Siblings sharing an instance key form one instance group, named alike: the
+    Part's name unless it looks generated, else the file name of the first member (in sibling order) whose file name does
+    not look generated. A group with neither has no name of its own: each member is `Component N` and is not numbered or
+    grouped (key None). Members of a group of two or more are numbered `Base <1>`, `Base <2>`... in sibling order; a group of
+    one keeps the plain base name. Every other child: `base_name`."""
+    keys = [instance_key(child) for child in children]
+    group_base: dict[str, str | None] = {}
+    for child, key in zip(children, keys):
+        if key is None:
+            continue
+        if key not in group_base:
+            part_name = child.get("part_name")
+            group_base[key] = part_name if key.startswith("part:") and not looks_generated(part_name) else None
+        if group_base[key] is None:
+            file_name = file_base_name(child.get("external_ref"))
+            if file_name is not None and not looks_generated(file_name):
+                group_base[key] = file_name
+    keys = [key if key is not None and group_base[key] is not None else None for key in keys]
     totals: dict[str, int] = {}
     for key in keys:
         if key is not None:
             totals[key] = totals.get(key, 0) + 1
     seen: dict[str, int] = {}
     out = []
-    for (base, _source), key in zip(bases, keys):
-        if key is not None and totals[key] > 1:
+    for i, (child, key) in enumerate(zip(children, keys)):
+        if key is None:
+            base = base_name(child, i)[0]
+            out.append({"name": base, "base": base, "key": None})
+            continue
+        base = group_base[key]
+        if totals[key] > 1:
             seen[key] = seen.get(key, 0) + 1
             out.append({"name": f"{base} <{seen[key]}>", "base": base, "key": key})
         else:
@@ -434,6 +459,7 @@ def build_tree(model: dict[str, Any], root_id: str, status: bool, max_depth: int
             "placements": None,
             "cycle": False,
             "truncated": False,
+            "status_failed": False,
             "mates": None,
             "patterns": None,
             "problems": None,
@@ -461,6 +487,7 @@ def build_tree(model: dict[str, Any], root_id: str, status: bool, max_depth: int
         "feature_count": root.get("feature_count", 0),
         "status_included": status,
         "truncated": False,
+        "status_failed": False,
         "mates": None,
         "patterns": None,
         "problems": None,
@@ -473,5 +500,5 @@ def build_tree(model: dict[str, Any], root_id: str, status: bool, max_depth: int
         totals[node["resolved_part_id"]] = totals.get(node["resolved_part_id"], 0) + 1
     for node in placed:
         node["placements"] = totals[node["resolved_part_id"]]
-    response.update(node_count=counter["nodes"], max_depth=max_depth, max_nodes=max_nodes, truncated_depth=counter["depth"], truncated_nodes=counter["cap"])
+    response.update(node_count=counter["nodes"], max_depth=max_depth, max_nodes=max_nodes, truncated_depth=counter["depth"], truncated_nodes=counter["cap"], status_incomplete=False)
     return response
