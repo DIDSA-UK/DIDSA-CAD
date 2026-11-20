@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
 
@@ -29,7 +30,11 @@ import 'package:didsa_cad_client/storage/project_root.dart';
 import 'package:didsa_cad_client/storage/storage_service.dart';
 import 'support/fake_project_store.dart';
 import 'support/in_memory_stores.dart';
-import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
+import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_helpers.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
+import 'package:didsa_cad_client/viewport3d/selection_list_drawer.dart';
+import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
@@ -41,6 +46,7 @@ import 'package:didsa_cad_client/viewport3d/feature_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/mirror_panel.dart';
 import 'package:didsa_cad_client/viewport3d/multi_select_action_bar.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_component_selection_drawer.dart';
+import 'package:didsa_cad_client/viewport3d/component_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/component_gizmo.dart';
 import 'package:didsa_cad_client/viewport3d/component_pattern_panel.dart';
 import 'package:didsa_cad_client/layout/layout_mode.dart';
@@ -138,6 +144,9 @@ class _FakeDocumentBackend {
 
   /// Every request that is not a GET, in order (so a test can check that nothing was written).
   final List<String> writes = [];
+
+  /// A4: every PATCH / DELETE of an occurrence that lives in a sub-assembly (`subOccurrences`): `part`, `id`, `method`, `body`.
+  final List<Map<String, dynamic>> subOccurrenceWrites = [];
 
   /// Sketch origin (Item 3b): every `POST .../features/sketch` body, every `origin` a `PATCH .../sketch-origin` sent (`'auto'`, a map, or null), and what the fake
   /// answers with: [autoStored] / [autoResolved] for `'auto'` (null = "no origin", the plane's own), [pickResolved] for a concrete origin.
@@ -245,9 +254,87 @@ class _FakeDocumentBackend {
   final List<Map<String, dynamic>> scenePatches = [];
 
   /// `GET .../constraint-status` for `part-1` (item 7) and how often it was
-  /// asked - the tree refreshes it next to the occurrence list.
+  /// asked - the tree refreshes it next to the occurrence list. A4: the Assembly tree reads it through `assembly-tree?status=true`
+  /// (the top level of `part-1`), so this map is what that answers as each occurrence's `constraint`.
   final Map<String, dynamic> constraintStatus = {};
   int constraintStatusRequests = 0;
+
+  /// A4: `GET .../assembly-tree`, answered from [occurrences] and [subOccurrences] (a sub-assembly's occurrences nest under the occurrence
+  /// that places it) the way the real route does: every request's query (plus the Part id under `part`), a switch for a backend without
+  /// the route (404), and the Part ids' feature counts a part row shows a chevron for.
+  final List<Map<String, String>> assemblyTreeRequests = [];
+  bool assemblyTreeMissing = false;
+  Map<String, int> treeFeatureCounts = {};
+
+  String _treePartName(String partId) => partId == 'part-1' ? partOneName : '${extraParts[partId]?['name'] ?? partId}';
+
+  Map<String, dynamic> assemblyTreeJson(String partId, {required bool status}) {
+    final seen = <String, int>{};
+    void count(List<dynamic> occs, Set<String> ancestors) {
+      for (final o in occs) {
+        final resolved = (o as Map)['resolved_part_id'] as String?;
+        if (resolved == null) continue;
+        seen[resolved] = (seen[resolved] ?? 0) + 1;
+        if (!ancestors.contains(resolved)) count(subOccurrences[resolved] ?? const [], {...ancestors, resolved});
+      }
+    }
+
+    List<Map<String, dynamic>> level(String owner, List<dynamic> occs, List<String> parentPath, Set<String> ancestors) {
+      return [
+        for (final raw in occs)
+          () {
+            final o = raw as Map<String, dynamic>;
+            final id = o['id'] as String;
+            final resolved = o['resolved_part_id'] as String?;
+            final path = [...parentPath, id];
+            final cycle = resolved != null && ancestors.contains(resolved);
+            final subs = resolved == null || cycle ? const <dynamic>[] : (subOccurrences[resolved] ?? const <dynamic>[]);
+            final constraint = status && owner == 'part-1' ? constraintStatus[id] : null;
+            return <String, dynamic>{
+              'occurrence_id': id,
+              'path': path,
+              'external_ref': o['external_ref'],
+              'ref_part_id': resolved,
+              'resolved_part_id': resolved,
+              'part_name': resolved == null ? null : _treePartName(resolved),
+              'name_override': o['name_override'],
+              'kind': resolved == null ? 'missing' : (subs.isNotEmpty ? 'assembly' : 'part'),
+              'fixed': o['fixed'] ?? false,
+              'hidden': o['hidden'] ?? false,
+              'suppressed': o['suppressed'] ?? false,
+              'color': o['color'],
+              if (constraint != null) 'constraint': constraint,
+              'feature_count': resolved == null ? null : (treeFeatureCounts[resolved] ?? 0),
+              'placements': resolved == null ? null : seen[resolved],
+              'cycle': cycle,
+              'children': level(resolved ?? '', subs, path, resolved == null ? ancestors : {...ancestors, resolved}),
+            };
+          }(),
+      ];
+    }
+
+    final rootOccs = partId == 'part-1' ? occurrences : (subOccurrences[partId] ?? const <dynamic>[]);
+    count(rootOccs, {partId});
+    final children = level(partId, rootOccs, const [], {partId});
+    final mateList = partId == 'part-1' ? mates : const <Map<String, dynamic>>[];
+    final patternList = partId == 'part-1' ? componentPatterns : const <Map<String, dynamic>>[];
+    return {
+      'part_id': partId,
+      'part_name': _treePartName(partId),
+      'kind': children.isEmpty ? 'part' : 'assembly',
+      'feature_count': treeFeatureCounts[partId] ?? 0,
+      'status_included': status,
+      if (mateList.isNotEmpty)
+        'mates': {
+          'count': mateList.length,
+          if (status) 'broken': mateList.where((m) => m['status'] == 'broken').length,
+          if (status) 'near': mateList.where((m) => m['status'] == 'near').length,
+        },
+      if (patternList.isNotEmpty) 'patterns': {'count': patternList.length},
+      'children': children,
+      'node_count': children.length,
+    };
+  }
   int _nextMateId = 1;
   int _nextPatternId = 1;
 
@@ -899,6 +986,13 @@ class _FakeDocumentBackend {
     }
     // Item 7: the Assembly tree's constraint badge. Scripted by tests via
     // [constraintStatus]; empty by default (no badge, plain fixed pin).
+    final assemblyTreeMatch = RegExp(r'^/document/parts/([^/]+)/assembly-tree$').firstMatch(path);
+    if (assemblyTreeMatch != null && method == 'GET') {
+      final treePart = assemblyTreeMatch.group(1)!;
+      assemblyTreeRequests.add({...request.url.queryParameters, 'part': treePart});
+      if (assemblyTreeMissing) return http.Response('not found', 404);
+      return _json(assemblyTreeJson(treePart, status: request.url.queryParameters['status'] == 'true'), 200);
+    }
     final constraintStatusMatch = RegExp(r'^/document/parts/([^/]+)/constraint-status$').firstMatch(path);
     if (constraintStatusMatch != null && method == 'GET') {
       constraintStatusRequests++;
@@ -1073,6 +1167,23 @@ class _FakeDocumentBackend {
           if (forRoot) ...extraAssemblyInstances,
         ],
       }, 200);
+    }
+    // A4: an occurrence of a sub-assembly (a Part other than `part-1`): the PATCH / DELETE a nested tree row sends to its parent Part.
+    final subOccurrenceMatch = RegExp(r'^/document/parts/([^/]+)/occurrences/([^/]+)$').firstMatch(path);
+    if (subOccurrenceMatch != null && subOccurrenceMatch.group(1) != 'part-1' && (method == 'PATCH' || method == 'DELETE')) {
+      final owner = subOccurrenceMatch.group(1)!;
+      final list = subOccurrences[owner] ?? const <Map<String, dynamic>>[];
+      final target = list.where((o) => o['id'] == subOccurrenceMatch.group(2)).firstOrNull;
+      if (target == null) return http.Response('not found: occurrence', 404);
+      subOccurrenceWrites.add({'part': owner, 'id': target['id'], 'method': method, 'body': body});
+      if (method == 'DELETE') {
+        subOccurrences[owner]!.removeWhere((o) => o['id'] == target['id']);
+        return http.Response('', 204);
+      }
+      if (body.containsKey('hidden')) target['hidden'] = body['hidden'];
+      if (body.containsKey('fixed')) target['fixed'] = body['fixed'];
+      if (body.containsKey('name_override')) target['name_override'] = (body['name_override'] as String).isEmpty ? null : body['name_override'];
+      return _json(target, 200);
     }
     final occurrencePatchMatch =
         RegExp(r'^/document/parts/part-1/occurrences/([^/]+)$').firstMatch(path);
@@ -1416,6 +1527,121 @@ Future<void> toggleSelectionMode(WidgetTester tester) => tapQuickButton(tester, 
 Future<void> openToolbar(WidgetTester tester) => tapQuickButton(tester, 'quick-menu-fab');
 
 /// Switches the lens through the Start menu's Part / Assembly switch ([to] is 'Part' or 'Assembly') and closes the menu.
+/// A4: the old Assembly panel's surface (what its fields said and what its callbacks did), over the real [AssemblyTreeView]: reads come from
+/// its model, and a "callback" is the gesture on the row that calls it (a long-press, a tap, a right click).
+class _TreeProbe {
+  _TreeProbe(this.tester);
+  final WidgetTester tester;
+
+  AssemblyTreeView get view => tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView));
+  AssemblyTreeModel get model => view.model;
+
+  static OccurrenceDto occurrenceOf(AssemblyTreeNodeDto n) => OccurrenceDto(
+        id: n.occurrenceId,
+        externalRef: n.externalRef,
+        resolvedPartId: n.resolvedPartId,
+        nameOverride: n.nameOverride,
+        transform: RigidTransformDto(translation: const [0.0, 0.0, 0.0], rotationAxis: const [0.0, 0.0, 1.0], rotationAngleDegrees: 0.0),
+        suppressed: n.suppressed,
+        hidden: n.hidden,
+        fixed: n.fixed,
+        color: n.color,
+      );
+
+  /// The components directly in the tree's root, in order.
+  List<OccurrenceDto> get occurrences => [for (final n in model.tree?.children ?? const <AssemblyTreeNodeDto>[]) occurrenceOf(n)];
+
+  /// The top-level selection (an id), or null.
+  String? get selectedOccurrenceId {
+    final key = model.selectedKey;
+    return key == null || key.isEmpty || key.contains('/') || key.contains('#') ? null : key;
+  }
+
+  Map<String, ConstraintStatusDto> get constraintStatusByOccurrenceId => topLevelConstraintStatus(model.tree!);
+
+  /// The mates and patterns the folders list, as the host gave them (a mate whose tone is error reads as broken).
+  List<AssemblyFolderItem> get mates => model.folderItems('#mates');
+  List<AssemblyFolderItem> get patterns => model.folderItems('#patterns');
+
+  /// Keys of the rows that show the unsaved dot (the root's key is the empty string).
+  List<String> get unsavedRowKeys => [for (final r in model.visibleRows()) if (r.state == AssemblyRowState.unsaved) r.key];
+
+  Set<String> get flashMateIds => view.flashItemIds;
+  int get flashToken => view.flashToken;
+
+  /// A tap on any row, by its key (the row must be listed: open its parents first).
+  Future<void> tapRow(String key) async {
+    view.onRowTap!(_row(key));
+    await tester.pump();
+  }
+
+  /// The row's own menu, as a right click opens it, and the entry [label] of it.
+  Future<void> menuAction(String key, String label) async {
+    view.onRowContextMenu!(_row(key), const Offset(300, 200));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    // The popup's own entry (the phone's selection bar has a Hide and an Isolate too).
+    await tester.tap(find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text(label)));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+  }
+
+  /// The "Focused on ..." row's Exit (the floating tree is slid off the screen while closed, so it is called, not tapped).
+  Future<void> exitFocus() async {
+    view.onExitFocus!();
+    await tester.pump();
+  }
+
+  AssemblyTreeRow _row(String key) => model.visibleRows().firstWhere((r) => r.key == key);
+
+  AssemblyTreeRow _itemRow(AssemblyRowKind kind, AssemblyFolderItem item) => AssemblyTreeRow(
+        key: '${kind == AssemblyRowKind.mate ? '#mates' : '#patterns'}#item:${item.id}',
+        kind: kind,
+        depth: 2,
+        label: item.label,
+        state: AssemblyRowState.none,
+        itemId: item.id,
+      );
+
+  // The old panel's callbacks are the view's own: the tests call them as they called the panel's (the floating tree is slid off the
+  // screen while closed, so a gesture could not reach its rows).
+
+  /// A long-press on the occurrence's row: the multi-select starts (its "More" opens the row menu).
+  Future<void> onOccurrenceLongPress(OccurrenceDto o) async {
+    view.onRowLongPress!(_row(o.id));
+    await tester.pump();
+  }
+
+  Future<void> onOccurrenceTap(OccurrenceDto o) async {
+    view.onRowTap!(_row(o.id));
+    await tester.pump();
+  }
+
+  Future<void> Function(OccurrenceDto)? get onOccurrenceVisibilityToggle => (o) async {
+        view.onVisibilityToggle!(_row(o.id));
+        await tester.pump();
+      };
+
+  /// The old colour disc: now the row menu's Appearance entry (a right click opens it at the cursor).
+  Future<void> Function(OccurrenceDto)? get onOccurrenceColorTap => (o) async {
+        view.onRowContextMenu!(_row(o.id), const Offset(300, 200));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.text('Appearance...'));
+        await tester.pump();
+      };
+
+  Future<void> Function(AssemblyFolderItem)? get onPatternTap => (item) async {
+        view.onRowTap!(_itemRow(AssemblyRowKind.pattern, item));
+        await tester.pump();
+      };
+
+  Future<void> Function(AssemblyFolderItem)? get onPatternLongPress => (item) async {
+        view.onRowLongPress!(_itemRow(AssemblyRowKind.pattern, item));
+        await tester.pump();
+      };
+}
+
 Future<void> switchLens(WidgetTester tester, String to) async {
   await openStartMenu(tester);
   await tester.tap(find.descendant(of: find.byKey(const ValueKey('start-lens')), matching: find.text(to)));
@@ -2422,7 +2648,7 @@ void main() {
       await _settleSheet(tester);
       await tester.tap(find.byTooltip('More actions'));
       await _settleSheet(tester);
-      await tester.tap(find.text('Hide'));
+      await tester.tap(find.widgetWithText(ListTile, 'Hide'));
       await settleRequests(tester);
       await _settleSheet(tester);
 
@@ -4689,10 +4915,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     // Not yet hidden - the context menu's toggle entry must offer "Hide".
-    expect(find.text('Hide'), findsOneWidget);
+    expect(find.widgetWithText(ListTile, 'Hide'), findsOneWidget);
     expect(find.text('Show'), findsNothing);
 
-    await tester.tap(find.text('Hide'));
+    await tester.tap(find.widgetWithText(ListTile, 'Hide'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -4710,10 +4936,10 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     // The menu now offers "Show" instead, reflecting the toggled state.
-    expect(find.text('Show'), findsOneWidget);
+    expect(find.widgetWithText(ListTile, 'Show'), findsOneWidget);
     expect(find.text('Hide'), findsNothing);
 
-    await tester.tap(find.text('Show'));
+    await tester.tap(find.widgetWithText(ListTile, 'Show'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -4766,7 +4992,7 @@ void main() {
     await tester.tap(find.byTooltip('More actions'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Hide'));
+    await tester.tap(find.widgetWithText(ListTile, 'Hide'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -6112,10 +6338,10 @@ void main() {
             ),
           ),
         );
-        await _pumpUntil(tester, () => find.byType(AssemblyTreePanel).evaluate().isNotEmpty);
+        await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty);
 
-        expect(find.byType(AssemblyTreePanel), findsOneWidget);
-        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        expect(find.byType(AssemblyTreeView), findsOneWidget);
+        final panel = _TreeProbe(tester);
         expect(panel.occurrences.single.id, 'occ-1');
       },
     );
@@ -6409,7 +6635,7 @@ void main() {
       expect(find.byKey(const ValueKey('error-banner-dismiss')), findsNothing, reason: 'not the global banner');
     });
 
-    testWidgets('item 7: the tree fetches constraint-status with the occurrence list and passes it to the panel', (
+    testWidgets('item 7 (A4): the tree reads constraint status with assembly-tree?status=true, after the structure', (
       tester,
     ) async {
       final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1')]);
@@ -6427,8 +6653,9 @@ void main() {
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
       await switchLens(tester, 'Assembly');
 
-      expect(backend.constraintStatusRequests, greaterThan(0));
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      // The structure first (no status), then the status in the background; each part of the answer lands in the rows.
+      expect(backend.assemblyTreeRequests.map((r) => r['status']), [null, 'true']);
+      final panel = _TreeProbe(tester);
       expect(panel.constraintStatusByOccurrenceId['occ-1']?.state, ConstraintState.underConstrained);
       expect(panel.constraintStatusByOccurrenceId['occ-1']?.dof, 3);
     });
@@ -6438,12 +6665,12 @@ void main() {
     ) async {
       await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      final panel = _TreeProbe(tester);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      final inPanel = find.descendant(of: find.byType(AssemblyTreePanel), matching: find.byType(MultiSelectActionBar));
+      final inPanel = find.descendant(of: find.byType(AssemblyTreeView), matching: find.byType(MultiSelectActionBar));
       expect(inPanel, findsOneWidget);
       expect(find.byType(DraggableScrollableSheet), findsNothing);
       expect(find.text('1 selected'), findsOneWidget);
@@ -6452,9 +6679,9 @@ void main() {
     testWidgets('Hide PATCHes hidden:true and the tree reflects it after refetch', (tester) async {
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       expect(panel.occurrences.single.hidden, isFalse);
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6463,12 +6690,12 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      await tester.tap(find.text('Hide'));
+      await tester.tap(find.widgetWithText(ListTile, 'Hide'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(backend.occurrences.single['hidden'], isTrue);
-      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final refreshed = _TreeProbe(tester);
       expect(refreshed.occurrences.single.hidden, isTrue);
     });
 
@@ -6480,9 +6707,9 @@ void main() {
       // Show genuinely un-hides it, not just this session's own view of it.
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1', hidden: true)]);
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       expect(panel.occurrences.single.hidden, isTrue);
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6491,13 +6718,13 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      expect(find.text('Show'), findsOneWidget);
-      await tester.tap(find.text('Show'));
+      expect(find.widgetWithText(ListTile, 'Show'), findsOneWidget);
+      await tester.tap(find.widgetWithText(ListTile, 'Show'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(backend.occurrences.single['hidden'], isFalse);
-      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final refreshed = _TreeProbe(tester);
       expect(refreshed.occurrences.single.hidden, isFalse);
     });
 
@@ -6507,9 +6734,9 @@ void main() {
         seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
       );
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
-      panel.onOccurrenceLongPress(target);
+      await panel.onOccurrenceLongPress(target);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6518,7 +6745,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      await tester.tap(find.text('Isolate'));
+      await tester.tap(find.widgetWithText(ListTile, 'Isolate'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -6533,9 +6760,9 @@ void main() {
         seedOccurrences: [occurrence('occ-1'), occurrence('occ-2', hidden: true)],
       );
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
-      panel.onOccurrenceLongPress(target);
+      await panel.onOccurrenceLongPress(target);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6544,7 +6771,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      await tester.tap(find.text('Isolate'));
+      await tester.tap(find.widgetWithText(ListTile, 'Isolate'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -6559,9 +6786,9 @@ void main() {
     testWidgets('Fix PATCHes fixed:true and the tree reflects it after refetch', (tester) async {
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1')]);
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       expect(panel.occurrences.single.fixed, isFalse);
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6575,16 +6802,16 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(backend.occurrences.single['fixed'], isTrue);
-      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final refreshed = _TreeProbe(tester);
       expect(refreshed.occurrences.single.fixed, isTrue);
     });
 
     testWidgets('Float PATCHes fixed:false, and Move/Rotate re-enables', (tester) async {
       final backend = await openInAssemblyLens(tester, seedOccurrences: [occurrence('occ-1', fixed: true)]);
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       expect(panel.occurrences.single.fixed, isTrue);
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6606,10 +6833,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(backend.occurrences.single['fixed'], isFalse);
-      final refreshed = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final refreshed = _TreeProbe(tester);
       expect(refreshed.occurrences.single.fixed, isFalse);
 
-      refreshed.onOccurrenceLongPress(refreshed.occurrences.single);
+      await refreshed.onOccurrenceLongPress(refreshed.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6648,8 +6875,8 @@ void main() {
       await toggleSelectionMode(tester);
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectionMode, isTrue);
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      final panel = _TreeProbe(tester);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -6774,8 +7001,8 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
       await switchLens(tester, 'Assembly');
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onOccurrenceLongPress(panel.occurrences.firstWhere((o) => o.id == target));
+      final panel = _TreeProbe(tester);
+      await panel.onOccurrenceLongPress(panel.occurrences.firstWhere((o) => o.id == target));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.byTooltip('More actions'));
@@ -6833,8 +7060,7 @@ void main() {
       expect((commits.single['transform'] as Map)['translation'], [4.0, 6.0, 9.0], reason: 'the release-time WISH');
       expect((backend.occurrences[0]['transform'] as Map)['translation'], [4.0, 6.0, 0.0]);
       expect((backend.occurrences[1]['transform'] as Map)['translation'], [34.0, 0.0, 0.0]);
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      expect(panel.occurrences.firstWhere((o) => o.id == 'occ-2').transform.translation[0], closeTo(34, 1e-9));
+      // (A4: the tree's rows carry no transforms; the follower's pose is the backend's, checked just above.)
       expect(find.byTooltip('Undo move'), findsOneWidget);
 
       // One undo reverses the grabbed occurrence AND the follower.
@@ -6944,8 +7170,8 @@ void main() {
         ],
         target: 'occ-1',
       );
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onPatternTap!(panel.patterns.single); // opens the Pattern panel on the stored pattern: its orient_with_rotation is the preview's
+      final panel = _TreeProbe(tester);
+      await panel.onPatternTap!(panel.patterns.single); // opens the Pattern panel on the stored pattern: its orient_with_rotation is the preview's
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       final viewport = tester.widget<PartViewport>(find.byType(PartViewport));
@@ -7183,8 +7409,8 @@ void main() {
       await switchLens(tester, 'Assembly');
 
       // Plain selection (a tap on the tree row): the component's context drawer shows.
-      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onOccurrenceTap(panel.occurrences.firstWhere((o) => o.id == 'occ-1'));
+      var panel = _TreeProbe(tester);
+      await panel.onOccurrenceTap(panel.occurrences.firstWhere((o) => o.id == 'occ-1'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(find.byType(AssemblyComponentSelectionDrawer), findsOneWidget);
@@ -7194,7 +7420,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
-      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel = _TreeProbe(tester);
       expect(panel.selectedOccurrenceId, isNull);
     });
 
@@ -7218,8 +7444,8 @@ void main() {
       // Move/Rotate panel is open, so no lens round trip: a tree row's eye toggle refreshes the tree just the same.
       plateFixed = true;
       backend.occurrences[1]['fixed'] = true;
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceVisibilityToggle!(tree.occurrences.firstWhere((o) => o.id == 'occ-2'));
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceVisibilityToggle!(tree.occurrences.firstWhere((o) => o.id == 'occ-2'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await settle(tester);
@@ -7292,7 +7518,7 @@ void main() {
   // so the menu could never actually show "Exit Focus" for a real nested
   // focus. `currentOccurrencePath.contains(occurrence.id)` fixes this.
   group('Assembly support Phase 10: Focus/Exit-Focus label', () {
-    testWidgets('long-pressing the just-focused Occurrence again offers Exit Focus, not Make Focus', (
+    testWidgets('after Make Focus the tree shows the focused Part, and its Exit row walks back one level', (
       tester,
     ) async {
       final occurrenceJson = {
@@ -7325,14 +7551,14 @@ void main() {
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
       await switchLens(tester, 'Assembly');
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       final occurrence = panel.occurrences.single;
 
       // First long-press: unfocused, offers Make Focus - taking it pushes
       // the focus stack (this Occurrence's own `resolvedPartId` becomes the
       // new primary Part, and `AssemblyFocusStack.currentOccurrencePath`
       // records `occurrence.id`).
-      panel.onOccurrenceLongPress(occurrence);
+      await panel.onOccurrenceLongPress(occurrence);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -7345,28 +7571,16 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      // Second long-press on the *same* Occurrence: the old
-      // `focusStack.current == resolvedPartId` comparison could never be
-      // true here (the Assembly tree only ever shows a Part's own
-      // *children* - this Occurrence itself was never re-listed as a
-      // child of the Part it now names), so the menu would incorrectly
-      // still offer "Make Focus" again. The fixed `currentOccurrencePath`
-      // check correctly recognizes this Occurrence as the one just focused.
-      final refreshedPanel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      final sameOccurrence = refreshedPanel.occurrences.firstWhere(
-        (o) => o.id == occurrence.id,
-        orElse: () => occurrence,
-      );
-      refreshedPanel.onOccurrenceLongPress(sameOccurrence);
+      // A4: the tree now shows the focused Part's own children, so the focused component has no row of its own to long-press again; the way
+      // back out is the "Focused on ..." row's Exit (the old panel's breadcrumb), which pops one level.
+      expect(find.byKey(const ValueKey('tree-exit-focus')), findsOneWidget);
+      expect(find.textContaining('Focused on'), findsOneWidget);
+      expect(_TreeProbe(tester).occurrences, isEmpty, reason: 'the focused leaf has no components of its own');
+      await _TreeProbe(tester).exitFocus();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      // Feature 1 (tree multi-select): long-press now enters multi-select;
-      // the row's own context menu is behind the action bar's "More".
-      await tester.tap(find.byTooltip('More actions'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      expect(find.text('Exit Focus'), findsOneWidget);
-      expect(find.text('Make Focus'), findsNothing);
+      expect(find.byKey(const ValueKey('tree-exit-focus')), findsNothing);
+      expect(_TreeProbe(tester).occurrences.map((o) => o.id), [occurrence.id]);
     });
   });
 
@@ -7468,11 +7682,11 @@ void main() {
         seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
       );
       backend.brokenMateIdsOnPatternEdit = ['mate-1'];
-      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      expect(panel.mates.single.isBroken, isFalse);
+      var panel = _TreeProbe(tester);
+      expect(panel.mates.single.tone, isNull);
       expect(panel.flashMateIds, isEmpty);
 
-      panel.onPatternTap!(panel.patterns.single);
+      await panel.onPatternTap!(panel.patterns.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       tester
@@ -7484,8 +7698,8 @@ void main() {
       }
 
       expect(backend.patternPatches, hasLength(1));
-      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      expect(panel.mates.single.isBroken, isTrue, reason: 'the refreshed tree carries the mate\'s status');
+      panel = _TreeProbe(tester);
+      expect(panel.mates.single.tone, AssemblyItemTone.error, reason: 'the refreshed tree carries the mate\'s status');
       expect(panel.flashMateIds, {'mate-1'});
       expect(panel.flashToken, 1);
       expect(find.text('Pattern updated - 1 mate could not be kept'), findsOneWidget);
@@ -7501,8 +7715,8 @@ void main() {
         seedOccurrences: [occurrence('occ-1')],
         seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
       );
-      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onPatternTap!(panel.patterns.single);
+      var panel = _TreeProbe(tester);
+      await panel.onPatternTap!(panel.patterns.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       tester
@@ -7513,7 +7727,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 50));
       }
       expect(backend.patternPatches, hasLength(1));
-      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel = _TreeProbe(tester);
       expect(panel.flashMateIds, isEmpty);
       expect(find.textContaining('could not be kept'), findsNothing);
     });
@@ -7524,8 +7738,8 @@ void main() {
         seedOccurrences: [occurrence('occ-1')],
         seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
       );
-      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onPatternLongPress!(panel.patterns.single);
+      var panel = _TreeProbe(tester);
+      await panel.onPatternLongPress!(panel.patterns.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(find.text('Edit'), findsOneWidget);
@@ -7543,7 +7757,7 @@ void main() {
       await tester.pump(const Duration(milliseconds: 250));
 
       expect(backend.dissolveCalls, ['part-1/pattern-1'], reason: 'one call, routed through the focused part');
-      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      panel = _TreeProbe(tester);
       expect(panel.patterns, isEmpty, reason: 'the tree was refreshed');
       expect(panel.occurrences.map((o) => o.id), containsAll(['occ-1', 'dissolved-1', 'dissolved-2']));
     });
@@ -7554,8 +7768,8 @@ void main() {
         seedOccurrences: [occurrence('occ-1')],
         seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
       );
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onPatternLongPress!(panel.patterns.single);
+      final panel = _TreeProbe(tester);
+      await panel.onPatternLongPress!(panel.patterns.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       await tester.tap(find.text('Dissolve'));
@@ -7565,7 +7779,7 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       expect(backend.dissolveCalls, isEmpty);
-      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).patterns, hasLength(1));
+      expect(_TreeProbe(tester).patterns, hasLength(1));
     });
 
     testWidgets('Dissolve is disabled for a suppressed pattern (and makes no call when tapped)', (tester) async {
@@ -7576,8 +7790,8 @@ void main() {
           {...patternSourcedFrom('pattern-1', ['occ-1']), 'suppressed': true},
         ],
       );
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onPatternLongPress!(panel.patterns.single);
+      final panel = _TreeProbe(tester);
+      await panel.onPatternLongPress!(panel.patterns.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       final dissolve = tester.widget<ListTile>(find.ancestor(of: find.text('Dissolve'), matching: find.byType(ListTile)));
@@ -7596,9 +7810,9 @@ void main() {
         seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
       );
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
-      panel.onOccurrenceLongPress(target);
+      await panel.onOccurrenceLongPress(target);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -7629,9 +7843,9 @@ void main() {
         seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
       );
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final panel = _TreeProbe(tester);
       final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
-      panel.onOccurrenceLongPress(target);
+      await panel.onOccurrenceLongPress(target);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -7660,8 +7874,8 @@ void main() {
         seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
       );
 
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      final panel = _TreeProbe(tester);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -7743,8 +7957,8 @@ void main() {
       final rootFeaturesGetCountBeforeFocus = backend.featuresGetCount;
 
       await switchLens(tester, 'Assembly');
-      final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      panel.onOccurrenceLongPress(panel.occurrences.single);
+      final panel = _TreeProbe(tester);
+      await panel.onOccurrenceLongPress(panel.occurrences.single);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
       // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -7770,20 +7984,8 @@ void main() {
       expect(backend.featuresGetCount, rootFeaturesGetCountBeforeFocus);
 
       // Exit Focus: back to the root - its own routes are hit again.
-      final refocusedPanel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      final sameOccurrence = refocusedPanel.occurrences.firstWhere(
-        (o) => o.id == 'occ-1',
-        orElse: () => panel.occurrences.single,
-      );
-      refocusedPanel.onOccurrenceLongPress(sameOccurrence);
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      // Feature 1 (tree multi-select): long-press now enters multi-select;
-      // the row's own context menu is behind the action bar's "More".
-      await tester.tap(find.byTooltip('More actions'));
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 250));
-      await tester.tap(find.text('Exit Focus'));
+      // A4: the way out is the tree's own "Focused on ..." row (its Exit).
+      await _TreeProbe(tester).exitFocus();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
@@ -7836,8 +8038,8 @@ void main() {
         expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusOccurrenceColorHex, isNull);
 
         await switchLens(tester, 'Assembly');
-        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-        panel.onOccurrenceLongPress(panel.occurrences.single);
+        final panel = _TreeProbe(tester);
+        await panel.onOccurrenceLongPress(panel.occurrences.single);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
         // Feature 1 (tree multi-select): long-press now enters multi-select;
@@ -7851,20 +8053,8 @@ void main() {
 
         expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusOccurrenceColorHex, '#AABBCC');
 
-        final refocusedPanel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-        final sameOccurrence = refocusedPanel.occurrences.firstWhere(
-          (o) => o.id == 'occ-1',
-          orElse: () => panel.occurrences.single,
-        );
-        refocusedPanel.onOccurrenceLongPress(sameOccurrence);
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
-        // Feature 1 (tree multi-select): long-press now enters multi-select;
-        // the row's own context menu is behind the action bar's "More".
-        await tester.tap(find.byTooltip('More actions'));
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 250));
-        await tester.tap(find.text('Exit Focus'));
+        // A4: the way out is the tree's own "Focused on ..." row (its Exit).
+        await _TreeProbe(tester).exitFocus();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
 
@@ -8405,7 +8595,7 @@ void main() {
         // own "first component is grounded by convention" rule).
         expect(backend.occurrences.single['fixed'], isTrue);
 
-        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        final panel = _TreeProbe(tester);
         expect(panel.occurrences, hasLength(1));
 
         // Both the new component and its parent ("Part 1") were silently
@@ -8808,8 +8998,8 @@ void main() {
 
         await switchLens(tester, 'Assembly');
 
-        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-        panel.onOccurrenceLongPress(panel.occurrences.single);
+        final panel = _TreeProbe(tester);
+        await panel.onOccurrenceLongPress(panel.occurrences.single);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.byTooltip('More actions'));
@@ -8864,9 +9054,9 @@ void main() {
 
         await switchLens(tester, 'Assembly');
 
-        final panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+        final panel = _TreeProbe(tester);
         final target = panel.occurrences.firstWhere((o) => o.id == 'occ-1');
-        panel.onOccurrenceLongPress(target);
+        await panel.onOccurrenceLongPress(target);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
         await tester.tap(find.byTooltip('More actions'));
@@ -9383,8 +9573,8 @@ void main() {
       final storage = _FakeStorageService()..pickerCancels = true;
       await pumpWithComponent(tester, storage);
 
-      expect(find.byType(AssemblyTreePanel), findsOneWidget);
-      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).occurrences, isEmpty);
+      expect(find.byType(AssemblyTreeView), findsOneWidget);
+      expect(_TreeProbe(tester).occurrences, isEmpty);
     });
 
     testWidgets('plain Save writes the new component and its parent, and the tree marks both until then', (
@@ -9393,10 +9583,11 @@ void main() {
       final storage = _FakeStorageService();
       final toolbar = await pumpWithComponent(tester, storage);
 
-      var panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      expect(panel.neverSavedPartIds, hasLength(1));
-      expect(panel.parentUnsaved, isTrue);
-      expect(find.byKey(const Key('unsaved-dot-new')), findsOneWidget);
+      // A4: one unsaved dot per row (a never-saved Part is unsaved too): the new component, and the root it was added to.
+      var panel = _TreeProbe(tester);
+      expect(panel.unsavedRowKeys, hasLength(2));
+      expect(panel.unsavedRowKeys, contains(''), reason: 'the parent');
+      expect(find.byKey(const ValueKey('tree-state::unsaved')), findsOneWidget);
       expect(storage.files, isEmpty);
 
       toolbar().onSaveNative!();
@@ -9404,11 +9595,9 @@ void main() {
 
       expect(storage.files.keys, containsAll(['Part 1.didsa', 'Component 1.didsa']));
       expect(find.text('Saved 2 files'), findsOneWidget);
-      panel = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      expect(panel.neverSavedPartIds, isEmpty);
-      expect(panel.unsavedPartIds, isEmpty);
-      expect(panel.parentUnsaved, isFalse);
-      expect(find.byKey(const Key('unsaved-dot-new')), findsNothing);
+      panel = _TreeProbe(tester);
+      expect(panel.unsavedRowKeys, isEmpty);
+      expect(find.byKey(const ValueKey('tree-state::unsaved')), findsNothing);
       expect(toolbar().hasUnsavedChanges, isFalse);
     });
 
@@ -9426,7 +9615,7 @@ void main() {
       await tester.tap(find.text('Close'));
       await settle(tester);
       expect(toolbar().hasUnsavedChanges, isTrue);
-      expect(tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel)).neverSavedPartIds, hasLength(1));
+      expect(_TreeProbe(tester).unsavedRowKeys, isNotEmpty);
     });
 
     testWidgets('leaving with unsaved parts names them', (tester) async {
@@ -9947,8 +10136,8 @@ void main() {
 
     testWidgets('the colour disc opens the Appearance panel; a row paints into the root; hover previews; undo clears', (tester) async {
       final backend = await openAssembly(tester);
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceColorTap!(tree.occurrences.first);
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceColorTap!(tree.occurrences.first);
       await settle(tester);
       expect(find.byKey(const ValueKey('appearance-panel-slot')), findsOneWidget);
       final panel = tester.widget<AppearancePanel>(find.byType(AppearancePanel));
@@ -10001,12 +10190,12 @@ void main() {
       await settle(tester);
 
       // Hide occ-1 while the scene shows: the viewport hides it, the model doesn't.
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceLongPress(tree.occurrences.first);
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceLongPress(tree.occurrences.first);
       await settle(tester);
       await tester.tap(find.byTooltip('More actions'));
       await settle(tester);
-      await tester.tap(find.text('Hide'));
+      await tester.tap(find.widgetWithText(ListTile, 'Hide'));
       await settle(tester);
       expect(backend.occurrences.first['hidden'], isFalse, reason: 'nothing sent: the scene hides it');
       expect(viewport(tester).assemblyInstances.firstWhere((i) => i.occurrencePath.join('/') == 'occ-1').hidden, isTrue);
@@ -10051,12 +10240,12 @@ void main() {
       await settle(tester);
       tester.widget<ScenesPanel>(find.byType(ScenesPanel)).onClose();
       await settle(tester);
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceLongPress(tree.occurrences.last);
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceLongPress(tree.occurrences.last);
       await settle(tester);
       await tester.tap(find.byTooltip('More actions'));
       await settle(tester);
-      await tester.tap(find.text('Hide'));
+      await tester.tap(find.widgetWithText(ListTile, 'Hide'));
       await settle(tester);
 
       await tapStartCommand(tester, 'Scenes', tab: 'evaluate');
@@ -10408,10 +10597,10 @@ void main() {
 
         final ops = <String, Future<void> Function()>{
           'open appearance via disc': () async {
-            if (find.byType(AssemblyTreePanel).evaluate().isEmpty) return;
-            final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+            if (find.byType(AssemblyTreeView).evaluate().isEmpty) return;
+            final tree = _TreeProbe(tester);
             if (tree.occurrences.isEmpty) return;
-            tree.onOccurrenceColorTap!(tree.occurrences[rng.nextInt(tree.occurrences.length)]);
+            await tree.onOccurrenceColorTap!(tree.occurrences[rng.nextInt(tree.occurrences.length)]);
             await settle();
           },
           'brush a colour': () async {
@@ -10470,10 +10659,10 @@ void main() {
             await settle();
           },
           'hide a component (long press)': () async {
-            if (find.byType(AssemblyTreePanel).evaluate().isEmpty) return;
-            final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+            if (find.byType(AssemblyTreeView).evaluate().isEmpty) return;
+            final tree = _TreeProbe(tester);
             if (tree.occurrences.isEmpty) return;
-            tree.onOccurrenceLongPress(tree.occurrences[rng.nextInt(tree.occurrences.length)]);
+            await tree.onOccurrenceLongPress(tree.occurrences[rng.nextInt(tree.occurrences.length)]);
             await settle();
           },
           'answer a dialog': () async {
@@ -10635,8 +10824,8 @@ void main() {
 
     /// Long press a tree row, then the menu entry (a long press enters multi-select; the menu is behind More actions).
     Future<void> menuAction(WidgetTester tester, String occurrenceId, String label) async {
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceLongPress(tree.occurrences.firstWhere((o) => o.id == occurrenceId));
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceLongPress(tree.occurrences.firstWhere((o) => o.id == occurrenceId));
       await settle(tester);
       await tester.tap(find.byTooltip('More actions'));
       await settle(tester);
@@ -10649,8 +10838,8 @@ void main() {
 
     testWidgets('the menu lists Edit Alone first, above Make Focus', (tester) async {
       await open(tester);
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceLongPress(tree.occurrences.first);
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceLongPress(tree.occurrences.first);
       await settle(tester);
       await tester.tap(find.byTooltip('More actions'));
       await settle(tester);
@@ -10666,7 +10855,7 @@ void main() {
       expect(viewport(tester).focusedOccurrencePath, ['occ-1']);
       expect(pill, findsOneWidget);
       expect(find.descendant(of: pill, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
-      expect(find.byType(AssemblyTreePanel), findsNothing, reason: 'Part lens: the assembly tree is not mounted');
+      expect(find.byType(AssemblyTreeView), findsNothing, reason: 'Part lens: the assembly tree is not mounted');
       // The way back is a button on the pill, and in the ribbon.
       expect(done, findsOneWidget);
 
@@ -10675,7 +10864,7 @@ void main() {
       expect(viewport(tester).soloFocus, isFalse);
       expect(viewport(tester).focusedOccurrencePath, isEmpty);
       expect(pill, findsNothing);
-      expect(find.byType(AssemblyTreePanel), findsOneWidget, reason: 'the lens before (Assembly) is back');
+      expect(find.byType(AssemblyTreeView), findsOneWidget, reason: 'the lens before (Assembly) is back');
       expect(backend.writes, isEmpty, reason: 'entering and leaving never write (no hidden flags)');
     });
 
@@ -10684,7 +10873,7 @@ void main() {
       await menuAction(tester, 'occ-2', 'Edit Alone');
       expect(viewport(tester).soloFocus, isTrue);
       expect(viewport(tester).focusedOccurrencePath, ['occ-2']);
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
+      final tree = _TreeProbe(tester);
       expect(tree.occurrences.map((o) => o.id), ['occ-3']);
       await tester.tap(done);
       await settle(tester);
@@ -10695,8 +10884,8 @@ void main() {
     testWidgets('Make Focus inside Edit Alone, then Done: back to the start in one step; no nested Edit Alone', (tester) async {
       await open(tester);
       await menuAction(tester, 'occ-2', 'Edit Alone');
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceLongPress(tree.occurrences.single);
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceLongPress(tree.occurrences.single);
       await settle(tester);
       await tester.tap(find.byTooltip('More actions'));
       await settle(tester);
@@ -10754,8 +10943,8 @@ void main() {
 
     testWidgets('the selected component\'s drawer has an Edit Alone button first', (tester) async {
       await open(tester);
-      final tree = tester.widget<AssemblyTreePanel>(find.byType(AssemblyTreePanel));
-      tree.onOccurrenceTap(tree.occurrences.firstWhere((o) => o.id == 'occ-1'));
+      final tree = _TreeProbe(tester);
+      await tree.onOccurrenceTap(tree.occurrences.firstWhere((o) => o.id == 'occ-1'));
       await settle(tester);
       final button = find.byKey(const ValueKey('component-edit-alone'));
       expect(button, findsOneWidget);
@@ -11132,4 +11321,492 @@ void main() {
       expect(sketchBackend.orientationPatches.last, (false, 0), reason: '...and the orientation, as before');
     });
   });
+
+  // A4 (`docs/assembly-tree-overhaul-scope.md` 9.6): the Assembly tree is `AssemblyTreeView` over `GET /parts/{id}/assembly-tree`, with
+  // selection and actions by path. The fixture: `asm-1` and `asm-2` both place the sub-assembly `sub` (children `c1`, `c2`), beside `plate`.
+  group('Assembly tree (A4)', () {
+    Map<String, dynamic> occ(String id, {String? part, bool fixed = false, bool hidden = false, String? ref, String? name}) => {
+          'id': id,
+          'external_ref': ref ?? 'parts/$id.didsa',
+          'resolved_part_id': part ?? '$id-part',
+          'name_override': name,
+          'transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'suppressed': false,
+          'hidden': hidden,
+          'fixed': fixed,
+        };
+
+    Map<String, dynamic> instance(List<String> path) => {
+          'occurrence_path': path,
+          'part_id': '${path.last}-part',
+          'world_transform': {
+            'translation': [0.0, 0.0, 0.0],
+            'rotation_axis': [0.0, 0.0, 1.0],
+            'rotation_angle_degrees': 0.0,
+          },
+          'hidden': false,
+        };
+
+    /// Opens the fixture in the Assembly lens. [around] sees every request after the fake has answered it (the answer is fixed by then) and
+    /// may hold it, to make an answer arrive late.
+    Future<_FakeDocumentBackend> openNested(WidgetTester tester, {Future<void> Function(http.Request request)? around}) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [
+        occ('asm-1', part: 'sub', ref: 'parts/sub.didsa'),
+        occ('asm-2', part: 'sub', ref: 'parts/sub.didsa'),
+        occ('plate'),
+      ]);
+      backend.subOccurrences = {
+        'sub': [occ('c1'), occ('c2')],
+      };
+      backend.extraAssemblyInstances = [
+        for (final a in ['asm-1', 'asm-2'])
+          for (final c in ['c1', 'c2']) instance([a, c]),
+      ];
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          final response = backend.handle(request);
+          if (around != null) await around(request);
+          return response;
+        }),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await switchLens(tester, 'Assembly');
+      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+      return backend;
+    }
+
+    Future<void> settle(WidgetTester tester) async {
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+    }
+
+    List<String> rowKeys(WidgetTester tester) => [for (final r in _TreeProbe(tester).model.visibleRows()) r.key];
+
+    List<AssemblyOccurrenceInstanceDto> instances(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).assemblyInstances;
+
+    bool instanceHidden(WidgetTester tester, List<String> path) =>
+        instances(tester).firstWhere((i) => i.occurrencePath.join('/') == path.join('/')).hidden;
+
+    testWidgets('the tree is read in two calls: the structure first, then the status; nested components are rows, collapsed below the first level',
+        (tester) async {
+      final backend = await openNested(tester);
+      expect(backend.assemblyTreeRequests.map((r) => r['status']), [null, 'true']);
+      expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate']);
+      final probe = _TreeProbe(tester);
+      expect(probe.model.nodeAtPath(const ['asm-1', 'c1']), isNotNull, reason: 'the whole hierarchy is in the model, open or not');
+      expect(probe.model.grouping, isTrue, reason: 'grouping is on by default');
+    });
+
+    testWidgets('a pick under the second placement of a sub-assembly reveals the second branch, not the first', (tester) async {
+      await openNested(tester);
+
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-2/c1'),
+          );
+      await settle(tester);
+
+      expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'asm-2/c1', 'asm-2/c2', 'plate']);
+      expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+      expect(_TreeProbe(tester).model.selectedPath, ['asm-2', 'c1']);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, {
+        const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-2/c1'),
+      });
+    });
+
+    testWidgets('a row tap selects by path: the same child under the other placement stays unselected', (tester) async {
+      await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+
+      await probe.tapRow('asm-1/c1');
+      await settle(tester);
+
+      expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1');
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities, {
+        const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c1'),
+      });
+
+      await _TreeProbe(tester).tapRow('asm-2/c1');
+      await settle(tester);
+      expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+    });
+
+    testWidgets('hiding a nested row hides only that placement: nothing is PATCHed, and the viewport follows by path', (tester) async {
+      final backend = await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+      final writesBefore = backend.writes.length;
+
+      probe.view.onVisibilityToggle!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-2/c1'));
+      await settle(tester);
+
+      expect(backend.writes.length, writesBefore, reason: 'a nested Hide is for this session: the shared occurrence is not written');
+      expect(backend.subOccurrenceWrites, isEmpty);
+      expect(instanceHidden(tester, ['asm-2', 'c1']), isTrue);
+      expect(instanceHidden(tester, ['asm-1', 'c1']), isFalse, reason: 'the same child under the other placement stays shown');
+      expect(instanceHidden(tester, ['asm-2', 'c2']), isFalse);
+      final rows = _TreeProbe(tester).model.visibleRows();
+      expect(rows.firstWhere((r) => r.key == 'asm-2/c1').hidden, isTrue);
+      expect(rows.firstWhere((r) => r.key == 'asm-1/c1').hidden, isFalse);
+
+      // The eye again shows it.
+      _TreeProbe(tester).view.onVisibilityToggle!(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-2/c1'));
+      await settle(tester);
+      expect(instanceHidden(tester, ['asm-2', 'c1']), isFalse);
+    });
+
+    testWidgets('Isolate on a nested row hides its siblings under that placement only', (tester) async {
+      await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+
+      await probe.menuAction('asm-1/c1', 'Isolate');
+
+      expect(instanceHidden(tester, ['asm-1', 'c2']), isTrue);
+      expect(instanceHidden(tester, ['asm-1', 'c1']), isFalse);
+      expect(instanceHidden(tester, ['asm-2', 'c2']), isFalse, reason: 'the other placement is not isolated');
+    });
+
+    testWidgets('Fix on a nested row PATCHes its parent Part, and the row says so at once', (tester) async {
+      final backend = await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+
+      await probe.menuAction('asm-1/c1', 'Fix');
+      await _pumpUntil(tester, () => backend.subOccurrenceWrites.isNotEmpty);
+      await settle(tester);
+
+      expect(backend.subOccurrenceWrites, hasLength(1));
+      expect(backend.subOccurrenceWrites.single['part'], 'sub', reason: 'the occurrence lives on the sub-assembly Part, not on the root');
+      expect(backend.subOccurrenceWrites.single['id'], 'c1');
+      expect(backend.subOccurrenceWrites.single['body'], containsPair('fixed', true));
+      expect(backend.writes.where((w) => w.startsWith('PATCH') && w.contains('/part-1/occurrences')), isEmpty);
+      expect(_TreeProbe(tester).model.nodeAtPath(const ['asm-1', 'c1'])!.fixed, isTrue);
+    });
+
+    testWidgets('Rename and Delete on a nested row go to its parent Part; Delete warns that it changes every placement (used 2\u00D7)',
+        (tester) async {
+      final backend = await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+
+      await probe.menuAction('asm-2/c2', 'Delete');
+      expect(find.textContaining('used 2\u00D7'), findsOneWidget);
+      expect(find.textContaining('every placement'), findsOneWidget);
+      await tester.tap(find.widgetWithText(TextButton, 'Delete'));
+      await _pumpUntil(tester, () => backend.subOccurrenceWrites.isNotEmpty);
+      await settle(tester);
+
+      expect(backend.subOccurrenceWrites.single, containsPair('method', 'DELETE'));
+      expect(backend.subOccurrenceWrites.single, containsPair('part', 'sub'));
+      expect(backend.subOccurrenceWrites.single, containsPair('id', 'c2'));
+      expect(_TreeProbe(tester).model.nodeAtPath(const ['asm-1', 'c2']), isNull, reason: 'gone under both placements');
+      expect(_TreeProbe(tester).model.nodeAtPath(const ['asm-2', 'c2']), isNull);
+    });
+
+    testWidgets('Make Focus from a nested row pushes each level; the Exit row walks back one level at a time', (tester) async {
+      final backend = await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+
+      await probe.menuAction('asm-1/c1', 'Make Focus');
+      await _pumpUntil(tester, () => backend.assemblyTreeRequests.any((r) => r['part'] == 'c1-part'));
+      await settle(tester);
+
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, ['asm-1', 'c1']);
+      expect(_TreeProbe(tester).model.tree!.partId, 'c1-part', reason: 'the tree shows the focused Part');
+      expect(find.textContaining('Focused on'), findsOneWidget);
+
+      await _TreeProbe(tester).exitFocus();
+      await settle(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, ['asm-1']);
+      expect(_TreeProbe(tester).model.tree!.partId, 'sub');
+      expect(rowKeys(tester), ['', 'c1', 'c2']);
+
+      await _TreeProbe(tester).exitFocus();
+      await settle(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, isEmpty);
+      expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+    });
+
+    testWidgets('names read `Bolt <2>` for a Part placed twice, in the tree and in the component drawer alike', (tester) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [
+        occ('b1', part: 'bolt', ref: 'parts/bolt.didsa'),
+        occ('b2', part: 'bolt', ref: 'parts/bolt.didsa'),
+        occ('lone'),
+      ]);
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            initialLens: AssemblyLens.assembly,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      final model = _TreeProbe(tester).model;
+      expect(model.labelAtPath(const ['b1']), 'bolt <1>');
+      expect(model.labelAtPath(const ['b2']), 'bolt <2>');
+      expect(model.labelAtPath(const ['lone']), 'lone-part');
+
+      await _TreeProbe(tester).onOccurrenceTap(_TreeProbe(tester).occurrences.firstWhere((o) => o.id == 'b2'));
+      await settle(tester);
+      expect(find.text('bolt <2>'), findsWidgets);
+    });
+
+    testWidgets('the grouping switch is saved in view preferences (on by default) and read again on the next open', (tester) async {
+      await openNested(tester);
+      expect(ViewPreferences.assemblyTreeGrouping, isTrue);
+
+      final probe = _TreeProbe(tester);
+      probe.model.grouping = false; // what the switch does before it reports
+      probe.view.onGroupingChanged!(false);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect((await SharedPreferences.getInstance()).getBool(ViewPreferences.assemblyTreeGroupingPrefKey), isFalse);
+      expect(ViewPreferences.assemblyTreeGrouping, isFalse);
+
+      // A new screen reads it back.
+      await tester.pumpWidget(const SizedBox());
+      await openNested(tester);
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(_TreeProbe(tester).model.grouping, isFalse);
+      SharedPreferences.setMockInitialValues({});
+      await ViewPreferences.load();
+    });
+
+    testWidgets('a status answer that arrives after a Fix is dropped: the row keeps what the Fix said', (tester) async {
+      var holdStatus = true;
+      final release = Completer<void>();
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('plate')]);
+      backend.constraintStatus['plate'] = {'status': 'under_constrained', 'dof': 3};
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          final response = backend.handle(request);
+          if (holdStatus && request.url.path.endsWith('/assembly-tree') && request.url.queryParameters['status'] == 'true') {
+            holdStatus = false; // only the first one
+            await release.future;
+          }
+          return response;
+        }),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            initialLens: AssemblyLens.assembly,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      // The structure is drawn while the status is still out: the row claims no state (absent, not wrong).
+      var row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'plate');
+      expect(row.state, AssemblyRowState.none);
+      expect(_TreeProbe(tester).model.statusIncluded, isFalse);
+
+      // Fix: the backend now says fixed; the row says so at once and the load that follows carries it.
+      backend.constraintStatus['plate'] = {'status': 'fixed', 'dof': 0};
+      await _TreeProbe(tester).menuAction('plate', 'Fix');
+      await _pumpUntil(tester, () => _TreeProbe(tester).model.statusIncluded);
+      await settle(tester);
+      row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'plate');
+      expect(row.state, AssemblyRowState.fixed);
+
+      // Now the old status answer (computed before the Fix: under-constrained, not fixed) lands.
+      release.complete();
+      await settle(tester);
+      await settle(tester);
+      row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'plate');
+      expect(row.state, AssemblyRowState.fixed, reason: 'the stale answer is dropped');
+      expect(_TreeProbe(tester).model.nodeAtPath(const ['plate'])!.fixed, isTrue);
+      expect(_TreeProbe(tester).constraintStatusByOccurrenceId['plate']!.state, ConstraintState.fixed);
+    });
+
+    testWidgets('a structure answer that arrives after a Fix is dropped too', (tester) async {
+      Completer<void>? release;
+      var holdNextStructure = false;
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('plate')]);
+      final documentApi = DocumentApiClient(
+        httpClient: MockClient((request) async {
+          final response = backend.handle(request);
+          if (holdNextStructure && request.url.path.endsWith('/assembly-tree') && request.url.queryParameters['status'] != 'true') {
+            holdNextStructure = false;
+            release = Completer<void>();
+            await release!.future;
+          }
+          return response;
+        }),
+      );
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            initialLens: AssemblyLens.assembly,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+
+      // Hide starts a reload whose structure answer is held (it is computed after the Hide, before the Fix).
+      holdNextStructure = true;
+      await _TreeProbe(tester).menuAction('plate', 'Hide');
+      await _pumpUntil(tester, () => release != null);
+      // Fix while that is out: its own reload answers at once.
+      await _TreeProbe(tester).menuAction('plate', 'Fix');
+      await _pumpUntil(tester, () => (_TreeProbe(tester).model.nodeAtPath(const ['plate'])?.fixed ?? false) && backend.occurrences.single['fixed'] == true);
+      await settle(tester);
+      expect(_TreeProbe(tester).model.nodeAtPath(const ['plate'])!.fixed, isTrue);
+
+      final requestsBefore = backend.assemblyTreeRequests.length;
+      release!.complete();
+      await settle(tester);
+      await settle(tester);
+      // A dropped answer starts nothing: no status call follows it (one that was applied would ask for its status and heal the row).
+      expect(backend.assemblyTreeRequests.length, requestsBefore);
+      final node = _TreeProbe(tester).model.nodeAtPath(const ['plate'])!;
+      expect(node.fixed, isTrue, reason: 'the older structure answer (not fixed) was dropped');
+      expect(node.hidden, isTrue);
+    });
+
+    testWidgets('review: a nested pick at the document root is named by its tree label, not its raw id, in the selection panels', (tester) async {
+      await openNested(tester);
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c1'),
+          );
+      await settle(tester);
+      // The Part lens's selection list reads the same names (the tree's own row, off screen, also says it).
+      await switchLens(tester, 'Part');
+      await settle(tester);
+      expect(find.descendant(of: find.byType(SelectionListDrawer), matching: find.textContaining('c1-part')), findsWidgets);
+    });
+
+    testWidgets('review: a nested row hidden at the root reads hidden after Make Focus into its parent; Show drops it and PATCHes nothing', (tester) async {
+      final backend = await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1']);
+      probe.view.onVisibilityToggle!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1'));
+      await settle(tester);
+      expect(instanceHidden(tester, ['asm-1', 'c1']), isTrue);
+
+      await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'sub');
+      await settle(tester);
+      final row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'c1');
+      expect(row.hidden, isTrue, reason: 'hidden for this session, whatever the focus');
+
+      _TreeProbe(tester).view.onVisibilityToggle!(row);
+      await settle(tester);
+      expect(backend.subOccurrenceWrites, isEmpty, reason: 'Show drops the session hide; nothing is written');
+      expect(instanceHidden(tester, ['asm-1', 'c1']), isFalse);
+      expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'c1').hidden, isFalse);
+    });
+
+    testWidgets('review: a backend without assembly-tree still has its constraint status read', (tester) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('plate')]);
+      backend.assemblyTreeMissing = true;
+      backend.constraintStatus['plate'] = {'status': 'under_constrained', 'dof': 3, 'rigid_set': 'plate'};
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          initialLens: AssemblyLens.assembly,
+        ),
+      ));
+      await _pumpUntil(tester, () => backend.constraintStatusRequests > 0);
+      expect(backend.constraintStatusRequests, greaterThan(0));
+    });
+
+    testWidgets('review: Edit Alone from a nested row pushes every level, and Done ends it from there', (tester) async {
+      await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1']);
+      await probe.menuAction('asm-1/c1', 'Edit Alone');
+      await _pumpUntil(tester, () => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath.length == 2);
+      await settle(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, ['asm-1', 'c1']);
+      await tester.tap(find.byKey(const ValueKey('edit-alone-done')).first);
+      await settle(tester);
+      await settle(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, isEmpty);
+    });
+
+    testWidgets('review: any failure of the tree call (not only an ApiException) falls back to the lists', (tester) async {
+      await openNested(tester, around: (request) async {
+        if (request.url.path.endsWith('/assembly-tree')) throw StateError('boom');
+      });
+      expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate']);
+    });
+
+    testWidgets('review: a tap on a folder row keeps its mark (the screen only overwrites the selection when its own changed)', (tester) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('plate')], seedMates: [
+        {'id': 'm1', 'type': 'coincident', 'references': <dynamic>[], 'suppressed': false, 'flipped': false, 'allow_rotation': true},
+      ]);
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          initialLens: AssemblyLens.assembly,
+        ),
+      ));
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      final probe = _TreeProbe(tester);
+      probe.model.selectedKey = '#mates'; // what the view does on the tap
+      probe.view.onRowTap!(probe.model.visibleRows().firstWhere((r) => r.key == '#mates'));
+      await settle(tester);
+      await settle(tester);
+      expect(_TreeProbe(tester).model.selectedKey, '#mates');
+    });
+
+    testWidgets('review: Delete at the document root asks for no whole-tree count', (tester) async {
+      final backend = await openNested(tester);
+      final before = backend.assemblyTreeRequests.length;
+      await _TreeProbe(tester).menuAction('plate', 'Delete');
+      expect(find.textContaining('used'), findsNothing);
+      expect(backend.assemblyTreeRequests.length, before);
+    });
+
+    testWidgets('a backend without the endpoint still shows its components, one level', (tester) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('plate'), occ('lid')]);
+      backend.assemblyTreeMissing = true;
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+            initialLens: AssemblyLens.assembly,
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      expect(rowKeys(tester), ['', 'plate', 'lid']);
+    });
+  });
+
 }

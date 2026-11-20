@@ -93,6 +93,9 @@ class AssemblyTreeView extends StatefulWidget {
     this.onFocusSelected,
     this.onAloneSelected,
     this.onMoreSelected,
+    this.statusLine,
+    this.flashItemIds = const {},
+    this.flashToken = 0,
   });
 
   final AssemblyTreeModel model;
@@ -150,12 +153,23 @@ class AssemblyTreeView extends StatefulWidget {
   final void Function(AssemblyTreeRow row)? onAloneSelected;
   final void Function(AssemblyTreeRow row)? onMoreSelected;
 
+  /// One quiet line under the header (A4: the motion summary, "Group: 5 DOF"...); null or empty shows nothing.
+  final String? statusLine;
+
+  /// Mates a pattern edit just left broken (A4, the old panel's pulse): their rows pulse about three times over two seconds each time
+  /// [flashToken] changes, and the Mates folder opens if it was closed so the pulse is seen. [flashItemIds] are mate ids (`row.itemId`).
+  final Set<String> flashItemIds;
+  final int flashToken;
+
   @override
   State<AssemblyTreeView> createState() => _AssemblyTreeViewState();
 }
 
-class _AssemblyTreeViewState extends State<AssemblyTreeView> {
+class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerProviderStateMixin {
   final ScrollController _scroll = ScrollController();
+
+  /// The pulse of [AssemblyTreeView.flashItemIds]: 0 -> 1 over two seconds, read as three pulses by [_flashPulse].
+  late final AnimationController _flash = AnimationController(vsync: this, duration: const Duration(milliseconds: 2000));
   AssemblyTreeResponseDto? _colourTree;
   Map<String, Color> _setColours = const {};
 
@@ -192,11 +206,28 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
       _seenTree = widget.model.tree;
     }
     _syncModel();
+    if (widget.flashToken != old.flashToken && widget.flashItemIds.isNotEmpty) {
+      // After this frame: the mate rows may only just have arrived with the refresh that brought the first broken mate.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        widget.model.setOpen('#mates', true);
+        setState(() {});
+        _flash.forward(from: 0);
+      });
+    }
+  }
+
+  /// 0..1: three pulses over the animation, fading out.
+  double get _flashPulse {
+    final t = _flash.value;
+    if (_flash.isDismissed || t >= 1.0) return 0.0;
+    return (0.5 - 0.5 * math.cos(2 * math.pi * 3 * t)) * (1.0 - t * 0.4);
   }
 
   @override
   void dispose() {
     widget.controller?._detach(this);
+    _flash.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -246,8 +277,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
     });
   }
 
-  bool _canToggle(AssemblyTreeRow r) =>
-      r.expandable && r.kind != AssemblyRowKind.root && r.kind != AssemblyRowKind.matesFolder && r.kind != AssemblyRowKind.patternsFolder;
+  bool _canToggle(AssemblyTreeRow r) => r.expandable && r.kind != AssemblyRowKind.root;
 
   void _toggle(AssemblyTreeRow row) {
     if (!_canToggle(row)) return;
@@ -262,7 +292,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
       return;
     }
     widget.model.selectedKey = row.key;
-    final groupLike = row.kind == AssemblyRowKind.group;
+    final groupLike = row.kind == AssemblyRowKind.group || row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder;
     if (groupLike) {
       widget.model.toggle(row.key);
       if (!row.open) _askForFeatures(row.path);
@@ -401,9 +431,22 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           widget.multiSelectHeader ?? _header(context, desktop),
-          if (widget.editAloneLabel != null && widget.onEditAloneDone != null)
+          // Not while the floating tree is closed: the pill at the top of the viewport is the way out then.
+          if (widget.editAloneLabel != null && widget.onEditAloneDone != null && (widget.visible || widget.docked))
             EditAloneRow(label: widget.editAloneLabel!, onDone: widget.onEditAloneDone!),
           if (widget.focusedLabel != null) _focusRow(context),
+          if (widget.statusLine != null && widget.statusLine!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  widget.statusLine!,
+                  key: const ValueKey('assembly-motion-summary'),
+                  style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                ),
+              ),
+            ),
           Expanded(
             child: rows.isEmpty
                 ? const Center(child: Text('Nothing to show yet'))
@@ -414,8 +457,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
                     itemCount: rows.length,
                     itemBuilder: (context, i) {
                       final r = rows[i];
-                      return _TreeRow(
+                      final flashing = r.kind == AssemblyRowKind.mate && r.itemId != null && widget.flashItemIds.contains(r.itemId);
+                      Widget rowWidget(double pulse) => _TreeRow(
                         key: ValueKey('tree-row:${r.key}'),
+                        pulse: pulse,
                         row: r,
                         height: h,
                         desktop: desktop,
@@ -432,6 +477,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
                             : (at) => widget.onRowContextMenu!(r, at),
                         onEye: () => widget.onVisibilityToggle?.call(r),
                       );
+                      // Only a row that is flashing listens to the animation; every other row is built once.
+                      return flashing ? AnimatedBuilder(animation: _flash, builder: (context, _) => rowWidget(_flashPulse)) : rowWidget(0);
                     },
                   ),
           ),
@@ -593,8 +640,11 @@ class _TreeRow extends StatefulWidget {
     required this.onLongPress,
     required this.onContextMenu,
     required this.onEye,
+    this.pulse = 0,
   });
 
+  /// 0..1, the flash of a mate row (see [AssemblyTreeView.flashItemIds]).
+  final double pulse;
   final AssemblyTreeRow row;
   final double height;
   final bool desktop;
@@ -625,6 +675,8 @@ class _TreeRowState extends State<_TreeRow> {
         AssemblyRowKind.feature => Icons.tune,
         AssemblyRowKind.matesFolder => Icons.link,
         AssemblyRowKind.patternsFolder => Icons.grid_view,
+        AssemblyRowKind.mate => Icons.link,
+        AssemblyRowKind.pattern => Icons.grid_view_outlined,
       };
 
   @override
@@ -660,13 +712,29 @@ class _TreeRowState extends State<_TreeRow> {
     }
 
     final dim = r.suppressed ? 0.45 : (r.hidden ? 0.65 : 1.0);
+    final isItem = r.itemId != null && (r.kind == AssemblyRowKind.mate || r.kind == AssemblyRowKind.pattern);
+    final palette = AiPalette.of(context);
+    final Color? toneColour = switch (r.tone) {
+      AssemblyItemTone.error => scheme.error,
+      AssemblyItemTone.warning => palette.warning,
+      AssemblyItemTone.info => scheme.primary,
+      null => null,
+    };
     final labelStyle = TextStyle(
       fontSize: desktop ? 13 : 15,
       fontWeight: r.kind == AssemblyRowKind.root ? FontWeight.w600 : FontWeight.normal,
-      fontStyle: r.suppressed ? FontStyle.italic : FontStyle.normal,
-      decoration: r.suppressed ? TextDecoration.lineThrough : null,
-      color: r.state == AssemblyRowState.missing ? AiPalette.of(context).danger : null,
+      // A mate or pattern a pattern edit or the backend suppressed is dimmed, not struck through (it is not a part).
+      fontStyle: r.suppressed && !isItem ? FontStyle.italic : FontStyle.normal,
+      decoration: r.suppressed && !isItem ? TextDecoration.lineThrough : null,
+      // Only a problem colours the label (an info line colours its icon and note, not the name).
+      color: r.state == AssemblyRowState.missing ? palette.danger : (r.tone == AssemblyItemTone.info ? null : toneColour),
     );
+    final noteStyle = TextStyle(fontSize: desktop ? 11 : 12, color: toneColour ?? scheme.onSurfaceVariant);
+    final IconData kindIcon = isItem && r.kind == AssemblyRowKind.mate && (r.tone == AssemblyItemTone.error || r.tone == AssemblyItemTone.warning)
+        ? Icons.warning_amber_rounded
+        : isItem && r.tone == AssemblyItemTone.info
+            ? Icons.info_outline
+            : _kindIcon(r.kind);
 
     Widget content = Row(
       children: [
@@ -676,13 +744,38 @@ class _TreeRowState extends State<_TreeRow> {
           opacity: dim,
           child: widget.multiSelect && isOccurrence
               ? Icon(widget.selected ? Icons.check_circle : Icons.circle_outlined, size: iconSize, color: scheme.primary)
-              : Icon(_kindIcon(r.kind), size: iconSize, color: scheme.onSurfaceVariant),
+              : Icon(kindIcon, size: iconSize, color: toneColour ?? scheme.onSurfaceVariant),
         ),
         const SizedBox(width: 8),
         Expanded(
           child: Opacity(
             opacity: dim,
-            child: Text(r.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle),
+            child: r.note == null
+                ? Text(r.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle)
+                : Tooltip(
+                    message: '${r.label} - ${r.note}',
+                    // Hover only: a touch long-press belongs to the row (its menu), not to the tooltip.
+                    triggerMode: TooltipTriggerMode.manual,
+                    child: desktop
+                        // One line: the label, then the note, dimmer.
+                        ? Text.rich(
+                            TextSpan(children: [
+                              TextSpan(text: r.label, style: labelStyle),
+                              TextSpan(text: '  ${r.note}', style: noteStyle),
+                            ]),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          )
+                        // Two lines in the 48 dp phone row.
+                        : Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(r.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle),
+                              Text(r.note!, key: ValueKey('tree-note:${r.key}'), maxLines: 1, overflow: TextOverflow.ellipsis, style: noteStyle),
+                            ],
+                          ),
+                  ),
           ),
         ),
         if (r.count != null && (r.kind == AssemblyRowKind.matesFolder || r.kind == AssemblyRowKind.patternsFolder))
@@ -718,7 +811,11 @@ class _TreeRowState extends State<_TreeRow> {
     }
 
     Widget tile = Material(
-      color: widget.selected ? scheme.secondaryContainer.withValues(alpha: 0.7) : Colors.transparent,
+      color: widget.pulse > 0
+          ? scheme.error.withValues(alpha: 0.35 * widget.pulse)
+          : widget.selected
+              ? scheme.secondaryContainer.withValues(alpha: 0.7)
+              : Colors.transparent,
       child: InkWell(
         onTap: widget.onTap,
         onLongPress: widget.onLongPress,

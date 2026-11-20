@@ -3,8 +3,9 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
-import 'package:didsa_cad_client/viewport3d/action_sheet.dart';
-import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
+import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_helpers.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
 import 'package:didsa_cad_client/viewport3d/body_naming.dart';
 import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
 
@@ -104,25 +105,27 @@ void main() {
     );
 
     Widget panel({required List<String> opened, bool multiSelect = false, List<String>? longPresses}) {
+      // The occurrence, the mate and the pattern each have a row (the mate and pattern ones under their folders, opened).
+      final model = AssemblyTreeModel(
+        tree: assemblyTreeFromLists(partId: 'root', partName: 'Root', occurrences: [occurrence], mates: [mate], patterns: [pattern]),
+      )
+        ..setFolderItems('#mates', mateFolderItems([mate]))
+        ..setFolderItems('#patterns', patternFolderItems([pattern]))
+        ..setOpen('#mates', true)
+        ..setOpen('#patterns', true);
+      String name(AssemblyTreeRow r) => switch (r.kind) {
+            AssemblyRowKind.mate => 'mate ${r.itemId}',
+            AssemblyRowKind.pattern => 'pattern ${r.itemId}',
+            _ => 'occurrence ${r.path?.last}',
+          };
       return MaterialApp(
         home: Scaffold(
-          body: AssemblyTreePanel(
-            visible: true,
-            occurrences: [occurrence],
-            mates: [mate],
-            patterns: [pattern],
-            selectedOccurrenceId: null,
-            onOccurrenceTap: (_) {},
-            onOccurrenceLongPress: (o) => longPresses?.add(o.id),
-            onMateTap: (_) {},
-            onMateLongPress: (m) => longPresses?.add(m.id),
-            onPatternTap: (_) {},
-            onPatternLongPress: (p) => longPresses?.add(p.id),
+          body: AssemblyTreeView(
+            model: model,
+            docked: true,
             isMultiSelectMode: multiSelect,
-            onClose: () {},
-            onOccurrenceContextMenu: (o, at) => opened.add('occurrence ${o.id}'),
-            onMateContextMenu: (m, at) => opened.add('mate ${m.id}'),
-            onPatternContextMenu: (p, at) => opened.add('pattern ${p.id}'),
+            onRowLongPress: (r) => longPresses?.add(r.itemId ?? r.path!.last),
+            onRowContextMenu: (r, at) => opened.add(name(r)),
           ),
         ),
       );
@@ -131,10 +134,8 @@ void main() {
     testWidgets('a right click on an occurrence, a mate and a pattern row reports each', (tester) async {
       final opened = <String>[];
       await tester.pumpWidget(panel(opened: opened));
-      final regions = find.byType(MouseContextMenuRegion);
-      expect(regions, findsNWidgets(3));
-      for (var i = 0; i < 3; i++) {
-        await _rightClick(tester, regions.at(i));
+      for (final key in ['o1', '#mates#item:m1', '#patterns#item:p1']) {
+        await _rightClick(tester, find.byKey(ValueKey('tree-row:$key')));
       }
       expect(opened, ['occurrence o1', 'mate m1', 'pattern p1']);
     });
@@ -143,9 +144,8 @@ void main() {
       final opened = <String>[];
       final longPresses = <String>[];
       await tester.pumpWidget(panel(opened: opened, longPresses: longPresses));
-      final regions = find.byType(MouseContextMenuRegion);
-      for (var i = 0; i < 3; i++) {
-        await tester.longPress(regions.at(i));
+      for (final key in ['o1', '#mates#item:m1', '#patterns#item:p1']) {
+        await tester.longPress(find.byKey(ValueKey('tree-row:$key')));
         await tester.pump();
       }
       expect(longPresses, ['o1', 'm1', 'p1']);
@@ -155,8 +155,8 @@ void main() {
     testWidgets('nothing is offered while a multi-select is open', (tester) async {
       final opened = <String>[];
       await tester.pumpWidget(panel(opened: opened, multiSelect: true));
-      for (var i = 0; i < 3; i++) {
-        await _rightClick(tester, find.byType(ListTile).at(i));
+      for (final key in ['o1', '#mates#item:m1', '#patterns#item:p1']) {
+        await _rightClick(tester, find.byKey(ValueKey('tree-row:$key')));
       }
       expect(opened, isEmpty);
     });

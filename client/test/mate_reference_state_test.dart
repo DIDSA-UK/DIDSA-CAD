@@ -7,7 +7,9 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:didsa_cad_client/ai/ai_theme.dart' show AiPalette;
 import 'package:didsa_cad_client/api/document_api_client.dart';
-import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
+import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_helpers.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
 import 'package:didsa_cad_client/viewport3d/mate_context_menu.dart';
 import 'package:didsa_cad_client/viewport3d/mate_reference_state.dart';
 
@@ -65,19 +67,22 @@ MateDto _lost() => _fromJson({
 /// An older backend: none of the N1b fields.
 MateDto _old() => _fromJson({});
 
-Widget _panel(List<MateDto> mates) => MaterialApp(
-      home: Scaffold(
-        body: AssemblyTreePanel(
-          visible: true,
-          occurrences: const [],
-          mates: mates,
-          selectedOccurrenceId: null,
-          onOccurrenceTap: (_) {},
-          onOccurrenceLongPress: (_) {},
-          onClose: () {},
-        ),
-      ),
-    );
+/// The Assembly tree with the mates listed under its Mates folder (open), as the Assembly lens shows them.
+Widget _panel(List<MateDto> mates) {
+  final model = AssemblyTreeModel(
+    tree: assemblyTreeFromLists(partId: 'root', partName: 'Root', occurrences: const [], mates: mates, patterns: const []),
+  )
+    ..setFolderItems('#mates', mateFolderItems(mates))
+    ..setOpen('#mates', true);
+  return MaterialApp(home: Scaffold(body: AssemblyTreeView(model: model, docked: true)));
+}
+
+/// The mate row for [id]: its icon and label colour, and the note under or after the label.
+Finder _mateRow(String id) => find.byKey(ValueKey('tree-row:#mates#item:$id'));
+Icon _rowIcon(WidgetTester tester, String id) =>
+    tester.widget<Icon>(find.descendant(of: _mateRow(id), matching: find.byType(Icon)).first);
+Color? _labelColour(WidgetTester tester, String id, String label) =>
+    tester.widget<Text>(find.descendant(of: _mateRow(id), matching: find.text(label))).style?.color;
 
 void main() {
   group('MateDto parses the N1b reference fields', () {
@@ -148,21 +153,19 @@ void main() {
   group('the row subtitle and icon', () {
     testWidgets('followed: an info icon and line, nothing alarming', (tester) async {
       await tester.pumpWidget(_panel([_followed()]));
-      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
-      expect((tile.leading as Icon).icon, Icons.info_outline);
+      expect(_rowIcon(tester, 'm1').icon, Icons.info_outline);
       expect(find.text(kMateFollowedText), findsOneWidget);
       final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
-      expect((tile.title as Text).style?.color, isNull);
-      expect((tile.leading as Icon).color, isNot(error));
+      expect(_labelColour(tester, 'm1', 'Coincident 1'), isNull);
+      expect(_rowIcon(tester, 'm1').color, isNot(error));
     });
 
     testWidgets('held: the amber warning icon and "Check this mate" with the reason', (tester) async {
       await tester.pumpWidget(_panel([_held()]));
       final amber = AiPalette.of(tester.element(find.text('Mates'))).warning;
-      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
-      expect((tile.leading as Icon).icon, Icons.warning_amber_rounded);
-      expect((tile.leading as Icon).color, amber);
-      expect((tile.title as Text).style?.color, amber);
+      expect(_rowIcon(tester, 'm1').icon, Icons.warning_amber_rounded);
+      expect(_rowIcon(tester, 'm1').color, amber);
+      expect(_labelColour(tester, 'm1', 'Coincident 1'), amber);
       expect(find.text('$kMateHeldText: the face moved a long way'), findsOneWidget);
     });
 
@@ -174,23 +177,21 @@ void main() {
       // the row must still be amber, not the error red of a lost face.
       final amber = AiPalette.of(tester.element(find.text('Mates'))).warning;
       final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
-      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
-      expect((tile.leading as Icon).color, amber);
-      expect((tile.title as Text).style?.color, amber);
-      expect((tile.leading as Icon).color, isNot(error));
+      expect(_rowIcon(tester, 'm1').color, amber);
+      expect(_labelColour(tester, 'm1', 'Coincident 1'), amber);
+      expect(_rowIcon(tester, 'm1').color, isNot(error));
     });
 
     testWidgets('lost: the error colour and the reason', (tester) async {
       await tester.pumpWidget(_panel([_lost()]));
       final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
-      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
-      expect((tile.leading as Icon).icon, Icons.warning_amber_rounded);
-      expect((tile.leading as Icon).color, error);
+      expect(_rowIcon(tester, 'm1').icon, Icons.warning_amber_rounded);
+      expect(_rowIcon(tester, 'm1').color, error);
       expect(find.text('Lost a face: its face is gone'), findsOneWidget);
       expect(find.text(kBrokenMateText), findsNothing);
     });
 
-    testWidgets('an unknown reason code reads as itself, a missing one says nothing more', (tester) async {
+    test('an unknown reason code reads as itself, a missing one says nothing more', () {
       final odd = _fromJson({
         'lost_references': ['references[0].subshape_ref'],
         'reference_reasons': {'references[0].subshape_ref': 'something_new'},
@@ -200,20 +201,16 @@ void main() {
       expect(mateReferenceNote(bare).text, 'Lost a face');
     });
 
-    testWidgets('an older backend\'s mate shows nothing: the plain link icon, no subtitle, no note', (tester) async {
+    testWidgets('an older backend\'s mate shows nothing: the plain link icon, no note', (tester) async {
       await tester.pumpWidget(_panel([_old()]));
-      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
-      expect((tile.leading as Icon).icon, Icons.link);
-      expect(tile.subtitle, isNull);
-      expect(find.byKey(const ValueKey('mate-reference-note-m1')), findsNothing);
-      expect(find.byKey(const ValueKey('mate-reference-icon-m1')), findsNothing);
+      expect(_rowIcon(tester, 'm1').icon, Icons.link);
+      expect(find.byKey(const ValueKey('tree-note:#mates#item:m1')), findsNothing);
     });
 
     testWidgets('a clean mate from a new backend looks the same as an old one', (tester) async {
       await tester.pumpWidget(_panel([_fromJson(_clean)]));
-      final tile = tester.widget<ListTile>(find.widgetWithText(ListTile, 'Coincident 1'));
-      expect((tile.leading as Icon).icon, Icons.link);
-      expect(tile.subtitle, isNull);
+      expect(_rowIcon(tester, 'm1').icon, Icons.link);
+      expect(find.byKey(const ValueKey('tree-note:#mates#item:m1')), findsNothing);
     });
   });
 

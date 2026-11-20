@@ -42,6 +42,7 @@ import '../assembly/pattern_copy_pose.dart';
 import '../assembly/assembly_lens.dart';
 import '../assembly/assembly_lens_theme.dart';
 import '../assembly/focus_stack.dart';
+import '../assembly/assembly_tree_model.dart';
 import '../assembly/native_file_shape.dart';
 import '../assembly/occurrence_visibility.dart';
 import '../assembly/reference_report.dart';
@@ -78,7 +79,8 @@ import '../storage/server/sync_conflicts.dart';
 import '../storage/storage_service_factory.dart';
 import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
-import 'assembly_tree_panel.dart';
+import 'assembly_tree_helpers.dart';
+import 'assembly_tree_view.dart';
 import 'edit_alone_row.dart';
 import 'body_naming.dart';
 import 'boolean_panel.dart';
@@ -645,6 +647,20 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   List<OccurrenceDto> _occurrences = [];
   List<MateDto> _mates = [];
 
+  /// A4: the Assembly tree's rows (`docs/assembly-tree-overhaul-scope.md` 9.6), from `GET /parts/{id}/assembly-tree` for the focused Part. The
+  /// model is not a Listenable: every change to it is followed by [_treeController]'s `refresh()`.
+  AssemblyTreeModel _treeModel = AssemblyTreeModel();
+  final AssemblyTreeController _treeController = AssemblyTreeController();
+
+  /// Bumped by every tree load (and by a local Fix / Float): an answer that is not from the latest one is dropped, for the structure call
+  /// and the status call both (VR met a slow older load landing after a Fix and showing the old state).
+  int _treeLoadToken = 0;
+
+  /// Nested rows hidden for this session only, as full paths from the document root joined with `/` (the backend's `hidden` sits on the
+  /// sub-assembly's own occurrence, which every placement of it shares; a top-level row still PATCHes it). Applied to the viewport by
+  /// [_displayAssemblyInstances] and to the rows by the model's `setSessionHiddenKeys`.
+  Set<String> _sessionHiddenPaths = const {};
+
   /// N1d: followed references the backend reported once, kept until the user dismisses them ("Got it"); never polled for, and never
   /// a reason to mark the document dirty (decision N-7).
   final MateFollowedNotes _mateFollowedNotes = MateFollowedNotes();
@@ -653,7 +669,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Mates a pattern edit left broken ([_announceBrokenMates]): the Assembly tree flashes these rows whenever [_flashMateToken] changes.
   Set<String> _flashMateIds = const {};
   int _flashMateToken = 0;
-  String? _selectedOccurrenceId;
+  /// A4: the selected component as a path of occurrence ids from the tree's root (the focused Part), null when none. A top-level
+  /// component's path is `[id]`.
+  List<String>? _selectedTreePath;
+
+  /// The selected component's id when it is a direct child of the focused Part (what the gizmo, the component drawer, Pattern and the
+  /// rest of this screen work with), else null: a nested selection has no id of its own at this level, see [_selectedTreePath].
+  String? get _selectedOccurrenceId => _selectedTreePath != null && _selectedTreePath!.length == 1 ? _selectedTreePath!.first : null;
+  set _selectedOccurrenceId(String? id) => _selectedTreePath = id == null ? null : [id];
 
   /// Test report item 5: [AssemblyTreePanel.selectedMateId]'s own backing
   /// state - mirrors [_selectedOccurrenceId]'s identical "which tree row is
@@ -1061,6 +1084,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     var overlaid = _assemblyMesh == null
         ? const <AssemblyOccurrenceInstanceDto>[]
         : (_sceneMode ? _sceneInstances : _assemblyMesh!.instances);
+    // A4: nested rows hidden for this session, by path (a child hidden under one placement stays shown under the other).
+    overlaid = applyHiddenPaths(overlaid, _sessionHiddenPaths);
     // M3: the parts a mate preview is gliding (or has just confirmed) are drawn at their glide pose.
     if (_glideWorld.isNotEmpty) {
       final glideFocus = _focusStack?.currentOccurrencePath ?? const <String>[];
@@ -1249,7 +1274,39 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           patterns: _componentPatterns,
           extraPaths: [for (final i in _assemblyMesh?.instances ?? const []) i.occurrencePath.join('/')],
         ),
+        // A4: where the tree knows a component its name wins, so a row, a drawer and the selection list read `Bolt <2>` the same way (a
+        // component's tree path is relative to the focused Part; the viewport's paths run from the document root).
+        ..._treeNamesByFullPath,
       };
+
+  /// Tree label by full path (from the document root, joined with `/`) for every component the tree has listed, including a top-level
+  /// component's bare id (what the flat lists use).
+  Map<String, String> get _treeNamesByFullPath {
+    final tree = _treeModel.tree;
+    if (tree == null) return const {};
+    final prefix = _treeRootPath;
+    // Walked once per loaded tree and focus (the getter is read in build).
+    final cacheKey = prefix.join('/');
+    if (identical(tree, _namesTree) && cacheKey == _namesPrefix) return _namesCache;
+    final out = <String, String>{};
+    final stack = <AssemblyTreeNodeDto>[...tree.children];
+    while (stack.isNotEmpty) {
+      final n = stack.removeLast();
+      final label = _treeModel.labelAtPath(n.path);
+      if (label == null) continue;
+      if (n.path.length == 1) out[n.occurrenceId] = label;
+      // Every component by its full path from the document root (the viewport's paths), also at the root: a nested one has no bare id.
+      out[[...prefix, ...n.path].join('/')] = label;
+      stack.addAll(n.children);
+    }
+    _namesTree = tree;
+    _namesPrefix = cacheKey;
+    return _namesCache = out;
+  }
+
+  AssemblyTreeResponseDto? _namesTree;
+  String _namesPrefix = '';
+  Map<String, String> _namesCache = const {};
 
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
@@ -3205,13 +3262,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       }
       // Bug fix ("selecting a component doesn't highlight it in 3D"): `entity`
       // is already a fully-formed component-kind `SelectionEntityRef` from
-      // hit-testing - feed it into `_selectedEntities` too, same as
-      // `_onOccurrenceTap`'s own identical fix.
+      // hit-testing - feed it into `_selectedEntities` too, same as a tree row's own identical fix.
+      //
+      // A4: the pick's occurrence id is the path from the document root. It selects that component by path and the tree reveals it (opens its
+      // ancestors, marks the row, scrolls): a pick under the second placement of a sub-assembly reveals the second branch, not the first.
+      final picked = _relativeTreePath(entity.occurrenceId.split('/'));
       setState(() {
-        _selectedOccurrenceId = entity.occurrenceId;
+        _selectedTreePath = picked;
         _selectedEntities = {entity};
         _selectedMateId = null;
       });
+      if (picked != null && _lens == AssemblyLens.assembly) _treeController.reveal(picked, select: true);
       return;
     }
     // Measure: caps the selection at 2 entities. Toggling an already-
@@ -3976,7 +4037,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     for (var i = 0; i < _occurrences.length; i++) {
       final partId = _occurrences[i].resolvedPartId;
       if (partId != null && partId != root?.id && unsaved.contains(partId)) {
-        names.add(occurrenceDisplayName(_occurrences, i));
+        names.add(_treeLabel([_occurrences[i].id], _occurrences[i]));
       }
     }
     final unnamed = unsaved.length - names.length;
@@ -6126,7 +6187,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   String? _occurrenceNameForId(String id) {
     final index = _displayOccurrences.indexWhere((o) => o.id == id);
     if (index < 0) return null;
-    return occurrenceDisplayName(_displayOccurrences, index);
+    return _treeLabel([_displayOccurrences[index].id], _displayOccurrences[index]);
   }
 
   /// Phase 11 (`[7]`): removes the source at `index` from the in-progress
@@ -11628,6 +11689,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _renderMode = ViewPreferences.renderMode;
       _isPerspective = ViewPreferences.isPerspective;
       _farClip = ViewPreferences.farClip;
+      _treeModel.grouping = ViewPreferences.assemblyTreeGrouping;
       _sceneRoughness = ScenePreferences.roughness;
       _sceneLightIntensity = ScenePreferences.lightIntensity;
       _sceneEmissiveIntensity = ScenePreferences.emissiveIntensity;
@@ -13070,6 +13132,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _part = part;
       _focusStack = AssemblyFocusStack(part.id);
       _editAlone = null;
+      // A4: a new document starts with a new tree (its open rows, its session-hidden rows).
+      _treeLoadToken++;
+      _treeModel = AssemblyTreeModel(grouping: ViewPreferences.assemblyTreeGrouping);
+      _treeHostSelection = null;
+      _treeFeaturePaths.clear();
+      _sessionHiddenPaths = const {};
+      _selectedTreePath = null;
       // Assembly support Phase 20: seed the root Part's own per-Part state
       // now that its real id is finally known - [_focusPartId] reads as
       // `part.id` at this exact point (nothing has been focused yet), so
@@ -13187,35 +13256,170 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   Future<void> _refreshAssemblyTree() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
-    final occurrences = await _api.listOccurrences(focusPartId);
-    final mates = await _api.listMates(focusPartId);
-    final patterns = await _api.listComponentPatterns(focusPartId);
-    // Item 7: the constraint badge is decoration, so a failed fetch (an
-    // older backend, an unresolvable mate) must never break the tree refresh -
-    // the rows just fall back to the plain fixed pin. Fetched here, next to
-    // the lists it annotates, because this already runs after every mate add/
-    // delete/edit and every move.
-    Map<String, ConstraintStatusDto> constraintStatus = const {};
+    // A4: every load has a token; an answer that is not from the latest load is dropped (see [_treeLoadToken]).
+    final token = ++_treeLoadToken;
+    // The tree's structure first (no status: it is the slow part), at the same time as the flat lists the rest of the screen works with.
+    final structure = _fetchTreeStructure(focusPartId); // never throws
+    final List<OccurrenceDto> occurrences;
+    final List<MateDto> mates;
+    final List<ComponentPatternDto> patterns;
     try {
-      constraintStatus = await _api.getConstraintStatus(focusPartId);
-    } on ApiException {
-      constraintStatus = const {};
+      occurrences = await _api.listOccurrences(focusPartId);
+      mates = await _api.listMates(focusPartId);
+      patterns = await _api.listComponentPatterns(focusPartId);
+    } catch (_) {
+      await structure; // never left unawaited
+      rethrow;
     }
-    if (!mounted) return;
+    final fetched = await structure;
+    if (!mounted || token != _treeLoadToken) return;
+    // A backend without the endpoint still shows its components: one level, from the lists.
+    final tree = fetched ??
+        assemblyTreeFromLists(
+          partId: focusPartId,
+          partName: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
+          occurrences: occurrences,
+          mates: mates,
+          patterns: patterns,
+        );
     setState(() {
       _occurrences = occurrences;
       _mates = _mateFollowedNotes.merge(mates);
       _componentPatterns = patterns;
-      _constraintStatusByOccurrenceId = constraintStatus;
-      if (_selectedOccurrenceId != null && !occurrences.any((o) => o.id == _selectedOccurrenceId)) {
-        _selectedOccurrenceId = null;
-        // Bug fix ("selecting a component doesn't highlight it in 3D"): a
-        // component-kind `_selectedEntities` entry has no meaning once its
-        // own Occurrence is gone - clear it alongside `_selectedOccurrenceId`
-        // so no orphaned 3D highlight survives.
+      // The rows claim no state until the status call answers; the screen's own map (the rigid-set grab notice) keeps the previous one until then
+      // (for the same Part: another Part's status is not this one's).
+      if (_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) _constraintStatusByOccurrenceId = const {};
+      _applyTree(tree);
+      final path = _selectedTreePath;
+      if (path != null && _treeModel.nodeAtPath(path) == null) {
+        _selectedTreePath = null;
+        // Bug fix ("selecting a component doesn't highlight it in 3D"): a component-kind `_selectedEntities` entry has no meaning once its
+        // own Occurrence is gone - clear it alongside the selection so no orphaned 3D highlight survives.
         _selectedEntities = {};
       }
     });
+    _refreshTreeFeatures();
+    if (fetched != null) {
+      unawaited(_loadTreeStatus(focusPartId, token));
+    } else {
+      unawaited(_loadFlatConstraintStatus(focusPartId, token));
+    }
+  }
+
+  /// A backend without `assembly-tree` still has `constraint-status`: the grab notice of a rigid set reads it.
+  Future<void> _loadFlatConstraintStatus(String partId, int token) async {
+    try {
+      final status = await _api.getConstraintStatus(partId);
+      if (!mounted || token != _treeLoadToken) return;
+      setState(() => _constraintStatusByOccurrenceId = status);
+    } catch (_) {
+      // Decoration: no status.
+    }
+  }
+
+  /// `GET .../assembly-tree` without status; null when the call failed (an older backend answers 404): the caller builds one level from the lists.
+  Future<AssemblyTreeResponseDto?> _fetchTreeStructure(String partId) async {
+    try {
+      return await _api.getAssemblyTree(partId);
+    } catch (_) {
+      // Any failure (an older backend's 404, a network error, a bad answer): the caller builds one level from the lists.
+      return null;
+    }
+  }
+
+  /// The second call: the same tree with `status=true`, merged over the first when it arrives. Dropped when a newer load has started since. A
+  /// failure leaves the rows without a state (absent, not wrong). The response is read and the model rebuilt once.
+  Future<void> _loadTreeStatus(String partId, int token) async {
+    final AssemblyTreeResponseDto withStatus;
+    try {
+      withStatus = await _api.getAssemblyTree(partId, status: true);
+    } catch (_) {
+      return;
+    }
+    if (!mounted || token != _treeLoadToken) return;
+    setState(() {
+      _treeModel.merge(withStatus);
+      _constraintStatusByOccurrenceId = topLevelConstraintStatus(withStatus);
+      _syncTreeSideData();
+    });
+    _treeController.refresh();
+  }
+
+  /// Puts [tree] in the model (a new model when the root Part changed: a focus push or pop shows another Part's tree, with its own open rows).
+  void _applyTree(AssemblyTreeResponseDto tree) {
+    if (_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) {
+      _treeModel = AssemblyTreeModel(grouping: _treeModel.grouping);
+      _treeHostSelection = null;
+      _treeFeaturePaths.clear();
+    }
+    _treeModel.merge(tree);
+    _syncTreeSideData();
+    _treeController.refresh();
+  }
+
+  /// What the model keeps besides the tree: the mates and patterns under the root folders, the unsaved Parts, and the nested rows hidden for
+  /// this session (as keys relative to the tree's root).
+  void _syncTreeSideData() {
+    _treeModel.setFolderItems('#mates', mateFolderItems(_mates));
+    _treeModel.setFolderItems('#patterns', patternFolderItems(_componentPatterns));
+    _treeModel.setUnsavedPartIds(_unsavedPartIds);
+    final focusPath = _focusStack?.currentOccurrencePath ?? const <String>[];
+    final prefix = focusPath.isEmpty ? '' : '${focusPath.join('/')}/';
+    _treeModel.setSessionHiddenKeys({
+      for (final full in _sessionHiddenPaths)
+        if (full.startsWith(prefix) && full.length > prefix.length) full.substring(prefix.length),
+    });
+  }
+
+  /// Paths (joined) whose features the tree has asked for: they are read again with every load, so they do not go stale after an edit.
+  final Set<String> _treeFeaturePaths = {};
+
+  void _refreshTreeFeatures() {
+    for (final key in _treeFeaturePaths.toList()) {
+      final path = key.isEmpty ? const <String>[] : key.split('/');
+      if (path.isNotEmpty && _treeModel.nodeAtPath(path) == null) {
+        _treeFeaturePaths.remove(key);
+        continue;
+      }
+      unawaited(_loadTreeFeatures(path));
+    }
+  }
+
+  /// The tree opened a part row (or the root) whose features it does not have: read them and hand them to the model. A failure is reported to
+  /// the controller, or that part would never ask again.
+  Future<void> _loadTreeFeatures(List<String> path) async {
+    final model = _treeModel;
+    final partId = path.isEmpty ? model.tree?.partId : model.nodeAtPath(path)?.resolvedPartId;
+    if (partId == null) {
+      _treeController.forgetFeaturesRequest(path);
+      return;
+    }
+    _treeFeaturePaths.add(path.join('/'));
+    try {
+      final features = await _api.listFeatures(partId);
+      // Not for a model that has been replaced since, nor for a row that is gone.
+      if (!mounted || !identical(model, _treeModel)) return;
+      if (path.isNotEmpty && model.nodeAtPath(path)?.resolvedPartId != partId) return;
+      setState(() => model.setFeatureDtos(path, features));
+      _treeController.refresh();
+    } on ApiException {
+      _treeFeaturePaths.remove(path.join('/'));
+      _treeController.forgetFeaturesRequest(path);
+    }
+  }
+
+  /// After a local Fix / Float: the row says so at once and drops its old constraint state (it is not known any more), and any load still in
+  /// flight is stale. The load that follows brings the real state.
+  void _applyLocalFixed(List<String> path, bool fixed) {
+    final tree = _treeModel.tree;
+    if (tree == null) return;
+    _treeLoadToken++;
+    final patched = assemblyTreeWithNode(tree, path, (n) => copyAssemblyTreeNode(n, fixed: fixed, clearConstraint: true));
+    setState(() {
+      _treeModel.merge(patched);
+      if (path.length == 1) _constraintStatusByOccurrenceId = {..._constraintStatusByOccurrenceId}..remove(path.first);
+    });
+    _treeController.refresh();
   }
 
   /// Assembly support Phase 4 (`docs/assembly-scope.md` §3): fetches
@@ -15477,17 +15681,18 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// freshly-picked file via [relocateOccurrenceInDocument] - the same
   /// merge-then-`importNative` shape [_onInsertComponentPressed] already
   /// uses, just updating [occurrence] in place instead of adding a new one.
-  Future<void> _onLocateMissingFilePressed(OccurrenceDto occurrence) async {
+  Future<void> _onLocateMissingFilePressed(OccurrenceDto occurrence, {List<String>? path}) async {
+    // A4: a nested missing file is on its parent Part, which is where the link is mended.
+    final rowPath = path ?? [occurrence.id];
     // A reference the open reported (found by id, several copies, a suggestion, missing) opens the Review sheet, which has the
     // candidates and Locate... too; this plain confirm-and-pick flow is for an Occurrence that went missing some other way.
     if (_referenceReports.value.any((report) => report.occurrenceId == occurrence.id)) {
       _openReferencesSheet();
       return;
     }
-    final rootPartId = _focusStack?.current ?? _part?.id;
+    final rootPartId = _ownerPartIdOf(rowPath);
     if (rootPartId == null) return;
-    final index = _displayOccurrences.indexWhere((o) => o.id == occurrence.id);
-    final name = index >= 0 ? occurrenceDisplayName(_displayOccurrences, index) : 'this component';
+    final name = _treeModel.labelAtPath(rowPath) ?? 'this component';
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -15872,7 +16077,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// sibling can never collide with a freshly generated one.
   String _nextComponentName() {
     final existingNames = <String>{
-      for (var i = 0; i < _occurrences.length; i++) occurrenceDisplayName(_occurrences, i),
+      for (var i = 0; i < _occurrences.length; i++) _treeLabel([_occurrences[i].id], _occurrences[i]),
     };
     var ordinal = _occurrences.length + 1;
     var name = 'Component $ordinal';
@@ -25379,6 +25584,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // than duplicating the sequential pattern's own `await` pairs inline.
       unawaited(() async {
         await _refreshAssemblyTree();
+        // A4: a component picked in the viewport while the tree was not on screen is revealed now.
+        final picked = _selectedTreePath;
+        if (mounted && picked != null) _treeController.reveal(picked, select: true);
         // Most sessions never open the Assembly lens at all, so this stays
         // uncalled (and [_assemblyMesh] stays `null`) for them, matching
         // [_refreshAssemblyTree]'s own lazy-fetch cost-avoidance.
@@ -25409,22 +25617,219 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  void _onOccurrenceTap(OccurrenceDto occurrence) {
-    if (_componentPatternPanelActive && _componentPatternPickingSources) {
-      _toggleComponentPatternSource(occurrence.id);
+  // --- The Assembly tree's rows (A4) ----------------------------------------------------------------------------------
+
+  /// The focus chain of occurrence ids down to the tree's root (`[]` at the document root).
+  List<String> get _treeRootPath => _focusStack?.currentOccurrencePath ?? const <String>[];
+
+  /// A pick's full path (from the document root) as a path from the tree's root, or null when it is not below the root.
+  List<String>? _relativeTreePath(List<String> full) {
+    final root = _treeRootPath;
+    if (full.length <= root.length) return null;
+    if (root.isNotEmpty && !isOccurrencePathWithinFocus(full, root)) return null;
+    return full.sublist(root.length);
+  }
+
+  /// [path] (from the tree's root) as the occurrence path the viewport and the scenes use, from the document root.
+  List<String> _fullPath(List<String> path) => [..._treeRootPath, ...path];
+
+  /// The Part that owns the occurrence at [path]: the focused Part for a row directly in it, else the Part the parent row places.
+  String? _ownerPartIdOf(List<String> path) {
+    if (path.isEmpty) return null;
+    if (path.length == 1) return _focusStack?.current ?? _part?.id;
+    return _treeModel.nodeAtPath(path.sublist(0, path.length - 1))?.resolvedPartId;
+  }
+
+  OccurrenceDto _occurrenceFromNode(AssemblyTreeNodeDto n) => OccurrenceDto(
+        id: n.occurrenceId,
+        externalRef: n.externalRef,
+        resolvedPartId: n.resolvedPartId,
+        nameOverride: n.nameOverride,
+        transform: RigidTransformDto(translation: const [0.0, 0.0, 0.0], rotationAxis: const [0.0, 0.0, 1.0], rotationAngleDegrees: 0.0),
+        suppressed: n.suppressed,
+        hidden: n.hidden,
+        fixed: n.fixed,
+        color: n.color,
+      );
+
+  _TreeTarget? _treeTargetOfPath(List<String> path) {
+    if (path.isEmpty) return null;
+    final owner = _ownerPartIdOf(path);
+    if (owner == null) return null;
+    if (path.length == 1) {
+      for (final o in _occurrences) {
+        if (o.id == path.first) return _TreeTarget(path, o, owner);
+      }
+    }
+    final node = _treeModel.nodeAtPath(path);
+    return node == null ? null : _TreeTarget(path, _occurrenceFromNode(node), owner);
+  }
+
+  void _withTreeTarget(AssemblyTreeRow row, Future<void> Function(_TreeTarget target) action) {
+    final path = row.path;
+    final target = path == null ? null : _treeTargetOfPath(path);
+    if (target != null) unawaited(action(target));
+  }
+
+  /// The label the tree shows for the occurrence at [path] (the same everywhere: `Bolt <2>`), else the flat-list name.
+  String _treeLabel(List<String> path, OccurrenceDto occurrence) =>
+      _treeModel.labelAtPath(path) ?? (() {
+        final i = _occurrences.indexWhere((o) => o.id == occurrence.id);
+        return i >= 0 && path.length == 1 ? occurrenceDisplayName(_occurrences, i) : occurrenceDisplayName([occurrence], 0);
+      })();
+
+  /// Whether the row shows hidden now: its own flag, or hidden for this session (a nested row), or the scene's choice while one shows.
+  bool _treeTargetHidden(_TreeTarget t) {
+    final full = _fullPath(t.path);
+    final real = t.occurrence.hidden || _sessionHiddenPaths.contains(full.join('/'));
+    return _shownHidden(full, real);
+  }
+
+  void _onTreeRowTap(AssemblyTreeRow row) {
+    switch (row.kind) {
+      case AssemblyRowKind.assembly:
+      case AssemblyRowKind.part:
+        final target = _treeTargetOfPath(row.path ?? const []);
+        if (target != null) _onTreeOccurrenceTap(target);
+      case AssemblyRowKind.missing:
+        // A missing file has nothing else to select; the tap is the way to locate it (it was the red badge on the old row).
+        final target = _treeTargetOfPath(row.path ?? const []);
+        if (target != null) {
+          _onTreeOccurrenceTap(target);
+          // Not while the Pattern panel is picking sources: the tap was a pick.
+          if (!(_componentPatternPanelActive && _componentPatternPickingSources)) {
+            unawaited(_onLocateMissingFilePressed(target.occurrence, path: target.path));
+          }
+        }
+      case AssemblyRowKind.mate:
+        final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
+        if (mate != null) _onMateTap(mate);
+      case AssemblyRowKind.pattern:
+        final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
+        if (pattern != null) _openComponentPatternForEdit(pattern);
+      case AssemblyRowKind.root:
+      case AssemblyRowKind.group:
+      case AssemblyRowKind.feature:
+      case AssemblyRowKind.matesFolder:
+      case AssemblyRowKind.patternsFolder:
+        // Nothing to select: the view marked the row, this screen's selection stays what it was.
+        setState(() {});
+    }
+  }
+
+  /// A tap on a component row: select it (and, while the Pattern panel is picking sources, add it to them).
+  void _onTreeOccurrenceTap(_TreeTarget target) {
+    if (_componentPatternPanelActive && _componentPatternPickingSources && target.topLevel) {
+      _toggleComponentPatternSource(target.occurrence.id);
       return;
     }
-    // Bug fix ("selecting a component doesn't highlight it in 3D"):
-    // `PartViewport`'s persistent highlighting is driven entirely by
-    // `selectedEntities` (`_syncSelectedEntityNodes`'s already-working
-    // `component` case) - `_selectedOccurrenceId` alone was never enough,
-    // mirrors `_onMateTap`'s own "select, then also populate
-    // `_selectedEntities`" shape just below in this file.
+    _selectTreeTarget(target);
+  }
+
+  void _selectTreeTarget(_TreeTarget target) {
     setState(() {
-      _selectedOccurrenceId = occurrence.id;
-      _selectedEntities = {SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: occurrence.id)};
+      _selectedTreePath = target.path;
+      // Bug fix ("selecting a component doesn't highlight it in 3D"): `PartViewport`'s persistent highlighting is driven by
+      // `selectedEntities`; its component entities name the instance by its path from the document root.
+      _selectedEntities = {SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: _fullPath(target.path).join('/'))};
       _selectedMateId = null;
     });
+  }
+
+  void _onTreeRowLongPress(AssemblyTreeRow row) {
+    switch (row.kind) {
+      case AssemblyRowKind.assembly:
+      case AssemblyRowKind.part:
+      case AssemblyRowKind.missing:
+        final target = _treeTargetOfPath(row.path ?? const []);
+        if (target == null) return;
+        if (target.topLevel) {
+          // Long-press starts the multi-select, as before.
+          _assemblyMultiSelectAnchor = target.occurrence;
+          _enterMultiSelect(_assemblyMultiSelect, target.occurrence.id);
+        } else {
+          // A nested row takes no part in the multi-select: the long-press opens its menu.
+          unawaited(_onOccurrenceLongPress(target.occurrence, path: target.path));
+        }
+      case AssemblyRowKind.mate:
+        final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
+        if (mate != null) unawaited(_onMateLongPress(mate));
+      case AssemblyRowKind.pattern:
+        final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
+        if (pattern != null) unawaited(_onPatternContextMenu(pattern, null));
+      case AssemblyRowKind.root:
+      case AssemblyRowKind.group:
+      case AssemblyRowKind.feature:
+      case AssemblyRowKind.matesFolder:
+      case AssemblyRowKind.patternsFolder:
+        break;
+    }
+  }
+
+  /// A right click (desktop): the row's own menu at the cursor.
+  void _onTreeRowContextMenu(AssemblyTreeRow row, Offset at) {
+    switch (row.kind) {
+      case AssemblyRowKind.assembly:
+      case AssemblyRowKind.part:
+      case AssemblyRowKind.missing:
+        _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, at: at, path: t.path));
+      case AssemblyRowKind.mate:
+        final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
+        if (mate != null) unawaited(_onMateLongPress(mate, at: at));
+      case AssemblyRowKind.pattern:
+        final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
+        if (pattern != null) unawaited(_onPatternContextMenu(pattern, at));
+      case AssemblyRowKind.root:
+      case AssemblyRowKind.group:
+      case AssemblyRowKind.feature:
+      case AssemblyRowKind.matesFolder:
+      case AssemblyRowKind.patternsFolder:
+        break;
+    }
+  }
+
+  /// The eye (desktop hover, an eye-off icon, the phone bar's Hide / Show): the row's own Hide / Show.
+  Future<void> _onTreeRowVisibilityToggle(AssemblyTreeRow row) async {
+    final path = row.path;
+    final target = path == null ? null : _treeTargetOfPath(path);
+    if (target == null) return;
+    await _setOccurrenceHidden(target.occurrence, !_treeTargetHidden(target), path: target.path);
+  }
+
+  /// Make Focus on the occurrence at [path]: each level from the tree's root down to it is pushed onto [_focusStack] (a nested row pushes
+  /// its parents first), so Exit Focus walks back one level at a time. Refused (with a message) when a level is an unresolved component.
+  bool _pushFocusPath(List<String> path) {
+    final stack = _focusStack;
+    final levels = _focusLevelsOf(path);
+    if (stack == null || levels == null) return false;
+    setState(() {
+      for (final (partId, id, label) in levels) {
+        stack.push(partId, id, label);
+      }
+    });
+    return true;
+  }
+
+  /// (Part id, occurrence id, label) for each level of [path], or null (and an error message) when one is an unresolved component.
+  List<(String, String, String)>? _focusLevelsOf(List<String> path) {
+    final levels = <(String, String, String)>[];
+    for (var i = 0; i < path.length; i++) {
+      final sub = path.sublist(0, i + 1);
+      final target = _treeTargetOfPath(sub);
+      final partId = target?.occurrence.resolvedPartId;
+      if (target == null || partId == null) {
+        setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
+        return null;
+      }
+      levels.add((partId, path[i], _treeLabel(sub, target.occurrence)));
+    }
+    return levels;
+  }
+
+  Future<void> _makeFocusOnPath(List<String> path) async {
+    _clearTransientError();
+    if (!_pushFocusPath(path)) return;
+    await _refreshFocusTargetContent();
   }
 
   /// [AssemblyTreePanel.onOccurrenceLongPress] - Phase 4's real call site
@@ -25474,16 +25879,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// opens [_openComponentPattern] - unlike Mate, this *does* use `occurrence`'s own
   /// pre-selection directly, since a ComponentPattern's source genuinely is
   /// "the whole component that was long-pressed."
-  Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence, {Offset? at}) async {
-    // Bug fix ("selecting a component doesn't highlight it in 3D"): same
-    // `_selectedEntities` population as `_onOccurrenceTap`'s own identical
-    // fix, so a long-press-selected component highlights too.
-    setState(() {
-      _selectedOccurrenceId = occurrence.id;
-      _selectedEntities = {SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: occurrence.id)};
-      _selectedMateId = null;
-    });
-    final resolvedPartId = occurrence.resolvedPartId;
+  Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence, {Offset? at, List<String>? path}) async {
+    // A4: [path] is the row's path from the tree's root; a component directly in the focused Part is `[id]`.
+    final rowPath = path ?? [occurrence.id];
+    final target = _treeTargetOfPath(rowPath) ?? _TreeTarget(rowPath, occurrence, _focusStack?.current ?? _part?.id ?? '');
+    final nested = !target.topLevel;
+    // Bug fix ("selecting a component doesn't highlight it in 3D"): same selection as a tap, so a long-press-selected component highlights
+    // too.
+    _selectTreeTarget(target);
     final focusStack = _focusStack;
     // §6 roadmap Phase 10 (`[19]`): was `focusStack.current ==
     // resolvedPartId`, an always-false comparison for any real Occurrence
@@ -25493,8 +25896,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // appendix item 4's own "noticed but out of scope" note). Checking
     // membership in the full focused chain is the real "is *this*
     // Occurrence the one currently focused" question.
-    final isFocused = focusStack?.currentOccurrencePath.contains(occurrence.id) ?? false;
-    final hidden = _shownHidden([...?_focusStack?.currentOccurrencePath, occurrence.id], occurrence.hidden);
+    final isFocused = !nested && (focusStack?.currentOccurrencePath.contains(occurrence.id) ?? false);
+    final hidden = _treeTargetHidden(target);
     final fixed = occurrence.fixed;
     // Bug fix ("selecting a component shows no contextual toolbar"): this
     // menu's own Move/Rotate/Fix/Float/Delete entries duplicate
@@ -25509,36 +25912,28 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       fixed: fixed,
       at: at,
       showEditAlone: _editAlone == null,
+      nested: nested,
     );
     if (mounted) setState(() => _componentContextMenuOpen = false);
     if (!mounted || action == null) return;
     switch (action) {
       case ComponentContextMenuAction.editAlone:
-        await _enterEditAlone(occurrence);
+        await _enterEditAlone(occurrence, path: rowPath);
       case ComponentContextMenuAction.makeFocus:
-        _clearTransientError();
-        if (resolvedPartId == null) {
-          setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
-          return;
-        }
-        final occurrenceIndex = _occurrences.indexWhere((o) => o.id == occurrence.id);
-        final label = occurrenceIndex >= 0
-            ? occurrenceDisplayName(_occurrences, occurrenceIndex)
-            : occurrenceDisplayName([occurrence], 0);
-        setState(() => focusStack?.push(resolvedPartId, occurrence.id, label));
-        await _refreshFocusTargetContent();
+        // A nested row pushes every level down to it (A4).
+        await _makeFocusOnPath(rowPath);
       case ComponentContextMenuAction.exitFocus:
         await _exitFocusOneLevel();
       case ComponentContextMenuAction.hide:
-        await _setOccurrenceHidden(occurrence, true);
+        await _setOccurrenceHidden(occurrence, true, path: rowPath);
       case ComponentContextMenuAction.show:
-        await _setOccurrenceHidden(occurrence, false);
+        await _setOccurrenceHidden(occurrence, false, path: rowPath);
       case ComponentContextMenuAction.isolate:
-        await _isolateOccurrence(occurrence);
+        await _isolateOccurrence(occurrence, path: rowPath);
       case ComponentContextMenuAction.fix:
-        await _setOccurrenceFixed(occurrence, true);
+        await _setOccurrenceFixed(occurrence, true, path: rowPath);
       case ComponentContextMenuAction.float:
-        await _setOccurrenceFixed(occurrence, false);
+        await _setOccurrenceFixed(occurrence, false, path: rowPath);
       case ComponentContextMenuAction.moveRotate:
         // Bug fix: selecting `occurrence` above already made the gizmo
         // target it (see this method's own doc comment) - but the gizmo's
@@ -25576,11 +25971,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case ComponentContextMenuAction.pattern:
         _openComponentPattern();
       case ComponentContextMenuAction.rename:
-        await _renameOccurrence(occurrence);
+        await _renameOccurrence(occurrence, path: rowPath);
       case ComponentContextMenuAction.appearance:
-        await _onOccurrenceColorTap(occurrence);
+        await _onOccurrenceColorTap(occurrence, path: rowPath);
       case ComponentContextMenuAction.delete:
-        await _confirmDeleteOccurrence(occurrence);
+        await _confirmDeleteOccurrence(occurrence, path: rowPath);
     }
   }
 
@@ -25959,38 +26354,53 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// delete along with it (computed from [_mates]/[_componentPatterns] -
   /// already loaded, no second round trip needed) and an Undo entry pushed
   /// right before the delete call, capturing exactly what the warning named.
-  Future<void> _confirmDeleteOccurrence(OccurrenceDto occurrence) async {
+  Future<void> _confirmDeleteOccurrence(OccurrenceDto occurrence, {List<String>? path}) async {
+    final rowPath = path ?? [occurrence.id];
+    final nested = rowPath.length > 1;
     final part = _part;
-    final focusPartId = _focusStack?.current ?? part?.id;
+    final focusPartId = _ownerPartIdOf(rowPath);
     if (part == null || focusPartId == null) return;
+    // The mates and patterns this Part's own lists name; for a nested row they belong to the parent Part, which is not loaded here: the
+    // backend removes them with the component, and the dialog says so without naming them.
     final affectedMates = <MateDto>[];
-    for (var i = 0; i < _mates.length; i++) {
-      if (mateTopLevelOccurrences(_mates[i]).contains(occurrence.id)) {
-        affectedMates.add(_mates[i]);
-      }
-    }
-    final affectedMateNames = [
-      for (var i = 0; i < _mates.length; i++)
-        if (affectedMates.contains(_mates[i])) mateDisplayName(_mates, i),
-    ];
     final affectedPatterns = <ComponentPatternDto>[];
-    for (var i = 0; i < _componentPatterns.length; i++) {
-      if (_componentPatterns[i].sourceOccurrenceIds.contains(occurrence.id)) {
-        affectedPatterns.add(_componentPatterns[i]);
+    final warningLines = <String>[];
+    if (!nested) {
+      for (var i = 0; i < _mates.length; i++) {
+        if (mateTopLevelOccurrences(_mates[i]).contains(occurrence.id)) {
+          affectedMates.add(_mates[i]);
+        }
       }
+      final affectedMateNames = [
+        for (var i = 0; i < _mates.length; i++)
+          if (affectedMates.contains(_mates[i])) mateDisplayName(_mates, i),
+      ];
+      for (var i = 0; i < _componentPatterns.length; i++) {
+        if (_componentPatterns[i].sourceOccurrenceIds.contains(occurrence.id)) {
+          affectedPatterns.add(_componentPatterns[i]);
+        }
+      }
+      final affectedPatternNames = [
+        for (var i = 0; i < _componentPatterns.length; i++)
+          if (affectedPatterns.contains(_componentPatterns[i])) componentPatternDisplayName(_componentPatterns, i),
+      ];
+      warningLines.addAll([
+        if (affectedMateNames.isNotEmpty) '${affectedMateNames.length} mate(s): ${affectedMateNames.join(', ')}',
+        if (affectedPatternNames.isNotEmpty) '${affectedPatternNames.length} pattern(s): ${affectedPatternNames.join(', ')}',
+      ]);
     }
-    final affectedPatternNames = [
-      for (var i = 0; i < _componentPatterns.length; i++)
-        if (affectedPatterns.contains(_componentPatterns[i])) componentPatternDisplayName(_componentPatterns, i),
-    ];
-    final warningLines = [
-      if (affectedMateNames.isNotEmpty) '${affectedMateNames.length} mate(s): ${affectedMateNames.join(', ')}',
-      if (affectedPatternNames.isNotEmpty)
-        '${affectedPatternNames.length} pattern(s): ${affectedPatternNames.join(', ')}',
-    ];
-    final content = warningLines.isEmpty
-        ? 'This cannot be undone.'
-        : 'Deleting this component will also delete ${warningLines.join(' and ')}. This cannot be undone.';
+    // A4: the component sits in a Part that may be placed more than once; deleting it changes every placement.
+    // The count needs the whole tree, so it is asked for only when it can be more than one, with the busy state showing meanwhile.
+    int? used = focusPartId == part.id ? 1 : null;
+    if (used == null) await _runGuarded(() async => used = await _placementsOfPart(focusPartId));
+    if (!mounted) return;
+    final usedLine = used != null && used! > 1 ? ' This changes every placement of its parent (used $used\u00D7).' : '';
+    final content = nested
+        ? 'Deleting this component will also delete any mates and patterns that use it.$usedLine This cannot be undone.'
+        : warningLines.isEmpty
+            ? '${usedLine.isEmpty ? '' : '${usedLine.trim()} '}This cannot be undone.'
+            : 'Deleting this component will also delete ${warningLines.join(' and ')}.$usedLine This cannot be undone.';
+    if (!mounted) return;
     // Bug fix ("selecting a component shows no contextual toolbar"): this
     // dialog has its own "Delete" button, which would otherwise render at
     // the same time as `ComponentSelectionToolbar`'s identically-labelled
@@ -26013,13 +26423,19 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (mounted) setState(() => _componentContextMenuOpen = false);
     if (confirmed != true || !mounted) return;
     try {
-      _componentTransformUndoStack.add(
-        _DeleteUndoEntry(occurrence: occurrence, mates: affectedMates, patterns: affectedPatterns),
-      );
+      // Undo restores into the focused Part; a nested delete has no entry (its parent Part is another one).
+      if (!nested) {
+        _componentTransformUndoStack.add(
+          _DeleteUndoEntry(occurrence: occurrence, mates: affectedMates, patterns: affectedPatterns),
+        );
+      }
       await _api.deleteOccurrence(focusPartId, occurrence.id);
       if (!mounted) return;
       setState(() {
-        if (_selectedOccurrenceId == occurrence.id) _selectedOccurrenceId = null;
+        final selected = _selectedTreePath;
+        if (selected != null && selected.length >= rowPath.length && pathEquals(selected.sublist(0, rowPath.length), rowPath)) {
+          _selectedTreePath = null;
+        }
         if (affectedMates.any((m) => m.id == _selectedMateId)) _selectedMateId = null;
         _selectedEntities = {};
       });
@@ -26031,8 +26447,30 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // restore something that was never actually removed, so it's popped
       // back off rather than left to silently no-op (a restore against a
       // still-live Occurrence id) the next time Undo is pressed.
-      _componentTransformUndoStack.removeLast();
+      if (!nested) _componentTransformUndoStack.removeLast();
       setState(() => _errorMessage = e.message);
+    }
+  }
+
+  /// How many times [partId] is placed in the whole document (the root counts once when it is that Part): the "used N\u00D7" of a delete. 1
+  /// when the tree cannot be read (nothing is claimed that is not known).
+  Future<int?> _placementsOfPart(String partId) async {
+    final root = _part;
+    if (root == null) return null;
+    try {
+      final tree = await _api.getAssemblyTree(root.id);
+      // A truncated tree may hold more placements than it lists: unknown, not a smaller number.
+      if (tree.truncatedDepth || tree.truncatedNodes) return null;
+      var count = tree.partId == partId ? 1 : 0;
+      final stack = <AssemblyTreeNodeDto>[...tree.children];
+      while (stack.isNotEmpty) {
+        final n = stack.removeLast();
+        if (n.resolvedPartId == partId && !n.cycle) count++;
+        stack.addAll(n.children);
+      }
+      return count;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -26065,15 +26503,19 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Edit Alone on [occurrence] (a part or a sub-assembly). Refused for an unresolved component and while a tool, a shown
   /// scene or Presentation mode owns the screen. Inside Edit Alone it is the same as Make Focus, so it does nothing there.
-  Future<void> _enterEditAlone(OccurrenceDto occurrence) async {
+  Future<void> _enterEditAlone(OccurrenceDto occurrence, {List<String>? path}) async {
     _clearTransientError();
     final focusStack = _focusStack;
     if (focusStack == null || _editAlone != null) return;
+    // A4: a nested row pushes every level down to it, like Make Focus.
+    final rowPath = path ?? [occurrence.id];
     final resolvedPartId = occurrence.resolvedPartId;
     if (resolvedPartId == null) {
       setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
       return;
     }
+    final levels = _focusLevelsOf(rowPath);
+    if (levels == null) return;
     if (_sceneMode) {
       _showSnack('Go back to the default view before editing a component alone');
       return;
@@ -26082,10 +26524,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _showSnack('Close the open tool first');
       return;
     }
-    final occurrenceIndex = _occurrences.indexWhere((o) => o.id == occurrence.id);
-    final label = occurrenceIndex >= 0
-        ? occurrenceDisplayName(_occurrences, occurrenceIndex)
-        : occurrenceDisplayName([occurrence], 0);
+    final label = _treeLabel(rowPath, occurrence);
     final session = _EditAloneSession(
       baseDepth: focusStack.depth,
       lensBefore: _lens,
@@ -26094,7 +26533,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     );
     setState(() {
       _editAlone = session;
-      focusStack.push(resolvedPartId, occurrence.id, label);
+      for (final (partId, id, levelLabel) in levels) {
+        focusStack.push(partId, id, levelLabel);
+      }
+      session.editDepth = focusStack.depth;
       _selectedOccurrenceId = null;
       _selectedMateId = null;
       _selectedEntities = {};
@@ -26144,7 +26586,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Exit Focus from the component menu: one level, except that the first level inside Edit Alone is Done.
   Future<void> _exitFocusOneLevel() async {
     final session = _editAlone;
-    if (session != null && (_focusStack?.depth ?? 0) <= session.baseDepth + 1) {
+    if (session != null && (_focusStack?.depth ?? 0) <= session.editDepth) {
       await _exitEditAlone();
       return;
     }
@@ -26205,13 +26647,29 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// so [_occurrences]/[_assemblyMesh] agree with the backend going forward,
   /// the same PATCH-then-refetch shape [_onComponentGizmoDragEnd] already
   /// uses for the gizmo's own transform persistence.
-  Future<void> _setOccurrenceHidden(OccurrenceDto occurrence, bool hidden) async {
+  ///
+  /// A4: [path] is the row's path from the tree's root. A row directly in the focused Part PATCHes as before. A nested row is hidden for this
+  /// session only, by its path: the backend's flag sits on the sub-assembly's own occurrence, which every placement of it shares, so a PATCH
+  /// would hide it under the other placement too.
+  Future<void> _setOccurrenceHidden(OccurrenceDto occurrence, bool hidden, {List<String>? path}) async {
+    final rowPath = path ?? [occurrence.id];
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
     if (_sceneMode) {
       // Scenes (S3): Hide / Show while a scene shows is the scene's.
-      _storeSceneHidden([...?_focusStack?.currentOccurrencePath, occurrence.id], hidden);
+      _storeSceneHidden(_fullPath(rowPath), hidden);
       return;
+    }
+    final fullKey = _fullPath(rowPath).join('/');
+    if (rowPath.length > 1) {
+      _setSessionHidden({fullKey: hidden});
+      return;
+    }
+    // A row hidden for this session (a nested row hidden before the focus moved into its parent) is shown by dropping that; only if the
+    // backend says hidden too is there something to PATCH.
+    if (!hidden && _sessionHiddenPaths.contains(fullKey)) {
+      _setSessionHidden({fullKey: false});
+      if (!occurrence.hidden) return;
     }
     await _runGuarded(() async {
       await _api.updateOccurrenceHidden(focusPartId, occurrence.id, hidden);
@@ -26220,17 +26678,34 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
+  /// Hides (or shows again) nested placements for this session: [changes] maps a full path (joined) to whether it is hidden. The rows and the
+  /// viewport follow.
+  void _setSessionHidden(Map<String, bool> changes) {
+    final next = {..._sessionHiddenPaths};
+    changes.forEach((key, hidden) => hidden ? next.add(key) : next.remove(key));
+    setState(() {
+      _sessionHiddenPaths = next;
+      _syncTreeSideData();
+    });
+    _treeController.refresh();
+  }
+
   /// Assembly testing bug fix: Fix/Float's real persistence call - mirrors
   /// [_setOccurrenceHidden] exactly, PATCHing the backend's own `fixed`
   /// field via [DocumentApiClient.updateOccurrenceFixed] and re-fetching the
   /// tree so [_occurrences] agrees with the backend going forward. No mesh
   /// re-fetch needed (unlike Hide/Show) - `fixed` never changes what's
   /// visible, only what can subsequently move.
-  Future<void> _setOccurrenceFixed(OccurrenceDto occurrence, bool fixed) async {
-    final focusPartId = _focusStack?.current ?? _part?.id;
-    if (focusPartId == null) return;
+  ///
+  /// A4: goes to the occurrence on its parent Part ([_ownerPartIdOf]), so a nested row PATCHes the sub-assembly's own occurrence. The row says
+  /// so at once and drops its old constraint state; any tree load still in flight is stale ([_applyLocalFixed]).
+  Future<void> _setOccurrenceFixed(OccurrenceDto occurrence, bool fixed, {List<String>? path}) async {
+    final rowPath = path ?? [occurrence.id];
+    final ownerPartId = _ownerPartIdOf(rowPath);
+    if (ownerPartId == null) return;
     await _runGuarded(() async {
-      await _api.updateOccurrenceFixed(focusPartId, occurrence.id, fixed);
+      await _api.updateOccurrenceFixed(ownerPartId, occurrence.id, fixed);
+      if (mounted) _applyLocalFixed(rowPath, fixed);
       await _refreshAssemblyTree();
     });
   }
@@ -26251,14 +26726,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// silently relabel every one of them, so that case only ever touches
   /// this one Occurrence's own label - [_promptRenameComponent] says so
   /// plainly rather than silently doing the narrower thing unexplained.
-  Future<void> _renameOccurrence(OccurrenceDto occurrence) async {
-    final focusPartId = _focusStack?.current ?? _part?.id;
+  ///
+  /// A4: the name change goes to the occurrence on its parent Part ([_ownerPartIdOf]), also for a nested row.
+  Future<void> _renameOccurrence(OccurrenceDto occurrence, {List<String>? path}) async {
+    final rowPath = path ?? [occurrence.id];
+    final focusPartId = _ownerPartIdOf(rowPath);
     if (focusPartId == null) return;
 
-    final occurrenceIndex = _occurrences.indexWhere((o) => o.id == occurrence.id);
-    final currentName = occurrenceIndex >= 0
-        ? occurrenceDisplayName(_occurrences, occurrenceIndex)
-        : occurrenceDisplayName([occurrence], 0);
+    final currentName = _treeLabel(rowPath, occurrence);
     final resolvedPartId = occurrence.resolvedPartId;
 
     var instanceCount = 1;
@@ -26364,9 +26839,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   ///
   /// The Appearance tool (V3): the disc now opens the Appearance panel on that component (its Part, Pattern, `Every <part>`,
   /// sub-assembly and Whole assembly rows); a click on the part in the viewport adds its Face and Body rows.
-  Future<void> _onOccurrenceColorTap(OccurrenceDto occurrence) async {
-    final path = [...?_focusStack?.currentOccurrencePath, occurrence.id];
-    await _openAppearance(pick: _PaintPick(path: path, label: _paintPickLabel(path)));
+  Future<void> _onOccurrenceColorTap(OccurrenceDto occurrence, {List<String>? path}) async {
+    final fullPath = _fullPath(path ?? [occurrence.id]);
+    await _openAppearance(pick: _PaintPick(path: fullPath, label: _paintPickLabel(fullPath)));
   }
 
   /// §6 roadmap Phase 10 (`[5]`): Isolate's real persistence call - mirrors
@@ -26378,12 +26853,35 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// already-fetched [_occurrences] list (every other Occurrence already
   /// hidden, this one not) rather than a separate client-side flag, since
   /// there's no longer a client-only "isolated id" to consult.
-  Future<void> _isolateOccurrence(OccurrenceDto occurrence) async {
+  ///
+  /// A4: among the siblings of the row's own parent. A top-level row PATCHes as before; a nested row's siblings are hidden for this session
+  /// only, by path (see [_setOccurrenceHidden]).
+  Future<void> _isolateOccurrence(OccurrenceDto occurrence, {List<String>? path}) async {
+    final rowPath = path ?? [occurrence.id];
+    if (rowPath.length > 1) {
+      final parentPath = rowPath.sublist(0, rowPath.length - 1);
+      final siblings = _treeModel.nodeAtPath(parentPath)?.children ?? const <AssemblyTreeNodeDto>[];
+      bool shown(AssemblyTreeNodeDto n) => n.hidden || _sessionHiddenPaths.contains(_fullPath(n.path).join('/'));
+      final alreadyIsolated = siblings.every((n) => n.occurrenceId == occurrence.id ? !shown(n) : shown(n));
+      _setSessionHidden({
+        for (final n in siblings)
+          _fullPath(n.path).join('/'): alreadyIsolated ? false : n.occurrenceId != occurrence.id,
+      });
+      return;
+    }
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
+    bool sessionHidden(OccurrenceDto o) => _sessionHiddenPaths.contains(_fullPath([o.id]).join('/'));
+    bool shownHidden(OccurrenceDto o) => o.hidden || sessionHidden(o);
     final alreadyIsolated = _occurrences.every(
-      (other) => other.id == occurrence.id ? !other.hidden : other.hidden,
+      (other) => other.id == occurrence.id ? !shownHidden(other) : shownHidden(other),
     );
+    // Rows hidden for this session count as hidden, and are shown again when the isolation is undone.
+    final sessionShow = {
+      for (final other in _occurrences)
+        if (sessionHidden(other) && (alreadyIsolated || other.id == occurrence.id)) _fullPath([other.id]).join('/'): false,
+    };
+    if (sessionShow.isNotEmpty) _setSessionHidden(sessionShow);
     await _runGuarded(() async {
       for (final other in _occurrences) {
         final shouldBeHidden = alreadyIsolated ? false : other.id != occurrence.id;
@@ -27601,7 +28099,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       final occurrence = _occurrences[index];
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
-                        displayName: occurrenceDisplayName(_occurrences, index),
+                        displayName: _treeLabel([_occurrences[index].id], _occurrences[index]),
                         onMove: () {
                           _clearTransientError();
                           setState(() {
@@ -27839,72 +28337,98 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                   );
   }
 
-  /// The Assembly tree, as [_buildFeatureTreePanel].
+  /// The Assembly tree, as [_buildFeatureTreePanel]: [AssemblyTreeView] (A4 of `docs/assembly-tree-overhaul-scope.md`) over [_treeModel].
   Widget _buildAssemblyTreePanel({required bool docked}) {
-    return AssemblyTreePanel(
+    // The model keeps this screen's selection and unsaved Parts (cheap: nothing changes when they have not).
+    _treeModel.setUnsavedPartIds(_unsavedPartIds);
+    // The mate and pattern rows follow the lists when something other than a load changed them (a "Got it" on a mate).
+    if (!identical(_mates, _treeMatesSynced)) {
+      _treeMatesSynced = _mates;
+      _treeModel.setFolderItems('#mates', mateFolderItems(_mates));
+    }
+    if (!identical(_componentPatterns, _treePatternsSynced)) {
+      _treePatternsSynced = _componentPatterns;
+      _treeModel.setFolderItems('#patterns', patternFolderItems(_componentPatterns));
+    }
+    // Only when this screen's own selection changed: a tap on a folder, group or feature row marks that row and keeps its mark.
+    final hostKey = _selectedMateId != null ? '#mates#item:$_selectedMateId' : _selectedTreePath?.join('/');
+    if (hostKey != _treeHostSelection) {
+      _treeHostSelection = hostKey;
+      _treeModel.selectedKey = hostKey;
+    }
+    AssemblyTreeView view(bool docked, double width) => AssemblyTreeView(
+      model: _treeModel,
+      controller: _treeController,
       docked: docked,
+      width: width,
+      title: 'Assembly Tree',
+      // The docked pane is shown or not by the layout itself.
+      visible: docked || _featureTreePanelVisible,
       editAloneLabel: _editAlone?.label,
       onEditAloneDone: _editAlone == null ? null : () => unawaited(_exitEditAlone()),
-                    motionSummary: _motionStatusText,
-                    unsavedPartIds: _dirtyPartIds,
-                    neverSavedPartIds: _neverWrittenPartIds,
-                    parentUnsaved: _focusedPartId != null && _dirtyPartIds.contains(_focusedPartId),
-                    parentNeverSaved: _focusedPartId != null && _neverWrittenPartIds.contains(_focusedPartId),
-                    multiSelectHeader: _activeMultiSelect == null
-                        ? null
-                        : MultiSelectActionBar(
-                            count: _activeMultiSelect!.count,
-                            allHidden: _multiSelectAllHidden,
-                            busy: _busy || _multiSelectBusy,
-                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
-                            onDelete: () => unawaited(_multiSelectDelete()),
-                            onCancel: _exitMultiSelect,
-                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
-                          ),
-                    visible: _featureTreePanelVisible,
-                    occurrences: _displayOccurrences,
-                    mates: _mates,
-                    patterns: _componentPatterns,
-                    selectedOccurrenceId: _selectedOccurrenceId,
-                    onOccurrenceTap: _onOccurrenceTap,
-                    onOccurrenceLongPress: (occurrence) {
-                      _assemblyMultiSelectAnchor = occurrence;
-                      _enterMultiSelect(_assemblyMultiSelect, occurrence.id);
-                    },
-                    constraintStatusByOccurrenceId: _constraintStatusByOccurrenceId,
-                    isMultiSelectMode: _assemblyMultiSelect.active,
-                    selectedMultiSelectIds: _assemblyMultiSelect.selectedIds,
-                    onMultiSelectToggle: (id) => _toggleMultiSelectMember(_assemblyMultiSelect, id),
-                    onOccurrenceVisibilityToggle: (occurrence) =>
-                        unawaited(_setOccurrenceHidden(occurrence, !occurrence.hidden)),
-                    onOccurrenceColorTap: (occurrence) => unawaited(_onOccurrenceColorTap(occurrence)),
-                    onLocateMissingFile: (occurrence) => unawaited(_onLocateMissingFilePressed(occurrence)),
-                    onClose: () {
-                      _exitMultiSelect();
-                      setState(() => _featureTreeVisible = false);
-                    },
-                    onMateTap: _onMateTap,
-                    onMateLongPress: _onMateLongPress,
-                    // Desktop input D4: a right click opens the row's menu at
-                    // the cursor.
-                    onOccurrenceContextMenu: (occurrence, at) => unawaited(_onOccurrenceLongPress(occurrence, at: at)),
-                    onMateContextMenu: (mate, at) => unawaited(_onMateLongPress(mate, at: at)),
-                    onPatternContextMenu: (pattern, at) => unawaited(_onPatternContextMenu(pattern, at)),
-                    selectedMateId: _selectedMateId,
-                    onPatternTap: _openComponentPatternForEdit,
-                    onPatternLongPress: (pattern) => unawaited(_onPatternContextMenu(pattern, null)),
-                    flashMateIds: _flashMateIds,
-                    flashToken: _flashMateToken,
-                    focusedLabel: _focusStack?.currentLabel,
-                    onExitFocus: () => unawaited(_exitAssemblyFocus()),
-                    // Test report item 1: the tree's own root row - whichever
-                    // Part these Components/Mates/Patterns sections actually
-                    // belong to, exactly mirroring `_refreshAssemblyTree`'s
-                    // own "`_focusStack.current`, defaulting to the root
-                    // Part" precedent for *which* Part's data to show.
-                    rootLabel: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
-                  );
+      focusedLabel: _focusStack?.currentLabel,
+      onExitFocus: () => unawaited(_exitAssemblyFocus()),
+      statusLine: _motionStatusText,
+      // The old panel closed the tree itself on a phone; the docked pane has no close.
+      onClose: docked
+          ? null
+          : () {
+              _exitMultiSelect();
+              setState(() => _featureTreeVisible = false);
+            },
+      multiSelectHeader: _activeMultiSelect == null
+          ? null
+          : MultiSelectActionBar(
+              count: _activeMultiSelect!.count,
+              allHidden: _multiSelectAllHidden,
+              busy: _busy || _multiSelectBusy,
+              onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
+              onDelete: () => unawaited(_multiSelectDelete()),
+              onCancel: _exitMultiSelect,
+              onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
+            ),
+      isMultiSelectMode: _assemblyMultiSelect.active,
+      selectedKeys: _assemblyMultiSelect.selectedIds,
+      // Multi-select works on the components directly in the assembly being edited (their key is their id); a nested row does not take part.
+      onMultiSelectToggle: (row) {
+        final path = row.path;
+        if (path != null && path.length == 1) _toggleMultiSelectMember(_assemblyMultiSelect, path.first);
+      },
+      onRowTap: _onTreeRowTap,
+      onRowLongPress: _onTreeRowLongPress,
+      onRowContextMenu: _onTreeRowContextMenu,
+      onVisibilityToggle: (row) => unawaited(_onTreeRowVisibilityToggle(row)),
+      onFeaturesRequested: (path) => unawaited(_loadTreeFeatures(path)),
+      onGroupingChanged: (value) => unawaited(ViewPreferences.setAssemblyTreeGrouping(value)),
+      flashItemIds: _flashMateIds,
+      flashToken: _flashMateToken,
+      // The phone selection bar: Hide, Isolate, Focus, Alone as the row menu's own actions, and More as the row menu itself.
+      onHideSelected: (row) => unawaited(_onTreeRowVisibilityToggle(row)),
+      onIsolateSelected: (row) => _withTreeTarget(row, (t) => _isolateOccurrence(t.occurrence, path: t.path)),
+      onFocusSelected: (row) => _withTreeTarget(row, (t) => _makeFocusOnPath(t.path)),
+      onAloneSelected: _editAlone == null ? (row) => _withTreeTarget(row, (t) => _enterEditAlone(t.occurrence, path: t.path)) : null,
+      onMoreSelected: (row) => _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, path: t.path)),
+    );
+    // A GlobalKey keeps the view's state (its scroll position, its flash) where it is when other overlays of the screen's Stack come and go
+    // and shift its place among the children.
+    if (docked) return KeyedSubtree(key: _treeDockedKey, child: view(true, 320));
+    // Floating over the viewport: the width the old panel had by default (66% of a portrait phone, else 40%). It has no resize handle.
+    return KeyedSubtree(
+      key: _treeOverlayKey,
+      child: LayoutBuilder(
+        builder: (context, constraints) => Align(
+          alignment: Alignment.topLeft,
+          child: SafeArea(child: view(false, assemblyTreeDefaultWidthFraction(MediaQuery.sizeOf(context)) * constraints.maxWidth)),
+        ),
+      ),
+    );
   }
+
+  String? _treeHostSelection;
+  List<MateDto>? _treeMatesSynced;
+  List<ComponentPatternDto>? _treePatternsSynced;
+  final GlobalKey _treeOverlayKey = GlobalKey(debugLabel: 'assembly-tree-overlay');
+  final GlobalKey _treeDockedKey = GlobalKey(debugLabel: 'assembly-tree-docked');
 
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(
@@ -30116,6 +30640,17 @@ class _SaveFailure {
   final String reason;
 }
 
+/// The component an Assembly tree row stands for (A4): its [path] of occurrence ids from the tree's root (the focused Part), the Occurrence
+/// record (the real one, with its transform, for a row directly in that Part; one made from the tree's node for a nested row) and the Part
+/// that owns it ([ownerPartId]): where Fix / Float, Rename, Delete and Hide go, which is the parent Part of a nested row.
+class _TreeTarget {
+  final List<String> path;
+  final OccurrenceDto occurrence;
+  final String ownerPartId;
+  const _TreeTarget(this.path, this.occurrence, this.ownerPartId);
+  bool get topLevel => path.length == 1;
+}
+
 /// Edit Alone's screen state (`_enterEditAlone`): where to go back to. Not part of [AssemblyFocusStack], which stays a plain
 /// focus path.
 class _EditAloneSession {
@@ -30129,6 +30664,9 @@ class _EditAloneSession {
 
   /// Set once the target's own Occurrences are known: a sub-assembly has some, a part has none.
   bool isSubAssembly = false;
+
+  /// [AssemblyFocusStack.depth] right after Edit Alone pushed its levels (a nested target pushes several): Exit Focus at or below it is Done.
+  int editDepth = 0;
 
   _EditAloneSession({required this.baseDepth, required this.lensBefore, required this.viewpointBefore, required this.label});
 }
