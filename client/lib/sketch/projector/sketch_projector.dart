@@ -473,8 +473,8 @@ class _System {
   final LineEndpoints _lines;
   final _Branches _branches;
 
-  _System._(this.unsupported, this.varIds, this.varOf, this._active, this._idsOf, this._groupList, this._points, this._lines,
-      this._branches);
+  _System._(this.unsupported, this.varIds, this.varOf, this._active, this._idsOf, this._groupList, this._points,
+      this._lines, this._branches);
 
   factory _System.build({
     required Map<String, (double, double)> points,
@@ -605,7 +605,8 @@ class _System {
       (c) {
         final p = ref[c.pointId], center = ref[c.centerPointId], rim = ref[c.radiusPointId];
         if (p == null || center == null || rim == null) return 1.0;
-        double dist((double, double) u, (double, double) v) => math.sqrt(math.pow(u.$1 - v.$1, 2) + math.pow(u.$2 - v.$2, 2));
+        double dist((double, double) u, (double, double) v) =>
+            math.sqrt(math.pow(u.$1 - v.$1, 2) + math.pow(u.$2 - v.$2, 2));
         return dist(p, center) >= dist(rim, center) ? 1.0 : -1.0;
       },
       (c) {
@@ -616,7 +617,8 @@ class _System {
       },
     );
 
-    return _System._(unsupported, varIds, varOf, active, idsOf, groupConstraints.toList()..sort(), points, lineEndpoints, branches);
+    return _System._(
+        unsupported, varIds, varOf, active, idsOf, groupConstraints.toList()..sort(), points, lineEndpoints, branches);
   }
 
   /// Residual rows with their sparse Jacobian at the coordinates [x] (the group's free variables).
@@ -764,6 +766,7 @@ SketchProjection projectSketch({
   if (rows.isEmpty) x.setAll(0, wish);
   final zero = Float64List(n);
   final trust = math.max(kProjectorTrust, kProjectorTrustDiagonal * diagonal);
+  var radius = trust; // the walk's trust radius (declared here: the rescue step reads it)
 
   // One damped constraint-only Newton step (min-norm in the scaled metric, halved until the residual norm drops). False
   // when no step length improves it.
@@ -797,6 +800,50 @@ SketchProjection projectSketch({
     }
     return math.sqrt(d);
   }
+  // The rescue step (spec 7.3, "Rescue"): at a singular start (a straight chain at full reach, an arm almost straight) the
+  // stiffness-weighted step moves the cheap followers a long way along directions that are tangent only to first order,
+  // and its correctors cannot bring it back: every step is rejected and the walk stalls. The rescue takes its direction
+  // from the same pull in the UNIFORM metric (every coordinate stiffness 1, so the followers no longer absorb it), caps it
+  // at the trust radius with the same multiplier, removes the step's second-order error along the normal space at the
+  // saved point (a second-order correction: the saved Jacobian with the trial point's residuals, again uniform), then
+  // runs the usual correctors. Accepted on the walk's own test; otherwise x and the rows are left for the caller to restore.
+  final unit = Float64List(n)..fillRange(0, n, 1.0);
+  bool rescue(double attempt, Float64List saved, List<_Row> savedRows, double n0) {
+    final pull = Float64List(n);
+    for (var c = 0; c < n; c++) {
+      pull[c] = wish[c] - saved[c];
+    }
+    final y = _correction(savedRows, n, unit, pull, 1.0);
+    var biggest = 0.0;
+    for (var c = 0; c < n; c++) {
+      biggest = math.max(biggest, y[c].abs());
+    }
+    if (biggest < kProjectorArrived * math.max(1.0, diagonal)) return false;
+    final cap = biggest * attempt > radius ? radius / (biggest * attempt) : 1.0;
+    for (var c = 0; c < n; c++) {
+      x[c] = saved[c] + attempt * cap * y[c];
+    }
+    final trial = evaluate();
+    final soc = _correction(
+      [for (var i = 0; i < savedRows.length; i++) _Row(trial[i].value, savedRows[i].cols, savedRows[i].vals)],
+      n,
+      unit,
+      zero,
+      1.0,
+    );
+    for (var c = 0; c < n; c++) {
+      x[c] += soc[c];
+    }
+    rows = evaluate();
+    residualInf = worst(rows);
+    iterations++;
+    for (var k = 0; k < kProjectorCorrectors && residualInf > tolerance; k++) {
+      if (!correct()) break;
+    }
+    return residualInf <= tolerance && wishDistanceNow() < n0 * (1 - 1e-9);
+  }
+
+
 
   // 0. a feasible start (the last accepted frame is; a frame whose provisional sizes just changed is nearly so).
   for (var polish = 0; polish < maxPolish && rows.isNotEmpty && residualInf > tolerance; polish++) {
@@ -807,7 +854,6 @@ SketchProjection projectSketch({
   // at the trust radius) must be brought back onto the manifold by a few correctors, else it is reverted and halved. The
   // answer is therefore always a feasible point; a wish beyond a wall stops at the wall (the nearest point) instead of
   // failing.
-  var radius = trust;
   var stalled = 0;
   var walks = 0;
   var rejected = 0;
@@ -871,6 +917,12 @@ SketchProjection projectSketch({
         break;
       }
       if (residualInf > tolerance) infeasible = true;
+      // Singular start (F6): until this call has accepted a walking step, a rejected attempt is retried once as a rescue
+      // step. Only the classification above (infeasible or not closer) decides how the walk shrinks afterwards.
+      if (walks == 0 && rescue(attempt, saved, savedRows, n0)) {
+        accepted = true;
+        break;
+      }
       x.setAll(0, saved);
       rows = savedRows;
       residualInf = worst(rows);

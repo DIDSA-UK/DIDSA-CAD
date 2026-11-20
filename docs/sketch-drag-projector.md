@@ -138,6 +138,9 @@ Both engines show *some* follower jerk because the arm is a floppy chain that fo
 A **straight** arm is a bifurcation (the tip cannot move inwards at first order). The projector stays put until the cursor leaves the
 axis; SolveSpace jumps to the folded branch (25 → 15 in one frame, a 10-unit pop). This is the "wrong root" behaviour
 `docs/constrained-drag-investigation.md` B.2 measured. The bench uses a gently curled arm so it measures ordinary dragging.
+(2026-11-20, F6: a walk that is rejected at such a start now tries a rescue step, a uniform-metric pull with a second-order
+correction, `docs/motion/sketch-projector-spec.md` 7.3.1; a nearly straight dimensioned chain swings round its pinned end
+instead of staying put. The pull past reach still stays at the wall; it never jumps to the folded branch.)
 
 ### The hybrid shapes: same hand path through both engines in lock-step (150 frames, ring sweep around the dimension's anchor)
 

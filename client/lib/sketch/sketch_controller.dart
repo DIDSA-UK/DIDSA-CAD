@@ -6313,7 +6313,11 @@ class SketchController extends ChangeNotifier {
   ///
   /// The clamp step is the one place this depends on the local solver ([_trySolveDuringDragLocally]); a
   /// different per-frame constraint projector can replace it without touching the shape formulas.
-  void _runHybridDragFrame(Map<String, (double, double)> positions, String draggedId, Set<String> structural) {
+  Map<String, double> _runHybridDragFrame(
+    Map<String, (double, double)> positions,
+    String draggedId,
+    Set<String> structural,
+  ) {
     (double, double)? at(String id) {
       final proposed = positions[id];
       if (proposed != null) return proposed;
@@ -6337,7 +6341,16 @@ class SketchController extends ChangeNotifier {
       // applied as the plain closed-form drag (the old no-solver behaviour) and the drop's backend solve settles it.
       unawaited(_applyClosedFormPositions(positions, sync: false));
     }
+    return sizes;
   }
+
+  /// The last closed-form shape proposal a point drag computed (null when the last frame of a shape drag computed none, and
+  /// outside shape drags it is stale): the grabbed point, every shape point's target, the provisional sizes switched on
+  /// (hybrid frames only) and whether the frame was clamped. Read by the shape-proposal vectors
+  /// (`docs/motion/sketch-projector-spec.md` section 13); nothing in the app reads it.
+  @visibleForTesting
+  ({String grabbed, Map<String, (double, double)> proposal, Map<String, double> provisional, bool hybrid})?
+      debugLastShapeProposal;
 
   /// What dragging [draggedPointId] may do to an intact [polygon], mirroring [_circleDragMode]:
   /// a centre drag translates (blocked when the centre is fully pinned); a vertex drag resizes
@@ -7795,11 +7808,14 @@ class SketchController extends ChangeNotifier {
       } else {
         positions = _closedFormRectangleGeometry(intactRectangle!, pointId, newX, newY);
       }
+      debugLastShapeProposal = null;
       if (positions != null) {
         final hybrid = _dragHybridStructural;
         if (hybrid != null) {
-          _runHybridDragFrame(positions, pointId, hybrid);
+          final sizes = _runHybridDragFrame(positions, pointId, hybrid);
+          debugLastShapeProposal = (grabbed: pointId, proposal: positions, provisional: sizes, hybrid: true);
         } else {
+          debugLastShapeProposal = (grabbed: pointId, proposal: positions, provisional: const {}, hybrid: false);
           unawaited(_applyClosedFormPositions(positions, sync: false));
         }
       }
