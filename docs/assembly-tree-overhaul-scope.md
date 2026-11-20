@@ -212,8 +212,8 @@ manager changes the contract in both repos at once.
   `python -m pytest tests/ -m "not gears" -n auto` in `backend/` (or the files you touched plus the assembly files, if the whole
   suite is too slow here; say which). Client: `flutter analyze` and `flutter test` in `client/`. DIDSA-VR: `tests/ci.sh`
   (see its `CLAUDE.md` for adding test files).
-- **Docs:** add an entry to that repo's `docs/status.md` (what was built, the tests, what is not verified), and tick your chunk
-  in 9.7 with the PR link.
+- **Docs:** add an entry to that repo's `docs/status.md` (what was built, the tests, what is not verified). Don't edit 9.7:
+  the manager owns it.
 - **Say what you could not verify.** Never write that something works on a device.
 
 ### 9.4 Report format (the PR body and the reply to the manager)
@@ -235,7 +235,8 @@ Owner should try: <bullets, or "nothing yet">
 3. The diff stays inside the chunk; the contract is untouched (after A1).
 4. Run `/code-review` on the PR and act on what it finds.
 5. Anything bigger than a one-line fix goes back to the worker with a short list; the manager doesn't implement it.
-6. After merging: update 9.7 and give the owner the next worker prompt (and the device check, where 9.1 says so).
+6. After merging: update 9.7 (the manager owns it: commit it on the manager's own branch and bring it to `main` in a small docs
+   PR now and then) and give the owner the next worker prompt (and the device check, where 9.1 says so).
 
 ### 9.6 The briefs
 
