@@ -100,6 +100,26 @@ void main() {
       });
     }
 
+    test('the nearly straight chain moves (F6: the rescue step at a singular start, spec 7.3)', () {
+      final c = cases.firstWhere((c) => c['id'] == 'scene-chain-20-nearly-straight') as Map<String, dynamic>;
+      final frames = c['frames'] as List;
+      for (var k = 0; k < frames.length; k++) {
+        final r = replayFrame(c, k);
+        final before = frameStart(c, k)['p20']!;
+        final (tx, ty) = r.points['p20']!;
+        final wish = (frames[k]['wish'] as Map)['p20'] as List;
+        final (wx, wy) = ((wish[0] as num).toDouble(), (wish[1] as num).toDouble());
+        double gap(double x, double y) => math.sqrt((wx - x) * (wx - x) + (wy - y) * (wy - y));
+        // The nearest feasible tip is on the reach circle (radius 100 round the pinned p0) towards the wish, or the wish itself.
+        final reach = math.min(100.0, math.sqrt(wx * wx + wy * wy));
+        final angle = math.atan2(wy, wx);
+        final nearestGap = gap(reach * math.cos(angle), reach * math.sin(angle));
+        expect(r.converged, isTrue, reason: 'frame $k');
+        expect(gap(tx, ty), lessThan(gap(before.$1, before.$2)), reason: 'frame $k: the tip moved towards the hand');
+        expect(gap(tx, ty) - nearestGap, lessThan(0.5), reason: 'frame $k: within 0.5 of the nearest feasible tip');
+      }
+    });
+
     test('a nudge of the inputs at the rounding grain moves no answer by more than a tenth of its tolerance', () {
       var worstRatio = 0.0;
       var worstAt = '';

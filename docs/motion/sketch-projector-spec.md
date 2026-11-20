@@ -195,6 +195,7 @@ up to NEAREST_MAX = 24 times, while rows exist and ‖r‖∞ ≤ τ:
         up to CORRECTORS = 4 times while ‖r‖∞ > τ: if the corrector fails, stop
         if ‖r‖∞ ≤ τ and δ(x) < n0 · (1 − 1e-9): accepted = true; stop trying
         if ‖r‖∞ > τ: infeasible = true
+        if walks = 0 and rescue(f, n0): accepted = true; stop trying      (7.3.1; F6)
         restore the saved x and rows
     if not accepted:
         prev = none;  rejected += 1
@@ -206,6 +207,34 @@ up to NEAREST_MAX = 24 times, while rows exist and ‖r‖∞ ≤ τ:
     if moved < ARRIVED · max(1, D) or δ(x) < τ: exit = "arrived"; stop
 converged = every x finite and ‖r‖∞ ≤ τ (the rows at the final x)
 ```
+
+#### 7.3.1 The rescue step (a singular start; added in F6)
+
+Until a call has accepted a walking step (`walks = 0`), every rejected attempt is retried once as a rescue step, from the same
+saved x and rows, with the same multiplier f and the current `radius`. With `1` the vector of ones (every coordinate stiffness 1):
+
+```
+rescue(f, n0):
+    u   = step₁(rows at saved, w − saved)          (7.1 with S = I: the pull in the uniform metric)
+    big = max_c |u_c|;  if big < ARRIVED · max(1, D): return false
+    cap = (big · f > radius) ? radius / (big · f) : 1
+    t   = saved + f · cap · u;  r_t = the rows' values at t
+    v   = step₁(rows with the SAVED Jacobian and the values r_t, 0)       (a second-order correction)
+    x   = t + v;  re-evaluate;  iterations += 1
+    up to CORRECTORS = 4 times while ‖r‖∞ > τ: if the corrector (7.2, stiffness-weighted) fails, stop
+    return ‖r‖∞ ≤ τ and δ(x) < n0 · (1 − 1e-9)
+```
+
+`step₁` is 7.1's step with every `s_c = 1`; `v`'s matrix is built from the saved point's Jacobian (the rows of the last accepted
+frame, in the same order) and its right-hand side from the residual values at `t`. A rescue that fails leaves `infeasible` as the
+plain attempt set it: the radius / `omega` bookkeeping below reads the plain attempt only. Once a step has been accepted the rescue
+is never tried again in that call.
+
+Why: at a singular start (a dimensioned chain at full reach, an arm nearly straight) the stiffness-weighted step either moves the tip
+sideways alone (tangent to first order, beyond reach to second order) or sends the cheap followers a long way; the weighted correctors
+cannot bring that back and every step was rejected (the stall of 7.4, before F6). In the uniform metric the followers no longer absorb
+the pull, and the correction along the normal space at the saved point takes out the step's second-order error (the tip comes back
+inside the reach), so the correctors start close to the manifold and the chain swings round its pinned end.
 
 Notes that matter for a port:
 * "Stop" leaves the loop with x as it is (accepted steps are kept).
@@ -222,14 +251,23 @@ The vectors pin the Dart projector's answers, not the exact nearest points. Wher
 * **Stops short on curved constraints.** After rejections the step multiplier only shrinks; at the floor the walk declares "arrived".
   The golden cases measure the gap to the exact nearest point (`nearest` in the file): ≤ 1e-6 for 23 of 32, 1e-5 to 9e-4 for nine
   (equal radius, the no-quadrant horizontal angle and every part D min / max distance; sizes 5-20 mm). The flat app's tests allow 1e-3
-  for those.
-* **A nearly straight chain does not move.** A 20-link chain whose start is almost straight (`scene-chain-20-nearly-straight`) stalls:
-  every walking step is infeasible after the correctors, and the tip stays put even when the wish is 8 mm to the side. The two-link
-  arm near full reach behaves alike (`scene-arm-followers` ends at the step limit 0.46 mm off the axis, `scene-arm-wall` at 0.2 mm). A
-  curled chain (`scene-chain-20-curled`) follows. `docs/sketch-drag-projector.md` describes the straight arm as a bifurcation.
+  for those. Kept as built (owner, 2026-11-19: under a micron, and the drop's backend solve is exact).
+* **A far wish from a singular start ends at the step limit, a little inside the wall.** With the rescue (7.3.1) a nearly straight
+  20-link chain follows the hand round its pinned end (`scene-chain-20-nearly-straight`: the tip lands 0.01, 0.09 and 0.38 mm from
+  the nearest feasible tip in its three frames; before F6 it did not move at all). Each step near full reach is short, so a wish
+  far beyond the reach ends at `NEAREST_MAX` (exit `limit`) with the tip slightly inside the reach circle; the next frame continues
+  from there. A curled chain (`scene-chain-20-curled`) follows as before.
+* **The two-link arm near full reach.** Fixed as a side effect of the rescue: `scene-arm-followers` ends 0.001 mm off the axis
+  (was 0.46) and `scene-arm-wall` 0.05 mm (was 0.2), both at the reach.
 * A point with no rows reports exit `limit` (the loop never runs); harmless.
 
-These are open questions for the owner (section 12), not port defects: a port reproduces them.
+**What F6 changed in the vectors** (all other cases are unchanged to 1e-9): `scene-chain-20-nearly-straight` (moves),
+`scene-arm-followers`, `scene-arm-wall` (on the axis), `scene-chain-20-curled` frame 3 (4e-3 mm, a first step rejected then
+rescued) and `drag-maximum-distance-point-and-circle` frames 6-7 (the point stalls on the maximum-distance wall 0.2 mm from
+where it did, the wall itself unchanged; both converged). The golden cases' answers did not change: their short stops come after
+an accepted step, where the rescue never runs.
+
+These are the reference's answers, not port defects: a port reproduces them.
 
 ## 8. Unsupported
 
@@ -257,7 +295,7 @@ tools/sketch_vectors/export.sh --check    # exit 1 if a regeneration differs, or
 The check is `client/test/sketch_vectors_test.dart`, which the full client suite runs too. It fails when a regeneration differs from
 the committed file (any number by more than `regenerate_tolerance` 1e-9, anything else at all), when the Dart projector does not
 reproduce a vector from its JSON alone within the case's tolerance, or when nudging the inputs by 1e-10 moves an answer by more than a
-tenth of the tolerance (measured worst: 0.47 %, so a port's rounding cannot fail a vector). Deterministic: every float is rounded to
+tenth of the tolerance (measured worst: 1.8 %, `scene-chain-20-nearly-straight`, since F6; 0.47 % before; so a port's rounding cannot fail a vector). Deterministic: every float is rounded to
 10 decimals; inputs are rounded and read back from JSON before the expected values are computed.
 
 **File.** Top level: `version`, `spec`, `generator`, `regenerate_tolerance`, `points_relative_tolerance`, `constants` (section 11),
@@ -284,9 +322,10 @@ within `tolerance`. `residual_inf` (≤ τ when converged), `exit`, `walks`, `re
 | `golden` | 32 | every supported type, one grabbed point `d`, every other point pinned, one wish (the flat app's golden cases: 21 from `sketch_projector_test.dart` and 11 part D ones, `client/test/support/sketch_projector_cases.dart`) |
 | `drag` | 32 | the same geometries with only the first other point pinned (the rest follow at stiffness 0.01), 8 frames along a path from `d` towards the golden wish and twice as far, bowed to one side |
 | `branch` | 7 | a hand path across the other branch: vertical / horizontal distance, two-line angle held at its supplement, horizontal and three-point angle with no quadrant, minimum distance outside a circle, a circle dragged through a line (tangent side) |
-| `scene` | 19 | free point; slide along a horizontal to a pinned point; only the group is solved; a pinned point does not link; two-link arm (follower, wall); redundant; conflict (not converged); provisional off / on (polish); spline unsupported / elsewhere; unknown Line and Point ids skipped; Fix is the caller's; rectangle with a stiff proposal; a circle built as the backend builds it (cardinal points pinned by 0 distances); two anchors (a whole line); 20-link chain nearly straight (stalls) and curled (the timing vector) |
+| `scene` | 19 | free point; slide along a horizontal to a pinned point; only the group is solved; a pinned point does not link; two-link arm (follower, wall); redundant; conflict (not converged); provisional off / on (polish); spline unsupported / elsewhere; unknown Line and Point ids skipped; Fix is the caller's; rectangle with a stiff proposal; a circle built as the backend builds it (cardinal points pinned by 0 distances); two anchors (a whole line); 20-link chain nearly straight (a singular start: moves through the rescue, 7.3.1) and curled (the timing vector) |
 
-**Timing.** The slowest frame in `flutter test` (Dart JIT, x86 Linux container) is ~2 ms (`scene-chain-20-curled`). Not a device figure.
+**Timing.** The slowest frame in `flutter test` (Dart JIT, x86 Linux container) is ~3.3 ms (`scene-chain-20-nearly-straight` frame 0,
+the rescue's extra solves; ~2.8 ms `scene-chain-20-curled`). Not a device figure.
 
 ## 11. Constants
 
@@ -310,12 +349,13 @@ within `tolerance`. `residual_inf` (≤ τ when converged), `exit`, `walks`, `re
 
 All are in the file's `constants` too.
 
-## 12. Open questions (for the owner; none blocks S9)
+## 12. Open questions and decisions
 
 1. **Accuracy on curved constraints** (7.4): `omega` never grows back after a rejection, so some walks stop up to ~1e-3 short of the
-   nearest point (part D min / max distances, equal radius). Invisible on screen at sketch scale; the drop's backend solve is exact.
-   Fixing it (for example resetting `omega` after an accepted step) changes the Dart projector, the vectors and the port together.
-2. **Nearly straight chains do not move** (7.4). The flat app has the same behaviour; worth a look before S10 if a straight dimensioned
-   polyline is a common thing to drag on the headset.
+   nearest point (part D min / max distances, equal radius). **Decided (owner, 2026-11-19, DIDSA-VR parity follow-ups decision 3):
+   keep as built.** Invisible at sketch scale; the drop's backend solve is exact.
+2. **Nearly straight chains did not move** (7.4). **Decided: fix (decision 3); done in F6** by the rescue step (7.3.1), the Dart
+   projector and the vectors first, the VR port after (DIDSA-VR session F7). The arm's 0.2-0.5 mm offset was not a target; the rescue
+   removed most of it.
 3. **The two-line `angle` ignores `quadrant`** and follows the reference frame. Part D's angles honour theirs. Consistent with the
    backend as far as this spec goes; not checked against the backend's solve.

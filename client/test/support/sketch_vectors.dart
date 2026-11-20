@@ -651,7 +651,8 @@ List<_Spec> _sceneSpecs() {
         ]),
     _Spec('scene-chain-20-nearly-straight', 'scene',
         '20 distance-5 links from a pinned origin, nearly straight (an infeasible start: polished first), the tip pulled sideways '
-        'and out: as built the walk stalls and nothing moves (the straight-chain bifurcation; spec 7.4)',
+        'and out: a singular start (the straight-chain bifurcation); the rescue step (spec 7.3) lets the tip swing round the pinned '
+            'origin towards the hand (before F6 the walk stalled and nothing moved)',
         start: chainStart,
         constraints: chain,
         anchors: ['p20'],
