@@ -6,7 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
-import 'package:didsa_cad_client/viewport3d/assembly_tree_panel.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_helpers.dart';
 import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
 
 /// `docs/gears-and-motion-plan.md` M4: the coupler ("motion") mates in the flat app - gear, rack and pinion, screw. Types and labels, the value
@@ -80,10 +80,11 @@ void main() {
       expect(mateValueSummary(mate('distance', 5)), isNull);
     });
 
-    testWidgets('the tree shows the summary under a coupler row and nothing under others', (tester) async {
-      await tester.pumpWidget(wrap(AssemblyTreePanel(visible: true, occurrences: const [], selectedOccurrenceId: null, onOccurrenceTap: (_) {}, onOccurrenceLongPress: (_) {}, onClose: () {}, mates: [mate('gear', 0.5), mate('distance', 5)])));
-      expect(find.text('Gear 1'), findsOneWidget);
-      expect(find.text('1 : 2'), findsOneWidget);
+    test('the tree lists the summary as the note of a coupler row and none on others', () {
+      final items = mateFolderItems([mate('gear', 0.5), mate('distance', 5)]);
+      expect(items.first.label, 'Gear 1');
+      expect(items.first.note, '1 : 2');
+      expect(items.last.note, isNull);
     });
   });
 

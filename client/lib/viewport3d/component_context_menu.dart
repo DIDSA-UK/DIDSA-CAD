@@ -15,6 +15,9 @@ import 'action_sheet.dart';
 /// The one label for Edit Alone (menu entry, selection drawer button, pill, ribbon).
 const String kEditAloneLabel = 'Edit Alone';
 
+/// Why Move/Rotate and Pattern are off for a nested row (A4).
+const String kNestedComponentReason = 'Focus the sub-assembly first';
+
 enum ComponentContextMenuAction {
   /// Edit Alone: edit this component or sub-assembly on its own, inside the same screen (`kEditAloneLabel`).
   editAlone,
@@ -73,6 +76,8 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
   Offset? at,
   // False inside Edit Alone: it would be the same as Make Focus there.
   bool showEditAlone = true,
+  // A4: the row is nested below the assembly being edited. Move/Rotate and Pattern work on the components directly in it.
+  bool nested = false,
 }) {
   return showContextMenu<ComponentContextMenuAction>(context, at: at, [
     if (showEditAlone)
@@ -95,8 +100,8 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       // one outright (`occurrence_is_fixed`) - disabling this entry up front
       // avoids offering an action that would silently do nothing (no gizmo
       // ever appears) or surface a raw server error either way.
-      enabled: !fixed,
-      disabledReason: fixed ? 'Float this component first' : null,
+      enabled: !fixed && !nested,
+      disabledReason: nested ? kNestedComponentReason : (fixed ? 'Float this component first' : null),
     ),
     ActionSheetEntry(
       action: hidden ? ComponentContextMenuAction.show : ComponentContextMenuAction.hide,
@@ -125,10 +130,12 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       label: 'Mate',
       icon: Icons.link,
     ),
-    const ActionSheetEntry(
+    ActionSheetEntry(
       action: ComponentContextMenuAction.pattern,
       label: 'Pattern',
       icon: Icons.grid_view_outlined,
+      enabled: !nested,
+      disabledReason: nested ? kNestedComponentReason : null,
     ),
     // Save/project overhaul Phase 2 (`docs/save-project-overhaul-scope.md`
     // §3.2): the correction path for Create Component's own auto-generated

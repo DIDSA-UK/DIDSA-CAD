@@ -243,4 +243,61 @@ void main() {
       expect(AssemblyTreeNaming.fileBaseName('parts/.washer'), '.washer');
     });
   });
+
+  // A4: what the host adds to the model: the rows of the root folders, and rows hidden for this session. Neither is in the vectors, so a model
+  // with none set still lists exactly what they say (the vector cases above).
+  group('A4 additions', () {
+    AssemblyTreeResponseDto withMates() => AssemblyTreeResponseDto.fromJson({
+          'part_id': 'root',
+          'part_name': 'Root',
+          'kind': 'assembly',
+          'mates': {'count': 2},
+          'patterns': {'count': 1},
+          'children': [
+            for (final id in ['a', 'b'])
+              {'occurrence_id': id, 'path': [id], 'resolved_part_id': 'p-$id', 'part_name': id, 'kind': 'part', 'children': []},
+          ],
+        });
+
+    test('the folders list the host\'s items only when open, after the folder row, with the item key', () {
+      final model = AssemblyTreeModel(tree: withMates());
+      model.setFolderItems('#mates', const [AssemblyFolderItem('m1', 'Coincident 1'), AssemblyFolderItem('m2', 'Distance 1', tone: AssemblyItemTone.warning)]);
+      model.setFolderItems('#patterns', const [AssemblyFolderItem('p1', 'Linear 1', note: '×3')]);
+      expect([for (final r in model.visibleRows()) r.key], ['', 'a', 'b', '#mates', '#patterns']);
+
+      model.setOpen('#mates', true);
+      final rows = model.visibleRows();
+      expect([for (final r in rows) r.key], ['', 'a', 'b', '#mates', '#mates#item:m1', '#mates#item:m2', '#patterns']);
+      expect(rows[4].kind, AssemblyRowKind.mate);
+      expect(rows[4].itemId, 'm1');
+      expect(rows[5].tone, AssemblyItemTone.warning);
+
+      model.setOpen('#patterns', true);
+      expect(model.visibleRows().last.note, '×3');
+      expect(model.folderItems('#patterns').single.id, 'p1');
+    });
+
+    test('merge keeps the open folders and a selected item while it still exists, and drops it when it is gone', () {
+      final model = AssemblyTreeModel(tree: withMates());
+      model.setFolderItems('#mates', const [AssemblyFolderItem('m1', 'Coincident 1')]);
+      model.setOpen('#mates', true);
+      model.selectedKey = '#mates#item:m1';
+      model.merge(withMates());
+      expect(model.isOpen('#mates'), isTrue);
+      expect(model.selectedKey, '#mates#item:m1');
+      model.setFolderItems('#mates', const []);
+      model.merge(withMates());
+      expect(model.selectedKey, isNull, reason: 'the mate is gone');
+    });
+
+    test('session-hidden keys read as hidden on the row (and on a group when every member is), and clear again', () {
+      final model = AssemblyTreeModel(tree: withMates())..setSessionHiddenKeys({'b'});
+      expect(model.visibleRows().firstWhere((r) => r.key == 'a').hidden, isFalse);
+      expect(model.visibleRows().firstWhere((r) => r.key == 'b').hidden, isTrue);
+      expect(model.nodeAtPath(['b'])!.hidden, isFalse, reason: 'the node\'s own flag is what the backend says');
+      model.setSessionHiddenKeys({});
+      expect(model.visibleRows().firstWhere((r) => r.key == 'b').hidden, isFalse);
+    });
+  });
+
 }

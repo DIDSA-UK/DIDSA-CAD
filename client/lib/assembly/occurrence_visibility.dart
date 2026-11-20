@@ -98,6 +98,38 @@ List<AssemblyOccurrenceInstanceDto> applyInstanceVisibilityOverrides(
   ];
 }
 
+/// A4 (`docs/assembly-tree-overhaul-scope.md` 9.6): [instances] with every instance at or below one of [hiddenPaths] hidden. [hiddenPaths] are
+/// full occurrence paths from the document root, joined with `/` (`['a', 'b']` is `a/b`), so hiding a child under one placement of a
+/// sub-assembly leaves the same child under the other placement alone: unlike [applyInstanceVisibilityOverrides], which matches a bare id
+/// anywhere in a path and so would hide both. Hiding a row hides what is nested inside it. [instances] itself when [hiddenPaths] is empty.
+List<AssemblyOccurrenceInstanceDto> applyHiddenPaths(List<AssemblyOccurrenceInstanceDto> instances, Set<String> hiddenPaths) {
+  if (hiddenPaths.isEmpty) return instances;
+  bool hiddenBy(List<String> path) {
+    var key = '';
+    for (final segment in path) {
+      key = key.isEmpty ? segment : '$key/$segment';
+      if (hiddenPaths.contains(key)) return true;
+    }
+    return false;
+  }
+
+  return [
+    for (final instance in instances)
+      if (instance.hidden || !hiddenBy(instance.occurrencePath))
+        instance
+      else
+        AssemblyOccurrenceInstanceDto(
+          occurrencePath: instance.occurrencePath,
+          partId: instance.partId,
+          worldTransform: instance.worldTransform,
+          hidden: true,
+          color: instance.color,
+          appearance: instance.appearance,
+          faceAppearances: instance.faceAppearances,
+        ),
+  ];
+}
+
 /// Phase 4 fix (`docs/assembly-scope.md` §5 appendix item 4, resolved):
 /// true if [occurrencePath] identifies the currently-focused Occurrence's
 /// own placed instance, or something nested inside it - a plain list-

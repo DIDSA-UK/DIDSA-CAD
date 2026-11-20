@@ -36,7 +36,12 @@ enum AssemblyRowKind {
   group('group'),
   feature('feature'),
   matesFolder('mates_folder'),
-  patternsFolder('patterns_folder');
+  patternsFolder('patterns_folder'),
+
+  /// A mate or a pattern listed under its root folder (A4: supplied by the host with [AssemblyTreeModel.setFolderItems]; the spec's
+  /// rows, vectors and keys do not include them).
+  mate('mate'),
+  pattern('pattern');
 
   final String wire;
   const AssemblyRowKind(this.wire);
@@ -65,6 +70,20 @@ class AssemblyFeature {
   final String id;
   final String label;
   const AssemblyFeature(this.id, this.label);
+}
+
+/// How a mate / pattern item row reads: the colour of its icon and note.
+enum AssemblyItemTone { error, warning, info }
+
+/// A mate or a pattern under its root folder (A4). The host names it and says how it reads; the model only keeps and lists it. [note] is the
+/// second line (a phone row) or the dimmed text after the label (a desktop row); [tone] colours the row; [suppressed] draws it dimmed.
+class AssemblyFolderItem {
+  final String id;
+  final String label;
+  final String? note;
+  final AssemblyItemTone? tone;
+  final bool suppressed;
+  const AssemblyFolderItem(this.id, this.label, {this.note, this.tone, this.suppressed = false});
 }
 
 /// One line of the tree (spec section 7).
@@ -97,6 +116,11 @@ class AssemblyTreeRow {
   /// The Feature id of a feature row; null otherwise.
   final String? featureId;
 
+  /// A mate or pattern item row (see [AssemblyFolderItem]): its id, note and tone; null otherwise.
+  final String? itemId;
+  final String? note;
+  final AssemblyItemTone? tone;
+
   const AssemblyTreeRow({
     required this.key,
     required this.kind,
@@ -112,6 +136,9 @@ class AssemblyTreeRow {
     this.suppressed = false,
     this.statusFailed = false,
     this.featureId,
+    this.itemId,
+    this.note,
+    this.tone,
   });
 
   @override
@@ -184,6 +211,8 @@ class AssemblyTreeModel {
   Set<String> _unsaved;
   final Set<String> _open = {};
   final Map<String, List<AssemblyFeature>> _features = {};
+  final Map<String, List<AssemblyFolderItem>> _folderItems = {};
+  Set<String> _sessionHidden = const {};
 
   // Load products.
   List<_N> _top = const [];
@@ -286,6 +315,30 @@ class AssemblyTreeModel {
   /// Whether the row at [path] already has its features (an open part row without them lists nothing under it; show progress on it).
   bool hasFeatures(List<String> path) => _features.containsKey(_keyOf(path));
 
+  // ----- Mates and patterns under the root folders (A4) -----
+
+  /// Sets what is listed under the root folder [folderKey] (`#mates` or `#patterns`) when it is open. The host reads `/mates` and
+  /// `/component-patterns` (spec section 7, rule 8) and names the rows. Not part of the spec's rows: a model with none set lists
+  /// exactly what the vectors say.
+  void setFolderItems(String folderKey, List<AssemblyFolderItem> items) {
+    _folderItems[folderKey] = List.unmodifiable(items);
+    _invalidate();
+  }
+
+  /// What [setFolderItems] last set for [folderKey] (empty when nothing was).
+  List<AssemblyFolderItem> folderItems(String folderKey) => _folderItems[folderKey] ?? const [];
+
+  // ----- Hidden for this session (A4) -----
+
+  /// Row keys hidden for this session only, on top of each node's own `hidden`: Hide on a nested row hides that placement alone (the
+  /// backend's flag sits on the sub-assembly's occurrence, which every placement shares). Those rows read as hidden (the eye-off).
+  Set<String> get sessionHiddenKeys => _sessionHidden;
+  void setSessionHiddenKeys(Set<String> keys) {
+    if (keys.length == _sessionHidden.length && keys.containsAll(_sessionHidden)) return;
+    _sessionHidden = {...keys};
+    _invalidate();
+  }
+
   // ----- Lookups -----
 
   AssemblyTreeNodeDto? nodeAtPath(List<String> path) => _byKey[_keyOf(path)]?.dto;
@@ -365,6 +418,10 @@ class AssemblyTreeModel {
 
   bool _selectionExists(String key) {
     if (key.isEmpty || _rowKeyExists(key)) return true;
+    for (final folder in const ['#mates', '#patterns']) {
+      final prefix = '$folder#item:';
+      if (key.startsWith(prefix)) return _folderItems[folder]?.any((it) => '$prefix${it.id}' == key) ?? false;
+    }
     final i = key.indexOf('#feature:');
     if (i < 0) return false;
     final owner = key.substring(0, i);
@@ -571,6 +628,7 @@ class AssemblyTreeModel {
         count: mates.count,
         statusFailed: t.statusFailed,
       ));
+      if (_open.contains('#mates')) _emitItems('#mates', AssemblyRowKind.mate, rows);
     }
     final patterns = t.patterns;
     if (patterns != null && patterns.count > 0) {
@@ -584,6 +642,7 @@ class AssemblyTreeModel {
         open: _open.contains('#patterns'),
         count: patterns.count,
       ));
+      if (_open.contains('#patterns')) _emitItems('#patterns', AssemblyRowKind.pattern, rows);
     }
     _emitFeatures('', 1, rows);
     return List.unmodifiable(rows);
@@ -623,7 +682,7 @@ class AssemblyTreeModel {
       expandable: expandable,
       open: open,
       path: d.path,
-      hidden: d.hidden,
+      hidden: d.hidden || _sessionHidden.contains(n.key),
       suppressed: d.suppressed,
       statusFailed: d.statusFailed,
     ));
@@ -646,7 +705,7 @@ class AssemblyTreeModel {
       first = false;
     }
     for (final m in g.members) {
-      hidden = hidden && m.dto.hidden;
+      hidden = hidden && (m.dto.hidden || _sessionHidden.contains(m.key));
       suppressed = suppressed && m.dto.suppressed;
     }
     AssemblyBubble? bubble;
@@ -678,6 +737,24 @@ class AssemblyTreeModel {
     if (!open) return;
     for (final m in g.members) {
       _emitNode(m, depth + 1, rows);
+    }
+  }
+
+  void _emitItems(String folderKey, AssemblyRowKind kind, List<AssemblyTreeRow> rows) {
+    final items = _folderItems[folderKey];
+    if (items == null) return;
+    for (final it in items) {
+      rows.add(AssemblyTreeRow(
+        key: '$folderKey#item:${it.id}',
+        kind: kind,
+        depth: 2,
+        label: it.label,
+        state: AssemblyRowState.none,
+        suppressed: it.suppressed,
+        itemId: it.id,
+        note: it.note,
+        tone: it.tone,
+      ));
     }
   }
 

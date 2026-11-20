@@ -487,4 +487,134 @@ void main() {
       expect(colours.length, 9);
     });
   });
+
+  // A4: what the host adds on top of A3 - the Mates and Patterns folders listing the host's own rows, the flash of mates a pattern edit broke,
+  // a status line, and the floating tree's Edit Alone row only while it is open.
+  group('A4 additions', () {
+    AssemblyTreeModel withFolders() {
+      final model = AssemblyTreeModel(
+        tree: AssemblyTreeResponseDto.fromJson({
+          'part_id': 'root',
+          'part_name': 'Root',
+          'kind': 'assembly',
+          'status_included': true,
+          'mates': {'count': 2, 'broken': 1},
+          'patterns': {'count': 1},
+          'children': [_node('a', ['a'], name: 'Arm')],
+        }),
+      );
+      model.setFolderItems('#mates', const [
+        AssemblyFolderItem('m1', 'Coincident 1', note: "Broken - can't be satisfied", tone: AssemblyItemTone.error),
+        AssemblyFolderItem('m2', 'Distance 1', note: '5 mm', suppressed: true),
+      ]);
+      model.setFolderItems('#patterns', const [AssemblyFolderItem('p1', 'Linear 1', note: '×3')]);
+      return model;
+    }
+
+    testWidgets('the folders open on a tap and list the host\'s rows; a tap and a long-press on a row report it', (tester) async {
+      final model = withFolders();
+      final taps = <String>[];
+      final presses = <String>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(
+        model: model,
+        onRowTap: (r) => taps.add('${r.kind.wire}:${r.itemId}'),
+        onRowLongPress: (r) => presses.add('${r.kind.wire}:${r.itemId}'),
+      )));
+      expect(_row('#mates#item:m1'), findsNothing, reason: 'the folders start closed');
+
+      await tester.tap(_row('#mates'));
+      await tester.pump();
+      expect(model.isOpen('#mates'), isTrue);
+      expect(_row('#mates#item:m1'), findsOneWidget);
+      expect(find.text('Coincident 1'), findsOneWidget);
+      expect(find.text("Broken - can't be satisfied"), findsOneWidget, reason: 'a phone row has the note on a second line');
+
+      await tester.tap(_row('#mates#item:m1'));
+      await tester.longPress(_row('#mates#item:m1'));
+      await tester.pump();
+      expect(taps, ['mates_folder:null', 'mate:m1']);
+      expect(presses, ['mate:m1'], reason: 'a note does not take the long-press away (no tooltip on touch)');
+
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:#patterns')));
+      await tester.pump();
+      expect(find.text('Linear 1'), findsOneWidget);
+      expect(model.selectedKey, '#mates#item:m1', reason: 'the chevron does not select');
+    });
+
+    testWidgets('a broken mate is red with a warning icon, a suppressed one is dimmed, a plain one keeps the link icon', (tester) async {
+      final model = withFolders()..setOpen('#mates', true);
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model)));
+      final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
+      Icon icon(String id) => tester.widget<Icon>(find.descendant(of: _row('#mates#item:$id'), matching: find.byType(Icon)).first);
+      expect(icon('m1').icon, Icons.warning_amber_rounded);
+      expect(icon('m1').color, error);
+      expect(tester.widget<Text>(find.descendant(of: _row('#mates#item:m1'), matching: find.text('Coincident 1'))).style?.color, error);
+      expect(icon('m2').icon, Icons.link);
+      expect(tester.widget<Opacity>(find.descendant(of: _row('#mates#item:m2'), matching: find.byType(Opacity)).first).opacity, lessThan(1));
+    });
+
+    testWidgets('a desktop row has the note after the label, on one line', (tester) async {
+      final model = withFolders()..setOpen('#mates', true);
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model), layout: LayoutPreference.desktop));
+      expect(find.byKey(const ValueKey('tree-note:#mates#item:m1')), findsNothing, reason: 'no second line');
+      expect(find.textContaining("Broken - can't be satisfied", findRichText: true), findsOneWidget);
+      expect(tester.getSize(_row('#mates#item:m1')).height, kAssemblyTreeRowHeightDesktop);
+    });
+
+    testWidgets('a new flash token pulses the named mate rows and opens the Mates folder', (tester) async {
+      final model = withFolders();
+      Widget view(int token, Set<String> ids) => _host(AssemblyTreeView(model: model, flashItemIds: ids, flashToken: token));
+      await tester.pumpWidget(view(0, const {}));
+      expect(_row('#mates#item:m1'), findsNothing);
+
+      await tester.pumpWidget(view(1, const {'m1'}));
+      await tester.pump(); // the post-frame work
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(model.isOpen('#mates'), isTrue);
+      final error = Theme.of(tester.element(find.text('Mates'))).colorScheme.error;
+      Color? fill() => tester.widget<Material>(find.descendant(of: _row('#mates#item:m1'), matching: find.byType(Material)).first).color;
+      // Somewhere in the two seconds the row's background is tinted with the error colour, and at the end it is plain again.
+      var tinted = false;
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        final c = fill();
+        if (c != null && c.a > 0 && c.r == error.r && c.g == error.g && c.b == error.b) tinted = true;
+      }
+      expect(tinted, isTrue);
+      expect(fill(), Colors.transparent);
+      // The other mate never pulses.
+      expect(tester.widget<Material>(find.descendant(of: _row('#mates#item:m2'), matching: find.byType(Material)).first).color, Colors.transparent);
+    });
+
+    testWidgets('a status line shows under the header, and nothing when empty', (tester) async {
+      final model = withFolders();
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, statusLine: 'Group: 5 DOF')));
+      expect(find.byKey(const ValueKey('assembly-motion-summary')), findsOneWidget);
+      expect(find.text('Group: 5 DOF'), findsOneWidget);
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, statusLine: '')));
+      expect(find.byKey(const ValueKey('assembly-motion-summary')), findsNothing);
+    });
+
+    testWidgets('the Edit Alone row is in the floating tree only while it is open (the pill is the way out when it is closed)', (tester) async {
+      final model = withFolders();
+      Widget view(bool visible) => _host(AssemblyTreeView(model: model, visible: visible, editAloneLabel: 'Arm', onEditAloneDone: () {}));
+      await tester.pumpWidget(view(true));
+      expect(find.byKey(const ValueKey('edit-alone-done')), findsOneWidget);
+      await tester.pumpWidget(view(false));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('edit-alone-done')), findsNothing);
+      // Docked, it is always there.
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, docked: true, visible: false, editAloneLabel: 'Arm', onEditAloneDone: () {}), layout: LayoutPreference.desktop));
+      expect(find.byKey(const ValueKey('edit-alone-done')), findsNothing, reason: 'a docked tree that is not shown draws nothing; the host shows it');
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, docked: true, editAloneLabel: 'Arm', onEditAloneDone: () {}), layout: LayoutPreference.desktop));
+      expect(find.byKey(const ValueKey('edit-alone-done')), findsOneWidget);
+    });
+
+    testWidgets('a row hidden for this session shows the eye-off like one hidden on the backend', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([_node('a', ['a'], name: 'Arm'), _node('b', ['b'], name: 'Bar')]))..setSessionHiddenKeys({'b'});
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onVisibilityToggle: (_) {})));
+      expect(find.byKey(const ValueKey('tree-eye-off:b')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tree-eye-off:a')), findsNothing);
+    });
+  });
 }

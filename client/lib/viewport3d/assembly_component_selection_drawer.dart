@@ -3,7 +3,7 @@ import 'package:material_ui/material_ui.dart';
 import '../layout/layout_mode.dart';
 
 import '../api/document_api_client.dart';
-import 'assembly_tree_panel.dart';
+import 'assembly_tree_helpers.dart';
 import 'component_context_menu.dart' show kEditAloneLabel;
 
 /// Assembly lens component selection drawer - the assembly equivalent of

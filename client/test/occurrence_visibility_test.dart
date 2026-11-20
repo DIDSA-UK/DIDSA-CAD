@@ -361,4 +361,40 @@ void main() {
       expect(soloFocusShowsInstance(['a'], const []), isFalse);
     });
   });
+
+  // A4: path-keyed hiding (a nested row hides one placement, not every placement).
+  group('applyHiddenPaths', () {
+    AssemblyOccurrenceInstanceDto instance(List<String> path, {bool hidden = false}) => AssemblyOccurrenceInstanceDto(
+          occurrencePath: path,
+          partId: 'part-${path.last}',
+          worldTransform: _identity(),
+          hidden: hidden,
+        );
+
+    final all = [
+      instance(['a', 'c1']),
+      instance(['a', 'c2']),
+      instance(['b', 'c1']),
+      instance(['b', 'c1', 'deep']),
+      instance(['b', 'c2'], hidden: true),
+    ];
+
+    test('hides the instance at the path and what is nested under it, nothing else: the same child under another placement stays', () {
+      final result = applyHiddenPaths(all, const {'b/c1'});
+      expect(result.map((i) => i.hidden), [false, false, true, true, true]);
+    });
+
+    test('hiding a placement hides everything inside it; the bare id of a child does not match under another parent', () {
+      expect(applyHiddenPaths(all, const {'a'}).map((i) => i.hidden), [true, true, false, false, true]);
+      expect(applyHiddenPaths(all, const {'c1'}).map((i) => i.hidden), [false, false, false, false, true], reason: 'not a full path from the root: it matches nothing');
+    });
+
+    test('nothing hidden returns the list itself, and the other fields of a hidden instance are kept', () {
+      expect(identical(applyHiddenPaths(all, const {}), all), isTrue);
+      final hiddenOne = applyHiddenPaths(all, const {'a/c1'}).first;
+      expect(hiddenOne.partId, 'part-c1');
+      expect(hiddenOne.occurrencePath, ['a', 'c1']);
+    });
+  });
+
 }

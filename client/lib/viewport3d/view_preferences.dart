@@ -37,6 +37,9 @@ class ViewPreferences {
   // Darker inside faces on see-through bodies (see kSeeThroughInteriorShade in mesh_geometry.dart).
   static const String darkenSeeThroughInteriorPrefKey = 'view_darken_see_through_interior';
   static const String sketchLineOutlinePrefKey = 'view_sketch_line_outline';
+  // The Assembly tree's "Group repeated parts" switch (A4, `docs/assembly-tree-overhaul-scope.md` section 8, answer 6): on by default.
+  static const String assemblyTreeGroupingPrefKey = 'view_assembly_tree_grouping';
+  static const bool defaultAssemblyTreeGrouping = true;
 
   /// Was `#1E1E2E` (Studio Dark) through Stage 18, then `#F5F5F0`
   /// (Off-white) through Stage 19a - now Charcoal (matches
@@ -95,6 +98,7 @@ class ViewPreferences {
   static bool _debugShowCameraOrientation = defaultDebugShowCameraOrientation;
   static bool _sketchLineOutline = defaultSketchLineOutline;
   static bool _darkenSeeThroughInterior = defaultDarkenSeeThroughInterior;
+  static bool _assemblyTreeGrouping = defaultAssemblyTreeGrouping;
 
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
@@ -108,6 +112,7 @@ class ViewPreferences {
   static bool get debugShowCameraOrientation => _debugShowCameraOrientation;
   static bool get sketchLineOutline => _sketchLineOutline;
   static bool get darkenSeeThroughInterior => _darkenSeeThroughInterior;
+  static bool get assemblyTreeGrouping => _assemblyTreeGrouping;
 
   /// Populates the in-memory cache from `shared_preferences`, falling back to
   /// the defaults above for any key never [save]d. [renderModePrefKey] is
@@ -134,6 +139,7 @@ class ViewPreferences {
     _sketchLineOutline = prefs.getBool(sketchLineOutlinePrefKey) ?? defaultSketchLineOutline;
     _darkenSeeThroughInterior =
         prefs.getBool(darkenSeeThroughInteriorPrefKey) ?? defaultDarkenSeeThroughInterior;
+    _assemblyTreeGrouping = prefs.getBool(assemblyTreeGroupingPrefKey) ?? defaultAssemblyTreeGrouping;
   }
 
   static Future<void> setBgColourHex(String hex) async {
@@ -200,6 +206,12 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(darkenSeeThroughInteriorPrefKey, value);
     _darkenSeeThroughInterior = value;
+  }
+
+  static Future<void> setAssemblyTreeGrouping(bool value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(assemblyTreeGroupingPrefKey, value);
+    _assemblyTreeGrouping = value;
   }
 
   static Future<void> setSketchLineOutline(bool value) async {
