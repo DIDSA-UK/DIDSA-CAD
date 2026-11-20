@@ -6,8 +6,10 @@ within each case's tolerance (section 10). The background (why there is no clien
 [`docs/sketch-drag-projector.md`](../sketch-drag-projector.md); this file only says **what to compute**. VR writes its code from this
 text and the vectors, not by translating the Dart (DIDSA-CAD `LICENSING.md`, rule 1, in spirit, as the parity plan's 3.2 asks).
 
-Not covered here: the mobility oracle (`analyseSketchMobility`, the "can this point move at all" check before a grab) and the
-controller's frame guards (blow-up, arc chord side, residual). They are callers' concerns (S10).
+Sections 1-12 are the projector. Section 13 (added in F6) is its caller for closed-form shapes: the shape proposals, the provisional
+sizes, the pre-grab rule and the mobility oracle (`analyseSketchMobility`, the "can this point move at all" check before a grab), with
+its own vectors ([`sketch-shape-vectors.json`](sketch-shape-vectors.json)). The controller's frame guards (blow-up, arc chord side)
+are named there, not specified.
 
 ## 1. What one call answers
 
@@ -359,3 +361,222 @@ All are in the file's `constants` too.
    removed most of it.
 3. **The two-line `angle` ignores `quadrant`** and follows the reference frame. Part D's angles honour theirs. Consistent with the
    backend as far as this spec goes; not checked against the backend's solve.
+
+## 13. Shape proposals: dragging a closed-form shape's point (hybrid drag; added in F6)
+
+Normative for DIDSA-VR's line and shape drags (parity follow-ups F8). The reference is `SketchController` (`client/lib/sketch/sketch_controller.dart`:
+`updatePointDrag`, `_closedForm*Geometry`, `_closedFormPolygonVertices`, `_closedFormCircleDragPositions`, `_closedFormArcDragPositions`,
+`_hybridStructuralFor`, `_runHybridDragFrame`, `_beginPointDrag`); the background is `docs/sketch-drag-hybrid.md`. A port reproduces
+[`sketch-shape-vectors.json`](sketch-shape-vectors.json) (13.7). As with sections 1-11, write the code from this text and the vectors.
+
+**Why.** Without a proposal the projector moves only the grabbed point and spreads the correction over the shape's other points by the
+minimum-norm rule, so a circle's rim drag moves its centre and a rectangle's corner drag moves the opposite corner (measured in VR,
+investigation C3). The proposal says where *every* point of the shape should go (a rigid, regular shape, one closed-form answer), and
+the projector only clamps it to the user's constraints.
+
+### 13.1 Shapes, membership and one frame
+
+Seven families, read from the backend's shape records (the wire keys below; `GET …/circles` etc.). A point belongs to the **first**
+family in this order whose record names it in the roles listed; the shape must be **intact** (every point and line the record names
+still exists), else the point is dragged as a plain point (sections 1-11 with no proposal).
+
+| Family (`kind` in the file) | Record keys read | Members (grabbable roles) | Intact also needs |
+|---|---|---|---|
+| polygon | `center_point_id`, `vertex_point_ids` (in order), `line_ids`, `radial_line_ids`, `sides`, `inscribed_circle_id`, `circumscribed_circle_id`, `structural_constraint_ids` | centre, vertices | the lines |
+| slot | `center1_point_id`, `center2_point_id`, `a_point_id` … `d_point_id`, `centerline_id`, `line1_id`, `line2_id`, `arc1_id`, `arc2_id`, `structural_constraint_ids` | both centres, the four corners | the lines and both arcs |
+| circle (`circles`) | `center_point_id`, `radius_point_id`, `cardinal_point_ids` (N, E, S, W), `structural_constraint_ids` | centre, radius point, cardinals | |
+| arc | `center_point_id`, `start_point_id`, `end_point_id`, `structural_constraint_ids` | all three | |
+| ellipse | `center_point_id`, `major_point_id`, `major_point_neg_id`, `minor_point_id`, `minor_point_neg_id`, `major_axis_line_id`, `minor_axis_line_id`, `structural_constraint_ids` | all five points | both axis lines |
+| ellipse_arc | `center_point_id`, `major_point_id`, `minor_point_id`, `start_point_id`, `end_point_id`, the two axis lines, `structural_constraint_ids` | all five points | both axis lines |
+| rectangle | `corner_point_ids` (4, in order round the rectangle), `line_ids`, `axis_aligned`, `center_point_id`, `diagonal_line_id`, `diagonal2_line_id`, `structural_constraint_ids` | corners, centre | `axis_aligned`, a centre point and a diagonal line |
+
+(A slot's two arcs are also arc records: a slot point is a slot member first.)
+
+**One frame.** At the grab, remember the grabbed point's position G and the hand's H₀. Each frame the hand is at H; the grabbed point's
+**target** is `T = G + (H − H₀)`. `P(id)` is a point's **current** position: the last frame's written-back answer (the grab's positions
+on the first frame). Then:
+
+1. the family's **proposal** (13.2, 13.3) from P, the grabbed id and T: a target for some or all of the shape's points (the grabbed one
+   included unless said otherwise), or **none** (a degenerate case: nothing moves this frame);
+2. **plain or hybrid** (13.4): with no user constraint touching the shape, write the proposal back as it is; otherwise clamp it with the
+   projector and write back the clamp.
+
+`|v|` is the plain Euclidean length here; "< 1e-9" tests guard the degenerate cases; angles in radians; `atan2(y, x)`.
+
+**Confirmed size.** A shape's size dimension is the `distance` constraint with exactly these `point_a_id` → `point_b_id` (first in
+constraint order): circle centre → radius point; arc centre → start; ellipse and ellipse arc centre → major, centre → minor; slot
+centre 1 → corner a; polygon centre → vertex 0 (a non-provisional one first, else the first). It is **confirmed** when it exists and is not
+`provisional: true`; its value is `distance`. A polygon's circumradius is also confirmed through its inscribed circle: when that
+circle's size (its centre → radius point) is confirmed with value r, the circumradius is `r / cos(π / sides)`.
+
+### 13.2 The proposals
+
+**Centre drags translate** (every family): with `d = T − P(centre)`, the centre goes to T and every other listed point to `P + d`:
+circle: radius point and cardinals; arc: start, end; ellipse: the four tips; ellipse arc: major, minor, start, end; rectangle: the
+four corners; polygon: every vertex and, when the inscribed circle exists and its radius point is in the sketch, that radius point.
+Slot centres are the exception (below).
+
+**Circle** (C = P(centre)). The drag **mode** first:
+* centre: translate (above).
+* radius point or cardinal: **resize** when the size is not confirmed; when it is confirmed, **translate** by the hand's delta: the
+  proposal is the centre drag with the centre's target `C + (T − P(grabbed))`.
+
+Resize: the grabbed point's index i in `cardinal_point_ids` gives the new radius ρ = `|T.y − C.y|` for N (0) and S (2), `|T.x − C.x|`
+for E (1) and W (3); a radius point that is not a cardinal gives ρ = |T − C|. ρ < 1e-9: none. Targets: cardinal i at
+`C + ρ (cos a_i, sin a_i)` with a = (π/2, 0, 3π/2, π); the radius point, when it is not a cardinal, at T if it is the grabbed one, else on
+its old ray at ρ (`C + (ρ, 0)` if it sat on the centre). The centre is not in the proposal (it stays). (In the file the radius point is
+always a cardinal, the fake's construction; the non-cardinal branch is not covered by a vector.)
+
+**Arc** (C, S = start, E = end). Mode: centre → translate; an end → resize when the size (centre → start) is not confirmed, else
+translate by the hand's delta (centre target `C + (T − P(grabbed))`). Resize: ρ = |T − C| (< 1e-9: none); the grabbed end at T, the
+other end on its old ray at ρ (`C + (ρ, 0)` if it sat on the centre). The centre is not in the proposal.
+
+**Ellipse** (C, M = major, M⁻, N = minor, N⁻). Centre → translate. Otherwise:
+* major tip (M or M⁻, σ = −1 for M⁻, else +1): `u = σ (T − C)`; ρ = |u| (< 1e-9: none); angle θ = atan2(u); the major radius is the
+  confirmed major size when there is one (the ellipse then only turns), else ρ; the minor radius b = |N − C| (kept).
+* minor tip (N or N⁻, σ likewise): a = |M − C| (< 1e-9: none), θ = the angle of M − C; b = `|σ (T − C) · (cos(θ + π/2), sin(θ + π/2))|`.
+* b < 1e-9: none. Targets (the centre is not in the proposal): M = C + a (cos θ, sin θ), M⁻ = C − a (cos θ, sin θ),
+  N = C + b (cos(θ + π/2), sin(θ + π/2)), N⁻ = C − b (…). The grabbed tip's target is that formula, not T.
+
+**Ellipse arc** (C, M, N, S = start, E = end; a₀ = |M − C|, b₀ = |N − C|). Centre → translate. Otherwise:
+* an end (S or E): b₀ < 1e-9: none. The proposal is **that end only**, at the ellipse point of T's parametric angle:
+  `t = param(T)`, target `ell(t)`, where for the current ellipse (centre C, major tip M, minor radius b₀) with r = the angle of M − C:
+  `param(p)`: q = rotate(p − C, −r); `t = atan2(q.y / b₀, q.x / a₀)`; `ell(t) = C + rotate((a₀ cos t, b₀ sin t), r)`.
+* major tip M: ρ = |T − C| (< 1e-9: none); θ = the angle of T − C; new a = the confirmed major size, else `max(ρ, b₀)`; b = b₀.
+* minor tip N: a₀ < 1e-9: none; θ = the angle of M − C; a = a₀; b = `min(|(T − C) · (cos(θ + π/2), sin(θ + π/2))|, a₀)`.
+* b < 1e-9: none. Targets: M = C + a (cos θ, sin θ), N = C + b (cos(θ + π/2), sin(θ + π/2)), and (when b₀ ≥ 1e-9) S and E keep their
+  parametric angles measured on the **old** ellipse: `S = ell'(param(P(S)))`, `E = ell'(param(P(E)))`, ell' being the new ellipse
+  (centre C, tip M, minor b). The centre is not in the proposal.
+
+**Rectangle** (corners k0..k3 in record order, centre K). Centre → translate. A corner i: the opposite corner O = P(k_{(i+2) mod 4})
+stays (not in the proposal); targets: k_i at T; for even i, k_{(i+1) mod 4} at (O.x, T.y) and k_{(i+3) mod 4} at (T.x, O.y); for odd i
+the other way round ((T.x, O.y) and (O.x, T.y)); the centre at (T + O) / 2.
+
+**Polygon** (centre C, vertices v_0..v_{n−1}, n = `sides`). Centre → translate. A vertex v_i: d = T − C, |d| < 1e-9: none; the
+circumradius R = the confirmed circumradius when there is one (the polygon then only turns), else |d|; β = atan2(d) − 2πi/n; every
+vertex v_j at `C + R (cos(β + 2πj/n), sin(β + 2πj/n))`; when the inscribed circle exists (its radius point in the sketch), its radius
+point at `C + ρ_in (cos(β + π/n), sin(β + π/n))` with ρ_in = its confirmed size, else `R cos(π/n)`. The centre is not in the proposal.
+
+**Slot** (centres c1, c2, corners a, b near c1 and c, d near c2, radius point a for the size). Corners are recomputed from the two
+centres and a radius ρ: `n = perp((c2 − c1)/|c2 − c1|)` = (−dir.y, dir.x); a = c1 + ρn, b = c1 − ρn, c = c2 − ρn, d = c2 + ρn
+(|c2 − c1| < 1e-9 or ρ < 1e-9: none).
+* c1 grabbed: c1 = T, ρ = |P(a) − P(c1)| (the old radius). c2 grabbed: c2 = T, ρ the same.
+* a corner grabbed: centres stay; ρ = the distance of T from the line through c1 and c2 (|c2 − c1| < 1e-9: none).
+* Targets: both centres and all four corners (six points).
+
+### 13.3 Which drags are refused or limited by a confirmed size (summary)
+
+| Family | Confirmed size | Effect |
+|---|---|---|
+| circle | radius | a rim / cardinal drag translates (refused if the centre is fully pinned, 13.5) |
+| arc | radius (centre → start) | an end drag translates (refused if the centre is fully pinned) |
+| ellipse | major | a major drag only turns |
+| ellipse | minor | a minor drag is **refused** at the grab |
+| ellipse arc | major / minor | a major drag only turns / a minor drag is **refused** |
+| polygon | circumradius (or the inscribed circle's radius) | a vertex drag only turns |
+| slot | radius (centre 1 → a) | a corner drag is **refused** |
+| rectangle | none | |
+
+### 13.4 Plain or hybrid, and the provisional sizes
+
+**User constraint.** Any constraint whose id is not in the shape's `structural_constraint_ids` and that names (as a point or, through a
+line id, a line) one of the shape's **touch set**:
+
+| Family | Points | Lines |
+|---|---|---|
+| polygon | the vertices, the inscribed and circumscribed circles' radius and cardinal points; **the centre only for a centre drag** | edges, radial lines |
+| slot | the four corners; both centres only for a centre drag | `line1_id`, `line2_id`; the centre line only for a centre drag |
+| circle | radius point, cardinals; the centre only for a centre drag | |
+| arc | start, end; the centre only for a centre drag | |
+| ellipse | the four tips; the centre only for a centre drag | both axis lines |
+| ellipse arc | major, minor, start, end; the centre only for a centre drag | both axis lines |
+| rectangle | corners and centre | sides and both diagonals |
+
+(A vertex / rim drag never moves the centre, so a constraint on the centre alone cannot be broken by it.) Decided **once at the grab**
+for the whole drag.
+
+**Plain** (no user constraint, or the shape's structural ids are unknown): each frame writes the proposal back as it is.
+
+**Hybrid**: each frame calls the projector (sections 1-11) once:
+
+| Input | Value |
+|---|---|
+| `points` | every point at P, with the proposal laid over it |
+| `reference` | P (the last written-back frame; the grab's positions on the first frame) |
+| `constraints`, `lines` | the whole sketch's |
+| `anchors` | the grabbed point |
+| `stiff` | every point the proposal names |
+| `pinned` | the locked points and the origin |
+| `provisional` | for each constraint in the shape's `structural_constraint_ids` that is a `distance` with `provisional: true`: its id → `|B − A|`, A and B its two points at their proposed positions (P when the proposal does not name them) |
+
+Written back when the projection is converged: its points, plus every proposal point outside the projector's group at its proposal.
+Not converged: nothing moves this frame (the shape stays at the last good frame). Unsupported (a spline tangency in the group): the
+proposal is written back unclamped and the drop's backend solve settles it. The flat app also drops a frame that moves a non-anchor
+point more than `max(10 · D, 100)` from its seed (D the diagonal of every point's seed) or flips any arc's centre to the other side of
+its chord; neither fires in the vectors.
+
+The drop is the ordinary point drop (the moved points ride in `solve-and-refresh` as `point_updates`).
+
+### 13.5 The pre-grab rule
+
+In this order; the first that applies refuses the grab:
+
+1. The sketch is busy, or the point is the origin or a locked point.
+2. **A point on no intact shape**: refused if it is over-constrained (the rigidity analysis says so, `docs/sketch-rigidity-spec.md`; or a
+   constraint the last solve reported failed names it; or it is on a line that is both horizontal and vertical, or on either of two lines
+   that are both parallel and perpendicular) or **immobile**: its mobility (13.6) is 0; when the mobility oracle is unsupported, when it is
+   *fully pinned*.
+3. **A shape point**, by family: circle centre, polygon centre, arc centre: refused when the centre is fully pinned; circle rim /
+   cardinal with a confirmed radius, arc end with a confirmed radius: refused when the centre is fully pinned; arc end: also refused when
+   the rigidity analysis says the end is fully constrained; slot corner with a confirmed radius, ellipse minor tip (either) with a
+   confirmed minor radius, ellipse arc minor tip with a confirmed minor radius: refused.
+4. **A hybrid drag** (13.4): also refused when the point is over-constrained (as in 2) or immobile (mobility 0; when the oracle is
+   unsupported, when the rigidity analysis says it is fully constrained).
+
+**Fully pinned** (point p): the whole sketch is fully constrained (the backend's last solve converged with `dof ≤ 0`, the sketch has
+geometry, and the rigidity analysis grounds at least one point), or the rigidity analysis says p is fully constrained or pinned
+(`docs/sketch-rigidity-spec.md`).
+
+### 13.6 The mobility oracle
+
+`analyseSketchMobility` (same file as the projector). From the point's group (section 3, with no provisional sizes and the pinned set
+of 13.4) and the current positions: the rows of section 4 at those positions, rows with no variable column dropped. Gauss-Jordan
+elimination of the dense row matrix (pivot = the largest |entry| in the column at or below the current row; a column whose best
+|entry| ≤ `1e-8 · max(1, max |entry|)` is skipped; the pivot row is scaled to 1 and the column cleared above and below). Each non-pivot
+column f gives a null-space vector (1 at f, `−a[i][f]` at pivot column i), orthonormalised against the earlier ones (Gram-Schmidt;
+a vector whose norm falls under 1e-12 is dropped). For each group point, the 2 × 2 Gram matrix of its (x, y) entries over the basis;
+its mobility is the number of eigenvalues above 1e-9 (0, 1 or 2). A point outside the group has mobility 2; an unsupported group gives
+no answer (the caller's fallback, 13.5). First order only: a momentarily singular configuration (a straight arm) is not caught.
+
+### 13.7 Vectors
+
+`docs/motion/sketch-shape-vectors.json` (34 cases, 73 frames), written by the "shape proposal vectors (F6)" group of
+`client/test/sketch_controller_test.dart`: each case draws a shape with the app's own tools on the hybrid-drag tests' fake backend,
+optionally confirms a size or adds a user constraint (the hybrid-drag tests' own scenes, plus two dimensioned to the pinned origin),
+grabs a point and drags it. `tools/sketch_vectors/export_shapes.sh` writes it; `--check` fails when a regeneration differs (1e-9) or
+when `client/test/sketch_shape_vectors_test.dart`, reading the file alone, finds a hybrid frame whose written-back positions are not
+the projector's answer to 13.4's call, or a plain frame that does not write back exactly its proposal.
+
+| Field | |
+|---|---|
+| `input` | `points` (every point, the origin included), `lines` (id → [start, end]), `constraints` (wire form, `provisional` flags included), `shapes` (id → the backend record plus `kind`), `grabbed`, `pinned` |
+| `grab` | the pre-grab rule's answer; a refused case has no frames |
+| `frames[k].target` | T for that frame (the file's hand starts on the grabbed point, so T is the hand) |
+| `expected.proposal` | id → target for every point the proposal names (13.2) |
+| `expected.provisional` | the provisional sizes (hybrid frames; empty otherwise) |
+| `expected.hybrid`, `clamp` | plain or hybrid; `none` / `accepted` / `rejected` |
+| `expected.result` | the positions written back for the proposal's points and every point that moved |
+| `tolerance` | per coordinate, `1e-5 · max(1, diagonal of input.points)` |
+
+**Replaying frame k:** P = `input.points` with frames 0..k−1's `expected.result` laid over it (the file's numbers). A port computes the
+proposal from P, the grabbed id and the target, and compares it with `expected.proposal` (the same ids, each coordinate within the
+tolerance); for a hybrid frame it also makes 13.4's call with the file's `expected.provisional` and compares with `expected.result`;
+for a plain frame `result` equals the proposal.
+
+**What the vectors do not cover.** The shapes come from the flat app's **test fake**, not the real backend: the circle's radius point is
+always its north cardinal, a circle has only its provisional radius as structure (the backend also ties its cardinals to the centre,
+`scene-circle-cardinals` in section 10), and the fake's structural ids are its own approximation of the backend's. The proposals do not
+depend on that, but a port's clamp answers on a real sketch will differ from these numbers: compare the clamp on the file's own
+constraints, not on a sketch made by the backend. Not covered by a vector: the non-cardinal radius point, the inscribed circle of a
+polygon, a fully pinned centre (13.5 step 3), a frame dropped by the flat app's guards, an unsupported group, the general points' rule
+(13.5 step 2).

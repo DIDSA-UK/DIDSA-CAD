@@ -11,6 +11,8 @@ import 'package:http/testing.dart';
 
 import 'package:didsa_cad_client/api/dimension_label_placement.dart';
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'support/sketch_shape_vectors.dart';
+import 'support/sketch_vectors.dart' show constraintToWire, r10;
 import 'support/slvs_reference/slvs_bindings.dart';
 import 'support/slvs_reference/solvespace_clamp.dart';
 import 'package:didsa_cad_client/sketch/label_drag_resolver.dart';
@@ -6509,6 +6511,10 @@ void main() {
     });
   });
   }
+
+  // The shape-proposal vectors (parity follow-ups F6): written from the drags below, checked from the file alone by
+  // test/sketch_shape_vectors_test.dart.
+  _shapeProposalVectorsGroup();
 
   // Feel of the hybrid drag, projector vs SolveSpace, same dense hand path through both engines in lock-step
   // (docs/sketch-drag-projector.md). Prints a table; set DIDSA_SKETCH_BENCH=1 (needs the host library for the reference).
@@ -17515,6 +17521,375 @@ void main() {
         expect(fullReload.showsFullAxisFor(id), isTrue);
         expect(fullReload.displayFactorFor(id), 2.0);
       });
+    });
+  });
+}
+
+// ---- parity follow-ups F6: the shape-proposal vectors (docs/motion/sketch-projector-spec.md section 13) ----------------
+//
+// Each case draws one closed-form shape with the app's own tools on the fake backend (as the hybrid-drag tests above do),
+// optionally confirms a size or adds a user constraint, grabs one point and drags it through a few targets. Every frame
+// records what the controller computed: the proposal for every shape point, the provisional sizes switched on, whether the
+// frame was clamped (hybrid), and the positions written back. `DIDSA_SHAPE_VECTORS=write` writes
+// docs/motion/sketch-shape-vectors.json; otherwise the regeneration must equal the committed file
+// (tools/sketch_vectors/export_shapes.sh [--check]).
+class _ShapeCase {
+  final String id;
+  final String description;
+
+  /// Draws the shape (and anything else), returns the id of the point to grab.
+  final Future<String> Function(SketchController c, _FakeBackend b) build;
+  final List<(double, double)> targets;
+  const _ShapeCase(this.id, this.description, this.build, this.targets);
+}
+
+void _shapeProposalVectorsGroup() {
+  group('shape proposal vectors (F6)', () {
+    late SketchController c;
+    late _FakeBackend b;
+
+    Future<void> tap(String tool, List<(double, double)> at) async {
+      c.selectDrawTool(SketchTool.values.byName(tool));
+      for (final (x, y) in at) {
+        await c.handleCanvasTap(x, y);
+      }
+      c.exitToSelectMode();
+    }
+
+    // A confirmed size: the shape's provisional centre-to-point distance, confirmed at its current value.
+    void confirm(String a, String bId) {
+      final d = c.constraints.values.whereType<DistanceConstraintDto>().firstWhere((d) => d.pointAId == a && d.pointBId == bId);
+      c.constraints[d.id] =
+          DistanceConstraintDto(id: d.id, pointAId: d.pointAId, pointBId: d.pointBId, distance: d.distance, orientation: d.orientation);
+    }
+
+    Future<String> point(double x, double y) async {
+      await tap('point', [(x, y)]);
+      return c.points.values.firstWhere((p) => p.x == x && p.y == y).id;
+    }
+
+    void userDistance(String a, String bId, double value) =>
+        c.constraints['user-distance'] = DistanceConstraintDto(id: 'user-distance', pointAId: a, pointBId: bId, distance: value);
+
+    double gap(String a, String bId) {
+      final pa = c.points[a]!, pb = c.points[bId]!;
+      return math.sqrt(math.pow(pb.x - pa.x, 2) + math.pow(pb.y - pa.y, 2));
+    }
+
+    Future<void> circle() => tap('circle', [(40, 20), (50, 20)]);
+    Future<void> arc() => tap('arc', [(40, 20), (50, 20), (40, 30)]);
+    Future<void> ellipse() => tap('ellipse', [(40, 20), (50, 20), (45, 24)]);
+    Future<void> ellipseArc() => tap('ellipseArc', [(20, 20), (30, 20), (25, 24), (20, 24), (10, 20)]);
+    Future<void> rectangle() => tap('rectangle', [(10, 10), (30, 25)]);
+    Future<void> hexagon() async {
+      c.setPolygonSides(6);
+      await tap('polygon', [(20, 20), (30, 20)]);
+    }
+
+    Future<void> slot() => tap('slot', [(10, 20), (30, 20), (20, 25)]);
+
+    final cases = <_ShapeCase>[
+      // ---- circle
+      _ShapeCase('circle-centre', 'circle centre: the whole circle translates', (c, b) async {
+        await circle();
+        return c.circles.values.single.centerPointId;
+      }, [(43, 22), (47, 26)]),
+      _ShapeCase('circle-cardinal-east', 'circle east point: the centre stays, radius = |dx| from the centre', (c, b) async {
+        await circle();
+        return c.circles.values.single.cardinalPointIds[1];
+      }, [(52, 24), (46, 31)]),
+      _ShapeCase('circle-cardinal-north', 'circle north point: radius = |dy| from the centre, the cardinals stay on their axes',
+          (c, b) async {
+        await circle();
+        return c.circles.values.single.cardinalPointIds[0];
+      }, [(41, 33), (38, 27)]),
+      _ShapeCase('circle-radius-confirmed', 'confirmed radius: a rim drag translates the circle by the hand\'s delta',
+          (c, b) async {
+        await circle();
+        final circle_ = c.circles.values.single;
+        confirm(circle_.centerPointId, circle_.radiusPointId);
+        return circle_.radiusPointId;
+      }, [(52, 24), (55, 18)]),
+      _ShapeCase('circle-centre-dimensioned', 'hybrid: the centre is dimensioned 20 from a point and slides round it, radius kept',
+          (c, b) async {
+        final anchor = await point(60, 20);
+        await circle();
+        userDistance(c.circles.values.single.centerPointId, anchor, 20);
+        return c.circles.values.single.centerPointId;
+      }, [(40, 26), (42, 34), (46, 44)]),
+      _ShapeCase('circle-centre-dimensioned-to-origin',
+          'hybrid: the centre is dimensioned to the (pinned) origin and slides on that ring, radius kept', (c, b) async {
+        await circle();
+        final centre = c.circles.values.single.centerPointId;
+        userDistance(centre, c.originPointId!, gap(centre, c.originPointId!));
+        return centre;
+      }, [(40, 26), (36, 30), (30, 36)]),
+      // ---- arc
+      _ShapeCase('arc-centre', 'arc centre: the arc translates', (c, b) async {
+        await arc();
+        return c.arcs.values.single.centerPointId;
+      }, [(42, 23), (45, 27)]),
+      _ShapeCase('arc-start', 'arc start: the centre stays, the other end moves radially to the new radius', (c, b) async {
+        await arc();
+        return c.arcs.values.single.startPointId;
+      }, [(53, 22), (50, 28)]),
+      _ShapeCase('arc-end-radius-confirmed', 'confirmed radius: an end drag translates the arc by the hand\'s delta', (c, b) async {
+        await arc();
+        final a = c.arcs.values.single;
+        confirm(a.centerPointId, a.startPointId);
+        return a.endPointId;
+      }, [(42, 33), (37, 35)]),
+      _ShapeCase('arc-start-dimensioned', 'hybrid: the start is dimensioned 10 from a point and slides round it, on its circle',
+          (c, b) async {
+        final anchor = await point(60, 20);
+        await arc();
+        userDistance(c.arcs.values.single.startPointId, anchor, 10);
+        return c.arcs.values.single.startPointId;
+      }, [(51, 25), (53, 31), (50, 38)]),
+      _ShapeCase('arc-start-dimensioned-to-origin',
+          'hybrid: the start is dimensioned to the (pinned) origin; it slides on that ring and the arc follows', (c, b) async {
+        await arc();
+        final start = c.arcs.values.single.startPointId;
+        userDistance(start, c.originPointId!, gap(start, c.originPointId!));
+        return start;
+      }, [(52, 25), (50, 30)]),
+      // ---- ellipse
+      _ShapeCase('ellipse-centre', 'ellipse centre: translates', (c, b) async {
+        await ellipse();
+        return c.ellipses.values.single.centerPointId;
+      }, [(42, 21), (44, 25)]),
+      _ShapeCase('ellipse-major', 'ellipse major tip: major radius and angle from the hand, minor radius kept', (c, b) async {
+        await ellipse();
+        return c.ellipses.values.single.majorPointId;
+      }, [(52, 23), (47, 30)]),
+      _ShapeCase('ellipse-major-neg', 'ellipse negative major tip: the same, mirrored through the centre', (c, b) async {
+        await ellipse();
+        return c.ellipses.values.single.majorPointNegId;
+      }, [(28, 18), (31, 12)]),
+      _ShapeCase('ellipse-minor', 'ellipse minor tip: minor radius = the hand\'s distance across the major axis', (c, b) async {
+        await ellipse();
+        return c.ellipses.values.single.minorPointId;
+      }, [(43, 26), (36, 27)]),
+      _ShapeCase('ellipse-major-confirmed', 'confirmed major radius: a major drag only turns the ellipse', (c, b) async {
+        await ellipse();
+        final e = c.ellipses.values.single;
+        confirm(e.centerPointId, e.majorPointId);
+        return e.majorPointId;
+      }, [(52, 26), (44, 33)]),
+      _ShapeCase('ellipse-minor-confirmed-refused', 'confirmed minor radius: a minor drag is refused at the grab', (c, b) async {
+        await ellipse();
+        final e = c.ellipses.values.single;
+        confirm(e.centerPointId, e.minorPointId);
+        return e.minorPointId;
+      }, [(43, 26)]),
+      _ShapeCase('ellipse-major-dimensioned', 'hybrid: the major tip is dimensioned 10 from a point, axes stay perpendicular',
+          (c, b) async {
+        final anchor = await point(60, 20);
+        await ellipse();
+        userDistance(c.ellipses.values.single.majorPointId, anchor, 10);
+        return c.ellipses.values.single.majorPointId;
+      }, [(51, 24), (52, 30), (49, 36)]),
+      // ---- ellipse arc
+      _ShapeCase('ellipse-arc-centre', 'ellipse arc centre: translates', (c, b) async {
+        await ellipseArc();
+        return c.ellipseArcs.values.single.centerPointId;
+      }, [(22, 21), (25, 24)]),
+      _ShapeCase('ellipse-arc-major', 'ellipse arc major tip: major radius (never under the minor) and angle; the ends keep their '
+          'parametric angles', (c, b) async {
+        await ellipseArc();
+        return c.ellipseArcs.values.single.majorPointId;
+      }, [(33, 23), (22, 3), (23, 22)]),
+      _ShapeCase('ellipse-arc-minor', 'ellipse arc minor tip: minor radius across the major axis (never over the major)',
+          (c, b) async {
+        await ellipseArc();
+        return c.ellipseArcs.values.single.minorPointId;
+      }, [(24, 26), (20, 40)]),
+      _ShapeCase('ellipse-arc-start', 'ellipse arc start: slides along the ellipse to the hand\'s parametric angle', (c, b) async {
+        await ellipseArc();
+        return c.ellipseArcs.values.single.startPointId;
+      }, [(24, 25), (29, 30)]),
+      _ShapeCase('ellipse-arc-major-dimensioned', 'hybrid: the major tip is dimensioned 20 from a point', (c, b) async {
+        final anchor = await point(50, 20);
+        await ellipseArc();
+        userDistance(c.ellipseArcs.values.single.majorPointId, anchor, 20);
+        return c.ellipseArcs.values.single.majorPointId;
+      }, [(31, 24), (32, 30), (29, 36)]),
+      // ---- rectangle
+      _ShapeCase('rectangle-centre', 'rectangle centre: translates', (c, b) async {
+        await rectangle();
+        return c.rectangles.values.single.centerPointId!;
+      }, [(22, 19), (25, 22)]),
+      _ShapeCase('rectangle-corner', 'rectangle corner: the opposite corner stays, the neighbours keep the axes', (c, b) async {
+        await rectangle();
+        return c.rectangles.values.single.cornerPointIds[0];
+      }, [(7, 6), (14, 12)]),
+      _ShapeCase('rectangle-corner-dimensioned', 'hybrid: the dragged corner is dimensioned to a point and keeps the distance',
+          (c, b) async {
+        final anchor = await point(0, 60);
+        await rectangle();
+        final opposite = c.rectangles.values.single.cornerPointIds[2];
+        userDistance(opposite, anchor, gap(opposite, anchor));
+        return opposite;
+      }, [(34, 30), (38, 36), (44, 40)]),
+      // ---- polygon (hexagon)
+      _ShapeCase('polygon-centre', 'polygon centre: translates', (c, b) async {
+        await hexagon();
+        return c.polygons.values.single.centerPointId;
+      }, [(23, 21), (26, 25)]),
+      _ShapeCase('polygon-vertex', 'polygon vertex: the centre stays, radius and angle from the hand', (c, b) async {
+        await hexagon();
+        return c.polygons.values.single.vertexPointIds[0];
+      }, [(31, 24), (26, 33)]),
+      _ShapeCase('polygon-vertex-radius-confirmed', 'confirmed circumradius: a vertex drag only turns the polygon', (c, b) async {
+        await hexagon();
+        final p = c.polygons.values.single;
+        confirm(p.centerPointId, p.vertexPointIds[0]);
+        return p.vertexPointIds[0];
+      }, [(31, 24), (26, 33)]),
+      _ShapeCase('polygon-vertex-edge-horizontal', 'hybrid: an edge is horizontal; the hexagon stays regular and keeps it',
+          (c, b) async {
+        await hexagon();
+        final polygon = c.polygons.values.single;
+        final edge = c.lines[polygon.lineIds[1]]!;
+        c.constraints['user-horizontal'] =
+            HorizontalConstraintDto(id: 'user-horizontal', pointAId: edge.startPointId, pointBId: edge.endPointId, lineId: edge.id);
+        return polygon.vertexPointIds[0];
+      }, [(31, 24), (32, 28), (30, 33)]),
+      // ---- slot
+      _ShapeCase('slot-centre', 'slot first centre: that centre follows the hand, the radius is kept, the corners recomputed',
+          (c, b) async {
+        await slot();
+        return c.slots.values.single.center1PointId;
+      }, [(8, 23), (12, 14)]),
+      _ShapeCase('slot-corner', 'slot corner: the radius is the hand\'s distance from the centre line', (c, b) async {
+        await slot();
+        return c.slots.values.single.aPointId;
+      }, [(11, 28), (19, 22)]),
+      _ShapeCase('slot-corner-radius-confirmed-refused', 'confirmed radius: a corner drag is refused at the grab', (c, b) async {
+        await slot();
+        final s = c.slots.values.single;
+        confirm(s.center1PointId, s.aPointId);
+        return s.aPointId;
+      }, [(11, 28)]),
+      _ShapeCase('slot-centre-dimensioned', 'hybrid: the second centre is dimensioned 20 from a point and slides round it',
+          (c, b) async {
+        final anchor = await point(50, 20);
+        await slot();
+        userDistance(c.slots.values.single.center2PointId, anchor, 20);
+        return c.slots.values.single.center2PointId;
+      }, [(34, 22), (36, 28), (32, 36)]),
+    ];
+
+    Map<String, dynamic> shapesOf() => {
+          for (final (kind, records) in [
+            ('circle', b.circles),
+            ('arc', b.arcs),
+            ('ellipse', b.ellipses),
+            ('ellipse_arc', b.ellipseArcs),
+            ('rectangle', b.rectangles),
+            ('polygon', b.polygons),
+            ('slot', b.slots),
+          ])
+            for (final r in records.values) r['id'] as String: {'kind': kind, ...r},
+        };
+
+    Map<String, (double, double)> snapshot() => {for (final e in c.points.entries) e.key: (e.value.x, e.value.y)};
+
+    test('regenerate (or compare with) docs/motion/sketch-shape-vectors.json', () async {
+      final out = <Map<String, dynamic>>[];
+      for (final sc in cases) {
+        // None of these sketches is fully constrained: the fake's default `dof` 0 would make the controller treat a grounded
+        // one as solved and refuse every grab (isFullyConstrained).
+        b = _FakeBackend()..dof = 1;
+        c = SketchController(api: SketchApiClient(httpClient: MockClient((request) async => b.handle(request))));
+        await c.ensureSketch();
+        final grabbed = await sc.build(c, b);
+        final start = snapshot();
+        final input = shapeClean({
+          'points': shapePointsJson(start),
+          'lines': {
+            for (final id in (c.lines.keys.toList()..sort())) id: [c.lines[id]!.startPointId, c.lines[id]!.endPointId],
+          },
+          'constraints': [for (final k in c.constraints.values) constraintToWire(k)],
+          'shapes': shapesOf(),
+          'grabbed': grabbed,
+          'pinned': [if (c.originPointId != null) c.originPointId!],
+        }) as Map<String, dynamic>;
+        final p = c.points[grabbed]!;
+        c.cursorX = p.x;
+        c.cursorY = p.y;
+        final grab = c.beginPointDrag(grabbed);
+        final frames = <Map<String, dynamic>>[];
+        if (grab) {
+          for (final (tx, ty) in sc.targets) {
+            final before = snapshot();
+            c.debugLastShapeProposal = null;
+            await c.updatePointDrag(tx, ty);
+            final after = snapshot();
+            final last = c.debugLastShapeProposal;
+            final changed = {
+              for (final e in after.entries)
+                if (before[e.key] != e.value) e.key: e.value,
+            };
+            final proposal = last?.proposal ?? const <String, (double, double)>{};
+            frames.add(shapeClean({
+              'target': [tx, ty],
+              'expected': {
+                'proposal': last == null ? null : shapePointsJson(proposal),
+                'provisional': {for (final k in ((last?.provisional.keys.toList() ?? <String>[])..sort())) k: last!.provisional[k]},
+                'hybrid': last?.hybrid ?? false,
+                'clamp': last == null || !last.hybrid ? 'none' : (changed.isEmpty ? 'rejected' : 'accepted'),
+                'result': shapePointsJson({
+                  for (final id in {...proposal.keys, ...changed.keys}) id: after[id]!,
+                }),
+              },
+            }) as Map<String, dynamic>);
+          }
+          await c.endPointDrag();
+        }
+        out.add({
+          'id': sc.id,
+          'description': sc.description,
+          'tolerance': r10(kShapePointsRelative * math.max(1.0, shapeDiagonal(start.values))),
+          'input': input,
+          'grab': grab,
+          'frames': frames,
+        });
+      }
+      final doc = <String, dynamic>{
+        'version': 1,
+        'spec': 'docs/motion/sketch-projector-spec.md, section 13',
+        'generator': 'client/test/sketch_controller_test.dart, group "shape proposal vectors (F6)" '
+            '(tools/sketch_vectors/export_shapes.sh writes; --check verifies)',
+        'regenerate_tolerance': kRegenerateTolerance,
+        'points_relative_tolerance': kShapePointsRelative,
+        'conventions': {
+          'point': '[x, y] in sketch units (mm)',
+          'input': 'the whole sketch before the grab: points, lines (id -> [start, end]), constraints (backend wire form, '
+              'provisional flags included), shapes (id -> the backend\'s shape record plus kind), the grabbed point, pinned '
+              '(the origin; locked points would be here too)',
+          'grab': 'whether the pre-grab rule lets the point be grabbed (spec 13.5); no frames when false',
+          'frame': 'start = input.points with every earlier frame\'s expected.result laid over it; target = where the hand puts '
+              'the grabbed point (the cursor delta from the grab added to the point\'s position at the grab)',
+          'expected': 'proposal: every shape point the proposal sets (spec 13.2/13.3; null when it makes none); provisional: '
+              'the sizes switched on (hybrid frames only, spec 13.4); hybrid: whether the frame is clamped by the projector; '
+              'clamp: none | accepted | rejected; result: the positions written back for the proposal\'s points and any point '
+              'that moved',
+        },
+        'cases': out,
+      };
+      final file = File(kShapeVectorsPath);
+      final text = encodeShapeVectors(doc);
+      if (Platform.environment['DIDSA_SHAPE_VECTORS'] == 'write') {
+        file.writeAsStringSync(text);
+        // ignore: avoid_print
+        print('wrote $kShapeVectorsPath: ${out.length} cases, ${out.fold<int>(0, (n, c) => n + (c['frames'] as List).length)} frames');
+        return;
+      }
+      expect(file.existsSync(), isTrue, reason: '$kShapeVectorsPath is missing: run tools/sketch_vectors/export_shapes.sh');
+      final differences = sketchVectorDifferences(
+          jsonDecode(file.readAsStringSync()), shapeVectorsViaJson(doc), kRegenerateTolerance);
+      expect(differences, isEmpty, reason: differences.take(20).join('\n'));
     });
   });
 }

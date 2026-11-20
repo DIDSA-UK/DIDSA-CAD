@@ -101,7 +101,7 @@ void main() {
     }
 
     test('the nearly straight chain moves (F6: the rescue step at a singular start, spec 7.3)', () {
-      final c = cases.firstWhere((c) => c['id'] == 'scene-chain-20-nearly-straight') as Map<String, dynamic>;
+      final c = cases.firstWhere((c) => c['id'] == 'scene-chain-20-nearly-straight');
       final frames = c['frames'] as List;
       for (var k = 0; k < frames.length; k++) {
         final r = replayFrame(c, k);
