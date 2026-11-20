@@ -1970,6 +1970,257 @@ class ConstraintStatusDto {
       );
 }
 
+/// `constraint` on an [AssemblyTreeNodeDto] (`docs/assembly-tree/spec.md` section 1): what `constraint-status` says about the occurrence within
+/// its parent Part, plus how many of the parent's mates touching it are broken / near.
+class AssemblyTreeConstraintDto {
+  final ConstraintState status;
+  final int dof;
+  final String? rigidSet;
+  final int brokenMates;
+  final int nearMates;
+
+  const AssemblyTreeConstraintDto({
+    required this.status,
+    this.dof = 0,
+    this.rigidSet,
+    this.brokenMates = 0,
+    this.nearMates = 0,
+  });
+
+  factory AssemblyTreeConstraintDto.fromJson(Map<String, dynamic> json) => AssemblyTreeConstraintDto(
+        status: switch (json['status'] as String?) {
+          'fixed' => ConstraintState.fixed,
+          'fully_constrained' => ConstraintState.fullyConstrained,
+          'over_constrained' => ConstraintState.overConstrained,
+          _ => ConstraintState.underConstrained,
+        },
+        dof: (json['dof'] as num?)?.toInt() ?? 0,
+        rigidSet: json['rigid_set'] as String?,
+        brokenMates: (json['broken_mates'] as num?)?.toInt() ?? 0,
+        nearMates: (json['near_mates'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// `mates` on an assembly level. [broken] / [near] / [held] / [lost] are null without `status=true` (and when the level's status failed).
+class AssemblyTreeMatesDto {
+  final int count;
+  final int suppressed;
+  final int? broken;
+  final int? near;
+  final int? held;
+  final int? lost;
+
+  const AssemblyTreeMatesDto({required this.count, this.suppressed = 0, this.broken, this.near, this.held, this.lost});
+
+  factory AssemblyTreeMatesDto.fromJson(Map<String, dynamic> json) => AssemblyTreeMatesDto(
+        count: (json['count'] as num?)?.toInt() ?? 0,
+        suppressed: (json['suppressed'] as num?)?.toInt() ?? 0,
+        broken: (json['broken'] as num?)?.toInt(),
+        near: (json['near'] as num?)?.toInt(),
+        held: (json['held'] as num?)?.toInt(),
+        lost: (json['lost'] as num?)?.toInt(),
+      );
+}
+
+/// `patterns` on an assembly level (pattern copies are not nodes).
+class AssemblyTreePatternsDto {
+  final int count;
+  final int suppressed;
+
+  const AssemblyTreePatternsDto({required this.count, this.suppressed = 0});
+
+  factory AssemblyTreePatternsDto.fromJson(Map<String, dynamic> json) => AssemblyTreePatternsDto(
+        count: (json['count'] as num?)?.toInt() ?? 0,
+        suppressed: (json['suppressed'] as num?)?.toInt() ?? 0,
+      );
+}
+
+/// `problems`, rolled up over an assembly's subtree (spec section 6). [broken] / [overConstrained] / [near] are null without `status=true`.
+class AssemblyTreeProblemsDto {
+  final int missing;
+  final int cycles;
+  final int? broken;
+  final int? overConstrained;
+  final int? near;
+
+  const AssemblyTreeProblemsDto({this.missing = 0, this.cycles = 0, this.broken, this.overConstrained, this.near});
+
+  factory AssemblyTreeProblemsDto.fromJson(Map<String, dynamic> json) => AssemblyTreeProblemsDto(
+        missing: (json['missing'] as num?)?.toInt() ?? 0,
+        cycles: (json['cycles'] as num?)?.toInt() ?? 0,
+        broken: (json['broken'] as num?)?.toInt(),
+        overConstrained: (json['over_constrained'] as num?)?.toInt(),
+        near: (json['near'] as num?)?.toInt(),
+      );
+}
+
+/// One placed occurrence in `GET /parts/{part_id}/assembly-tree` (`docs/assembly-tree/spec.md` section 1). [path] is unique in the response.
+class AssemblyTreeNodeDto {
+  final String occurrenceId;
+  final List<String> path;
+  final String? externalRef;
+  final String? refPartId;
+  final String? resolvedPartId;
+  final String? partName;
+  final String? nameOverride;
+
+  /// `assembly`, `part` or `missing`.
+  final String kind;
+  final bool fixed;
+  final bool hidden;
+  final bool suppressed;
+  final String? color;
+
+  /// Null without `status`, and for an occurrence `constraint-status` leaves out.
+  final AssemblyTreeConstraintDto? constraint;
+  final int? featureCount;
+  final int? placements;
+
+  /// The Part is already open above this node (placed inside itself).
+  final bool cycle;
+
+  /// A cap stopped the walk below this node.
+  final bool truncated;
+
+  /// With `status`: this assembly level's status could not be computed. Not the same as status not being asked for.
+  final bool statusFailed;
+  final AssemblyTreeMatesDto? mates;
+  final AssemblyTreePatternsDto? patterns;
+  final AssemblyTreeProblemsDto? problems;
+  final List<AssemblyTreeNodeDto> children;
+
+  const AssemblyTreeNodeDto({
+    required this.occurrenceId,
+    required this.path,
+    this.externalRef,
+    this.refPartId,
+    this.resolvedPartId,
+    this.partName,
+    this.nameOverride,
+    this.kind = 'part',
+    this.fixed = false,
+    this.hidden = false,
+    this.suppressed = false,
+    this.color,
+    this.constraint,
+    this.featureCount,
+    this.placements,
+    this.cycle = false,
+    this.truncated = false,
+    this.statusFailed = false,
+    this.mates,
+    this.patterns,
+    this.problems,
+    this.children = const [],
+  });
+
+  factory AssemblyTreeNodeDto.fromJson(Map<String, dynamic> json) {
+    final constraint = json['constraint'] as Map<String, dynamic>?;
+    final mates = json['mates'] as Map<String, dynamic>?;
+    final patterns = json['patterns'] as Map<String, dynamic>?;
+    final problems = json['problems'] as Map<String, dynamic>?;
+    final children = json['children'] as List? ?? const [];
+    return AssemblyTreeNodeDto(
+      occurrenceId: json['occurrence_id'] as String,
+      path: [for (final p in json['path'] as List) p as String],
+      externalRef: json['external_ref'] as String?,
+      refPartId: json['ref_part_id'] as String?,
+      resolvedPartId: json['resolved_part_id'] as String?,
+      partName: json['part_name'] as String?,
+      nameOverride: json['name_override'] as String?,
+      kind: json['kind'] as String? ?? 'part',
+      fixed: json['fixed'] as bool? ?? false,
+      hidden: json['hidden'] as bool? ?? false,
+      suppressed: json['suppressed'] as bool? ?? false,
+      color: json['color'] as String?,
+      constraint: constraint == null ? null : AssemblyTreeConstraintDto.fromJson(constraint),
+      featureCount: (json['feature_count'] as num?)?.toInt(),
+      placements: (json['placements'] as num?)?.toInt(),
+      cycle: json['cycle'] as bool? ?? false,
+      truncated: json['truncated'] as bool? ?? false,
+      statusFailed: json['status_failed'] as bool? ?? false,
+      mates: mates == null ? null : AssemblyTreeMatesDto.fromJson(mates),
+      patterns: patterns == null ? null : AssemblyTreePatternsDto.fromJson(patterns),
+      problems: problems == null ? null : AssemblyTreeProblemsDto.fromJson(problems),
+      children: children.isEmpty
+          ? const []
+          : [for (final c in children) AssemblyTreeNodeDto.fromJson(c as Map<String, dynamic>)],
+    );
+  }
+}
+
+/// `GET /parts/{part_id}/assembly-tree`: the whole hierarchy below one Part (`docs/assembly-tree/spec.md` section 1).
+///
+/// [statusIncluded] is whether the call asked for `status=true`; without it every status field is null. [statusIncomplete] (only with status)
+/// means some level has [statusFailed], which is different from status not being asked for. [truncatedDepth] / [truncatedNodes] mean the tree
+/// is incomplete and the problem counts cover only what is listed.
+class AssemblyTreeResponseDto {
+  final String partId;
+  final String partName;
+
+  /// `assembly` or `part`.
+  final String kind;
+  final int featureCount;
+  final bool statusIncluded;
+  final AssemblyTreeMatesDto? mates;
+  final AssemblyTreePatternsDto? patterns;
+  final AssemblyTreeProblemsDto? problems;
+  final List<AssemblyTreeNodeDto> children;
+  final bool truncated;
+  final int nodeCount;
+  final int maxDepth;
+  final int maxNodes;
+  final bool truncatedDepth;
+  final bool truncatedNodes;
+  final bool statusFailed;
+  final bool statusIncomplete;
+
+  const AssemblyTreeResponseDto({
+    required this.partId,
+    required this.partName,
+    this.kind = 'part',
+    this.featureCount = 0,
+    this.statusIncluded = false,
+    this.mates,
+    this.patterns,
+    this.problems,
+    this.children = const [],
+    this.truncated = false,
+    this.nodeCount = 0,
+    this.maxDepth = 32,
+    this.maxNodes = 10000,
+    this.truncatedDepth = false,
+    this.truncatedNodes = false,
+    this.statusFailed = false,
+    this.statusIncomplete = false,
+  });
+
+  factory AssemblyTreeResponseDto.fromJson(Map<String, dynamic> json) {
+    final mates = json['mates'] as Map<String, dynamic>?;
+    final patterns = json['patterns'] as Map<String, dynamic>?;
+    final problems = json['problems'] as Map<String, dynamic>?;
+    return AssemblyTreeResponseDto(
+      partId: json['part_id'] as String,
+      partName: json['part_name'] as String? ?? '',
+      kind: json['kind'] as String? ?? 'part',
+      featureCount: (json['feature_count'] as num?)?.toInt() ?? 0,
+      statusIncluded: json['status_included'] as bool? ?? false,
+      mates: mates == null ? null : AssemblyTreeMatesDto.fromJson(mates),
+      patterns: patterns == null ? null : AssemblyTreePatternsDto.fromJson(patterns),
+      problems: problems == null ? null : AssemblyTreeProblemsDto.fromJson(problems),
+      children: [for (final c in json['children'] as List? ?? const []) AssemblyTreeNodeDto.fromJson(c as Map<String, dynamic>)],
+      truncated: json['truncated'] as bool? ?? false,
+      nodeCount: (json['node_count'] as num?)?.toInt() ?? 0,
+      maxDepth: (json['max_depth'] as num?)?.toInt() ?? 32,
+      maxNodes: (json['max_nodes'] as num?)?.toInt() ?? 10000,
+      truncatedDepth: json['truncated_depth'] as bool? ?? false,
+      truncatedNodes: json['truncated_nodes'] as bool? ?? false,
+      statusFailed: json['status_failed'] as bool? ?? false,
+      statusIncomplete: json['status_incomplete'] as bool? ?? false,
+    );
+  }
+}
+
 /// One unique Part's own local-space geometry within a [GetAssemblyMesh]
 /// response - see `app.document.schemas.AssemblyBodyGeometry`'s own
 /// docstring. Computed once per Part id regardless of how many
@@ -5931,6 +6182,22 @@ class DocumentApiClient {
   Future<List<OccurrenceDto>> listOccurrences(String partId) => _send(
         () => _httpClient.get(_uri('/document/parts/$partId/occurrences'), headers: _headers),
         (body) => (body as List).map((o) => OccurrenceDto.fromJson(o as Map<String, dynamic>)).toList(),
+      );
+
+  /// `GET /document/parts/{part_id}/assembly-tree` - the whole hierarchy below [partId] in one call
+  /// (`docs/assembly-tree/spec.md`). [status] is off by default because it is slow on big trees (the first call builds the placed Parts'
+  /// bodies): ask for the structure first, then again with `status: true` in the background and merge the answer in. [maxDepth] and
+  /// [maxNodes] are sent only when given (the server's defaults are 32 and 10000).
+  Future<AssemblyTreeResponseDto> getAssemblyTree(String partId, {bool status = false, int? maxDepth, int? maxNodes}) => _send(
+        () => _httpClient.get(
+          _uri('/document/parts/$partId/assembly-tree').replace(queryParameters: {
+            if (status) 'status': 'true',
+            if (maxDepth != null) 'max_depth': '$maxDepth',
+            if (maxNodes != null) 'max_nodes': '$maxNodes',
+          }),
+          headers: _headers,
+        ),
+        (body) => AssemblyTreeResponseDto.fromJson(body as Map<String, dynamic>),
       );
 
   /// Bug report 2026-10-14, item 7: `GET /document/parts/{part_id}/constraint-status`
