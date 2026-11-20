@@ -5,7 +5,7 @@ The prompt was that sub-assemblies and parts don't expand: you cannot see the ch
 leading CAD products do, what ours do today, a ranked list of what's missing and how to add it, and how the tree should treat
 the upstream assembly in Make Focus and Edit Alone, on desktop and on a phone.
 
-**Status:** scoped; the owner answered every question on 20 Nov (section 8). Nothing built.
+**Status:** scoped; the owner answered every question on 20 Nov (section 8). Phase A briefs in section 9. Nothing built.
 
 **Visual concepts** (desktop, Focus, Edit Alone, phone sheet, deep nesting on a phone, VR room tree) are in the published page
 <https://claude.ai/artifact/9bvc9fbpAnC2uhoq5vxpBW> (private to the owner until shared). This file is the text of record.
@@ -160,6 +160,250 @@ test at 2,000 rows. Not testable headless: feel, the sheet's heights, readabilit
 5. **Yes, add `GET /parts/{id}/assembly-tree`** (the whole hierarchy in one call, with rolled-up problem counts).
 6. **Repeated parts are grouped by default** ("Bolt M4 x4", more than 3 identical siblings), with a switch to turn grouping off
    (a header / Columns-menu toggle, remembered in view preferences).
+
+## 9. Phase A: implementation briefs
+
+Phase A is built by a chain of sessions: a **manager** session that hands out these briefs, checks the results and keeps the
+progress table (9.7) current, and **worker** sessions that each build one chunk. This section is the single source of truth.
+A worker prompt only needs to name its chunk; everything else is here.
+
+### 9.1 Order and gates
+
+```
+A1 contract (DIDSA-CAD: backend + spec + vectors)
+ ├── A2 Flutter tree logic (DIDSA-CAD client, pure)      ──> A3 Flutter tree widget ──> A4 Flutter integration
+ └── A5 VR adoption (DIDSA-VR)                            (A5 can run alongside A2-A4)
+```
+
+- A chunk starts only after the chunk it depends on is **merged to `main`**, and starts from `main`.
+- Owner device checks: after A4 (the Flutter tree on a phone and on desktop) and after A5 (the headset).
+- Phase B to D get briefs of their own after Phase A has been used.
+
+### 9.2 The contract (fixed once A1 merges)
+
+A1 produces these. After A1 merges, nobody else changes them. A worker that needs a change says so in its report, and the
+manager changes the contract in both repos at once.
+
+1. **`GET /parts/{part_id}/assembly-tree`** (backend), with its response schema documented in `docs/assembly-tree/spec.md`.
+2. **`docs/assembly-tree/spec.md`**: the rules both clients follow:
+   - display names (name override, then the Part's name, then the file name if a person chose it, then "Component N"),
+     with `<n>` instance suffixes, written `Bolt <2>`;
+   - grouping repeats (on by default, can be switched off);
+   - the single state slot and its severity order: missing > broken > over-constrained > unsaved > under-constrained > fixed;
+   - problem counts on collapsed rows;
+   - how the visible rows are listed for a given set of open rows (order, depth, group rows);
+   - row keys (the full occurrence path; how a group row and a feature row are keyed).
+3. **`docs/assembly-tree/vectors.json`**: input trees and expected outputs for every rule in the spec, produced by a small
+   reference implementation in `tools/assembly_tree_vectors/` (with its own test), not typed by hand. Flutter tests read it
+   from `../docs/assembly-tree/vectors.json`. VR copies it to `tests/fixtures/assembly_tree_vectors.json` and registers it in
+   `tests/fixtures/README.md`, as it does the other vector files.
+
+"Unsaved" is client-side state: the vectors take it as an input; the backend never reports it.
+
+### 9.3 Every worker
+
+- **Read first:** the repo's `CLAUDE.md` (DIDSA-VR has one; DIDSA-CAD has none), `docs/status.md`, sections 1 to 8 of this doc,
+  your brief, and the contract (9.2) if your chunk comes after A1. Read only the files your brief names, plus what they lead
+  you to.
+- **Stay in your chunk.** Don't change files another chunk owns, and don't change the contract.
+- **Branch:** the branch your session is given. When done, push and open a PR into `main` titled `Tree A<n>: <summary>`, with a
+  body in the format of 9.4.
+- **Tests:** the commands CI runs for the parts you touched, all passing before you report. DIDSA-CAD backend:
+  `python -m pytest tests/ -m "not gears" -n auto` in `backend/` (or the files you touched plus the assembly files, if the whole
+  suite is too slow here; say which). Client: `flutter analyze` and `flutter test` in `client/`. DIDSA-VR: `tests/ci.sh`
+  (see its `CLAUDE.md` for adding test files).
+- **Docs:** add an entry to that repo's `docs/status.md` (what was built, the tests, what is not verified), and tick your chunk
+  in 9.7 with the PR link.
+- **Say what you could not verify.** Never write that something works on a device.
+
+### 9.4 Report format (the PR body and the reply to the manager)
+
+```
+Chunk: A<n>   PR: <link>   Branch: <name>
+Built: <bullets>
+Differs from the brief: <bullets, or "nothing">
+Contract change needed: <none, or what and why>
+Tests: <files added/changed>; <command> -> <pass/fail counts>
+Not verified: <bullets>
+Owner should try: <bullets, or "nothing yet">
+```
+
+### 9.5 Manager checks before merging
+
+1. CI is green on the PR.
+2. The report matches the brief: every "Done when" point is covered, and differences are explained.
+3. The diff stays inside the chunk; the contract is untouched (after A1).
+4. Run `/code-review` on the PR and act on what it finds.
+5. Anything bigger than a one-line fix goes back to the worker with a short list; the manager doesn't implement it.
+6. After merging: update 9.7 and give the owner the next worker prompt (and the device check, where 9.1 says so).
+
+### 9.6 The briefs
+
+#### A1. Contract: hierarchy endpoint, spec and vectors (DIDSA-CAD)
+
+**Suggested model:** strongest. **Size:** M. **Depends on:** nothing.
+
+**Build:**
+- `GET /parts/{part_id}/assembly-tree` in `backend/app/document/router.py` (next to `list_occurrences` and
+  `get_constraint_status`), with its schemas in `schemas.py`. One nested response from the root Part down. Each occurrence node
+  has:
+  - `occurrence_id` and `path` (occurrence ids from the root);
+  - `external_ref`, `ref_part_id` and `resolved_part_id`;
+  - `part_name` (the resolved Part's own name, so clients don't need a fetch per Part), `name_override`;
+  - `kind` (`assembly` / `part` / `missing`), `fixed`, `hidden`, `suppressed`, `color`;
+  - `constraint` (status, dof, rigid set: what `constraint-status` reports for it within its parent);
+  - `feature_count` (so a part row knows whether to show a chevron);
+  - `children`.
+
+  Each assembly node (the root included) also has `mates` and `patterns` summaries (count; broken, near, held / lost counts)
+  and a rolled-up `problems` count for its subtree (missing, broken or over-constrained, near).
+- **Guards:** a reference cycle or a Part placed inside itself must not recurse; mark the node and stop. Cap the depth (say
+  32) and the node count, and report when a cap was hit. Pattern copies are not nodes.
+- **Cost:** time it on the VR gear-train demo (`DIDSA-VR/demo/assemblies/gear_train/`, if reachable, or an equivalent fixture)
+  and on a synthetic tree of about 2,000 occurrences. If the constraint status makes it slow, put it behind `?status=true`
+  (default to whatever keeps a typical tree under about 300 ms) and say so in the spec.
+- `docs/assembly-tree/spec.md`, `docs/assembly-tree/vectors.json` and `tools/assembly_tree_vectors/` as in 9.2. Write the
+  rules from today's behaviour where it already agrees: Flutter's `occurrenceDisplayName`, `looksGeneratedName` and
+  `_withInstanceOrdinal` (`client/lib/viewport3d/assembly_tree_panel.dart`) and VR's `occurrence_tree_model.gd`
+  (`apply_instance_names`, `state_icon`). The owner's answers in section 8 settle where they differ.
+
+**Done when:**
+- `backend/tests/test_assembly_tree.py` covers:
+  - two levels;
+  - one sub-assembly placed twice (distinct paths, same child ids);
+  - a missing file, and hidden / suppressed / fixed;
+  - the problem roll-up;
+  - the cycle guard and the caps;
+  - agreement with `/occurrences` and `/constraint-status` level by level.
+- The reference implementation's test passes, and the vectors cover every rule in the spec, including grouping on and off and
+  a tree with more than 3 identical siblings.
+- The spec names every field and rule a client needs, so the A2 and A5 workers don't have to read the backend.
+
+**Don't touch:** client code, DIDSA-VR.
+
+#### A2. Flutter tree logic (DIDSA-CAD `client/`)
+
+**Suggested model:** mid-tier. **Size:** M. **Depends on:** A1.
+
+**Build:**
+- The DTOs and `getAssemblyTree(partId)` in `client/lib/api/document_api_client.dart`, matching the spec.
+- `client/lib/assembly/assembly_tree_model.dart`, pure Dart with no widgets:
+  - nodes keyed by full path, a set of open rows, and the grouping switch;
+  - `visibleRows()`, a flat list of rows for a given set of open rows. Each row has its depth, kind, label, state slot,
+    problem count, group count and key;
+  - lazy feature rows under a part (`setFeatures(path, features)`), named with the existing `featureDisplayName`;
+  - the root Mates and Patterns folders as rows (per-level mates is Phase C);
+  - `reveal(path)`, which returns the rows to open so a path is visible, and `indexOf(key)`;
+  - `merge(newTree)`, which keeps the open rows and the selection after a refresh (VR's `merge_children` is the precedent).
+
+**Done when:** `client/test/assembly_tree_model_test.dart` passes every vector in `../docs/assembly-tree/vectors.json`, plus
+these cases:
+- two placements of one sub-assembly give distinct keys;
+- `reveal` on a 4-deep path;
+- `merge` keeps what was open;
+- feature rows appear under an open part.
+
+`flutter analyze` is clean.
+
+**Don't touch:** `part_screen.dart`, `assembly_tree_panel.dart` and any widget.
+
+#### A3. Flutter tree widget (DIDSA-CAD `client/`)
+
+**Suggested model:** mid-tier, or the strongest if A2's report flags trouble. **Size:** M. **Depends on:** A2.
+
+**Build:** a new widget, `client/lib/viewport3d/assembly_tree_view.dart`. It doesn't replace anything yet; A4 swaps it in.
+- It draws `AssemblyTreeModel.visibleRows()` in one `ListView.builder` with a fixed row height: 30 px on desktop, 48 dp on a
+  phone (use `LayoutModeScope`).
+- Rows follow the rules in section 3:
+  - one state slot, problem counts on collapsed rows, and the unsaved dot;
+  - the rigid-set bracket is kept;
+  - an eye-off icon only on hidden rows;
+  - no buttons in phone rows; a hover eye on desktop.
+- Interaction:
+  - tap to select, long-press for the menu or multi-select, right-click for the context menu (keep today's callbacks and
+    multi-select behaviour);
+  - a selection bar for phone (Hide, Isolate, Focus, Alone, More), passed in as callbacks.
+- Header: title, collapse all, and the grouping switch (the widget only reports the change; A4 saves it).
+- It keeps today's `visible` / `docked` / Edit Alone / focus-label inputs, so it can sit where the old panel sits.
+- An `AssemblyTreeController` with `reveal(path)` that scrolls the row into view.
+
+**Done when:** `client/test/assembly_tree_view_test.dart` covers:
+- a nested row opens and closes;
+- `reveal` scrolls to a row 4 deep among 2,000 rows (it builds only what is on screen);
+- a problem count shows on a collapsed parent;
+- a phone row has no buttons, and a hidden row shows the eye-off;
+- the selection bar's callbacks fire;
+- the grouping switch reports its change;
+- the desktop hover eye appears.
+
+`flutter analyze` is clean.
+
+**Don't touch:** `part_screen.dart`, the old `assembly_tree_panel.dart`, the model (raise a problem with it in the report).
+
+#### A4. Flutter integration (DIDSA-CAD `client/`)
+
+**Suggested model:** strongest (`part_screen.dart` is about 30,000 lines). **Size:** M-L. **Depends on:** A3.
+
+**Build:**
+- In `part_screen.dart`, the Assembly tree uses `AssemblyTreeView`, fed by `getAssemblyTree` wherever the tree's
+  occurrences and constraint status are fetched today. Keep the existing `/occurrences` fetches the rest of the screen relies on.
+- **Selection by path:** `_selectedOccurrenceId` becomes a path. A viewport pick calls `reveal` (expand, mark, scroll). A row
+  selects by path. Use VR's B1 test as the model: a pick under the second placement of a sub-assembly must reveal the second
+  branch.
+- **Nested rows' actions act on the right thing:**
+  - Hide / Isolate are per path, so hiding a child under one placement does not hide it under the other. Check
+    `occurrence_visibility.dart`, which matches bare ids today.
+  - Fix / Float, Rename and Delete go to the occurrence on its parent Part. Delete warns "changes every placement (used N×)".
+  - Make Focus from a nested row pushes each level onto `AssemblyFocusStack`.
+- **Names** become `Bolt <2>` everywhere, through the spec's rules (about 7 files use `occurrenceDisplayName` /
+  `occurrencePathDisplayName`).
+- The grouping switch is saved in view preferences, on by default.
+- Remove the old `AssemblyTreePanel`. Move its pure helpers that other files import (`mateDisplayName`, rigid-set helpers,
+  `componentPatternDisplayName`, …) to a file of their own, so imports stay simple.
+
+**Done when:** `part_screen_test.dart` has an "Assembly tree" group covering:
+- a pick under the second placement reveals the right row;
+- a row tap selects by path;
+- hiding a nested row hides only that placement;
+- Fix on a nested row PATCHes its parent Part;
+- Make Focus from a nested row, then the breadcrumb back;
+- the grouping switch is saved.
+
+Also: the old panel's tests are moved or retired (say which), `flutter analyze` is clean, and the whole `flutter test` passes.
+
+**Don't touch:** the backend and the contract; Phase B items (the phone sheet, the full breadcrumb strip, search).
+
+#### A5. VR adoption (DIDSA-VR)
+
+**Suggested model:** mid-tier. **Size:** M. **Depends on:** A1 (can run alongside A2 to A4).
+
+**Build:**
+- `scripts/assembly_tree_window.gd` reads `GET /parts/{id}/assembly-tree` once instead of one request per level, and falls
+  back to the per-level fetch on a 404 (an older backend).
+- `scripts/tree/occurrence_tree_model.gd` follows the spec for names, grouping (on by default; a switch in the window header,
+  saved with the other user settings), the state slot and problem counts on collapsed rows.
+- Copy the vectors into `tests/fixtures/assembly_tree_vectors.json` and register them in `tests/fixtures/README.md`.
+- Keep everything T1 does: selection by path, the pulse, the bottom bar, refresh in place.
+
+**Done when:**
+- `tests/occurrence_tree_model.gd` passes every vector;
+- `tests/occurrence_tree_actions.gd` passes with a fake backend that serves the new call, and with one that 404s;
+- `tests/e2e_assembly_tree.gd` (named in the 11 Nov review, never written) runs against a live backend from `main`: it opens a
+  two-level assembly, fixes a nested part from the tree, and checks that a grip on that part is refused. It is added to
+  `tests/e2e_ci_list.txt`.
+- `tests/ci.sh` is clean, and the test files are registered as the repo's `CLAUDE.md` says.
+
+**Don't touch:** rooms, the design table, T2 / T3 work, DIDSA-CAD.
+
+### 9.7 Progress
+
+| Chunk | Status | PR | Model used | Notes |
+|---|---|---|---|---|
+| A1 contract | not started | | | |
+| A2 Flutter logic | not started | | | |
+| A3 Flutter widget | not started | | | |
+| A4 Flutter integration | not started | | | |
+| A5 VR adoption | not started | | | |
 
 ## Sources
 
