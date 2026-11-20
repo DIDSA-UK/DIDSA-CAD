@@ -33,6 +33,7 @@ import 'support/in_memory_stores.dart';
 import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_helpers.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
+import 'package:didsa_cad_client/viewport3d/selection_list_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
@@ -11686,6 +11687,107 @@ void main() {
       final node = _TreeProbe(tester).model.nodeAtPath(const ['plate'])!;
       expect(node.fixed, isTrue, reason: 'the older structure answer (not fixed) was dropped');
       expect(node.hidden, isTrue);
+    });
+
+    testWidgets('review: a nested pick at the document root is named by its tree label, not its raw id, in the selection panels', (tester) async {
+      await openNested(tester);
+      tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c1'),
+          );
+      await settle(tester);
+      // The Part lens's selection list reads the same names (the tree's own row, off screen, also says it).
+      await switchLens(tester, 'Part');
+      await settle(tester);
+      expect(find.descendant(of: find.byType(SelectionListDrawer), matching: find.textContaining('c1-part')), findsWidgets);
+    });
+
+    testWidgets('review: a nested row hidden at the root reads hidden after Make Focus into its parent; Show drops it and PATCHes nothing', (tester) async {
+      final backend = await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1']);
+      probe.view.onVisibilityToggle!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1'));
+      await settle(tester);
+      expect(instanceHidden(tester, ['asm-1', 'c1']), isTrue);
+
+      await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'sub');
+      await settle(tester);
+      final row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'c1');
+      expect(row.hidden, isTrue, reason: 'hidden for this session, whatever the focus');
+
+      _TreeProbe(tester).view.onVisibilityToggle!(row);
+      await settle(tester);
+      expect(backend.subOccurrenceWrites, isEmpty, reason: 'Show drops the session hide; nothing is written');
+      expect(instanceHidden(tester, ['asm-1', 'c1']), isFalse);
+      expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'c1').hidden, isFalse);
+    });
+
+    testWidgets('review: a backend without assembly-tree still has its constraint status read', (tester) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('plate')]);
+      backend.assemblyTreeMissing = true;
+      backend.constraintStatus['plate'] = {'status': 'under_constrained', 'dof': 3, 'rigid_set': 'plate'};
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          initialLens: AssemblyLens.assembly,
+        ),
+      ));
+      await _pumpUntil(tester, () => backend.constraintStatusRequests > 0);
+      expect(backend.constraintStatusRequests, greaterThan(0));
+    });
+
+    testWidgets('review: Edit Alone from a nested row pushes every level, and Done ends it from there', (tester) async {
+      await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1']);
+      await probe.menuAction('asm-1/c1', 'Edit Alone');
+      await _pumpUntil(tester, () => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath.length == 2);
+      await settle(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, ['asm-1', 'c1']);
+      await tester.tap(find.byKey(const ValueKey('edit-alone-done')).first);
+      await settle(tester);
+      await settle(tester);
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, isEmpty);
+    });
+
+    testWidgets('review: any failure of the tree call (not only an ApiException) falls back to the lists', (tester) async {
+      await openNested(tester, around: (request) async {
+        if (request.url.path.endsWith('/assembly-tree')) throw StateError('boom');
+      });
+      expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate']);
+    });
+
+    testWidgets('review: a tap on a folder row keeps its mark (the screen only overwrites the selection when its own changed)', (tester) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [occ('plate')], seedMates: [
+        {'id': 'm1', 'type': 'coincident', 'references': <dynamic>[], 'suppressed': false, 'flipped': false, 'allow_rotation': true},
+      ]);
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(MaterialApp(
+        home: PartScreen(
+          documentApi: documentApi,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          initialLens: AssemblyLens.assembly,
+        ),
+      ));
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      final probe = _TreeProbe(tester);
+      probe.model.selectedKey = '#mates'; // what the view does on the tap
+      probe.view.onRowTap!(probe.model.visibleRows().firstWhere((r) => r.key == '#mates'));
+      await settle(tester);
+      await settle(tester);
+      expect(_TreeProbe(tester).model.selectedKey, '#mates');
+    });
+
+    testWidgets('review: Delete at the document root asks for no whole-tree count', (tester) async {
+      final backend = await openNested(tester);
+      final before = backend.assemblyTreeRequests.length;
+      await _TreeProbe(tester).menuAction('plate', 'Delete');
+      expect(find.textContaining('used'), findsNothing);
+      expect(backend.assemblyTreeRequests.length, before);
     });
 
     testWidgets('a backend without the endpoint still shows its components, one level', (tester) async {
