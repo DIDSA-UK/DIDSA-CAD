@@ -1972,7 +1972,7 @@ def constraint_status(document: Document, part: Part) -> dict[str, tuple[str, in
 
 
 def constraint_report(
-    document: Document, part: Part, rigid_set_ids: dict[str, str] | None = None
+    document: Document, part: Part, rigid_set_ids: dict[str, str] | None = None, free_motions: bool = True
 ) -> dict[str, tuple[str, int, list[dict]]]:
     """[constraint_status] plus, for an `under_constrained` occurrence, its free motions
     (`free_motions_for_member`): `{occurrence_id: (status, dof, free_motions)}`. Every other status has no motions
@@ -1980,7 +1980,8 @@ def constraint_report(
 
     M1: a component with rigid sets is analysed on one body per set (`app.document.rigid_sets`; the mates inside a set count in
     the residual check, and the analysis is expanded back to every member). `rigid_set_ids`, when given, is filled with
-    `{occurrence id: set id}` for every member of a set that moves (a set locked to the ground reports none)."""
+    `{occurrence id: set id}` for every member of a set that moves (a set locked to the ground reports none). `free_motions=False`
+    leaves every motion list empty (the assembly tree reports status and dof only, and the motions are most of the cost)."""
     from fastapi import HTTPException  # local: this module is otherwise HTTP-free
 
     from app.document import rigid_sets
@@ -2021,7 +2022,7 @@ def constraint_report(
             elif mobility == 0 and analysis.grounded:
                 result[member_id] = (STATUS_FULLY_CONSTRAINED, 0, [])
             else:
-                motions = free_motions_for_member(analysis, member_id, transforms[member_id]) if mobility else []
+                motions = free_motions_for_member(analysis, member_id, transforms[member_id]) if mobility and free_motions else []
                 result[member_id] = (STATUS_UNDER_CONSTRAINED, mobility, motions)
     return result
 
