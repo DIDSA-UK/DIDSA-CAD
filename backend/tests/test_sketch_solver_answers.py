@@ -1,20 +1,25 @@
-"""Parity follow-ups F4 / C8: the four answers the real solver gives to a redundant or contradicting constraint, pinned.
+"""Parity follow-ups F4 / C8: the answers the real solver gives to a redundant or contradicting constraint, pinned.
 
 Both apps decide whether to take a just-made constraint back from `solve-and-refresh`'s flags (`converged`, `solver_reported_failed_constraint_ids`): the
-VR sketcher (`SketchSession._taken_back`) and the flat app (`SketchController`'s take-back). They keep a constraint that is redundant but consistent, and take
-back one the solver names as failed. That depends on these answers, so a change in py-slvs or in `solver.py` that moves one of them must show up here first.
+VR sketcher (`SketchSession._taken_back`) and the flat app (`SketchController`'s take-back). They keep a constraint that is redundant but consistent; after a
+converged sketch they take back any constraint that stops it converging; on a sketch that was already not converged they take one back only when the failed
+list names it. So a change in py-slvs or in `solver.py` that moves `converged` or drops the new constraint from the failed list must show up here first.
 
-Measured 2026-11-19 against the real solver (a local backend from `main`), each case after a `solve-and-refresh`:
+Each case after a `solve-and-refresh`, from CI's two legs (py-slvs 1.0.6's prebuilt wheel for each architecture; arm64 is the Pi 5 server's):
 
-| Case | converged | result_code | failed ids |
+| Case | converged | result_code amd64 / arm64 | failed ids amd64 / arm64 |
 |---|---|---|---|
-| a second Horizontal on the same line | true | 0 | [] |
-| the same distance twice (two free points) | true | 5 | [] |
-| Horizontal + horizontal distance + aligned distance of the same length | true | 5 | [] |
-| distance 10, then 12 between the same points | false | 1 | [the 12] |
+| a second Horizontal on the same line | true | 0 / 0 | [] / [] |
+| the same distance twice (two free points) | true | 5 / 1 | [] / [] |
+| Horizontal + horizontal distance + aligned distance of the same length | true | 5 / 5 | [] / [] |
+| distance 10, then 12 between the same points | false | 1 / 1 | [the 12] / [the 10, the 12] |
 
-`result_code` is py-slvs's: 0 okay, 1 inconsistent, 5 "redundant, okay" (the solve converged with a redundant equation). The DOF the solver reports for the
-duplicate-distance case is not pinned: it was seen to fall below the true figure (3 to 1) once, which is the solver's own count with a redundant row.
+`result_code` is py-slvs's: 0 okay, 1 inconsistent, 5 "redundant, okay" (the solve converged with a redundant equation). Neither app reads it. The two
+architectures' wheels disagree on the duplicate distance (arm64 calls it inconsistent; `solver.py`'s residual check still reports it converged), and arm64's
+failed list names every constraint of the conflict, not only the newest. Those two answers are therefore pinned only where both agree: the code is left out
+of the duplicate-distance case, and the contradiction's failed list must name the 12 and nothing outside the conflict. Measured first on amd64 only
+(2026-11-19); the arm64 answers are from CI run 44714434241 (2026-11-20). The DOF the solver reports for the duplicate-distance case is not pinned: it was
+seen to fall below the true figure (3 to 1) once, which is the solver's own count with a redundant row.
 """
 
 from fastapi.testclient import TestClient
@@ -72,8 +77,8 @@ def test_the_same_distance_twice_is_redundant_but_consistent():
 
     _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=10)
     solve = _solve(sketch_id)
+    # No result_code: 5 on amd64, 1 on arm64 (see the module docstring). Both apps read only these two.
     assert solve["converged"] is True
-    assert solve["result_code"] == REDUNDANT_OKAY
     assert solve["solver_reported_failed_constraint_ids"] == []
 
 
@@ -102,5 +107,7 @@ def test_a_contradicting_distance_fails_and_the_failed_list_names_it():
     solve = _solve(sketch_id)
     assert solve["converged"] is False
     assert solve["result_code"] == INCONSISTENT
-    assert solve["solver_reported_failed_constraint_ids"] == [twelve]
-    assert ten not in solve["solver_reported_failed_constraint_ids"]
+    failed = solve["solver_reported_failed_constraint_ids"]
+    # amd64 names only the 12; arm64 names the 10 as well (see the module docstring). Both name the new one, which is what the take-back reads.
+    assert twelve in failed
+    assert set(failed) <= {ten, twelve}
