@@ -41,6 +41,15 @@ def _comparable_part(part: dict) -> str:
     return json.dumps(stripped, sort_keys=True)
 
 
+# Per-sketch bookkeeping that is not the sketch's content: the numbers (F4 / A1) are given on first use in a live session and written on save, so a file
+# saved before numbers existed (or by an older client) differs from the session's copy of the same sketch only by these. They must not read as "two different files".
+_SKETCH_BOOKKEEPING_KEYS = ("numbers", "number_counters", "label_shows")
+
+
+def _comparable_sketch(sketch: dict) -> str:
+    return json.dumps({key: value for key, value in sketch.items() if key not in _SKETCH_BOOKKEEPING_KEYS}, sort_keys=True)
+
+
 def _has_identity_collision(
     current_parts: list[dict],
     component_parts: list[dict],
@@ -60,7 +69,7 @@ def _has_identity_collision(
     current_sketch_by_id = {sketch["id"]: sketch for sketch in current_sketches}
     for sketch in component_sketches:
         existing = current_sketch_by_id.get(sketch["id"])
-        if existing is not None and json.dumps(existing, sort_keys=True) != json.dumps(sketch, sort_keys=True):
+        if existing is not None and _comparable_sketch(existing) != _comparable_sketch(sketch):
             return True
     return False
 

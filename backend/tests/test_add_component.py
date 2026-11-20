@@ -239,3 +239,22 @@ def test_add_component_save_as_copy_of_open_part_is_insertable():
     assert occurrence["resolved_part_id"] != root_id
     assert _boss_end_distance(occurrence["resolved_part_id"]) == 1600.0
     assert _boss_end_distance(root_id) == 800.0
+
+
+def test_add_component_file_saved_before_sketch_numbers_is_the_same_part():
+    """F4 follow-up: a sketch's numbers (and saved dimension readings) are bookkeeping the live session gives on first use, so a file saved without them is still
+    the same Part as the session's copy: it dedups by id and is not re-minted as a different file."""
+    part = _create_part("Peg")
+    response = client.get("/document/export/native")
+    assert response.status_code == 200
+    component = response.json()
+    component["document"]["root_part_id"] = part["id"]
+    assert any("numbers" in sketch for sketch in component["sketches"])  # the export carries them...
+    for sketch in component["sketches"]:  # ...a file from before F4 does not
+        for key in ("numbers", "number_counters", "label_shows"):
+            sketch.pop(key, None)
+    root = _create_part("Assembly")
+    before = set(client.get("/document/export/native").json()["document"]["parts"][i]["id"] for i in range(len(client.get("/document/export/native").json()["document"]["parts"])))
+    response = client.post(f"/document/parts/{root['id']}/add-component", json={"component": component, "external_ref": "Peg.didsa"})
+    assert response.status_code == 200, response.text
+    assert set(response.json()["part_ids"]) == before  # nothing was re-minted: the peg was already here
