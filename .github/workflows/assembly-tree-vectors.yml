@@ -1,0 +1,29 @@
+name: Assembly tree vectors - test
+
+# The assembly tree's reference implementation and its golden vectors (docs/assembly-tree/spec.md). Standard library only,
+# so a plain runner: no backend image. Fails when docs/assembly-tree/vectors.json is not what the generator writes.
+on:
+  push:
+    branches:
+      - "**"
+    paths:
+      - "tools/assembly_tree_vectors/**"
+      - "docs/assembly-tree/**"
+      - ".github/workflows/assembly-tree-vectors.yml"
+  pull_request:
+    paths:
+      - "tools/assembly_tree_vectors/**"
+      - "docs/assembly-tree/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Reference implementation and checked-in vectors
+        run: python -m unittest discover -s tools/assembly_tree_vectors -v

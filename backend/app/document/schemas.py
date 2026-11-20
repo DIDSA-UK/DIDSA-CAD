@@ -3994,6 +3994,94 @@ class ConstraintStatusEntry(BaseModel):
     rigid_set: str | None = None
 
 
+class AssemblyTreeConstraint(BaseModel):
+    """`GET /parts/{id}/assembly-tree`: what `constraint-status` reports for an occurrence within its parent Part (`status`, `dof`,
+    `rigid_set`; `free_motions` are left out), plus how many of the parent's unsuppressed mates touching it are `broken` / `near`
+    (the `mates` listing's status, counted by the mate's top-level occurrences)."""
+
+    status: Literal["fixed", "fully_constrained", "under_constrained", "over_constrained"]
+    dof: int
+    rigid_set: str | None = None
+    broken_mates: int = 0
+    near_mates: int = 0
+
+
+class AssemblyTreeMates(BaseModel):
+    """The mates of one assembly level. `broken` / `near` / `held` / `lost` are null when the call was made without `status`."""
+
+    count: int
+    suppressed: int
+    broken: int | None = None
+    near: int | None = None
+    held: int | None = None
+    lost: int | None = None
+
+
+class AssemblyTreePatterns(BaseModel):
+    """The component patterns of one assembly level (their copies are not nodes)."""
+
+    count: int
+    suppressed: int
+
+
+class AssemblyTreeProblems(BaseModel):
+    """Rolled-up problems of an assembly's subtree (`docs/assembly-tree/spec.md`, "Problem counts"): missing-file and cycle rows,
+    broken mates, over-constrained rows (state slot `over_constrained`) and near mates, over every level below and including this
+    one, skipping suppressed subtrees. `broken` / `over_constrained` / `near` are null without `status`."""
+
+    missing: int
+    cycles: int
+    broken: int | None = None
+    over_constrained: int | None = None
+    near: int | None = None
+
+
+class AssemblyTreeNode(BaseModel):
+    """One placed occurrence in `GET /parts/{id}/assembly-tree` (`docs/assembly-tree/spec.md`, "Node")."""
+
+    occurrence_id: str
+    path: list[str]
+    external_ref: str | None = None
+    ref_part_id: str | None = None
+    resolved_part_id: str | None = None
+    part_name: str | None = None
+    name_override: str | None = None
+    kind: Literal["assembly", "part", "missing"]
+    fixed: bool = False
+    hidden: bool = False
+    suppressed: bool = False
+    color: str | None = None
+    constraint: AssemblyTreeConstraint | None = None
+    feature_count: int | None = None
+    placements: int | None = None
+    cycle: bool = False
+    truncated: bool = False
+    mates: AssemblyTreeMates | None = None
+    patterns: AssemblyTreePatterns | None = None
+    problems: AssemblyTreeProblems | None = None
+    children: list["AssemblyTreeNode"] = []
+
+
+class AssemblyTreeResponse(BaseModel):
+    """`GET /parts/{part_id}/assembly-tree`: the root Part and its whole hierarchy (`docs/assembly-tree/spec.md`, "Response")."""
+
+    part_id: str
+    part_name: str
+    kind: Literal["assembly", "part"]
+    feature_count: int
+    status_included: bool
+    truncated: bool = False
+    mates: AssemblyTreeMates | None = None
+    patterns: AssemblyTreePatterns | None = None
+    problems: AssemblyTreeProblems | None = None
+    children: list[AssemblyTreeNode] = []
+    node_count: int
+    max_depth: int
+    max_nodes: int
+    truncated_depth: bool = False
+    truncated_nodes: bool = False
+
+
 class MateMotionQuality(BaseModel):
     residual_inf: float
     sigma_min: float | None = None  # null at rank 0

@@ -60,6 +60,7 @@ from app.document.assembly_group import (
     validate_mate_geometry,
 )
 from app.document.assembly_solver import _quaternion_from_axis_angle, sync_flipped
+from app.document.assembly_tree import MAX_DEPTH as ASSEMBLY_TREE_MAX_DEPTH, MAX_NODES as ASSEMBLY_TREE_MAX_NODES, build_assembly_tree
 from app.document.mate_status import MateStatusDetail, mate_status, mate_status_detail, mate_status_details
 from app.document.rigid_sets import mate_rigid_sets
 from app.document.occurrence_paths import resolve_path
@@ -264,6 +265,7 @@ from app.document.solid_from_surfaces import resolve_solid_from_surfaces
 from app.document.thicken import resolve_thicken
 from app.document.face_reference import classify_face, face_axis, face_line
 from app.document.schemas import (
+    AssemblyTreeResponse,
     BevelGearFeatureResponse,
     BevelPairFeatureResponse,
     JobCancelResponse,
@@ -3966,6 +3968,22 @@ def get_constraint_status(part_id: str) -> dict[str, ConstraintStatusEntry]:
         )
         for occurrence_id, (status, dof, motions) in report.items()
     }
+
+
+@router.get("/parts/{part_id}/assembly-tree", response_model=AssemblyTreeResponse)
+def get_assembly_tree(
+    part_id: str,
+    status: bool = False,
+    max_depth: int = Query(ASSEMBLY_TREE_MAX_DEPTH, ge=1, le=ASSEMBLY_TREE_MAX_DEPTH),
+    max_nodes: int = Query(ASSEMBLY_TREE_MAX_NODES, ge=1, le=ASSEMBLY_TREE_MAX_NODES),
+) -> dict:
+    """Assembly tree overhaul A1 (`docs/assembly-tree/spec.md`): the whole hierarchy below `part_id` in one call - every placed
+    occurrence at every depth with its names, flags and kind, mate / pattern summaries and rolled-up problem counts per assembly.
+    No geometry. `status=true` adds what `constraint-status` and the `mates` listing report, level by level (computed once per
+    distinct assembly Part; that is the slow part, so it is off by default). Cycles stop at a `cycle` node; the walk stops at
+    `max_depth` levels / `max_nodes` occurrence nodes and says so (`truncated_*`)."""
+    part = get_part_or_404(part_id)
+    return build_assembly_tree(get_document(), part, status=status, max_depth=max_depth, max_nodes=max_nodes)
 
 
 @router.get("/parts/{part_id}/mates", response_model=list[MateResponse])
