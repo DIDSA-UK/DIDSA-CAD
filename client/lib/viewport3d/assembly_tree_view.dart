@@ -33,8 +33,13 @@ class AssemblyTreeController {
     s._reveal(path, select: select);
   }
 
-  /// Rebuilds the rows from the model's current state.
+  /// Rebuilds the rows from the model's current state. Also retries what was waiting for data: a [reveal] made before the tree loaded, and
+  /// the root's features when the tree has just arrived.
   void refresh() => _state?._refresh();
+
+  /// A features fetch asked for through `onFeaturesRequested` failed (or the host cleared the features): forget that it was asked, so
+  /// opening the row asks again. The view otherwise asks once per path until `setFeatures`, a `merge` or a model swap.
+  void forgetFeaturesRequest(List<String> path) => _state?._forgetRequest(path);
 
   void _attach(_AssemblyTreeViewState s) {
     _state = s;
@@ -154,11 +159,25 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
   AssemblyTreeResponseDto? _colourTree;
   Map<String, Color> _setColours = const {};
 
+  /// The tree the view last saw: a new one (a `merge`, or the first load) forgets what was asked for.
+  AssemblyTreeResponseDto? _seenTree;
+
+  /// Feature fetches asked for and not answered yet (row key -> path), so a reopen or a reveal through an open ancestor does not ask twice.
+  final Map<String, List<String>> _requested = {};
+
+  /// A [reveal] made before the model had a tree, kept until it has one.
+  List<String>? _pendingReveal;
+  bool _pendingSelect = false;
+
+  /// A row to scroll to once the list exists (a docked tree that is not shown has none).
+  String? _pendingScrollKey;
+
   @override
   void initState() {
     super.initState();
+    _seenTree = widget.model.tree;
     widget.controller?._attach(this);
-    _requestRootFeatures();
+    _syncModel();
   }
 
   @override
@@ -168,7 +187,11 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
       old.controller?._detach(this);
       widget.controller?._attach(this);
     }
-    if (old.model != widget.model) _requestRootFeatures();
+    if (old.model != widget.model) {
+      _requested.clear();
+      _seenTree = widget.model.tree;
+    }
+    _syncModel();
   }
 
   @override
@@ -179,24 +202,48 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
   }
 
   void _refresh() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    _syncModel();
+    setState(() {});
   }
 
-  void _requestRootFeatures() {
+  /// What depends on the model's data: forget answered or stale feature requests, ask for the root's features once the tree is there, and
+  /// retry a reveal that was waiting for the tree. Never calls setState (it runs from didUpdateWidget); the host callbacks run after the frame.
+  void _syncModel() {
+    final m = widget.model;
+    if (!identical(m.tree, _seenTree)) {
+      _seenTree = m.tree;
+      _requested.clear();
+    } else {
+      _requested.removeWhere((_, path) => m.hasFeatures(path));
+    }
+    final tree = m.tree;
+    if (tree != null && tree.featureCount > 0) _askForFeatures(const [], root: true);
+    final pending = _pendingReveal;
+    if (pending != null && tree != null) {
+      _pendingReveal = null;
+      _doReveal(pending, select: _pendingSelect);
+    }
+  }
+
+  void _forgetRequest(List<String> path) => _requested.remove(path.join('/'));
+
+  /// Asks the host for [path]'s features, once until answered. Deferred to after the frame so the host may setState.
+  void _askForFeatures(List<String>? path, {bool root = false}) {
     final cb = widget.onFeaturesRequested;
-    final tree = widget.model.tree;
-    if (cb == null || tree == null || tree.featureCount <= 0 || widget.model.hasFeatures(const [])) return;
+    if (cb == null || path == null || (path.isEmpty && !root)) return;
+    final m = widget.model;
+    if (!root) {
+      final node = m.nodeAtPath(path);
+      if (node == null || node.kind == 'missing' || (node.featureCount ?? 0) <= 0) return;
+    }
+    if (m.hasFeatures(path)) return;
+    final key = path.join('/');
+    if (_requested.containsKey(key)) return;
+    _requested[key] = List.of(path);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !widget.model.hasFeatures(const [])) cb(const []);
+      if (mounted && _requested.containsKey(key)) cb(path);
     });
-  }
-
-  void _askForFeatures(List<String>? path) {
-    final cb = widget.onFeaturesRequested;
-    if (cb == null || path == null || path.isEmpty) return;
-    final node = widget.model.nodeAtPath(path);
-    if (node == null || node.kind == 'missing' || (node.featureCount ?? 0) <= 0 || widget.model.hasFeatures(path)) return;
-    cb(path);
   }
 
   bool _canToggle(AssemblyTreeRow r) =>
@@ -233,7 +280,19 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
   }
 
   void _reveal(List<String> path, {required bool select}) {
+    _doReveal(path, select: select);
+    setState(() {});
+  }
+
+  /// Opens the ancestors, selects, and schedules the scroll. With no tree yet the path is kept for [_syncModel]; a path the loaded tree does
+  /// not know is dropped.
+  void _doReveal(List<String> path, {required bool select}) {
     final m = widget.model;
+    if (m.tree == null) {
+      _pendingReveal = List.of(path);
+      _pendingSelect = select;
+      return;
+    }
     if (m.nodeAtPath(path) == null) return;
     m.revealAndOpen(path);
     final key = path.join('/');
@@ -241,12 +300,19 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
     for (var i = 1; i < path.length; i++) {
       _askForFeatures(path.sublist(0, i));
     }
-    setState(() {});
-    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollTo(key));
+    _scheduleScroll(key);
   }
 
-  void _scrollTo(String key) {
-    if (!mounted || !_scroll.hasClients) return;
+  void _scheduleScroll(String key) {
+    _pendingScrollKey = key;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _flushScroll());
+  }
+
+  /// Scrolls to [_pendingScrollKey] when the list exists; with no list yet (docked and not shown) the key stays until it does.
+  void _flushScroll() {
+    final key = _pendingScrollKey;
+    if (!mounted || key == null || !_scroll.hasClients) return;
+    _pendingScrollKey = null;
     final i = widget.model.indexOf(key);
     if (i < 0) return;
     final h = _rowHeight();
@@ -261,6 +327,25 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
     if (target == null) return;
     // Not clamped to maxScrollExtent: it can still be the extent from before the rows were opened. The row exists, so the target is in range.
     _scroll.jumpTo(math.max(target, p.minScrollExtent));
+  }
+
+  /// Collapse all, but the selected row stays listed: its ancestors reopen, or (a group, feature or folder row) the selection is dropped.
+  void _collapseAll() {
+    final m = widget.model;
+    m.closeAll();
+    final sel = m.selectedKey;
+    if (sel != null) {
+      final path = m.selectedPath;
+      if (path != null && path.isNotEmpty) m.revealAndOpen(path);
+      if (m.indexOf(sel) < 0 && sel.isNotEmpty) m.selectedKey = null;
+    }
+    setState(() {});
+    final keep = m.selectedKey;
+    if (keep != null && m.indexOf(keep) >= 0) {
+      _scheduleScroll(keep);
+    } else if (_scroll.hasClients) {
+      _scroll.jumpTo(0);
+    }
   }
 
   double _rowHeight() => LayoutModeScope.isDesktop(context) ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
@@ -280,7 +365,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
     }
     const palette = <Color>[Color(0xFF1E88E5), Color(0xFFF4511E), Color(0xFF43A047), Color(0xFF8E24AA), Color(0xFFFDD835), Color(0xFF00ACC1)];
     final sorted = ids.toList()..sort();
-    _setColours = {for (var i = 0; i < sorted.length; i++) sorted[i]: palette[i % palette.length]};
+    // Six fixed colours, then golden-angle hues, so no two of the first dozens of sets share one (a huge number of sets can still look alike).
+    Color colourAt(int i) => i < palette.length ? palette[i] : HSLColor.fromAHSL(1, (i * 137.508) % 360, 0.65, i.isEven ? 0.45 : 0.6).toColor();
+    _setColours = {for (var i = 0; i < sorted.length; i++) sorted[i]: colourAt(i)};
     return _setColours;
   }
 
@@ -292,6 +379,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
     final h = desktop ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
     final colours = _rigidColours();
     final scheme = Theme.of(context).colorScheme;
+    if (_pendingScrollKey != null) WidgetsBinding.instance.addPostFrameCallback((_) => _flushScroll());
 
     final selectedIndex = model.selectedKey == null ? -1 : model.indexOf(model.selectedKey!);
     final selectedRow = selectedIndex < 0 ? null : rows[selectedIndex];
@@ -408,9 +496,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> {
               visualDensity: VisualDensity.compact,
               icon: const Icon(Icons.unfold_less, size: 20),
               onPressed: () {
-                widget.model.closeAll();
-                setState(() {});
-                if (_scroll.hasClients) _scroll.jumpTo(0);
+                _collapseAll();
               },
             ),
             if (widget.onClose != null)
@@ -549,7 +635,8 @@ class _TreeRowState extends State<_TreeRow> {
     final iconSize = desktop ? 16.0 : 22.0;
     final isOccurrence = r.path != null && r.path!.isNotEmpty;
     final canEye = widget.showEye && isOccurrence;
-    final eyeSlot = r.hidden
+    // A group row never shows one: it has nothing to toggle (its members show their own).
+    final eyeSlot = r.hidden && r.kind != AssemblyRowKind.group
         ? Icon(Icons.visibility_off_outlined, key: ValueKey('tree-eye-off:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
         : (desktop && _hover && canEye && !widget.multiSelect)
             ? Icon(Icons.visibility_outlined, key: ValueKey('tree-eye:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
@@ -605,9 +692,11 @@ class _TreeRowState extends State<_TreeRow> {
           ),
         if (r.bubble != null && !r.open) _bubble(context, r.bubble!),
         if (eyeSlot != null)
-          Padding(
-            padding: const EdgeInsets.only(left: 6),
-            child: GestureDetector(behavior: HitTestBehavior.opaque, onTap: canEye && desktop ? widget.onEye : null, child: eyeSlot),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            // Desktop: the hover eye and the eye-off toggle. Phone: only the eye-off of a hidden row (it is state, not a button). Never in multi-select.
+            onTap: canEye && !widget.multiSelect && (desktop || r.hidden) ? widget.onEye : null,
+            child: SizedBox(width: desktop ? 26 : 40, height: widget.height, child: Center(child: eyeSlot)),
           ),
         Padding(padding: const EdgeInsets.only(left: 6, right: 8), child: _stateSlot(context, r, iconSize)),
       ],

@@ -329,4 +329,162 @@ void main() {
     expect(_row(''), findsOneWidget);
     expect(_row('a'), findsOneWidget);
   });
+
+  group('review fixes', () {
+    testWidgets('root features are asked for when the tree arrives after the view', (tester) async {
+      final model = AssemblyTreeModel();
+      final controller = AssemblyTreeController();
+      final asked = <List<String>>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, controller: controller, onFeaturesRequested: asked.add)));
+      await tester.pump();
+      expect(asked, isEmpty);
+
+      model.merge(_tree([_node('a', ['a'])], featureCount: 2));
+      controller.refresh();
+      await tester.pump();
+      expect(asked, [<String>[]]);
+
+      // Once: another refresh while the fetch is out does not ask again.
+      controller.refresh();
+      await tester.pump();
+      expect(asked.length, 1);
+    });
+
+    testWidgets('a reveal made before the tree loads is applied when it arrives', (tester) async {
+      final model = AssemblyTreeModel();
+      final controller = AssemblyTreeController();
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, controller: controller)));
+      controller.reveal(['z', 'zc'], select: true);
+      await tester.pump();
+
+      model.merge(_tree([
+        for (var i = 0; i < 100; i++) _node('p$i', ['p$i']),
+        _node('z', ['z'], kind: 'assembly', children: [_node('zc', ['z', 'zc'])]),
+      ]));
+      controller.refresh();
+      await tester.pump();
+      await tester.pump();
+      expect(model.isOpen('z'), isTrue);
+      expect(model.selectedKey, 'z/zc');
+      final list = tester.getRect(find.byKey(const ValueKey('assembly-tree-list')));
+      expect(_row('z/zc'), findsOneWidget);
+      expect(tester.getRect(_row('z/zc')).bottom, lessThanOrEqualTo(list.bottom + 0.5));
+    });
+
+    testWidgets('a reveal while the docked tree is not shown scrolls when it is', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([
+        for (var i = 0; i < 100; i++) _node('p$i', ['p$i']),
+        _node('z', ['z'], kind: 'assembly', children: [_node('zc', ['z', 'zc'])]),
+      ]));
+      final controller = AssemblyTreeController();
+      Widget view(bool visible) => _host(AssemblyTreeView(model: model, controller: controller, docked: true, visible: visible));
+      await tester.pumpWidget(view(false));
+      controller.reveal(['z', 'zc']);
+      await tester.pump();
+      await tester.pump();
+      expect(model.isOpen('z'), isTrue);
+
+      await tester.pumpWidget(view(true));
+      await tester.pump();
+      await tester.pump();
+      final list = tester.getRect(find.byKey(const ValueKey('assembly-tree-list')));
+      expect(_row('z/zc'), findsOneWidget);
+      expect(tester.getRect(_row('z/zc')).bottom, lessThanOrEqualTo(list.bottom + 0.5));
+    });
+
+    testWidgets('the eye-off does nothing in multi-select on desktop', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([_node('h', ['h'], hidden: true)]));
+      final toggled = <String>[];
+      await tester.pumpWidget(_host(
+        AssemblyTreeView(model: model, isMultiSelectMode: true, onVisibilityToggle: (r) => toggled.add(r.key)),
+        layout: LayoutPreference.desktop,
+      ));
+      await tester.tap(find.byKey(const ValueKey('tree-eye-off:h')));
+      expect(toggled, isEmpty);
+    });
+
+    testWidgets('on a phone the eye-off of a hidden row toggles it (and no other row has one)', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([_node('a', ['a']), _node('h', ['h'], hidden: true)]));
+      final toggled = <String>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onVisibilityToggle: (r) => toggled.add(r.key))));
+      await tester.tap(find.byKey(const ValueKey('tree-eye-off:h')));
+      expect(toggled, ['h']);
+      expect(find.byKey(const ValueKey('tree-eye:a')), findsNothing);
+    });
+
+    testWidgets('features are asked for once while the fetch is out; forgetting it allows another ask', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([
+        _node('a', ['a'], kind: 'assembly', featureCount: 1, children: [_node('b', ['a', 'b'], featureCount: 1)]),
+      ]));
+      final controller = AssemblyTreeController();
+      final asked = <String>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, controller: controller, onFeaturesRequested: (p) => asked.add(p.join('/')))));
+
+      Future<void> toggleA() async {
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:a')));
+        await tester.pump();
+        await tester.pump();
+      }
+
+      await toggleA(); // open
+      await toggleA(); // close
+      await toggleA(); // reopen: still waiting for the first answer
+      expect(asked, ['a']);
+
+      controller.reveal(['a', 'b']); // through the open ancestor 'a': 'a' is not asked again
+      await tester.pump();
+      await tester.pump();
+      expect(asked, ['a']);
+
+      controller.forgetFeaturesRequest(['a']);
+      await toggleA(); // close
+      await toggleA(); // open
+      expect(asked, ['a', 'a']);
+
+      // An answer clears it: nothing more to ask.
+      model.setFeatures(['a'], const [AssemblyFeature('f', 'Sketch 1')]);
+      controller.refresh();
+      await toggleA();
+      await toggleA();
+      expect(asked, ['a', 'a']);
+    });
+
+    testWidgets('collapse all keeps the selected row listed, so the phone bar stays', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([
+        _node('a', ['a'], kind: 'assembly', children: [_node('b', ['a', 'b'])]),
+      ]));
+      model.setOpen('a', true);
+      model.selectedKey = 'a/b';
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onHideSelected: (_) {})));
+      expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+
+      await tester.tap(find.byKey(const ValueKey('tree-collapse-all')));
+      await tester.pump();
+      await tester.pump();
+      expect(model.selectedKey, 'a/b');
+      expect(_row('a/b'), findsOneWidget);
+      expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+    });
+
+    testWidgets('a group row of hidden members shows no eye-off', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([
+        for (var i = 0; i < 4; i++) {..._node('bolt$i', ['bolt$i'], name: 'Bolt M4', hidden: true), 'resolved_part_id': 'same'},
+      ]));
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onVisibilityToggle: (_) {})));
+      expect(find.text('Bolt M4 x4'), findsOneWidget);
+      expect(find.byWidgetPredicate((w) => w.key.toString().contains('tree-eye-off:')), findsNothing);
+    });
+
+    testWidgets('more than six rigid sets still get different colours', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([
+        for (var i = 0; i < 9; i++)
+          _node('n$i', ['n$i'], constraint: {'status': 'fully_constrained', 'dof': 0, 'rigid_set': 's$i'}),
+      ]));
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model)));
+      final colours = {
+        for (var i = 0; i < 9; i++) tester.widget<ColoredBox>(find.byKey(ValueKey('tree-bracket:n$i'))).color,
+      };
+      expect(colours.length, 9);
+    });
+  });
 }
