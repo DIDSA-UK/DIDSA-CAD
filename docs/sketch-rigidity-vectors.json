@@ -1,0 +1,346 @@
+{
+ "version": 1,
+ "spec": "docs/sketch-rigidity-spec.md",
+ "generator": "client/test/sketch_rigidity_vectors_test.dart (tools/sketch_vectors/export_rigidity.sh writes; --check verifies)",
+ "dof_cost": {
+   "distance": 1,
+   "vertical": 1,
+   "horizontal": 1,
+   "angle": 1,
+   "coincident": 2,
+   "concentric": 2,
+   "parallel": 1,
+   "perpendicular": 1,
+   "equal_length": 1,
+   "line_distance": 1,
+   "collinear": 2,
+   "point_line_distance": 1,
+   "at_midpoint": 2,
+   "tangent": 1,
+   "curve_tangent": 1,
+   "equal_radius": 1,
+   "spline_tangent": 1,
+   "point_on_line": 1,
+   "point_on_circle": 1,
+   "point_on_ellipse": 1,
+   "arc_length": 1,
+   "horizontal_angle": 1,
+   "point_angle": 1,
+   "circle_distance": 1,
+   "line_circle_distance": 1,
+   "point_circle_distance": 1
+ },
+ "conventions": {
+   "input": "point_ids: the sketch's points; fixed: the origin and locked points; lines: id -> [start, end]; constraints: backend wire form (a provisional distance is marked); trust_converged_solve: the backend's last solve converged",
+   "frames": "one entry, the expected answer: the sorted ids (of point_ids and fixed) that are fully constrained, over-constrained, grounded, pinned; any_grounded; entities (scenes): kind -> id -> over | fully | free",
+   "checks": "the assertions dof_analysis_test.dart makes on the same input (query, args, want)"
+ },
+ "cases": [
+  {
+   "id": "standalone-point",
+   "description": "a Point with no Constraint at all is neither fully nor over constrained",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":false},{"query":"over","args":["a"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":[],"pinned":["origin"],"any_grounded":false}
+   ]
+  },
+  {
+   "id": "floating-rigid-pair",
+   "description": "a rigid pair not tied to the origin is not fully constrained",
+   "input": {"point_ids":["origin","a","b"],"fixed":["origin"],"lines":{},"constraints":[{"type":"horizontal","id":"c1","line_id":"l1","point_a_id":"a","point_b_id":"b"},{"type":"distance","id":"c2","point_a_id":"a","point_b_id":"b","distance":10.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":false},{"query":"fully","args":["b"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":[],"pinned":["origin"],"any_grounded":false}
+   ]
+  },
+  {
+   "id": "grounded-rigid-pair",
+   "description": "the same pair IS fully constrained once tied to the origin",
+   "input": {"point_ids":["origin","a","b"],"fixed":["origin"],"lines":{},"constraints":[{"type":"horizontal","id":"c1","line_id":"l1","point_a_id":"origin","point_b_id":"a"},{"type":"distance","id":"c2","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"},{"type":"horizontal","id":"c3","line_id":"l2","point_a_id":"a","point_b_id":"b"},{"type":"distance","id":"c4","point_a_id":"a","point_b_id":"b","distance":10.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":true},{"query":"fully","args":["b"],"want":true},{"query":"segment_fully","args":["a","b"],"want":true}],
+   "frames": [
+    {"fully":["a","b","origin"],"over":[],"grounded":["a","b","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "one-dof-to-origin",
+   "description": "a single 1-DOF constraint to the origin leaves one degree of freedom",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":false},{"query":"over","args":["a"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "coincident-with-origin",
+   "description": "a Point Coincident with the origin is fully constrained by itself",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[{"type":"coincident","id":"c1","point_a_id":"origin","point_b_id":"a"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":true}],
+   "frames": [
+    {"fully":["a","origin"],"over":[],"grounded":["a","origin"],"pinned":["a","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "redundant-third",
+   "description": "a third redundant constraint on a fully constrained Point reports over-constrained",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"},{"type":"horizontal","id":"c2","line_id":"l1","point_a_id":"origin","point_b_id":"a"},{"type":"vertical","id":"c3","line_id":"l2","point_a_id":"origin","point_b_id":"a"}],"trust_converged_solve":false},
+   "checks": [{"query":"over","args":["a"],"want":true},{"query":"fully","args":["a"],"want":false}],
+   "frames": [
+    {"fully":[],"over":["a","origin"],"grounded":["a","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "segment-over-either-end",
+   "description": "isSegmentOverConstrained is true if either endpoint is implicated",
+   "input": {"point_ids":["origin","a","b"],"fixed":["origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"},{"type":"horizontal","id":"c2","line_id":"l1","point_a_id":"origin","point_b_id":"a"},{"type":"vertical","id":"c3","line_id":"l2","point_a_id":"origin","point_b_id":"a"}],"trust_converged_solve":false},
+   "checks": [{"query":"over","args":["b"],"want":false},{"query":"segment_over","args":["a","b"],"want":true},{"query":"segment_over","args":["a","origin"],"want":true}],
+   "frames": [
+    {"fully":[],"over":["a","origin"],"grounded":["a","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "trust-converged",
+   "description": "trustConvergedSolve suppresses a redundant-but-consistent over-constrained verdict",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"},{"type":"horizontal","id":"c2","line_id":"l1","point_a_id":"origin","point_b_id":"a"},{"type":"vertical","id":"c3","line_id":"l2","point_a_id":"origin","point_b_id":"a"}],"trust_converged_solve":true},
+   "checks": [{"query":"over","args":["a"],"want":false},{"query":"fully","args":["a"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "hexagon-horizontal-and-across-flats",
+   "description": "a polygon's redundant chain plus a horizontal edge AND an across-flats dimension reads as over-constrained by counting alone",
+   "input": {"point_ids":["origin","center","v0","v1","v2","v3","v4","v5"],"fixed":["origin"],"lines":{"edge0":["v0","v1"],"edge1":["v1","v2"],"edge2":["v2","v3"],"edge3":["v3","v4"],"edge4":["v4","v5"],"edge5":["v5","v0"],"radial0":["center","v0"],"radial1":["center","v1"],"radial2":["center","v2"],"radial3":["center","v3"],"radial4":["center","v4"],"radial5":["center","v5"]},"constraints":[{"type":"coincident","id":"coincident","point_a_id":"origin","point_b_id":"center"},{"type":"distance","id":"radius","point_a_id":"center","point_b_id":"v0","distance":10.0,"orientation":"linear"},{"type":"equal_radius","id":"equal_radius_1","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v1"},{"type":"equal_radius","id":"equal_radius_2","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v2"},{"type":"equal_radius","id":"equal_radius_3","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v3"},{"type":"equal_radius","id":"equal_radius_4","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v4"},{"type":"equal_radius","id":"equal_radius_5","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v5"},{"type":"angle","id":"angle_0","line1_id":"radial0","line2_id":"radial1","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_1","line1_id":"radial1","line2_id":"radial2","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_2","line1_id":"radial2","line2_id":"radial3","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_3","line1_id":"radial3","line2_id":"radial4","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_4","line1_id":"radial4","line2_id":"radial5","angle_degrees":60.0,"quadrant":null},{"type":"horizontal","id":"horizontal","line_id":"edge0","point_a_id":"v0","point_b_id":"v1"},{"type":"line_distance","id":"across_flats","line1_id":"edge0","line2_id":"edge3","distance":17.32}],"trust_converged_solve":false},
+   "checks": [{"query":"over","args":["v0"],"want":true}],
+   "frames": [
+    {"fully":[],"over":["center","origin","v0","v1","v2","v3","v4","v5"],"grounded":["center","origin","v0","v1","v2","v3","v4","v5"],"pinned":["center","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "hexagon-horizontal-and-across-flats-trusted",
+   "description": "the same, once told the backend converged: nothing is over",
+   "input": {"point_ids":["origin","center","v0","v1","v2","v3","v4","v5"],"fixed":["origin"],"lines":{"edge0":["v0","v1"],"edge1":["v1","v2"],"edge2":["v2","v3"],"edge3":["v3","v4"],"edge4":["v4","v5"],"edge5":["v5","v0"],"radial0":["center","v0"],"radial1":["center","v1"],"radial2":["center","v2"],"radial3":["center","v3"],"radial4":["center","v4"],"radial5":["center","v5"]},"constraints":[{"type":"coincident","id":"coincident","point_a_id":"origin","point_b_id":"center"},{"type":"distance","id":"radius","point_a_id":"center","point_b_id":"v0","distance":10.0,"orientation":"linear"},{"type":"equal_radius","id":"equal_radius_1","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v1"},{"type":"equal_radius","id":"equal_radius_2","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v2"},{"type":"equal_radius","id":"equal_radius_3","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v3"},{"type":"equal_radius","id":"equal_radius_4","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v4"},{"type":"equal_radius","id":"equal_radius_5","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v5"},{"type":"angle","id":"angle_0","line1_id":"radial0","line2_id":"radial1","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_1","line1_id":"radial1","line2_id":"radial2","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_2","line1_id":"radial2","line2_id":"radial3","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_3","line1_id":"radial3","line2_id":"radial4","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_4","line1_id":"radial4","line2_id":"radial5","angle_degrees":60.0,"quadrant":null},{"type":"horizontal","id":"horizontal","line_id":"edge0","point_a_id":"v0","point_b_id":"v1"},{"type":"line_distance","id":"across_flats","line1_id":"edge0","line2_id":"edge3","distance":17.32}],"trust_converged_solve":true},
+   "checks": [{"query":"over","args":["center"],"want":false},{"query":"over","args":["v0"],"want":false},{"query":"over","args":["v1"],"want":false},{"query":"over","args":["v2"],"want":false},{"query":"over","args":["v3"],"want":false},{"query":"over","args":["v4"],"want":false},{"query":"over","args":["v5"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["center","origin","v0","v1","v2","v3","v4","v5"],"pinned":["center","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "hexagon-horizontal-only",
+   "description": "the polygon chain with only the horizontal edge is not over-constrained",
+   "input": {"point_ids":["origin","center","v0","v1","v2","v3","v4","v5"],"fixed":["origin"],"lines":{"edge0":["v0","v1"],"edge1":["v1","v2"],"edge2":["v2","v3"],"edge3":["v3","v4"],"edge4":["v4","v5"],"edge5":["v5","v0"],"radial0":["center","v0"],"radial1":["center","v1"],"radial2":["center","v2"],"radial3":["center","v3"],"radial4":["center","v4"],"radial5":["center","v5"]},"constraints":[{"type":"coincident","id":"coincident","point_a_id":"origin","point_b_id":"center"},{"type":"distance","id":"radius","point_a_id":"center","point_b_id":"v0","distance":10.0,"orientation":"linear"},{"type":"equal_radius","id":"equal_radius_1","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v1"},{"type":"equal_radius","id":"equal_radius_2","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v2"},{"type":"equal_radius","id":"equal_radius_3","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v3"},{"type":"equal_radius","id":"equal_radius_4","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v4"},{"type":"equal_radius","id":"equal_radius_5","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v5"},{"type":"angle","id":"angle_0","line1_id":"radial0","line2_id":"radial1","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_1","line1_id":"radial1","line2_id":"radial2","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_2","line1_id":"radial2","line2_id":"radial3","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_3","line1_id":"radial3","line2_id":"radial4","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_4","line1_id":"radial4","line2_id":"radial5","angle_degrees":60.0,"quadrant":null},{"type":"horizontal","id":"horizontal","line_id":"edge0","point_a_id":"v0","point_b_id":"v1"}],"trust_converged_solve":false},
+   "checks": [{"query":"over","args":["v0"],"want":false}],
+   "frames": [
+    {"fully":["center","origin","v0","v1","v2","v3","v4","v5"],"over":[],"grounded":["center","origin","v0","v1","v2","v3","v4","v5"],"pinned":["center","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "hexagon-across-flats-only",
+   "description": "the polygon chain with only the across-flats dimension is not over-constrained",
+   "input": {"point_ids":["origin","center","v0","v1","v2","v3","v4","v5"],"fixed":["origin"],"lines":{"edge0":["v0","v1"],"edge1":["v1","v2"],"edge2":["v2","v3"],"edge3":["v3","v4"],"edge4":["v4","v5"],"edge5":["v5","v0"],"radial0":["center","v0"],"radial1":["center","v1"],"radial2":["center","v2"],"radial3":["center","v3"],"radial4":["center","v4"],"radial5":["center","v5"]},"constraints":[{"type":"coincident","id":"coincident","point_a_id":"origin","point_b_id":"center"},{"type":"distance","id":"radius","point_a_id":"center","point_b_id":"v0","distance":10.0,"orientation":"linear"},{"type":"equal_radius","id":"equal_radius_1","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v1"},{"type":"equal_radius","id":"equal_radius_2","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v2"},{"type":"equal_radius","id":"equal_radius_3","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v3"},{"type":"equal_radius","id":"equal_radius_4","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v4"},{"type":"equal_radius","id":"equal_radius_5","center1_point_id":"center","radius1_point_id":"v0","center2_point_id":"center","radius2_point_id":"v5"},{"type":"angle","id":"angle_0","line1_id":"radial0","line2_id":"radial1","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_1","line1_id":"radial1","line2_id":"radial2","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_2","line1_id":"radial2","line2_id":"radial3","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_3","line1_id":"radial3","line2_id":"radial4","angle_degrees":60.0,"quadrant":null},{"type":"angle","id":"angle_4","line1_id":"radial4","line2_id":"radial5","angle_degrees":60.0,"quadrant":null},{"type":"line_distance","id":"across_flats","line1_id":"edge0","line2_id":"edge3","distance":17.32}],"trust_converged_solve":false},
+   "checks": [{"query":"over","args":["v0"],"want":false}],
+   "frames": [
+    {"fully":["center","origin","v0","v1","v2","v3","v4","v5"],"over":[],"grounded":["center","origin","v0","v1","v2","v3","v4","v5"],"pinned":["center","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "parallel-unions-four",
+   "description": "Parallel between two Lines unions all four endpoints into one cluster",
+   "input": {"point_ids":["origin","a","b","c","d"],"fixed":["origin"],"lines":{"l1":["a","b"],"l2":["c","d"]},"constraints":[{"type":"parallel","id":"c1","line1_id":"l1","line2_id":"l2"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":false},{"query":"over","args":["a"],"want":false},{"query":"fully","args":["b"],"want":false},{"query":"over","args":["b"],"want":false},{"query":"fully","args":["c"],"want":false},{"query":"over","args":["c"],"want":false},{"query":"fully","args":["d"],"want":false},{"query":"over","args":["d"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":[],"pinned":["origin"],"any_grounded":false}
+   ]
+  },
+  {
+   "id": "at-midpoint",
+   "description": "AtMidpoint removes both degrees of freedom of the midpoint Point",
+   "input": {"point_ids":["origin","a","b","m"],"fixed":["origin"],"lines":{"l1":["a","b"]},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"},{"type":"horizontal","id":"c2","line_id":"l0","point_a_id":"origin","point_b_id":"a"},{"type":"distance","id":"c3","point_a_id":"a","point_b_id":"b","distance":10.0,"orientation":"linear"},{"type":"horizontal","id":"c4","line_id":"l0b","point_a_id":"a","point_b_id":"b"},{"type":"at_midpoint","id":"c5","point_id":"m","line_id":"l1"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":true},{"query":"fully","args":["b"],"want":true},{"query":"fully","args":["m"],"want":true}],
+   "frames": [
+    {"fully":["a","b","m","origin"],"over":[],"grounded":["a","b","m","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "pinned-centre",
+   "description": "a Point Coincident with the origin is pinned even though its cluster still has freedom",
+   "input": {"point_ids":["origin","centre","start"],"fixed":["origin"],"lines":{},"constraints":[{"type":"coincident","id":"c1","point_a_id":"origin","point_b_id":"centre"},{"type":"distance","id":"c2","point_a_id":"centre","point_b_id":"start","distance":5.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["centre"],"want":false},{"query":"pinned","args":["centre"],"want":true},{"query":"pinned","args":["start"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["centre","origin","start"],"pinned":["centre","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "not-pinned-by-distance",
+   "description": "a Point reached only through a 1-DOF constraint type is not pinned",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"pinned","args":["a"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "concentric-pins",
+   "description": "Concentric pins the same way Coincident does",
+   "input": {"point_ids":["origin","centre"],"fixed":["origin"],"lines":{},"constraints":[{"type":"concentric","id":"c1","entity1_id":"e1","entity2_id":"e2","center1_point_id":"origin","center2_point_id":"centre"}],"trust_converged_solve":false},
+   "checks": [{"query":"pinned","args":["centre"],"want":true}],
+   "frames": [
+    {"fully":["centre","origin"],"over":[],"grounded":["centre","origin"],"pinned":["centre","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "pinned-chain",
+   "description": "pinning is transitive through a chain of Coincident Points",
+   "input": {"point_ids":["origin","a","b"],"fixed":["origin"],"lines":{},"constraints":[{"type":"coincident","id":"c1","point_a_id":"origin","point_b_id":"a"},{"type":"coincident","id":"c2","point_a_id":"a","point_b_id":"b"}],"trust_converged_solve":false},
+   "checks": [{"query":"pinned","args":["b"],"want":true}],
+   "frames": [
+    {"fully":["a","b","origin"],"over":[],"grounded":["a","b","origin"],"pinned":["a","b","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "floating-pair-not-grounded",
+   "description": "a rigid pair not connected to the origin is not grounded",
+   "input": {"point_ids":["origin","a","b"],"fixed":["origin"],"lines":{},"constraints":[{"type":"horizontal","id":"c1","line_id":"l1","point_a_id":"a","point_b_id":"b"},{"type":"distance","id":"c2","point_a_id":"a","point_b_id":"b","distance":10.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"grounded","args":["a"],"want":false},{"query":"grounded","args":["b"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":[],"pinned":["origin"],"any_grounded":false}
+   ]
+  },
+  {
+   "id": "one-constraint-grounds",
+   "description": "a single Constraint touching the origin grounds the whole cluster",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"fully","args":["a"],"want":false},{"query":"grounded","args":["a"],"want":true}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "grounding-transitive",
+   "description": "grounding is transitive through an intermediate Point",
+   "input": {"point_ids":["origin","a","b"],"fixed":["origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"},{"type":"distance","id":"c2","point_a_id":"a","point_b_id":"b","distance":3.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"grounded","args":["b"],"want":true}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","b","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "untouched-not-grounded",
+   "description": "a Point untouched by any Constraint is not grounded",
+   "input": {"point_ids":["origin","a"],"fixed":["origin"],"lines":{},"constraints":[],"trust_converged_solve":false},
+   "checks": [{"query":"grounded","args":["a"],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":[],"pinned":["origin"],"any_grounded":false}
+   ]
+  },
+  {
+   "id": "nothing-grounded",
+   "description": "isAnyPointGrounded is false when nothing is grounded",
+   "input": {"point_ids":["origin","a","b"],"fixed":["origin"],"lines":{},"constraints":[{"type":"horizontal","id":"c1","line_id":"l1","point_a_id":"a","point_b_id":"b"}],"trust_converged_solve":false},
+   "checks": [{"query":"any_grounded","args":[],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":[],"pinned":["origin"],"any_grounded":false}
+   ]
+  },
+  {
+   "id": "any-grounded",
+   "description": "isAnyPointGrounded is true as soon as any single Point is grounded",
+   "input": {"point_ids":["origin","a","b","c"],"fixed":["origin"],"lines":{},"constraints":[{"type":"horizontal","id":"c1","line_id":"l1","point_a_id":"b","point_b_id":"c"},{"type":"distance","id":"c2","point_a_id":"origin","point_b_id":"a","distance":5.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"grounded","args":["b"],"want":false},{"query":"any_grounded","args":[],"want":true}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","origin"],"pinned":["origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "fixed-anchor-grounds",
+   "description": "any fixed Point grounds, not only the origin",
+   "input": {"point_ids":["origin","anchor","a"],"fixed":["anchor","origin"],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"anchor","point_b_id":"a","distance":5.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"grounded","args":["a"],"want":true},{"query":"any_grounded","args":[],"want":true}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","anchor"],"pinned":["anchor","origin"],"any_grounded":true}
+   ]
+  },
+  {
+   "id": "no-fixed-grounds-nothing",
+   "description": "an empty fixed set grounds nothing at all",
+   "input": {"point_ids":["a","b"],"fixed":[],"lines":{},"constraints":[{"type":"distance","id":"c1","point_a_id":"a","point_b_id":"b","distance":5.0,"orientation":"linear"}],"trust_converged_solve":false},
+   "checks": [{"query":"any_grounded","args":[],"want":false}],
+   "frames": [
+    {"fully":[],"over":[],"grounded":[],"pinned":[],"any_grounded":false}
+   ]
+  },
+  {
+   "id": "scene-rectangle-missing-height",
+   "description": "a rectangle on the origin with its width but no height: one cluster with one degree of freedom left, so no side is fully constrained",
+   "input": {"point_ids":["origin","a","b","c","d"],"fixed":["origin"],"lines":{"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"]},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"a"},{"type":"horizontal","id":"h0","line_id":"l0","point_a_id":"a","point_b_id":"b"},{"type":"vertical","id":"v1","line_id":"l1","point_a_id":"b","point_b_id":"c"},{"type":"horizontal","id":"h2","line_id":"l2","point_a_id":"c","point_b_id":"d"},{"type":"vertical","id":"v3","line_id":"l3","point_a_id":"d","point_b_id":"a"},{"type":"distance","id":"width","point_a_id":"a","point_b_id":"b","distance":40.0,"orientation":"horizontal"}],"trust_converged_solve":false,"entities":{"line":{"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"]}}},
+   "checks": [],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","b","c","d","origin"],"pinned":["a","origin"],"any_grounded":true,"entities":{"line":{"l0":"free","l1":"free","l2":"free","l3":"free"}}}
+   ]
+  },
+  {
+   "id": "scene-rectangle-dimensioned",
+   "description": "the same rectangle with its height: every side fully constrained",
+   "input": {"point_ids":["origin","a","b","c","d"],"fixed":["origin"],"lines":{"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"]},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"a"},{"type":"horizontal","id":"h0","line_id":"l0","point_a_id":"a","point_b_id":"b"},{"type":"vertical","id":"v1","line_id":"l1","point_a_id":"b","point_b_id":"c"},{"type":"horizontal","id":"h2","line_id":"l2","point_a_id":"c","point_b_id":"d"},{"type":"vertical","id":"v3","line_id":"l3","point_a_id":"d","point_b_id":"a"},{"type":"distance","id":"width","point_a_id":"a","point_b_id":"b","distance":40.0,"orientation":"horizontal"},{"type":"distance","id":"height","point_a_id":"b","point_b_id":"c","distance":20.0,"orientation":"vertical"}],"trust_converged_solve":false,"entities":{"line":{"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"]}}},
+   "checks": [],
+   "frames": [
+    {"fully":["a","b","c","d","origin"],"over":[],"grounded":["a","b","c","d","origin"],"pinned":["a","origin"],"any_grounded":true,"entities":{"line":{"l0":"fully","l1":"fully","l2":"fully","l3":"fully"}}}
+   ]
+  },
+  {
+   "id": "scene-rectangle-and-free-line",
+   "description": "the dimensioned rectangle plus a horizontal line on its own: the rectangle's sides are fully constrained, the free line is not (per-entity, not whole-sketch)",
+   "input": {"point_ids":["origin","a","b","c","d","p","q"],"fixed":["origin"],"lines":{"free":["p","q"],"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"]},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"a"},{"type":"horizontal","id":"h0","line_id":"l0","point_a_id":"a","point_b_id":"b"},{"type":"vertical","id":"v1","line_id":"l1","point_a_id":"b","point_b_id":"c"},{"type":"horizontal","id":"h2","line_id":"l2","point_a_id":"c","point_b_id":"d"},{"type":"vertical","id":"v3","line_id":"l3","point_a_id":"d","point_b_id":"a"},{"type":"distance","id":"width","point_a_id":"a","point_b_id":"b","distance":40.0,"orientation":"horizontal"},{"type":"distance","id":"height","point_a_id":"b","point_b_id":"c","distance":20.0,"orientation":"vertical"},{"type":"horizontal","id":"hf","line_id":"free","point_a_id":"p","point_b_id":"q"}],"trust_converged_solve":false,"entities":{"line":{"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"],"free":["p","q"]}}},
+   "checks": [],
+   "frames": [
+    {"fully":["a","b","c","d","origin"],"over":[],"grounded":["a","b","c","d","origin"],"pinned":["a","origin"],"any_grounded":true,"entities":{"line":{"free":"free","l0":"fully","l1":"fully","l2":"fully","l3":"fully"}}}
+   ]
+  },
+  {
+   "id": "scene-rectangle-over-dimensioned",
+   "description": "the dimensioned rectangle with a second height on the other side: every side over-constrained by counting (the backend would converge: with trustConvergedSolve nothing is red)",
+   "input": {"point_ids":["origin","a","b","c","d"],"fixed":["origin"],"lines":{"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"]},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"a"},{"type":"horizontal","id":"h0","line_id":"l0","point_a_id":"a","point_b_id":"b"},{"type":"vertical","id":"v1","line_id":"l1","point_a_id":"b","point_b_id":"c"},{"type":"horizontal","id":"h2","line_id":"l2","point_a_id":"c","point_b_id":"d"},{"type":"vertical","id":"v3","line_id":"l3","point_a_id":"d","point_b_id":"a"},{"type":"distance","id":"width","point_a_id":"a","point_b_id":"b","distance":40.0,"orientation":"horizontal"},{"type":"distance","id":"height","point_a_id":"b","point_b_id":"c","distance":20.0,"orientation":"vertical"},{"type":"distance","id":"height2","point_a_id":"a","point_b_id":"d","distance":20.0,"orientation":"vertical"}],"trust_converged_solve":false,"entities":{"line":{"l0":["a","b"],"l1":["b","c"],"l2":["c","d"],"l3":["d","a"]}}},
+   "checks": [],
+   "frames": [
+    {"fully":[],"over":["a","b","c","d","origin"],"grounded":["a","b","c","d","origin"],"pinned":["a","origin"],"any_grounded":true,"entities":{"line":{"l0":"over","l1":"over","l2":"over","l3":"over"}}}
+   ]
+  },
+  {
+   "id": "scene-circle-provisional-radius",
+   "description": "a circle on the origin whose radius is still provisional: the provisional distance is skipped, so the radius point keeps both degrees of freedom",
+   "input": {"point_ids":["origin","centre","r"],"fixed":["origin"],"lines":{},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"centre"},{"type":"distance","id":"radius","point_a_id":"centre","point_b_id":"r","distance":10.0,"orientation":"linear","provisional":true}],"trust_converged_solve":false,"entities":{"circle":{"k":["centre","r"]}}},
+   "checks": [],
+   "frames": [
+    {"fully":["centre","origin"],"over":[],"grounded":["centre","origin"],"pinned":["centre","origin"],"any_grounded":true,"entities":{"circle":{"k":"free"}}}
+   ]
+  },
+  {
+   "id": "scene-circle-confirmed",
+   "description": "the same circle with the radius confirmed and the radius point held horizontal: fully constrained",
+   "input": {"point_ids":["origin","centre","r"],"fixed":["origin"],"lines":{},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"centre"},{"type":"distance","id":"radius","point_a_id":"centre","point_b_id":"r","distance":10.0,"orientation":"linear"},{"type":"horizontal","id":"hr","line_id":"none","point_a_id":"centre","point_b_id":"r"}],"trust_converged_solve":false,"entities":{"circle":{"k":["centre","r"]}}},
+   "checks": [],
+   "frames": [
+    {"fully":["centre","origin","r"],"over":[],"grounded":["centre","origin","r"],"pinned":["centre","origin"],"any_grounded":true,"entities":{"circle":{"k":"fully"}}}
+   ]
+  },
+  {
+   "id": "scene-arc-one-end-free",
+   "description": "an arc on the origin with its start fixed by a radius and a horizontal, its end only on the circle (equal radius): the end keeps one degree of freedom, so the arc is not fully constrained (both radii must be)",
+   "input": {"point_ids":["origin","centre","s","e"],"fixed":["origin"],"lines":{},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"centre"},{"type":"distance","id":"radius","point_a_id":"centre","point_b_id":"s","distance":10.0,"orientation":"linear"},{"type":"horizontal","id":"hs","line_id":"none","point_a_id":"centre","point_b_id":"s"},{"type":"equal_radius","id":"eq","center1_point_id":"centre","radius1_point_id":"s","center2_point_id":"centre","radius2_point_id":"e"}],"trust_converged_solve":false,"entities":{"arc":{"k":["centre","s","e"]}}},
+   "checks": [],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["centre","e","origin","s"],"pinned":["centre","origin"],"any_grounded":true,"entities":{"arc":{"k":"free"}}}
+   ]
+  },
+  {
+   "id": "scene-part-d-and-fix",
+   "description": "part D types count one each; a Fix constraint counts nothing (the caller passes its point as fixed instead); a spline tangency counts one over seven points",
+   "input": {"point_ids":["origin","a","b","c","r","f","s0","s1","s2","s3","s4","s5","s6","s7"],"fixed":["f","origin"],"lines":{},"constraints":[{"type":"coincident","id":"on_origin","point_a_id":"origin","point_b_id":"c"},{"type":"point_circle_distance","id":"pcd","point_id":"a","circle_or_arc_id":"k","center_point_id":"c","radius_point_id":"r","distance":5.0,"side":"min"},{"type":"point_angle","id":"pa","vertex_point_id":"c","point1_id":"a","point2_id":"b","angle_degrees":30.0,"quadrant":null},{"type":"fixed","id":"fix","point_ids":["f"]},{"type":"spline_tangent","id":"st","spline_id":"sp","segment_a_p0":"s0","segment_a_p1":"s1","segment_a_p2":"s2","segment_a_p3":"s3","segment_b_p0":"s3","segment_b_p1":"s5","segment_b_p2":"s6","segment_b_p3":"s7"}],"trust_converged_solve":false},
+   "checks": [],
+   "frames": [
+    {"fully":[],"over":[],"grounded":["a","b","c","origin","r"],"pinned":["c","f","origin"],"any_grounded":true}
+   ]
+  }
+ ]
+}
