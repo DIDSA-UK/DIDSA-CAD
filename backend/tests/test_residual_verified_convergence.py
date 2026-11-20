@@ -647,3 +647,43 @@ def test_stepped_rectangle_with_horizontal_vertical_and_collinear_converges():
     result = solve_sketch(sketch)
 
     assert result.converged
+
+
+def test_slot_and_an_axis_aligned_rectangle_in_one_sketch_still_converge():
+    """F8 finding (DIDSA-VR, 2026-11-20): a sketch holding a Slot and an axis-aligned Rectangle reported `converged=False` (result_code 5, nothing failed)
+    though a Slot alone and a Rectangle alone each solve. The Slot's own redundancy (code 5) is excused by the narrow Slot override, which needs every
+    constraint to be redundancy-safe; the Rectangle's own centre AtMidpointConstraint is not (as a type, see `_ellipse_owned_at_midpoint_constraint_ids`),
+    so one rectangle anywhere in the sketch switched the excuse off. The Rectangle's own instance (it is the sole equation of its centre Point) is trusted
+    by id, as an Ellipse's are."""
+    for confirmed in (False, True):
+        for axis_aligned in (True, False):
+            sketch = Sketch(id="s", plane=Plane.XY)
+            c1 = sketch.add_point(0.0, 0.0)
+            c2 = sketch.add_point(20.0, 0.0)
+            slot = sketch.add_slot(c1.id, c2.id, 5.0)
+            if confirmed:
+                sketch.constraints[slot.radius_constraint_id].provisional = False
+            corners = [sketch.add_point(x, y) for x, y in ((40.0, 0.0), (70.0, 0.0), (70.0, 20.0), (40.0, 20.0))]
+            sketch.add_rectangle([p.id for p in corners], axis_aligned=axis_aligned)
+
+            result = solve_sketch(sketch)
+
+            assert result.converged, (confirmed, axis_aligned, result.detail)
+            assert not result.solver_reported_failed_constraint_ids
+
+
+def test_a_users_own_at_midpoint_on_a_rectangle_is_still_not_trusted_by_the_slot_override():
+    """The id-based trust covers only the Rectangle's own centre constraint: a second, user-made AtMidpoint (here a second centre Point pinned to the
+    same diagonal) is a type the override does not trust, so a Slot sharing the sketch is still not excused by it."""
+    sketch = Sketch(id="s", plane=Plane.XY)
+    c1 = sketch.add_point(0.0, 0.0)
+    c2 = sketch.add_point(20.0, 0.0)
+    sketch.add_slot(c1.id, c2.id, 5.0)
+    corners = [sketch.add_point(x, y) for x, y in ((40.0, 0.0), (70.0, 0.0), (70.0, 20.0), (40.0, 20.0))]
+    rectangle = sketch.add_rectangle([p.id for p in corners])
+    extra = sketch.add_point(55.0, 10.0)
+    sketch.add_at_midpoint_constraint(extra.id, rectangle.diagonal_line_id)
+
+    result = solve_sketch(sketch)
+
+    assert result.converged is False

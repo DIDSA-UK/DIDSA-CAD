@@ -44,7 +44,7 @@ from app.sketch.constraints import (
     TangentConstraint,
     VerticalConstraint,
 )
-from app.sketch.models import Arc, Ellipse, EllipseArc, Point, Sketch
+from app.sketch.models import Arc, Ellipse, EllipseArc, Point, Rectangle, Sketch
 
 # Constraint types empirically confirmed to never need py-slvs's own
 # redundancy detection to distrust a converged solve - see `converged`'s
@@ -629,6 +629,10 @@ def _ellipse_owned_at_midpoint_constraint_ids(sketch: Sketch) -> frozenset[str]:
         for entity in sketch.entities.values()
         if isinstance(entity, Ellipse)
         for constraint_id in (entity.major_midpoint_constraint_id, entity.minor_midpoint_constraint_id)
+    ) | frozenset(
+        entity.midpoint_constraint_id
+        for entity in sketch.entities.values()
+        if isinstance(entity, Rectangle) and entity.midpoint_constraint_id is not None
     )
 
 
@@ -1384,7 +1388,11 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         and residual_result is None
         and result_code in (4, 5)
         and any(isinstance(c, (TangentConstraint, EqualRadiusConstraint)) for c in sketch.constraints.values())
-        and all(isinstance(c, _REDUNDANCY_SAFE_CONSTRAINT_TYPES) for c in sketch.constraints.values())
+        and all(
+            isinstance(c, _REDUNDANCY_SAFE_CONSTRAINT_TYPES)
+            or (isinstance(c, AtMidpointConstraint) and c.id in ellipse_owned_at_midpoint_ids)
+            for c in sketch.constraints.values()
+        )
     ):
         # A Slot's closed loop of 2 Arcs + 2 Lines, tied together with
         # Tangent/EqualRadius constraints, is *mathematically* over-
