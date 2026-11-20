@@ -9,6 +9,7 @@ Over-constrained/unsatisfiable systems are solved anyway, never rejected.
 See SolveResult for how non-convergence is reported.
 """
 
+import copy
 import math
 from dataclasses import dataclass, field
 
@@ -721,8 +722,22 @@ class _PySlvsBuilder:
         # other - see `solve_sketch`'s retry-without-anchors fallback for
         # how that case is resolved rather than left stuck.
         self._anchor_point_ids = anchor_point_ids
+        # The free Points the Constraint being added touches, while `_solve_sketch_once` records them (see `record_points`).
+        self._touched: set[str] | None = None
+
+    def record_points(self) -> None:
+        """Start collecting the free Points the next Constraint's `add_to_solver` touches (`recorded_points` ends it). Pinned
+        Points (the origin, anchors) are left out: their params never move, so two Constraints that meet only there cannot
+        affect each other, which is what `_independent_constraint_groups` relies on."""
+        self._touched = set()
+
+    def recorded_points(self) -> set[str]:
+        touched, self._touched = self._touched or set(), None
+        return touched
 
     def point2d(self, point_id: str) -> int:
+        if self._touched is not None and point_id != self._origin_point_id and point_id not in self._anchor_point_ids:
+            self._touched.add(point_id)
         if point_id not in self._point_handles:
             point = self._points[point_id]
             is_pinned = point_id == self._origin_point_id or point_id in self._anchor_point_ids
@@ -1275,7 +1290,74 @@ def _has_free_motion(sketch: Sketch, anchor_point_ids: frozenset[str]) -> bool:
     return False
 
 
-def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> SolveResult:
+def _independent_constraint_groups(points_by_constraint: dict[str, set[str]]) -> list[list[str]]:
+    """The constraints sent to py-slvs, split into groups that share no free Point (union-find over the Points each one touched,
+    see `_PySlvsBuilder.record_points`). Constraints in different groups move disjoint parameters, so neither group can make
+    the other fail. Each group keeps the constraints' own order."""
+    parent: dict[str, str] = {}
+
+    def find(key: str) -> str:
+        while parent[key] != key:
+            parent[key] = parent[parent[key]]
+            key = parent[key]
+        return key
+
+    for constraint_id, point_ids in points_by_constraint.items():
+        parent.setdefault(constraint_id, constraint_id)
+        for point_id in point_ids:
+            node = "p:" + point_id
+            parent.setdefault(node, node)
+            parent[find(constraint_id)] = find(node)
+
+    groups: dict[str, list[str]] = {}
+    for constraint_id in points_by_constraint:
+        groups.setdefault(find(constraint_id), []).append(constraint_id)
+    return list(groups.values())
+
+
+def _failed_ids_in_conflicting_groups(
+    sketch: Sketch,
+    anchor_point_ids: frozenset[str],
+    failed_ids: list[str],
+    points_by_constraint: dict[str, set[str]],
+    start_positions: dict[str, tuple[float, float]],
+) -> list[str]:
+    """py-slvs's own failed list, narrowed to the groups (see `_independent_constraint_groups`) that cannot be solved on their own.
+
+    Why: both apps keep a constraint made on a sketch that is already not converged (a conflict the user kept) unless this
+    list names it (VR `SketchSession._taken_back`, the flat app's take-back). py-slvs's raw list is not reliable for that:
+    on arm64 (the Pi 5 server) it named a Horizontal on a line with no connection to a kept 10-vs-12 distance conflict, so
+    every new constraint anywhere in the sketch would be taken back (DIDSA-CAD PR #386,
+    `tests/test_sketch_solver_answers.py`). Here each group holding a named constraint is re-solved alone, from the same
+    starting positions and with the same rules (`_solve_sketch_once`, without this narrowing), and only the named
+    constraints of groups that still do not converge are kept. Never narrows to nothing: if every group solves alone, py-slvs's
+    list is returned unchanged."""
+    groups = _independent_constraint_groups(points_by_constraint)
+    if len(groups) < 2:
+        return failed_ids
+    group_of = {constraint_id: index for index, group in enumerate(groups) for constraint_id in group}
+    # Constraints py-slvs never saw (provisional dimensions, those an arc entity already states) add no equations; every
+    # re-solve keeps them so that the rules reading them see the same sketch.
+    unsent = {constraint_id for constraint_id in sketch.constraints if constraint_id not in points_by_constraint}
+
+    conflicting: set[int] = set()
+    for index in sorted({group_of[c] for c in failed_ids if c in group_of}):
+        members = set(groups[index]) | unsent
+        scratch = copy.copy(sketch)
+        scratch.points = {}
+        for point_id, point in sketch.points.items():
+            scratch_point = copy.copy(point)
+            scratch_point.x, scratch_point.y = start_positions[point_id]
+            scratch.points[point_id] = scratch_point
+        scratch.constraints = {c: constraint for c, constraint in sketch.constraints.items() if c in members}
+        if not _solve_sketch_once(scratch, anchor_point_ids, narrow_failed=False).converged:
+            conflicting.add(index)
+
+    narrowed = [c for c in failed_ids if group_of.get(c) in conflicting]
+    return narrowed or failed_ids
+
+
+def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str], *, narrow_failed: bool = True) -> SolveResult:
     """One py-slvs solve attempt - see `solve_sketch` for the retry-without-
     anchors fallback built on top of this.
 
@@ -1310,11 +1392,17 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
         anchor_point_ids=anchor_point_ids,
     )
 
+    # Where every Point starts, for `_failed_ids_in_conflicting_groups` (the solve below writes its result over them).
+    start_positions = {point_id: (point.x, point.y) for point_id, point in sketch.points.items()}
+
     constraint_id_by_handle: dict[int, str] = {}
+    points_by_constraint: dict[str, set[str]] = {}
     # A provisional dimension is not yet confirmed by the user and contributes zero DOF-removal, exactly as if it didn't exist, until
     # confirmed (see DistanceConstraint.provisional's own doc comment); see `_solver_constraints` for the other ones left out.
     for constraint in _solver_constraints(sketch):
+        builder.record_points()
         handle = constraint.add_to_solver(builder)
+        points_by_constraint[constraint.id] = builder.recorded_points()
         constraint_id_by_handle[handle] = constraint.id
 
     # Register every Point - not just ones a Constraint happens to
@@ -1548,6 +1636,10 @@ def _solve_sketch_once(sketch: Sketch, anchor_point_ids: frozenset[str]) -> Solv
             if handle in constraint_id_by_handle
         ]
     )
+    if solver_reported_failed_constraint_ids and narrow_failed:
+        solver_reported_failed_constraint_ids = _failed_ids_in_conflicting_groups(
+            sketch, anchor_point_ids, solver_reported_failed_constraint_ids, points_by_constraint, start_positions
+        )
 
     blamed_constraint_ids: list[str] = []
     if not converged:

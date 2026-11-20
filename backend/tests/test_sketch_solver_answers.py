@@ -23,10 +23,16 @@ Nothing here pins `result_code` or the whole failed list: py-slvs gives differen
 and once on amd64 between two runs of the same code; arm64 also names every constraint of a conflict where amd64 names only the newest
 (DIDSA-CAD `docs/status.md`, 2026-11-20). The redundant cases converge only because `solver.py`'s own checks accept what py-slvs reports
 as code 1 or 5, so these tests also guard those checks. Every test runs on both CI architectures; arm64 is the Pi 5 server's.
+
+arm64's py-slvs also named a constraint on unrelated geometry while a conflict was kept, which made every new constraint be taken back
+there. `solver.py` now narrows the list to the groups of constraints that cannot be solved on their own
+(`_failed_ids_in_conflicting_groups`). The tests that read the failed list run twice (the `py_slvs_failed_list` fixture): with py-slvs
+as it is, and with a py-slvs whose failed list names every constraint, as arm64's did, so the narrowing is checked on every architecture.
 """
 
 import pytest
 from fastapi.testclient import TestClient
+from py_slvs import slvs
 
 from app.main import app
 from tests.conftest import TEST_API_KEY
@@ -116,7 +122,7 @@ def _converged_ten(sketch_id: str) -> tuple[str, str, str]:
     return a, b, ten
 
 
-def test_a_contradiction_added_to_a_converged_sketch_does_not_converge_and_names_the_new_constraint():
+def test_a_contradiction_added_to_a_converged_sketch_does_not_converge_and_names_the_new_constraint(py_slvs_failed_list):
     sketch_id = _sketch()
     a, b, _ten = _converged_ten(sketch_id)
 
@@ -124,6 +130,22 @@ def test_a_contradiction_added_to_a_converged_sketch_does_not_converge_and_names
     solve = _solve(sketch_id)
     assert solve["converged"] is False, "rule 2: the contradiction must be taken back"
     assert twelve in _failed(solve)
+
+
+class _SystemNamingEveryConstraint(slvs.System):
+    """py-slvs as arm64's build behaved in CI (DIDSA-CAD PR #386): when a solve fails, `Failed` names every constraint, related
+    to the conflict or not. `solver.py` must still name only the conflict's group (`_failed_ids_in_conflicting_groups`)."""
+
+    @property
+    def Failed(self):
+        return list(range(1, 100_000))
+
+
+@pytest.fixture(params=["py-slvs as it is", "py-slvs naming every constraint"])
+def py_slvs_failed_list(request, monkeypatch):
+    if request.param == "py-slvs naming every constraint":
+        monkeypatch.setattr(slvs, "System", _SystemNamingEveryConstraint)
+    return request.param
 
 
 def _kept_conflict() -> tuple[str, str, str, str]:
@@ -137,7 +159,7 @@ def _kept_conflict() -> tuple[str, str, str, str]:
     return sketch_id, a, b, unrelated_line
 
 
-def test_while_a_conflict_is_kept_a_constraint_on_unrelated_geometry_is_not_named():
+def test_while_a_conflict_is_kept_a_constraint_on_unrelated_geometry_is_not_named(py_slvs_failed_list):
     sketch_id, _a, _b, unrelated_line = _kept_conflict()
 
     horizontal = _add(sketch_id, type="horizontal", line_id=unrelated_line)
@@ -146,7 +168,7 @@ def test_while_a_conflict_is_kept_a_constraint_on_unrelated_geometry_is_not_name
     assert horizontal not in _failed(solve), "rule 3: an unrelated constraint must be kept while a conflict is"
 
 
-def test_while_a_conflict_is_kept_a_further_contradiction_is_named():
+def test_while_a_conflict_is_kept_a_further_contradiction_is_named(py_slvs_failed_list):
     sketch_id, a, b, _unrelated_line = _kept_conflict()
 
     fifteen = _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=15)
