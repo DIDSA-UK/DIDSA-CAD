@@ -5,21 +5,23 @@ VR sketcher (`SketchSession._taken_back`) and the flat app (`SketchController`'s
 converged sketch they take back any constraint that stops it converging; on a sketch that was already not converged they take one back only when the failed
 list names it. So a change in py-slvs or in `solver.py` that moves `converged` or drops the new constraint from the failed list must show up here first.
 
-Each case after a `solve-and-refresh`, from CI's two legs (py-slvs 1.0.6's prebuilt wheel for each architecture; arm64 is the Pi 5 server's):
+Each case after a `solve-and-refresh`, as seen in CI (py-slvs 1.0.6's prebuilt wheel for each architecture; arm64 is the Pi 5 server's), 2026-11-19/20:
 
 | Case | converged | result_code amd64 / arm64 | failed ids amd64 / arm64 |
 |---|---|---|---|
 | a second Horizontal on the same line | true | 0 / 0 | [] / [] |
 | the same distance twice (two free points) | true | 5 / 1 | [] / [] |
-| Horizontal + horizontal distance + aligned distance of the same length | true | 5 / 5 | [] / [] |
+| Horizontal + horizontal distance + aligned distance of the same length | true | 5, once 1 / 5 | [] / [] |
 | distance 10, then 12 between the same points | false | 1 / 1 | [the 12] / [the 10, the 12] |
 
-`result_code` is py-slvs's: 0 okay, 1 inconsistent, 5 "redundant, okay" (the solve converged with a redundant equation). Neither app reads it. The two
-architectures' wheels disagree on the duplicate distance (arm64 calls it inconsistent; `solver.py`'s residual check still reports it converged), and arm64's
-failed list names every constraint of the conflict, not only the newest. Those two answers are therefore pinned only where both agree: the code is left out
-of the duplicate-distance case, and the contradiction's failed list must name the 12 and nothing outside the conflict. Measured first on amd64 only
-(2026-11-19); the arm64 answers are from CI run 44714434241 (2026-11-20). The DOF the solver reports for the duplicate-distance case is not pinned: it was
-seen to fall below the true figure (3 to 1) once, which is the solver's own count with a redundant row.
+`result_code` is py-slvs's: 0 okay, 1 inconsistent, 5 "redundant, okay" (the solve converged with a redundant equation). Neither app reads it. Its verdict
+on a redundant equation is not stable: arm64 gave 1 for the duplicate distance in every run, and amd64 gave 1 once for the Horizontal triple (PR #386's
+pull_request run, 44725693905) where it gave 5 in seven other runs of the same code (`solver.py`'s residual check reports both converged either way).
+arm64's failed list also names every constraint of the conflict, not only the newest. Why is not known: an amd64 machine with the same wheels (cp311 and
+cp313) gave the table's amd64 answers in every one of over 2 000 solves (repeated, in fresh processes, after larger solves, through the routes). So no
+redundant case pins a code (the stable 0 and 1 stay pinned), and the contradiction's failed list must name the 12 and nothing outside the conflict. The DOF
+the solver reports for the duplicate-distance case is not pinned: it was seen to fall below the true figure (3 to 1) once, which is the solver's own count
+with a redundant row.
 """
 
 from fastapi.testclient import TestClient
@@ -30,7 +32,6 @@ from tests.conftest import TEST_API_KEY
 client = TestClient(app)
 client.headers.update({"X-API-Key": TEST_API_KEY})
 
-REDUNDANT_OKAY = 5
 INCONSISTENT = 1
 
 
@@ -92,8 +93,8 @@ def test_horizontal_plus_horizontal_distance_plus_aligned_distance_of_one_length
 
     _add(sketch_id, type="distance", point_a_id=a, point_b_id=b, distance=10)
     solve = _solve(sketch_id)
+    # No result_code: 5 in all but one run, 1 once on amd64 (see the module docstring). Both apps read only these two.
     assert solve["converged"] is True
-    assert solve["result_code"] == REDUNDANT_OKAY
     assert solve["solver_reported_failed_constraint_ids"] == []
 
 
