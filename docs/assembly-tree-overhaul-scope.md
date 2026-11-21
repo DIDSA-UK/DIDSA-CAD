@@ -400,11 +400,11 @@ Also: the old panel's tests are moved or retired (say which), `flutter analyze` 
 
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
-| A1 contract | not started | | | |
-| A2 Flutter logic | not started | | | |
-| A3 Flutter widget | not started | | | |
-| A4 Flutter integration | not started | | | |
-| A5 VR adoption | not started | | | |
+| A1 contract | merged 20 Nov | #388 | strongest | One send-back (suppressed mates counted, one failing level failed the call, GET wrote mate refs); all fixed. Added states `cycle`, `near`; `status` off by default; `status_failed` / `status_incomplete`. |
+| A2 Flutter logic | merged 20 Nov | #389 | mid-tier | One send-back (refresh lost open groups while grouping was off; small API/model nits); all fixed. 36/36 vectors. |
+| A3 Flutter widget | merged 20 Nov | #390 | mid-tier | One send-back (late tree / hidden pane lost reveals and root features; eye rules; repeat feature requests); all fixed. A4 must call `forgetFeaturesRequest` on a failed fetch. |
+| A4 Flutter integration | merged 20 Nov | #391 | strongest | One send-back (raw ids at root, session-hidden after focus, status fallback, Edit Alone depth, error handling). Owner device check: row select doesn't highlight in the viewport, Hide / Isolate on a sub-assembly don't reach its children, grouping switch too big, wants zoom to selection: follow-up A4.1. |
+| A5 VR adoption | merged 20 Nov | VR #96 | mid-tier | One send-back (a Part-not-found 404 forced the old per-level reads for good; Fix/Float icon stale; null children crashed); all fixed. 36/36 vectors. Render check (Xvfb/Mesa, 8 scenarios) as expected; found an intermittent stale tree after Float and clipped state hints: follow-up A5.1 (VR #98, merged 20 Nov after one send-back), render check script in VR `tools/assembly_tree_render_check/` (VR #97). Headset check pending (owner). |
 
 ## Sources
 
