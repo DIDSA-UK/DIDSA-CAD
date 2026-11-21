@@ -1,3 +1,4 @@
+import 'dart:async' show unawaited;
 import 'dart:math' as math;
 
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
@@ -8,7 +9,10 @@ import '../api/document_api_client.dart';
 import '../assembly/assembly_tree_model.dart';
 import '../layout/layout_mode.dart';
 import 'action_sheet.dart' show MouseContextMenuRegion;
+import 'assembly_tree_feature_icon.dart';
 import 'edit_alone_row.dart';
+import 'svg_icon.dart';
+import 'view_preferences.dart';
 
 /// Row height (A3, `docs/assembly-tree-overhaul-scope.md` 9.6): fixed, so the list can scroll to any row without building the ones in between.
 const double kAssemblyTreeRowHeightDesktop = 30;
@@ -85,6 +89,8 @@ class AssemblyTreeView extends StatefulWidget {
     this.onClose,
     this.onRowTap,
     this.onRowLongPress,
+    this.onRowEdit,
+    this.onRowPick,
     this.onRowContextMenu,
     this.onVisibilityToggle,
     this.onFeaturesRequested,
@@ -99,6 +105,11 @@ class AssemblyTreeView extends StatefulWidget {
     this.onZoomSelected,
     this.onAloneSelected,
     this.onMoreSelected,
+    this.onEditSelected,
+    this.onRollbackSelected,
+    this.coarseEligibleFeatureIds = const {},
+    this.pinnedCoarseFeatureIds = const {},
+    this.onToggleCoarsePin,
     this.statusLine,
     this.statusUnavailable = false,
     this.flashItemIds = const {},
@@ -132,6 +143,14 @@ class AssemblyTreeView extends StatefulWidget {
   final void Function(AssemblyTreeRow row)? onRowTap;
   final void Function(AssemblyTreeRow row)? onRowLongPress;
 
+  /// Edit the row: a double-tap (touch) or a double-click (desktop) on a feature row of the live part, and only there (a tap stays select-only).
+  /// Null leaves the gesture out, and with it the delay a single tap would otherwise wait for a second one.
+  final void Function(AssemblyTreeRow row)? onRowEdit;
+
+  /// A row that the model's picker says is pickable (or picked, to take it back) was tapped (spec section 13's picker modes; see
+  /// [AssemblyTreeModel.setPicker]). A locked row shows its reason in the banner and does not call this.
+  final void Function(AssemblyTreeRow row)? onRowPick;
+
   /// Mouse right click; [position] is global. Not called during a multi-select.
   final void Function(AssemblyTreeRow row, Offset position)? onRowContextMenu;
 
@@ -162,6 +181,19 @@ class AssemblyTreeView extends StatefulWidget {
   final void Function(AssemblyTreeRow row)? onZoomSelected;
   final void Function(AssemblyTreeRow row)? onAloneSelected;
   final void Function(AssemblyTreeRow row)? onMoreSelected;
+
+  /// The bar of a live feature row: Edit, and Roll back to here (the feature becomes the end of the rollback). Hide / Show, Zoom and More are
+  /// [onHideSelected], [onZoomSelected] and [onMoreSelected], whichever rows they apply to (the bar says: a feature has Edit, Roll back, Hide,
+  /// More; a body, surface or curve Hide, Zoom, More; a default plane Show / Hide).
+  final void Function(AssemblyTreeRow row)? onEditSelected;
+  final void Function(AssemblyTreeRow row)? onRollbackSelected;
+
+  /// Level-of-detail "pin to coarse": the features it applies to (by feature id), those pinned now, and the toggle. With a toggle set, the
+  /// desktop header gets an icon that shows a pin column (off by default, saved in `ViewPreferences`); the same action belongs in the host's
+  /// More menu on a phone. A null toggle leaves the column and the icon out.
+  final Set<String> coarseEligibleFeatureIds;
+  final Set<String> pinnedCoarseFeatureIds;
+  final void Function(AssemblyTreeRow row)? onToggleCoarsePin;
 
   /// The status call failed, or the backend cannot give one: the filter says "status unavailable" instead of "still loading".
   final bool statusUnavailable;
@@ -207,6 +239,13 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   bool _filterOpen = false;
 
   bool get _filtering => _query.trim().isNotEmpty;
+
+  /// The desktop pin column (P1): saved in `ViewPreferences`, off by default.
+  late bool _pinColumn = ViewPreferences.assemblyTreePinColumn;
+
+  /// The picker the last build saw, and the reason of the locked row last tapped under it (shown in the banner until the picker changes).
+  AssemblyPicker? _seenPicker;
+  String? _pickNote;
 
   @override
   void initState() {
@@ -324,12 +363,27 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (!row.open) _askForFeatures(row.path);
   }
 
+  /// Whether a multi-select tap on [row] toggles it: an occurrence row, or a feature, body, surface or curve of the live part.
+  bool _multiSelectable(AssemblyTreeRow row) =>
+      (row.path != null && row.path!.isNotEmpty) || widget.model.multiSelectKeyOfRow(row.key) != null;
+
   void _tap(AssemblyTreeRow row) {
     if (widget.isMultiSelectMode) {
-      if (row.path != null && row.path!.isNotEmpty) widget.onMultiSelectToggle?.call(row);
+      if (_multiSelectable(row)) widget.onMultiSelectToggle?.call(row);
       return;
     }
-    widget.model.selectedKey = row.key;
+    if (row.pick != AssemblyPickState.none) {
+      if (row.pick == AssemblyPickState.locked) {
+        setState(() => _pickNote = row.pickReason);
+      } else {
+        setState(() => _pickNote = null);
+        widget.onRowPick?.call(row);
+      }
+      return;
+    }
+    // While a picker is open a row it does not take only opens or closes (a folder, a group); the selection is the picker's business.
+    final picking = widget.model.picker != null;
+    if (!picking) widget.model.selectedKey = row.key;
     final groupLike =
         row.kind == AssemblyRowKind.group || row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder;
     if (groupLike && !_filtering) {
@@ -337,15 +391,24 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       if (!row.open) _askForFeatures(row.path);
     }
     setState(() {});
-    widget.onRowTap?.call(row);
+    if (!picking) widget.onRowTap?.call(row);
   }
 
   void _longPress(AssemblyTreeRow row) {
     if (widget.isMultiSelectMode) {
-      if (row.path != null && row.path!.isNotEmpty) widget.onMultiSelectToggle?.call(row);
+      if (_multiSelectable(row)) widget.onMultiSelectToggle?.call(row);
       return;
     }
+    if (widget.model.picker != null) return; // a picker is its own mode: no menu, no multi-select
     widget.onRowLongPress?.call(row);
+  }
+
+  /// A double-tap / double-click: Edit, on a live feature row.
+  void _edit(AssemblyTreeRow row) {
+    if (widget.isMultiSelectMode || widget.model.picker != null) return;
+    // The double-tap wins the gesture, so the single tap never ran: select through the host first (the viewport highlight follows).
+    _tap(row);
+    widget.onRowEdit?.call(row);
   }
 
   void _reveal(List<String> path, {required bool select}) {
@@ -507,17 +570,21 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
 
     final selectedIndex = model.selectedKey == null ? -1 : _indexOfRow(model.selectedKey!);
     final selectedRow = selectedIndex < 0 ? null : rows[selectedIndex];
-    final showBar = !desktop &&
-        !widget.isMultiSelectMode &&
-        selectedRow != null &&
-        selectedRow.path != null &&
-        selectedRow.path!.isNotEmpty &&
-        (widget.onHideSelected != null ||
-            widget.onIsolateSelected != null ||
-            widget.onFocusSelected != null ||
-            widget.onZoomSelected != null ||
-            widget.onAloneSelected != null ||
-            widget.onMoreSelected != null);
+    final picker = model.picker;
+    if (!identical(picker, _seenPicker)) {
+      _seenPicker = picker;
+      _pickNote = null;
+    }
+    final bar = picker != null || widget.isMultiSelectMode || desktop || selectedRow == null ? null : _barButtons(selectedRow);
+    final showBar = bar != null && bar.isNotEmpty;
+    final pinColumn = desktop && _pinColumn && widget.onToggleCoarsePin != null;
+    // Multi-select ticks by row key, but a plane feature listed in the Planes folder and in the build order is one feature: both rows tick.
+    final Set<String?> selectedMs = widget.isMultiSelectMode
+        ? {
+            for (final k in widget.selectedKeys)
+              if (model.multiSelectKeyOfRow(k) != null) model.multiSelectKeyOfRow(k)!
+          }
+        : const <String>{};
 
     final body = Material(
       color: scheme.surface,
@@ -533,6 +600,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           if (widget.editAloneLabel != null && widget.onEditAloneDone != null && (widget.visible || widget.docked))
             EditAloneRow(label: widget.editAloneLabel!, onDone: widget.onEditAloneDone!),
           if (widget.focusedLabel != null) _focusRow(context),
+          if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
           if (widget.statusLine != null && widget.statusLine!.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
@@ -566,15 +634,29 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                                 row: r,
                                 height: h,
                                 desktop: desktop,
-                                selected: widget.isMultiSelectMode ? widget.selectedKeys.contains(r.key) : r.key == model.selectedKey,
+                                selected: widget.isMultiSelectMode
+                                    ? widget.selectedKeys.contains(r.key) || selectedMs.contains(model.multiSelectKeyOfRow(r.key))
+                                    : r.key == model.selectedKey,
                                 multiSelect: widget.isMultiSelectMode,
+                                selectable: _multiSelectable(r),
+                                pinState: pinColumn && r.featureId != null && widget.coarseEligibleFeatureIds.contains(r.featureId)
+                                    ? widget.pinnedCoarseFeatureIds.contains(r.featureId)
+                                    : null,
+                                onPin: () => widget.onToggleCoarsePin?.call(r),
+                                pickMulti: picker?.multi ?? false,
+                                onDoubleTap: widget.onRowEdit != null &&
+                                        r.liveKind == AssemblyLiveKind.feature &&
+                                        picker == null &&
+                                        !widget.isMultiSelectMode
+                                    ? () => _edit(r)
+                                    : null,
                                 bracket: _bracketFor(r, colours),
                                 canToggle: _canToggle(r),
                                 showEye: widget.onVisibilityToggle != null,
                                 onToggle: () => _toggle(r),
                                 onTap: () => _tap(r),
                                 onLongPress: () => _longPress(r),
-                                onContextMenu: widget.isMultiSelectMode || widget.onRowContextMenu == null
+                                onContextMenu: widget.isMultiSelectMode || picker != null || widget.onRowContextMenu == null
                                     ? null
                                     : (at) => widget.onRowContextMenu!(r, at),
                                 onEye: () => widget.onVisibilityToggle?.call(r),
@@ -586,7 +668,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                         },
                       ),
           ),
-          if (showBar) _selectionBar(context, selectedRow),
+          if (showBar) _selectionBar(context, selectedRow!, bar),
         ],
       ),
     );
@@ -671,6 +753,21 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                 widget.onGroupingChanged?.call(v);
               },
             ),
+            // The pin-to-coarse column (desktop, off by default).
+            if (desktop && widget.onToggleCoarsePin != null)
+              button(
+                key: 'tree-pin-column-toggle',
+                tooltip: _pinColumn ? 'Pin column: on' : 'Pin column: off',
+                icon: Icons.blur_off,
+                colour: scheme.onSurfaceVariant,
+                selectedIcon: Icons.blur_on,
+                selected: _pinColumn,
+                onPressed: () {
+                  final v = !_pinColumn;
+                  setState(() => _pinColumn = v);
+                  unawaited(ViewPreferences.setAssemblyTreePinColumn(v));
+                },
+              ),
             button(
               key: 'tree-expand-to-selection',
               tooltip: 'Expand to selection',
@@ -817,47 +914,139 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     );
   }
 
-  Widget _selectionBar(BuildContext context, AssemblyTreeRow row) {
+  /// The buttons of the phone bar for [row]: an occurrence row's (Hide, Isolate, Zoom, Focus, Alone, More), or for the live part's rows a
+  /// feature's (Edit, Roll back to here, Hide / Show, More), a body, surface or curve's (Hide / Show, Zoom, More) and a default plane's
+  /// (Show / Hide). A button whose callback is null is left out; null means the row has no bar.
+  List<_BarButton>? _barButtons(AssemblyTreeRow row) {
+    final hide = _BarButton('tree-bar-hide', row.hidden ? Icons.visibility_outlined : Icons.visibility_off_outlined, row.hidden ? 'Show' : 'Hide',
+        widget.onHideSelected);
+    final zoom = _BarButton('tree-bar-zoom', Icons.zoom_out_map, 'Zoom', widget.onZoomSelected);
+    final more = _BarButton('tree-bar-more', Icons.more_horiz, 'More', widget.onMoreSelected);
+    List<_BarButton> live(List<_BarButton> all) => [
+          for (final b in all)
+            if (b.onTap != null) b
+        ];
+    if (row.path != null && row.path!.isNotEmpty) {
+      return live([
+        hide,
+        _BarButton('tree-bar-isolate', Icons.filter_center_focus, 'Isolate', widget.onIsolateSelected),
+        zoom,
+        _BarButton('tree-bar-focus', Icons.center_focus_strong_outlined, 'Focus', widget.onFocusSelected),
+        _BarButton('tree-bar-alone', Icons.edit_outlined, 'Alone', widget.onAloneSelected),
+        more,
+      ]);
+    }
+    switch (row.liveKind) {
+      case AssemblyLiveKind.feature:
+        return live([
+          _BarButton('tree-bar-edit', Icons.edit_outlined, 'Edit', widget.onEditSelected),
+          _BarButton('tree-bar-rollback', Icons.history, 'Roll back to here', widget.onRollbackSelected),
+          hide,
+          more,
+        ]);
+      case AssemblyLiveKind.body:
+      case AssemblyLiveKind.surface:
+      case AssemblyLiveKind.curve:
+        return live([hide, zoom, more]);
+      case AssemblyLiveKind.defaultPlane:
+        return live([hide]);
+      default:
+        return null;
+    }
+  }
+
+  /// What a live feature's state says, for the bar and the row's tooltip; null when it has nothing to say.
+  static String? _stateText(AssemblyTreeRow row) => switch (row.featureState) {
+        AssemblyFeatureState.lostReference => row.lostReason == null || row.lostReason!.isEmpty ? 'Lost reference' : 'Lost reference: ${row.lostReason}',
+        AssemblyFeatureState.movedReference => 'Reference may have moved - open to check',
+        AssemblyFeatureState.pendingDetail => 'Loading full detail...',
+        AssemblyFeatureState.rolledBack => 'After the rollback point',
+        _ => null,
+      };
+
+  Widget _selectionBar(BuildContext context, AssemblyTreeRow row, List<_BarButton> buttons) {
     final scheme = Theme.of(context).colorScheme;
-    Widget button(String key, IconData icon, String label, void Function(AssemblyTreeRow)? cb) {
-      if (cb == null) return const SizedBox.shrink();
-      return Expanded(
-        child: InkWell(
-          key: ValueKey(key),
-          onTap: () => cb(row),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(icon, size: 20),
-                Text(label, style: const TextStyle(fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
-              ],
+    final palette = AiPalette.of(context);
+    final text = row.isLive ? _stateText(row) : null;
+    final Color textColour = switch (row.featureState) {
+      AssemblyFeatureState.lostReference => palette.danger,
+      AssemblyFeatureState.movedReference => palette.warning,
+      _ => scheme.onSurfaceVariant,
+    };
+    Widget button(_BarButton b) => Expanded(
+          child: InkWell(
+            key: ValueKey(b.key),
+            onTap: () => b.onTap!(row),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(b.icon, size: 20),
+                  Text(b.label, style: const TextStyle(fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis),
+                ],
+              ),
             ),
           ),
-        ),
-      );
-    }
+        );
 
     return Material(
       key: const ValueKey('tree-selection-bar'),
       color: scheme.surfaceContainerHigh,
       child: SafeArea(
         top: false,
-        child: Row(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            button('tree-bar-hide', row.hidden ? Icons.visibility_outlined : Icons.visibility_off_outlined, row.hidden ? 'Show' : 'Hide',
-                widget.onHideSelected),
-            button('tree-bar-isolate', Icons.filter_center_focus, 'Isolate', widget.onIsolateSelected),
-            button('tree-bar-zoom', Icons.zoom_out_map, 'Zoom', widget.onZoomSelected),
-            button('tree-bar-focus', Icons.center_focus_strong_outlined, 'Focus', widget.onFocusSelected),
-            button('tree-bar-alone', Icons.edit_outlined, 'Alone', widget.onAloneSelected),
-            button('tree-bar-more', Icons.more_horiz, 'More', widget.onMoreSelected),
+            if (text != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 6, 12, 0),
+                child: Text(text,
+                    key: const ValueKey('tree-bar-reason'), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, color: textColour)),
+              ),
+            Row(children: [for (final b in buttons) button(b)]),
           ],
         ),
       ),
     );
   }
+
+  /// A picker's banner, in the bar's place: what is being picked, how many are ticked, and why the last locked row tapped cannot be (a lock with
+  /// no banner of its own shows only that reason, once a row is tapped).
+  Widget _pickerBanner(BuildContext context, AssemblyPicker picker) {
+    final scheme = Theme.of(context).colorScheme;
+    final banner = picker.banner;
+    if (banner == null && _pickNote == null) return const SizedBox.shrink();
+    final count = picker.multi ? picker.picked.length : 0;
+    return Container(
+      key: const ValueKey('tree-picker-banner'),
+      width: double.infinity,
+      color: scheme.surfaceContainerHighest,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (banner != null)
+            Text(count == 0 ? banner : '$banner - $count selected',
+                maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 13)),
+          if (_pickNote != null)
+            Text(_pickNote!,
+                key: const ValueKey('tree-picker-reason'), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(color: scheme.error, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+}
+
+/// One button of the phone bar.
+class _BarButton {
+  final String key;
+  final IconData icon;
+  final String label;
+  final void Function(AssemblyTreeRow row)? onTap;
+  const _BarButton(this.key, this.icon, this.label, this.onTap);
 }
 
 /// One line. Stateful only for the desktop hover.
@@ -869,6 +1058,11 @@ class _TreeRow extends StatefulWidget {
     required this.desktop,
     required this.selected,
     required this.multiSelect,
+    required this.selectable,
+    required this.pinState,
+    required this.onPin,
+    required this.onDoubleTap,
+    required this.pickMulti,
     required this.bracket,
     required this.canToggle,
     required this.showEye,
@@ -887,6 +1081,19 @@ class _TreeRow extends StatefulWidget {
   final bool desktop;
   final bool selected;
   final bool multiSelect;
+
+  /// A multi-select tap toggles this row (it draws a tick circle instead of its icon).
+  final bool selectable;
+
+  /// The desktop pin column: null draws nothing, else whether this feature is pinned to coarse.
+  final bool? pinState;
+  final VoidCallback onPin;
+
+  /// Edit (double-tap, double-click); null leaves the gesture out.
+  final VoidCallback? onDoubleTap;
+
+  /// The model's picker ticks several rows: a pickable row draws an empty tick circle.
+  final bool pickMulti;
   final Color? bracket;
   final bool canToggle;
   final bool showEye;
@@ -916,6 +1123,27 @@ class _TreeRowState extends State<_TreeRow> {
         AssemblyRowKind.pattern => Icons.grid_view_outlined,
       };
 
+  /// The icon of a row of the live part: the existing feature glyphs, a folder, a body, a plane.
+  Widget _liveIcon(AssemblyTreeRow r, double size, Color colour) {
+    switch (r.liveKind!) {
+      case AssemblyLiveKind.bodiesFolder:
+      case AssemblyLiveKind.planesFolder:
+      case AssemblyLiveKind.surfacesFolder:
+      case AssemblyLiveKind.curvesFolder:
+        return Icon(Icons.folder_outlined, size: size, color: colour);
+      case AssemblyLiveKind.body:
+        return SvgIcon('assets/icons/viewport/selection_body.svg', size: size, color: colour);
+      case AssemblyLiveKind.surface:
+        return SvgIcon(assemblyTreeFeatureAsset('surface'), size: size, color: colour);
+      case AssemblyLiveKind.curve:
+        return SvgIcon(assemblyTreeFeatureAsset('curve'), size: size, color: colour);
+      case AssemblyLiveKind.defaultPlane:
+        return SvgIcon(assemblyTreeFeatureAsset('create_plane'), size: size, color: colour);
+      case AssemblyLiveKind.feature:
+        return SvgIcon(assemblyTreeFeatureAsset(r.type ?? ''), size: size, color: colour);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final r = widget.row;
@@ -923,7 +1151,7 @@ class _TreeRowState extends State<_TreeRow> {
     final desktop = widget.desktop;
     final iconSize = desktop ? 16.0 : 22.0;
     final isOccurrence = r.path != null && r.path!.isNotEmpty;
-    final canEye = widget.showEye && isOccurrence;
+    final canEye = widget.showEye && (isOccurrence || (r.isLive && !r.isLiveFolder));
     // A group row never shows one: it has nothing to toggle (its members show their own).
     final eyeSlot = r.hidden && r.kind != AssemblyRowKind.group
         ? Icon(Icons.visibility_off_outlined, key: ValueKey('tree-eye-off:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
@@ -948,7 +1176,9 @@ class _TreeRowState extends State<_TreeRow> {
       chevron = SizedBox(width: chevronWidth);
     }
 
-    final dim = r.suppressed ? 0.45 : (r.hidden ? 0.65 : 1.0);
+    final dim = r.suppressed || r.featureState == AssemblyFeatureState.rolledBack || r.pick == AssemblyPickState.locked
+        ? 0.45
+        : (r.hidden ? 0.65 : 1.0);
     final isItem = r.itemId != null && (r.kind == AssemblyRowKind.mate || r.kind == AssemblyRowKind.pattern);
     final palette = AiPalette.of(context);
     final Color? toneColour = switch (r.tone) {
@@ -980,9 +1210,15 @@ class _TreeRowState extends State<_TreeRow> {
         chevron,
         Opacity(
           opacity: dim,
-          child: widget.multiSelect && isOccurrence
+          child: widget.multiSelect && widget.selectable
               ? Icon(widget.selected ? Icons.check_circle : Icons.circle_outlined, size: iconSize, color: scheme.primary)
-              : Icon(kindIcon, size: iconSize, color: toneColour ?? scheme.onSurfaceVariant),
+              : r.pick == AssemblyPickState.picked
+                  ? Icon(Icons.check_circle, key: ValueKey('tree-picked:${r.key}'), size: iconSize, color: scheme.primary)
+                  : r.pick == AssemblyPickState.pickable && r.liveKind != null && widget.pickMulti
+                      ? Icon(Icons.circle_outlined, size: iconSize, color: scheme.primary)
+                      : r.liveKind != null
+                          ? _liveIcon(r, iconSize, scheme.primary)
+                          : Icon(kindIcon, size: iconSize, color: toneColour ?? scheme.onSurfaceVariant),
         ),
         const SizedBox(width: 8),
         Expanded(
@@ -1019,7 +1255,7 @@ class _TreeRowState extends State<_TreeRow> {
                   ),
           ),
         ),
-        if (r.count != null && (r.kind == AssemblyRowKind.matesFolder || r.kind == AssemblyRowKind.patternsFolder))
+        if (r.count != null && (r.kind == AssemblyRowKind.matesFolder || r.kind == AssemblyRowKind.patternsFolder || r.isLiveFolder))
           Padding(
             padding: const EdgeInsets.only(left: 4),
             child: Text('${r.count}', style: TextStyle(fontSize: desktop ? 12 : 13, color: scheme.onSurfaceVariant)),
@@ -1031,6 +1267,22 @@ class _TreeRowState extends State<_TreeRow> {
             // Desktop: the hover eye and the eye-off toggle. Phone: only the eye-off of a hidden row (it is state, not a button). Never in multi-select.
             onTap: canEye && !widget.multiSelect && (desktop || r.hidden) ? widget.onEye : null,
             child: SizedBox(width: desktop ? 26 : 40, height: widget.height, child: Center(child: eyeSlot)),
+          ),
+        if (widget.pinState != null)
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onPin,
+            child: SizedBox(
+              width: 26,
+              height: widget.height,
+              child: Center(
+                child: Tooltip(
+                  message: widget.pinState! ? 'Always showing simplified geometry' : 'Always show simplified geometry',
+                  child: Icon(widget.pinState! ? Icons.blur_on : Icons.blur_off,
+                      key: ValueKey('tree-pin:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant),
+                ),
+              ),
+            ),
           ),
         Padding(padding: const EdgeInsets.only(left: 6, right: 8), child: _stateSlot(context, r, iconSize)),
       ],
@@ -1061,10 +1313,13 @@ class _TreeRowState extends State<_TreeRow> {
                   : Colors.transparent,
       child: InkWell(
         onTap: widget.onTap,
+        onDoubleTap: widget.onDoubleTap,
         onLongPress: widget.onLongPress,
         child: SizedBox(height: widget.height, child: content),
       ),
     );
+    final tip = r.pick == AssemblyPickState.locked ? r.pickReason : (r.isLive ? _AssemblyTreeViewState._stateText(r) : null);
+    if (tip != null) tile = Tooltip(message: tip, triggerMode: TooltipTriggerMode.manual, child: tile);
     tile = MouseContextMenuRegion(onOpen: widget.onContextMenu, child: tile);
     if (desktop) {
       tile = MouseRegion(
@@ -1100,8 +1355,9 @@ class _TreeRowState extends State<_TreeRow> {
   Widget _stateSlot(BuildContext context, AssemblyTreeRow r, double size) {
     final scheme = Theme.of(context).colorScheme;
     final palette = AiPalette.of(context);
-    final slotKey = ValueKey('tree-state:${r.key}:${r.state.wire}');
+    final slotKey = ValueKey('tree-state:${r.key}:${r.stateWire}');
     final state = r.state;
+    if (r.isLive) return _liveStateSlot(context, r, size);
     const constraintStates = {
       AssemblyRowState.broken,
       AssemblyRowState.overConstrained,
@@ -1146,6 +1402,24 @@ class _TreeRowState extends State<_TreeRow> {
       );
     }
     return Tooltip(message: look.$3!, child: Icon(look.$1, key: slotKey, size: size - 2, color: look.$2));
+  }
+
+  /// The live part's one state slot (spec section 13): lost reference (red), moved reference (amber), waiting for detail, after the rollback
+  /// point. `hidden` is the eye-off the row already draws; a folder, a plain row and a hidden row have no icon here.
+  Widget _liveStateSlot(BuildContext context, AssemblyTreeRow r, double size) {
+    final palette = AiPalette.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final key = ValueKey('tree-state:${r.key}:${r.stateWire}');
+    final text = _AssemblyTreeViewState._stateText(r);
+    final (IconData?, Color?) look = switch (r.featureState) {
+      AssemblyFeatureState.lostReference => (Icons.warning_rounded, palette.danger),
+      AssemblyFeatureState.movedReference => (Icons.help_rounded, palette.warning),
+      AssemblyFeatureState.pendingDetail => (Icons.hourglass_bottom, scheme.primary),
+      AssemblyFeatureState.rolledBack => (Icons.history, scheme.onSurfaceVariant),
+      _ => (null, null),
+    };
+    if (look.$1 == null) return const SizedBox.shrink();
+    return Tooltip(message: text ?? '', child: Icon(look.$1, key: key, size: size - 2, color: look.$2));
   }
 
   int? _dof(BuildContext context, AssemblyTreeRow r) {
