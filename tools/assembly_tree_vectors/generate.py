@@ -548,7 +548,7 @@ CASES += [
     # --- the live part and restore
     restore_case(
         "live_restore_folder_key_and_feature_key",
-        "Folder keys of the live part are open keys (kept when the folder shows); feature, body, plane keys never are; the empty Surfaces folder is not a row, so its key is dropped.",
+        "Folder keys of the live part are open keys (kept when the folder shows); feature, body, plane keys never are; Surfaces has one item, so its key is kept; Curves is empty and not a row, so its key is dropped.",
         "rover",
         ["mast/arm/head#feature:h1", "mast/arm/head#planes", "mast/arm/head#bodies", "mast/arm/head#surfaces", "mast/arm/head#body:hb1", "mast/arm/head#plane:xy", "mast/arm/head", "mast/arm/head#curves"],
         live=LIVE_HEAD,

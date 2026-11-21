@@ -268,9 +268,9 @@ document is Phase B.
 | Folder | the owning row's key and `#mates` / `#patterns` | `#mates` |
 | Live part's folders and items (section 13) | the live row's key `K` and `#bodies` / `#planes` / `#surfaces` / `#curves`; `K#body:<id>`, `K#surface:<id>`, `K#curve:<id>`; `K#plane:xy` / `xz` / `yz`; `K#plane:feature:<feature id>` | `mast/arm/head#bodies`, `#plane:xy`, `#plane:feature:f3`, `#body:b1` |
 
-Ids the backend and both clients make (uuid4) never contain `#` or `/`, and pattern copies use `#pattern:`, so keys do not collide.
-The backend does not check an id it is given (`POST /parts/{id}/occurrences` restores an id Undo took from the document a moment
-before, and `import_native` takes ids as written), so a hand-edited `.didsa` can still carry a `#` or a `/`. Keys can then collide
+The ids the backend and both clients make never contain `#` or `/` (the backend's uuid4, VR's `occ_<hex>`; the contract is only that property, not the format), and pattern copies use `#pattern:`, so keys do not collide.
+The backend does not check an id it is given (`POST /parts/{id}/occurrences`, `POST /parts/{id}/add-component`, whose
+`occurrence_id` is taken as given, and `import_native`, which takes ids as written), so a hand-edited `.didsa` can still carry a `#` or a `/`. Keys can then collide
 (`/` joins path ids: `a/b` at the root and the child `b` of `a` are one key; `#` is the separator of group, feature and folder
 keys), and the rows, filter, reveal and restore results for those rows are undefined. A client must not crash on one: it treats the
 key as it is. Keys use stored ids only
@@ -421,7 +421,7 @@ stay in the build order below. When a row becomes live a client adds its key to 
 
 **Keys** (section 8 has the table): folders `K#bodies`, `K#planes`, `K#surfaces`, `K#curves`; `K#body:<id>`, `K#surface:<id>`,
 `K#curve:<id>`; default planes `K#plane:xy` / `xz` / `yz`; every plane feature in the Planes folder `K#plane:feature:<feature id>`
-(always, so the two kinds of plane row can never share a key), its build-order row `K#feature:<id>`. Ids are the backend's: a feature id is a UUID; a body id can contain `#` (`<feature id>#<n>`, when a feature makes several bodies). A client appends the whole id after the prefix and never splits a key, so that is harmless.
+(always, so the two kinds of plane row can never share a key), its build-order row `K#feature:<id>`. Ids are the backend's: a feature id the backend makes is a UUID (a hand-written file can carry any id); a body id can contain `#` (`<feature id>#<n>`, when a feature makes several bodies). A client appends the whole id after the prefix and never splits a key, so that is harmless.
 
 **A feature id can never be `xy`, `xz` or `yz`.** Every route that
 creates a feature mints its id with `uuid.uuid4()` (the one fixed id in the backend, `ImportFeature`'s `convert`, is not a plane

@@ -403,7 +403,8 @@ class VersionTwo(unittest.TestCase):
         for c in cases_of("live_part", "live_part_filter"):
             keys = [r["key"] for r in rows_of(c) if r["kind"] == "feature" and "#plane:" in r["key"]]
             self.assertTrue(all("#plane:feature:" in k for k in keys), c["name"])
-            self.assertFalse(any(r["kind"] == "feature" and r["key"].rsplit("#plane:", 1)[-1] in ("xy", "xz", "yz") for r in rows_of(c) if "#plane:" in r["key"]), c["name"])
+            defaults = {r["key"] for r in rows_of(c) if r["kind"] == "default_plane"}
+            self.assertFalse(defaults & set(keys), c["name"])  # no plane feature's key is a default plane's (K#plane:xy|xz|yz)
         keys = [r["key"] for r in case("live_part_plane_feature_named_xy")["expected"]]
         self.assertEqual(len(keys), len(set(keys)))
 

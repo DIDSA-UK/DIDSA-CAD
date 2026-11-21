@@ -16005,7 +16005,7 @@
     "mast/arm/head#curves"
    ],
    "tree": "rover",
-   "why": "Folder keys of the live part are open keys (kept when the folder shows); feature, body, plane keys never are; the empty Surfaces folder is not a row, so its key is dropped."
+   "why": "Folder keys of the live part are open keys (kept when the folder shows); feature, body, plane keys never are; Surfaces has one item, so its key is kept; Curves is empty and not a row, so its key is dropped."
   },
   {
    "expected": [
