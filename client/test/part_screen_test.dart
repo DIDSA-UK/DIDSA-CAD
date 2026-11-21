@@ -1663,6 +1663,19 @@ class _TreeProbe {
       };
 }
 
+/// P2 (`docs/assembly-tree-overhaul-scope.md` 10.6): a tap on a build tree row (the one tree, [AssemblyTreeView]) selects it. A live
+/// feature row waits out the double-tap before its tap lands, so this pumps past it.
+Future<void> _tapTreeRow(WidgetTester tester, String label) async {
+  await tester.tap(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text(label)));
+  await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 20));
+}
+
+/// What the old build tree's tap did (open the feature for editing, rolled back to it): select the row, then the bar's Edit.
+Future<void> _editFromTree(WidgetTester tester, String label) async {
+  await _tapTreeRow(tester, label);
+  await tester.tap(find.byKey(const ValueKey('tree-bar-edit')));
+}
+
 Future<void> switchLens(WidgetTester tester, String to) async {
   await openStartMenu(tester);
   await tester.tap(find.descendant(of: find.byKey(const ValueKey('start-lens')), matching: find.text(to)));
@@ -1736,7 +1749,8 @@ void main() {
     // the real test of whether flutter_scene's GPU-bound
     // UnskinnedGeometry.uploadVertexData can execute at all in this
     // sandbox's headless `flutter test` runner.
-    expect(find.text('Part 1'), findsOneWidget);
+    // P2: the one tree's root row names the part too.
+    expect(find.descendant(of: find.byType(AppBar), matching: find.text('Part 1')), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     // Stage 10b: the FAB now opens a flyout rather than acting directly -
@@ -2710,10 +2724,13 @@ void main() {
       await _settleSheet(tester);
       await tester.tap(find.text('Planes'));
       await _settleSheet(tester);
-      for (final label in ['XY Plane', 'XZ Plane', 'YZ Plane']) {
+      for (final label in ['XY plane', 'XZ plane', 'YZ plane']) {
         expect(find.text(label), findsOneWidget);
       }
-      await tester.tap(find.byKey(const ValueKey('ref-plane-eye-XZ')));
+      // P2: a phone row has no eye (no buttons in phone rows): a default plane's long-press offers Hide / Show.
+      await tester.longPress(find.text('XZ plane'));
+      await _settleSheet(tester);
+      await tester.tap(find.widgetWithText(ListTile, 'Hide'));
       await settleRequests(tester);
       expect(backend.visibilityRequests.single, containsPair('reference_plane_ids', ['XZ']));
       expect(backend.visibilityRequests.single, containsPair('hidden', true));
@@ -2740,7 +2757,9 @@ void main() {
       await _settleSheet(tester);
       await tester.tap(find.text('Planes'));
       await _settleSheet(tester);
-      await tester.tap(find.byKey(const ValueKey('ref-plane-eye-YZ')));
+      await tester.longPress(find.text('YZ plane'));
+      await _settleSheet(tester);
+      await tester.tap(find.widgetWithText(ListTile, 'Show'));
       await settleRequests(tester);
       expect(backend.visibilityRequests.last, containsPair('reference_plane_ids', ['YZ']));
       expect(backend.visibilityRequests.last, containsPair('hidden', false));
@@ -2966,11 +2985,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     expect(find.text('Sketch 1'), findsOneWidget);
-    // On-device feedback ("we now have the ability to edit parent features
-    // and parametric flow is working" - the Locked badge was removed):
-    // every row shows "Editable" regardless of lock state now, not just the
-    // last (previously "unlocked") one.
-    expect(find.text('Editable'), findsNWidgets(2));
+    // P2: a healthy row is one line (no "Editable" subtitle, rule 1 of the scope's section 3); no lock badge either.
+    expect(find.text('Editable'), findsNothing);
 
     // The toolbar's Menu button is left out of the quick column while the tree is open (the tree's own X button is the
     // way to close it instead); the column's other buttons are still there.
@@ -2981,7 +2997,7 @@ void main() {
     await tester.tap(_startFab); // the X closes the column again
     await _settleSheet(tester);
 
-    await tester.tap(find.text('Sketch 1'));
+    await _editFromTree(tester, 'Sketch 1'); // P2: a tap selects; Edit is the bar's
     // B4: true SolidWorks-style rollback means a tap on a locked Feature no
     // longer does nothing - it always selects and opens it for editing (see
     // _onFeatureTap's doc comment), mirroring "tapping an unlocked (editable)
@@ -3175,12 +3191,13 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    // Two clicks on the row before anything has had time to open.
-    final row = tester.getCenter(find.text('Sketch 1'));
-    final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+    // Two clicks on the row before anything has had time to open. P2: the double-click is Edit (a single click selects), the clicks spaced
+    // as a person's are (past the double-tap's minimum). Two mouse clicks of their own: a real mouse gets a new pointer id for each press,
+    // a single TestGesture keeps one for both, and the double-tap arena never sees the second.
+    final row = tester.getCenter(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Sketch 1')));
     for (var i = 0; i < 2; i++) {
-      await mouse.down(row);
-      await mouse.up();
+      await tester.tapAt(row, kind: PointerDeviceKind.mouse);
+      if (i == 0) await tester.pump(const Duration(milliseconds: 60));
     }
     await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
     expect(find.text('DIDSA-CAD Sketch'), findsOneWidget);
@@ -3209,7 +3226,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Sketch 2'));
+    await _editFromTree(tester, 'Sketch 2'); // P2: a tap selects; Edit is the bar's
     await _pumpUntil(tester, () => find.byType(SketchScreen).evaluate().isNotEmpty);
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -3346,7 +3363,7 @@ void main() {
 
     expect(find.text('Pattern 1'), findsOneWidget);
 
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -3394,7 +3411,7 @@ void main() {
     // ordinary, always-expanded Features section.
     expect(find.text('Merge 1'), findsOneWidget);
 
-    await tester.tap(find.text('Merge 1'));
+    await _editFromTree(tester, 'Merge 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -3441,7 +3458,7 @@ void main() {
     // ordinary, always-expanded Features section, same as Merge's own row.
     expect(find.text('Subtract 1'), findsOneWidget);
 
-    await tester.tap(find.text('Subtract 1'));
+    await _editFromTree(tester, 'Subtract 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -3483,7 +3500,7 @@ void main() {
 
     expect(find.text('Surface 1'), findsOneWidget);
 
-    await tester.tap(find.text('Surface 1'));
+    await _editFromTree(tester, 'Surface 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -3668,7 +3685,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
     expect(find.text('Edit Pattern'), findsOneWidget);
@@ -3699,7 +3716,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
     expect(_scopeTab(tester), SeedScopeTab.body);
@@ -3753,7 +3770,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Edit Pattern'), findsOneWidget);
@@ -3811,7 +3828,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Spring 1'));
+    await _editFromTree(tester, 'Spring 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('Edit Spring'), findsOneWidget);
@@ -3860,7 +3877,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Imported'), findsNothing); // shown as editable
-    await tester.tap(find.text('Helix 1'));
+    await _editFromTree(tester, 'Helix 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('Edit Helix'), findsOneWidget);
@@ -3964,7 +3981,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Intersection Curve 1'));
+    await _editFromTree(tester, 'Intersection Curve 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 500));
     expect(find.text('Edit Intersection Curve'), findsOneWidget);
@@ -4023,7 +4040,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Fillet 1'));
+    await _editFromTree(tester, 'Fillet 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Edit Fillet'), findsOneWidget);
@@ -4085,7 +4102,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Chamfer 1'));
+    await _editFromTree(tester, 'Chamfer 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Edit Chamfer'), findsOneWidget);
@@ -4551,7 +4568,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
@@ -4618,7 +4635,7 @@ void main() {
     await tester.tap(find.byTooltip('Feature tree'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Edit Pattern'), findsOneWidget);
@@ -4686,7 +4703,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     expect(find.text('Edit Pattern'), findsOneWidget);
@@ -4765,7 +4782,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    await tester.tap(find.text('Pattern 1'));
+    await _editFromTree(tester, 'Pattern 1'); // P2: a tap selects; Edit is the bar's
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 600));
     expect(find.text('Edit Pattern'), findsOneWidget);
@@ -4891,7 +4908,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    await tester.tap(find.text('Sketch 2'));
+    await _editFromTree(tester, 'Sketch 2'); // P2: a tap selects; Edit is the bar's
     // The camera-animation-into-the-Sketch-plane runs (and must complete)
     // before navigation - _pumpUntil's bounded pumping carries the tester
     // through both that animation and the eventual SketchScreen load.
@@ -4924,7 +4941,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    expect(find.byIcon(Icons.visibility_off), findsNothing);
+    expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsNothing);
 
     await tester.longPress(find.text('Sketch 1'));
     await tester.pump();
@@ -4944,7 +4961,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 250));
 
     // Hidden now - the tree row shows the eye-slash trailing icon.
-    expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+    expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsOneWidget);
     expect(tester.takeException(), isNull);
 
     await tester.longPress(find.text('Sketch 1'));
@@ -4964,7 +4981,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
 
-    expect(find.byIcon(Icons.visibility_off), findsNothing);
+    expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsNothing);
     expect(tester.takeException(), isNull);
   });
 
@@ -5573,10 +5590,9 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      expect(
-        find.text('This sketch has no closed profile — add more lines or close the loop first'),
-        findsOneWidget,
-      );
+      // P2: the picker is a rule of the tree's model: an ineligible sketch is locked and the banner says why (it was a SnackBar).
+      expect(find.byKey(const ValueKey('tree-picker-reason')), findsOneWidget);
+      expect(find.text('Pick a sketch with a closed profile'), findsOneWidget);
       // Still in picker mode - the banner is still up and no Extrude panel
       // opened.
       expect(find.text('Select a sketch to extrude'), findsOneWidget);
@@ -5648,49 +5664,12 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      // B4: tapping Sketch 1 (locked or not) always selects it and now also
-      // opens its Sketch screen - so getting back to a "pre-selected but on
-      // PartScreen" state means exiting that Sketch afterward, the same way
-      // a real user would; _selectedFeatureId (all _extrudeSelectedFeature
-      // actually reads) stays set to feature-1 across the round trip since
-      // PartScreen's own State is never rebuilt, just covered/uncovered.
-      await tester.tap(find.text('Sketch 1'));
-      await _pumpUntil(tester, () => find.text('DIDSA-CAD Sketch').evaluate().isNotEmpty);
-      // The title text is in the tree as soon as the route is pushed, but
-      // the page-transition slide-in animation may still be in progress -
-      // a FAB positioned via right:8 during that slide can genuinely sit
-      // outside the test viewport's bounds until it settles.
-      await tester.pump(const Duration(milliseconds: 300));
-
-      // find.byTooltip resolves to the tooltip overlay's own positioning
-      // surrogate here, not the actual FAB - which can sit outside the test
-      // viewport's bounds and silently miss. A heroTag predicate targets
-      // the real rendered button directly (find.widgetWithIcon no longer
-      // works now that the FAB's glyph is an SVG asset, not a named
-      // IconData).
-      await tester.tap(find.byWidgetPredicate(
-        (w) => w is FloatingActionButton && w.heroTag == 'exit-sketch-fab',
-      ));
-      // The pop's page-route transition (a fade wrapping both the outgoing
-      // and incoming route, per the default transitions builder) needs to
-      // fully finish - and its cleanup (removing the outgoing route's
-      // RenderObjects from the Overlay) needs a frame *after* that - before
-      // the FAB underneath is actually hit-testable at its resting offset.
-      // The 'add-fab' FloatingActionButton itself is a poor completion
-      // signal here: it's the same persistent widget the whole time (never
-      // rebuilt - PartScreen's own State outlives the push/pop), so a
-      // widget-count/find check on it is satisfied instantly, before the
-      // transition even starts. pumpAndSettle can't be used either -
-      // confirmed on CI to time out here (PartViewport's Scene render loop
-      // keeps scheduling frames indefinitely, same reason it's avoided
-      // elsewhere in this file for the *initial* mesh-loading spinner).
-      // Pumping many small steps (rather than one large jump) gives each
-      // intermediate frame's post-frame callbacks - where the Overlay
-      // actually drops the finished route's RenderObjects - a chance to run.
-      for (var i = 0; i < 20; i++) {
-        await tester.pump(const Duration(milliseconds: 50));
-      }
-      expect(find.text('Part 1'), findsOneWidget);
+      // P2: a tap on Sketch 1 selects it (no Sketch screen opens): the selection is what the Add menu's Extrude reads.
+      await _tapTreeRow(tester, 'Sketch 1');
+      expect(find.text('DIDSA-CAD Sketch'), findsNothing);
+      await tester.tap(find.byTooltip('Close'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
 
       await tapAddFeatureExtrude(tester);
 
@@ -5818,7 +5797,7 @@ void main() {
         await tester.tap(find.byTooltip('Feature tree'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
-        expect(find.byIcon(Icons.visibility_off), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsOneWidget);
 
         // Delete the ExtrudeFeature - Sketch 1 becomes the last (editable)
         // Feature again, so it should no longer be hidden either.
@@ -5852,7 +5831,7 @@ void main() {
         // frame - an extra settle pump avoids reading the icon mid-update.
         await tester.pump(const Duration(milliseconds: 250));
 
-        expect(find.byIcon(Icons.visibility_off), findsNothing);
+        expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsNothing);
         expect(tester.takeException(), isNull);
       },
     );
@@ -6359,7 +6338,8 @@ void main() {
             ),
           ),
         );
-        await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty);
+        // P2: the tree is built in both lenses (a part's own tree is there before the answer): wait for the answer's component.
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.children.isNotEmpty ?? false);
 
         expect(find.byType(AssemblyTreeView), findsOneWidget);
         final panel = _TreeProbe(tester);
@@ -10600,7 +10580,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 500));
 
     expect(find.byKey(const Key('reference-o-gone')), findsNothing, reason: 'the sheet closed');
-    expect(find.text('Part 1'), findsOneWidget, reason: 'the screen under it is still there');
+    // P2: the one tree's root row names the part too: the app bar's title is the screen's.
+    expect(find.descendant(of: find.byType(AppBar), matching: find.text('Part 1')), findsOneWidget, reason: 'the screen under it is still there');
   });
 
   // Stress by simulated input on the whole screen: seeded random sequences of what a person does with the Appearance panel, the Scenes
@@ -10911,7 +10892,9 @@ void main() {
       expect(viewport(tester).focusedOccurrencePath, ['occ-1']);
       expect(pill, findsOneWidget);
       expect(find.descendant(of: pill, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
-      expect(find.byType(AssemblyTreeView), findsNothing, reason: 'Part lens: the assembly tree is not mounted');
+      // P2: one tree in both lenses; the Part lens makes the edited part (the tree's root here) live.
+      expect(_TreeProbe(tester).view.title, 'Build Tree', reason: 'Part lens');
+      expect(_TreeProbe(tester).model.liveKey, '', reason: 'the part being edited alone is the live root');
       // The way back is a button on the pill, and in the ribbon.
       expect(done, findsOneWidget);
 
@@ -10920,7 +10903,8 @@ void main() {
       expect(viewport(tester).soloFocus, isFalse);
       expect(viewport(tester).focusedOccurrencePath, isEmpty);
       expect(pill, findsNothing);
-      expect(find.byType(AssemblyTreeView), findsOneWidget, reason: 'the lens before (Assembly) is back');
+      expect(_TreeProbe(tester).view.title, 'Assembly Tree', reason: 'the lens before (Assembly) is back');
+      expect(_TreeProbe(tester).model.liveKey, isNull, reason: 'the Assembly lens has no live row');
       expect(backend.writes, isEmpty, reason: 'entering and leaving never write (no hidden flags)');
     });
 
@@ -10961,7 +10945,7 @@ void main() {
       await menuAction(tester, 'occ-1', 'Edit Alone');
       // No tree open: the pill is the floating one at the top, outside any tree.
       expect(pill, findsOneWidget);
-      expect(find.descendant(of: find.byType(FeatureTreePanel), matching: pill), findsNothing);
+      expect(find.descendant(of: find.byType(AssemblyTreeView), matching: pill), findsNothing);
       final topPill = tester.widget<EditAloneRow>(pill);
       expect(topPill.pill, isTrue);
 
@@ -10969,10 +10953,11 @@ void main() {
       await settle(tester);
       // Tree open (Part lens: the Build Tree): exactly one row, inside the tree, directly under the header row, not floating.
       expect(pill, findsOneWidget);
-      expect(find.descendant(of: find.byType(FeatureTreePanel), matching: pill), findsOneWidget);
+      expect(find.descendant(of: find.byType(AssemblyTreeView), matching: pill), findsOneWidget);
       expect(tester.widget<EditAloneRow>(pill).pill, isFalse);
       expect(tester.getTopLeft(pill).dy, greaterThan(tester.getTopLeft(find.text('Build Tree')).dy));
-      expect(tester.getTopLeft(pill).dy, lessThan(tester.getTopLeft(find.text('Features')).dy));
+      // P2: above the first row (the live root), not floating.
+      expect(tester.getTopLeft(pill).dy, lessThan(tester.getTopLeft(find.byKey(const ValueKey('tree-row:'))).dy));
       expect(find.descendant(of: pill, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
 
       await tester.tap(done);
@@ -11471,7 +11456,7 @@ void main() {
       } else {
         await switchLens(tester, 'Assembly');
       }
-      if (waitForTree) await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+      if (waitForTree) await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
       return backend;
     }
 
@@ -11600,7 +11585,7 @@ void main() {
       );
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
       await switchLens(tester, 'Assembly');
-      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
       _TreeProbe(tester).model.openAll(const ['asm-1', 'asm-2', 'asm-1/g', 'asm-2/g']);
       await settle(tester);
       return backend;
@@ -11883,7 +11868,7 @@ void main() {
           ),
         ),
       );
-      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
       final model = _TreeProbe(tester).model;
       expect(model.labelAtPath(const ['b1']), 'bolt <1>');
       expect(model.labelAtPath(const ['b2']), 'bolt <2>');
@@ -11941,7 +11926,7 @@ void main() {
           ),
         ),
       );
-      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
       // The structure is drawn while the status is still out: the row claims no state (absent, not wrong).
       var row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'plate');
       expect(row.state, AssemblyRowState.none);
@@ -11990,7 +11975,7 @@ void main() {
           ),
         ),
       );
-      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
 
       // Hide starts a reload whose structure answer is held (it is computed after the Hide, before the Fix).
       holdNextStructure = true;
@@ -12097,7 +12082,7 @@ void main() {
           initialLens: AssemblyLens.assembly,
         ),
       ));
-      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
       final probe = _TreeProbe(tester);
       probe.model.selectedKey = '#mates'; // what the view does on the tap
       probe.view.onRowTap!(probe.model.visibleRows().firstWhere((r) => r.key == '#mates'));
@@ -12128,7 +12113,7 @@ void main() {
           ),
         ),
       );
-      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
+      await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
       expect(rowKeys(tester), ['', 'plate', 'lid']);
     });
 
@@ -12243,7 +12228,7 @@ void main() {
         gate = Completer<void>();
         await openNested(tester, filePath: '/docs/a.didsa', around: holdStructure, waitForTree: false);
         await tester.pump(const Duration(milliseconds: 200));
-        expect(_TreeProbe(tester).model.tree, isNull, reason: 'document A has not heard back yet');
+        expect(_TreeProbe(tester).model.tree?.children ?? const [], isEmpty, reason: 'document A has not heard back yet (P2: the part\'s own root is there)');
 
         // The person opens document B in its place (a new screen: the previous document's state is gone).
         await closeScreen(tester);
@@ -12273,7 +12258,7 @@ void main() {
         // A second load (the lens switched away and back) answers first, and restores.
         await switchLens(tester, 'Part');
         await switchLens(tester, 'Assembly');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
         expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
         _TreeProbe(tester).model.setOpen('asm-1', false);
         await tester.pump();
@@ -12290,13 +12275,13 @@ void main() {
         gate = Completer<void>();
         await openNested(tester, filePath: '/docs/a.didsa', around: holdStructure, waitForTree: false);
         await tester.pump(const Duration(milliseconds: 200));
-        expect(_TreeProbe(tester).model.tree, isNull);
+        expect(_TreeProbe(tester).model.tree?.children ?? const [], isEmpty);
 
         // Before anything is listed the person asks for everything collapsed.
         pressTreeButton(tester, 'tree-collapse-all');
         await tester.pump();
         gate!.complete();
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
         await settle(tester);
         expect(_TreeProbe(tester).model.openKeys, isEmpty, reason: 'the stored asm-1 does not overwrite the person\'s collapse all');
         expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate']);
@@ -12310,7 +12295,7 @@ void main() {
         await tester.pump(const Duration(milliseconds: 200));
         _TreeProbe(tester).model.setOpen('asm-2', true);
         gate!.complete();
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
         await settle(tester);
         expect(_TreeProbe(tester).model.openKeys, {'asm-2'});
         expect(await stored(tester, '/docs/a.didsa'), ['asm-2']);
@@ -12346,11 +12331,11 @@ void main() {
         gate = Completer<void>();
         await openNested(tester, filePath: '/docs/a.didsa', around: holdStructure, waitForTree: false);
         await tester.pump(const Duration(milliseconds: 200));
-        expect(_TreeProbe(tester).model.tree, isNull);
+        expect(_TreeProbe(tester).model.tree?.children ?? const [], isEmpty);
 
         expect(_TreeProbe(tester).model.expandToSelection(), isFalse, reason: 'no tree, nothing selected: nothing to open');
         gate!.complete();
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.children.isNotEmpty == true);
         await settle(tester);
         expect(_TreeProbe(tester).model.openKeys, {'asm-1'}, reason: 'the stored rows were restored, not overwritten with none');
         expect(await stored(tester, '/docs/a.didsa'), ['asm-1']);
@@ -12528,7 +12513,7 @@ void main() {
           }
         });
         await tester.pump(const Duration(milliseconds: 200));
-        expect(_TreeProbe(tester).model.tree, isNull, reason: 'the first answer is held');
+        expect(_TreeProbe(tester).model.tree?.children ?? const [], isEmpty, reason: 'the first answer is held (P2: the part\'s own root is there)');
         gate = null; // the copy's own screen is not held
 
         tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveAsNative!();
@@ -12557,6 +12542,400 @@ void main() {
         _TreeProbe(tester).model.setOpen('asm-2', true);
         await tester.pump();
         expect(await stored(tester, '/docs/a.didsa'), ['asm-1'], reason: 'a one-level tree must not rewrite what the real tree remembered');
+      });
+    });
+
+    // P2 (`docs/assembly-tree-overhaul-scope.md` 10.6): the Part lens draws the one tree. A part opened alone is the live root; inside an
+    // assembly the focused Part is live; a tap selects (Edit is the bar's, a double-tap's and the menu's).
+    group('Build tree (P2)', () {
+      final partFeatures = <Map<String, dynamic>>[
+        {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+        {
+          'type': 'extrude', 'id': 'feature-2', 'sketch_feature_id': 'feature-1', 'extrude_type': 'boss', 'start_distance': 0.0,
+          'end_distance': 10.0, 'locked': true, 'produces': 'body',
+        },
+        {
+          'type': 'create_plane', 'id': 'feature-3', 'locked': false, 'produces': 'plane', 'origin': [0.0, 0.0, 5.0],
+          'normal': [0.0, 0.0, 1.0], 'x_axis': [1.0, 0.0, 0.0], 'y_axis': [0.0, 1.0, 0.0],
+        },
+      ];
+
+      /// A part on its own (no components), in the Part lens, with its tree open. [around] sees each answer and may hold it.
+      Future<_FakeDocumentBackend> openPart(WidgetTester tester,
+          {List<Map<String, dynamic>>? features,
+          String? filePath,
+          Future<void> Function(http.Request request)? around,
+          bool openTree = true}) async {
+        final backend = _FakeDocumentBackend(seedFeatures: [for (final f in features ?? partFeatures) {...f}])
+          ..meshBodies = [
+            {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+          ];
+        final documentApi = DocumentApiClient(
+          httpClient: MockClient((request) async {
+            final response = backend.handle(request);
+            if (around != null) await around(request);
+            return response;
+          }),
+        );
+        final sketchBackend = _FakeSketchBackend();
+        await tester.pumpWidget(MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            initialFilePath: filePath,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ));
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.liveKey != null);
+        if (openTree) {
+          await tester.tap(find.byTooltip('Feature tree'));
+          await settle(tester);
+        }
+        return backend;
+      }
+
+      PartViewport viewport(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport));
+
+      testWidgets('a part opened alone: the part is the live root, its folders then its features in build order', (tester) async {
+        await openPart(tester);
+        final probe = _TreeProbe(tester);
+        expect(probe.view.title, 'Build Tree');
+        expect(probe.model.liveKey, '');
+        expect(rowKeys(tester), ['', '#bodies', '#planes', '#feature:feature-1', '#feature:feature-2', '#feature:feature-3']);
+        final rows = {for (final r in probe.model.visibleRows()) r.key: r};
+        expect(rows['#bodies']!.kind, AssemblyRowKind.bodiesFolder);
+        expect(rows['#bodies']!.open, isFalse, reason: 'folders start collapsed');
+        expect(rows['#feature:feature-2']!.label, 'Extrude 1');
+        expect(rows['#feature:feature-2']!.type, 'extrude');
+        await _tapTreeRow(tester, 'Bodies');
+        await _tapTreeRow(tester, 'Planes');
+        expect(rowKeys(tester), [
+          '', '#bodies', '#body:feature-2', '#planes', '#plane:xy', '#plane:xz', '#plane:yz', '#plane:feature:feature-3',
+          '#feature:feature-1', '#feature:feature-2', '#feature:feature-3',
+        ]);
+        expect(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Body 1')), findsOneWidget);
+      });
+
+      testWidgets('a tap selects the feature and highlights what it made; it opens no panel and rolls nothing back', (tester) async {
+        final backend = await openPart(tester);
+        final meshCalls = backend.meshRequests.length;
+        await _tapTreeRow(tester, 'Extrude 1');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, '#feature:feature-2');
+        expect(viewport(tester).selectedEntities, {const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'feature-2')});
+        expect(find.byType(ExtrudePanel), findsNothing);
+        expect(backend.meshRequests.length, meshCalls, reason: 'no rollback');
+        // The phone bar of a feature row.
+        expect(find.byKey(const ValueKey('tree-bar-edit')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-bar-hide')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-bar-more')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-bar-rollback')), findsNothing, reason: 'no rollback point exists to set yet (#17)');
+
+        // A plane feature highlights its plane; a body row its body.
+        await _tapTreeRow(tester, 'Plane 1');
+        expect(viewport(tester).selectedEntities,
+            {const SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: 'feature-3')});
+        await _tapTreeRow(tester, 'Bodies');
+        await _tapTreeRow(tester, 'Body 1');
+        expect(_TreeProbe(tester).model.selectedKey, '#body:feature-2');
+        expect(viewport(tester).selectedEntities, {const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'feature-2')});
+        expect(find.byKey(const ValueKey('tree-bar-zoom')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-bar-edit')), findsNothing);
+      });
+
+      testWidgets('Edit from the bar opens the panel at the rollback point; a double-tap edits too', (tester) async {
+        final backend = await openPart(tester);
+        await _editFromTree(tester, 'Extrude 1');
+        await settle(tester);
+        expect(find.byType(ExtrudePanel), findsOneWidget);
+        expect(backend.meshRequests.last['rollback_excluded_feature_ids'], 'feature-3', reason: 'rolled back to Extrude 1');
+        await tester.pump(const Duration(milliseconds: 600));
+      });
+
+      testWidgets('a double-tap on a feature row is Edit, without the bar', (tester) async {
+        await openPart(tester);
+        final row = find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Extrude 1'));
+        await tester.tap(row);
+        await tester.pump(const Duration(milliseconds: 60));
+        await tester.tap(row);
+        await settle(tester);
+        expect(find.byType(ExtrudePanel), findsOneWidget);
+        await tester.pump(const Duration(milliseconds: 600));
+      });
+
+      testWidgets('Hide from the bar, on a feature and on a body (through its feature)', (tester) async {
+        final backend = await openPart(tester);
+        await _tapTreeRow(tester, 'Sketch 1');
+        await tester.tap(find.byKey(const ValueKey('tree-bar-hide')));
+        await settle(tester);
+        expect(backend.hiddenByPart['part-1'], {'feature-1'});
+        expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsOneWidget);
+        expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == '#feature:feature-1').state, AssemblyRowState.hidden);
+
+        await _tapTreeRow(tester, 'Bodies');
+        await _tapTreeRow(tester, 'Body 1');
+        await tester.tap(find.byKey(const ValueKey('tree-bar-hide')));
+        await settle(tester);
+        await settle(tester);
+        expect(backend.hiddenByPart['part-1'], {'feature-1', 'feature-2'});
+        expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == '#body:feature-2').hidden, isTrue);
+        // Show again from the same bar.
+        await tester.tap(find.byKey(const ValueKey('tree-bar-hide')));
+        await settle(tester);
+        await settle(tester);
+        expect(backend.hiddenByPart['part-1'], {'feature-1'});
+      });
+
+      testWidgets('a default plane: its long-press offers Hide / Show only; its tap opens the plane sheet', (tester) async {
+        final backend = await openPart(tester);
+        await _tapTreeRow(tester, 'Planes');
+        await tester.longPress(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('XZ plane')));
+        await _settleSheet(tester);
+        expect(find.text('Delete'), findsNothing, reason: 'a default plane is not a feature');
+        // The planes hid themselves when the first body appeared: the menu offers Show.
+        expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == '#plane:xz').hidden, isTrue);
+        await tester.tap(find.widgetWithText(ListTile, 'Show'));
+        await settle(tester);
+        await settle(tester);
+        expect(backend.visibilityRequests.last, containsPair('reference_plane_ids', ['XZ']));
+        expect(backend.visibilityRequests.last, containsPair('hidden', false));
+        expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == '#plane:xz').hidden, isFalse);
+
+        await tester.tap(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('XY plane')));
+        await _settleSheet(tester);
+        expect(find.text('New Sketch on XY'), findsOneWidget, reason: 'the plane sheet, as a tap on the plane in the viewport');
+        expect(_TreeProbe(tester).model.selectedKey, '#plane:xy');
+      });
+
+      testWidgets("Extrude's sketch picker is the tree's picker: ineligible rows locked with the reason, the sketch picked", (tester) async {
+        await openPart(tester, openTree: false);
+        await tapStartCommand(tester, 'Extrude');
+        final model = _TreeProbe(tester).model;
+        expect(model.picker, isNotNull);
+        expect(find.byKey(const ValueKey('tree-picker-banner')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsNothing, reason: 'the banner replaces the bar');
+        final rows = {for (final r in model.visibleRows()) r.key: r};
+        expect(rows['#feature:feature-1']!.pick, AssemblyPickState.pickable);
+        expect(rows['#feature:feature-2']!.pick, AssemblyPickState.locked);
+        await tester.tap(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Extrude 1')));
+        await settle(tester);
+        expect(find.byKey(const ValueKey('tree-picker-reason')), findsOneWidget);
+        expect(find.byType(ExtrudePanel), findsNothing);
+        await tester.tap(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Sketch 1')));
+        await settle(tester);
+        expect(find.byType(ExtrudePanel), findsOneWidget);
+        expect(_TreeProbe(tester).model.picker, isNull, reason: 'the picker closed with the pick');
+        await tester.pump(const Duration(milliseconds: 600));
+      });
+
+      testWidgets('multi-select by row keys: a long-press starts it, rows tick, Delete removes both', (tester) async {
+        final backend = await openPart(tester);
+        await tester.longPress(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Plane 1')));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.isMultiSelectMode, isTrue);
+        expect(_TreeProbe(tester).view.selectedKeys, {'#feature:feature-3'});
+        await tester.tap(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Extrude 1')));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.selectedKeys, {'#feature:feature-3', '#feature:feature-2'});
+        await tester.tap(find.descendant(of: find.byType(MultiSelectActionBar), matching: find.text('Delete')));
+        await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
+        expect(find.text('Delete 2 features?'), findsOneWidget);
+        await tester.tap(find.descendant(of: find.byType(AlertDialog), matching: find.text('Delete all')));
+        await _pumpUntil(tester, () => find.text('Plane 1').evaluate().isEmpty);
+        await settle(tester);
+        expect([for (final f in backend.features) f['id']], ['feature-1']);
+        expect(rowKeys(tester).where((k) => k.contains('#feature:')), ['#feature:feature-1']);
+      });
+
+      testWidgets('a body or face picked in the viewport marks its feature\'s row and opens the tree down to it', (tester) async {
+        await openPart(tester);
+        final model = _TreeProbe(tester).model;
+        model.setOpen('', false); // the root never closes; a live root is open anyway
+        viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.face, bodyId: 'feature-2', id: 3));
+        await settle(tester);
+        expect(model.selectedKey, '#feature:feature-2');
+        expect(model.indexOf('#feature:feature-2'), greaterThan(0));
+      });
+
+      testWidgets('switching lens keeps the open rows, the scroll and the selection; it is not the person\'s change and writes nothing',
+          (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        await openPart(tester, filePath: '/docs/p.didsa', features: [
+          ...partFeatures,
+          for (var i = 0; i < 30; i++) {'type': 'sketch', 'id': 'more-$i', 'sketch_id': 'sketch-1', 'locked': false, 'produces': 'sketch'},
+        ]);
+        final model = _TreeProbe(tester).model;
+        await _tapTreeRow(tester, 'Bodies'); // the person's change: stored
+        await _tapTreeRow(tester, 'Body 1');
+        final list = find.byKey(const ValueKey('assembly-tree-list'));
+        await tester.drag(list, const Offset(0, -300));
+        await settle(tester);
+        final scroll = tester.widget<ListView>(list).controller!;
+        final offset = scroll.offset;
+        expect(offset, greaterThan(0));
+        // Anything the switch wrote would replace this.
+        await tester.runAsync(() async => (await SharedPreferences.getInstance())
+            .setString('assembly_tree_open:file:/docs/p.didsa', jsonEncode(['sentinel'])));
+        final touched = model.openKeysTouched;
+
+        await switchLens(tester, 'Assembly');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.title, 'Assembly Tree');
+        expect(_TreeProbe(tester).model.liveKey, isNull, reason: 'the Assembly lens has no live row');
+        expect(rowKeys(tester).where((k) => k.contains('#body')), isEmpty);
+        await switchLens(tester, 'Part');
+        await settle(tester);
+
+        final after = _TreeProbe(tester).model;
+        expect(identical(after, model), isTrue, reason: 'the same tree');
+        expect(after.openKeys, contains('#bodies'));
+        expect(after.selectedKey, '#body:feature-2');
+        expect(after.openKeysTouched, touched);
+        expect(tester.widget<ListView>(list).controller!.offset, offset, reason: 'the same list, scrolled where it was');
+        expect(await tester.runAsync(() => AssemblyTreeOpenStore.read('file:/docs/p.didsa')), ['sentinel'], reason: 'nothing was stored');
+      });
+    });
+
+    group('Build tree (P2) in an assembly', () {
+      /// [openNested] without the switch to the Assembly lens: the Part lens, the tree open.
+      Future<_FakeDocumentBackend> openNestedInPartLens(WidgetTester tester, {Future<void> Function(http.Request request)? around}) async {
+        final backend = await openNested(tester, around: around);
+        await switchLens(tester, 'Part');
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        return backend;
+      }
+
+      testWidgets('the Part lens shows the whole tree with the focused Part live, and the lens switches which row is live', (tester) async {
+        await openNestedInPartLens(tester);
+        final model = _TreeProbe(tester).model;
+        expect(_TreeProbe(tester).view.title, 'Build Tree');
+        expect(model.liveKey, '', reason: 'nothing focused: the document root is the focused Part');
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate', '#mates', '#planes'].where(rowKeys(tester).contains).toList());
+        expect(rowKeys(tester), containsAll(['asm-1', 'asm-2', 'plate', '#planes']));
+        expect(rowKeys(tester).indexOf('#planes'), greaterThan(rowKeys(tester).indexOf('plate')),
+            reason: "the live root's folders follow its components");
+
+        // Make Focus on a part: the focused Part is the live row (today the tree is re-rooted on it; B3 keeps the whole tree).
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.liveKey, '');
+        expect(rowKeys(tester), contains('#planes'));
+      });
+
+      testWidgets('a late features answer for the Part focused before is dropped; the focused Part keeps its own', (tester) async {
+        Completer<void>? holdRootFeatures;
+        Completer<void>? holdPlateTree;
+        final backend = await openNestedInPartLens(tester, around: (request) async {
+          final p = request.url.path;
+          if (holdRootFeatures != null && p == '/document/parts/part-1/features' && request.method == 'GET') await holdRootFeatures.future;
+          if (holdPlateTree != null && p == '/document/parts/plate-part/assembly-tree') await holdPlateTree.future;
+        });
+        // Focus the plate, and come back: the way back asks for the root's features, which is held.
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        backend.features.add({'type': 'sketch', 'id': 'feature-late', 'sketch_id': 'sketch-1', 'locked': false});
+        final late = holdRootFeatures = Completer<void>();
+        _TreeProbe(tester).view.onExitFocus!();
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'part-1');
+        await settle(tester);
+        // The root's features are on their way when the plate is focused again (its tree held, so its features are not asked for yet).
+        holdRootFeatures = null;
+        holdPlateTree = Completer<void>();
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await settle(tester);
+        late.complete();
+        await settle(tester);
+        await settle(tester);
+        bool lateShown() =>
+            _TreeProbe(tester).model.livePart?.features.any((f) => f.id == 'feature-late') ?? false;
+        expect(lateShown(), isFalse, reason: "the root's answer landed after the focus moved: it is dropped");
+        holdPlateTree.complete();
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        expect(lateShown(), isFalse);
+        expect(_TreeProbe(tester).model.liveKey, '');
+      });
+
+      testWidgets('a late mesh answer for the Part focused before is dropped', (tester) async {
+        Completer<void>? holdRootMesh;
+        Completer<void>? holdPlateTree;
+        final backend = await openNestedInPartLens(tester, around: (request) async {
+          final p = request.url.path;
+          if (holdRootMesh != null && p == '/document/parts/part-1/mesh' && request.url.queryParameters['tier'] != 'coarse') {
+            await holdRootMesh.future;
+          }
+          if (holdPlateTree != null && p == '/document/parts/plate-part/assembly-tree') await holdPlateTree.future;
+        });
+        backend.meshBodies = [
+          {'body_id': 'root-body', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+        ];
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        final late = holdRootMesh = Completer<void>();
+        _TreeProbe(tester).view.onExitFocus!();
+        await settle(tester);
+        await settle(tester);
+        holdRootMesh = null;
+        holdPlateTree = Completer<void>();
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await settle(tester);
+        late.complete();
+        await settle(tester);
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies.map((b) => b.bodyId), isNot(contains('root-body')),
+            reason: "the root's bodies landed after the focus moved: dropped");
+        holdPlateTree.complete();
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies.map((b) => b.bodyId), isNot(contains('root-body')));
+      });
+
+      testWidgets('a tree answer that lands after a lens switch is applied to the same tree: the open rows, the selection and the live row stay',
+          (tester) async {
+        Completer<void>? hold;
+        await openNestedInPartLens(tester, around: (request) async {
+          if (hold != null && request.url.path == '/document/parts/part-1/assembly-tree') await hold.future;
+        });
+        final model = _TreeProbe(tester).model;
+        await _tapTreeRow(tester, 'Planes');
+        await _tapTreeRow(tester, 'XY plane');
+        await _settleSheet(tester);
+        await tester.tapAt(const Offset(400, 20)); // the plane sheet the tap opened
+        await _settleSheet(tester);
+        final touched = model.openKeysTouched;
+        // Entering the Assembly lens reloads the tree; its answer is held until the Part lens is back.
+        final late = hold = Completer<void>();
+        await switchLens(tester, 'Assembly');
+        await switchLens(tester, 'Part');
+        hold = null;
+        late.complete();
+        await settle(tester);
+        await settle(tester);
+        final after = _TreeProbe(tester).model;
+        expect(identical(after, model), isTrue);
+        expect(after.liveKey, '');
+        expect(after.openKeys, contains('#planes'));
+        expect(after.selectedKey, '#plane:xy');
+        expect(after.openKeysTouched, touched);
+      });
+
+      testWidgets('an older tree load that lands after a newer one is dropped, across a focus change', (tester) async {
+        Completer<void>? hold;
+        await openNestedInPartLens(tester, around: (request) async {
+          if (hold != null && request.url.path == '/document/parts/part-1/assembly-tree') await hold.future;
+        });
+        // The root's tree is on its way (the Assembly lens asks for it) when the plate is focused.
+        final late = hold = Completer<void>();
+        await switchLens(tester, 'Assembly');
+        hold = null;
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        late.complete();
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree?.partId, 'plate-part', reason: "the root's late tree did not replace the focused Part's");
       });
     });
   });

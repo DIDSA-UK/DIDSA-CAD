@@ -14,10 +14,10 @@ AssemblyTreeResponseDto _tree(String name) =>
 
 Map<String, dynamic> _rowJson(AssemblyTreeRow r, {bool live = false}) => {
       'key': r.key,
-      'kind': r.kindWire,
+      'kind': r.kind.wire,
       'depth': r.depth,
       'label': r.label,
-      'state': r.stateWire,
+      'state': r.state.wire,
       'bubble': r.bubble == null ? null : {'level': r.bubble!.level.name, 'count': r.bubble!.count},
       'expandable': r.expandable,
       'open': r.open,
@@ -55,7 +55,7 @@ void main() {
 
   test('the vectors file is the version this model knows', () {
     expect(_vectors['version'], 2);
-    expect([for (final s in AssemblyRowState.values) s.wire], _vectors['states']);
+    expect([for (final s in AssemblyRowState.occurrenceStates) s.wire], _vectors['states']);
   });
 
   group('vectors', () {
@@ -527,12 +527,13 @@ void main() {
       model.setLivePart(live(''));
       final rows = {for (final r in model.visibleRows()) r.key: r};
       expect(rows.containsKey('#feature:old'), isFalse);
-      expect(rows['#feature:e1']!.stateWire, 'lost_reference');
+      expect(rows['#feature:e1']!.state.wire, 'lost_reference');
       expect(rows['#feature:e1']!.lostReason, 'The sketch was deleted');
-      expect(rows['#feature:s2']!.stateWire, 'hidden');
+      expect(rows['#feature:s2']!.state.wire, 'hidden');
       expect(rows['#feature:s2']!.type, 'sketch');
-      expect(rows['#bodies']!.kindWire, 'bodies_folder');
-      expect(rows['#bodies']!.kind, AssemblyRowKind.group);
+      expect(rows['#bodies']!.kind.wire, 'bodies_folder');
+      expect(rows['#bodies']!.kind, AssemblyRowKind.bodiesFolder);
+      expect(rows['#bodies']!.live, isTrue);
       expect(rows['#planes']!.count, 4);
     });
 
@@ -657,6 +658,101 @@ void main() {
       expect(keys, containsAll(['#plane:xy', '#plane:feature:xy', '#feature:xy', '#body:f#1']));
       expect(keys.toSet().length, keys.length);
       expect(model.rowKeyOfMultiSelect('body:f#1'), '#body:f#1');
+    });
+  });
+
+  group('P2 additions', () {
+    AssemblyLivePart live(String key) => AssemblyLivePart(
+          key,
+          features: const [
+            AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch'),
+            AssemblyLiveFeature(id: 'e1', label: 'Extrude 1', type: 'extrude', lostReference: 'open to re-select'),
+            AssemblyLiveFeature(id: 'e2', label: 'Extrude 2', type: 'extrude', rolledBack: true, hidden: true),
+          ],
+          bodies: const [AssemblyLiveItem('e1', 'Body 1', hidden: true)],
+          surfaces: const [AssemblyLiveItem('f1', 'Surface 1')],
+          curves: const [AssemblyLiveItem('c1', 'Curve 1')],
+        );
+
+    test('the live kinds are AssemblyRowKind values and the feature states AssemblyRowState values', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.openAll(['#bodies', '#planes', '#surfaces', '#curves']);
+      final rows = {for (final r in model.visibleRows()) r.key: r};
+      expect(rows['#bodies']!.kind, AssemblyRowKind.bodiesFolder);
+      expect(rows['#planes']!.kind, AssemblyRowKind.planesFolder);
+      expect(rows['#surfaces']!.kind, AssemblyRowKind.surfacesFolder);
+      expect(rows['#curves']!.kind, AssemblyRowKind.curvesFolder);
+      expect(rows['#body:e1']!.kind, AssemblyRowKind.body);
+      expect(rows['#surface:f1']!.kind, AssemblyRowKind.surface);
+      expect(rows['#curve:c1']!.kind, AssemblyRowKind.curve);
+      expect(rows['#plane:xy']!.kind, AssemblyRowKind.defaultPlane);
+      // Nothing of the live part reads as a group, and only its features as features.
+      for (final r in rows.values.where((r) => r.live)) {
+        expect(r.kind, isNot(AssemblyRowKind.group), reason: r.key);
+        if (r.kind == AssemblyRowKind.feature) expect(r.featureId, isNotNull, reason: r.key);
+      }
+      expect(rows['#feature:e1']!.state, AssemblyRowState.lostReference);
+      // Two states on one feature: the more severe wins.
+      expect(rows['#feature:e2']!.state, AssemblyRowState.rolledBack);
+      expect(rows['#body:e1']!.state, AssemblyRowState.hidden);
+      expect(rows['#bodies']!.state, AssemblyRowState.none);
+      expect(rows['#feature:e1']!.state.isLiveState, isTrue);
+      expect(AssemblyRowState.fixed.isLiveState, isFalse);
+      expect(AssemblyRowState.none.isLiveState, isFalse);
+      // Folders open like a group, never match a filter, and are kept by restore.
+      expect(model.filteredRows('bodies').rows.where((r) => r.match), isEmpty);
+      expect(model.restoreOpenKeys(['#bodies', '#body:e1', '#feature:s1']), ['#bodies']);
+    });
+
+    test('hiding the live part (the Assembly lens) keeps its open folders and a selected live row through merge, unreported', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      var reported = 0;
+      model.onOpenKeysChanged = () => reported++;
+      model.setLivePart(live(''));
+      model.setOpen('#bodies', true);
+      model.selectedKey = '#body:e1';
+      reported = 0;
+      final touched = model.openKeysTouched;
+
+      model.livePartShown = false;
+      expect(model.visibleRows().any((r) => r.live), isFalse);
+      expect(model.liveKey, isNull);
+      expect(model.multiSelectKeyOfRow('#feature:s1'), isNull);
+      expect(model.liveFeatureKey('s1'), isNull);
+      // A refresh while hidden (entering the Assembly lens reloads the tree) and a data refresh of the live part keep them.
+      model.merge(_tree('single_part'));
+      model.setLivePart(live(''));
+      expect(model.openKeys, {'#bodies'});
+      expect(model.selectedKey, '#body:e1');
+
+      model.livePartShown = true;
+      expect(model.indexOf('#body:e1'), greaterThan(0));
+      expect(model.selectedKey, '#body:e1');
+      expect(reported, 0);
+      expect(model.openKeysTouched, touched);
+      expect(model.keysToStore(), ['#bodies']);
+    });
+
+    test('hidden, the live row lists what setFeatures gave it, as any part row', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setFeatures(const [], const [AssemblyFeature('s1', 'Sketch 1')]);
+      model.setLivePart(live(''));
+      expect(model.visibleRows().where((r) => r.kind == AssemblyRowKind.feature && r.live), hasLength(3));
+      model.livePartShown = false;
+      final features = [for (final r in model.visibleRows()) if (r.kind == AssemblyRowKind.feature) r];
+      expect([for (final r in features) r.key], ['#feature:s1']);
+      expect(features.single.live, isFalse);
+    });
+
+    test('a live part that is cleared drops its folders and selection (unlike hiding it)', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.setOpen('#bodies', true);
+      model.selectedKey = '#body:e1';
+      model.clearLivePart();
+      expect(model.openKeys, isEmpty);
+      expect(model.selectedKey, isNull);
     });
   });
 }

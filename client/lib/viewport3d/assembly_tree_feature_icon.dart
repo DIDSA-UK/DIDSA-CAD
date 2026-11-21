@@ -90,3 +90,21 @@ String assemblyTreeFeatureAsset(String type, {String? curveType}) => switch (typ
       'fill_surface' => 'assets/icons/feature/feature_surface.svg',
       _ => 'assets/icons/feature/feature_new_sketch.svg',
     };
+
+/// `docs/lod-strategy/01-design.md` SS3: the feature types the backend can build a coarse stand-in for, so the only ones that offer "pin to
+/// coarse" (the old panel's private `_coarseEligibleFeatureTypes`, which goes with it in P3).
+const Set<String> kCoarseEligibleFeatureTypes = {
+  'gear',
+  'bevel_gear',
+  'bevel_pair',
+  'gear_chain',
+  'planetary_gear',
+  'pattern',
+  'loft',
+};
+
+/// Whether a feature of [type] has an edit panel to open: an import and a Fill Surface have none (the old panel's private `_hasEditPanel`).
+bool featureTypeHasEditPanel(String type) => switch (type) {
+      'import' || 'fill_surface' => false,
+      _ => true,
+    };

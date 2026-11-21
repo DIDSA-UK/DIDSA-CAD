@@ -82,6 +82,7 @@ import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
 import 'assembly_tree_helpers.dart';
 import 'assembly_tree_open_store.dart';
+import 'assembly_tree_feature_icon.dart' show kCoarseEligibleFeatureTypes, featureTypeHasEditPanel;
 import 'assembly_tree_view.dart';
 import 'edit_alone_row.dart';
 import 'body_naming.dart';
@@ -720,6 +721,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   static String _projectTreeKey(String rootKey, String relativePath) => 'project:$rootKey|$relativePath';
 
+  /// The tree in the model is the one [_seedPartOnlyTree] made (no call), not an answer: the first real answer counts as the first.
+  bool _treeSeeded = false;
+
+  /// The seeded tree's stored rows were read back and all fit it (and were opened, unless the person had already changed them).
+  bool _treeSeedRestored = false;
+
   /// Whether the tree in the model came from `assembly-tree` (not built from the flat lists when that call failed: such a tree is one level
   /// deep, and what it would store or drop is not what the document's tree holds).
   bool _treeFromBackend = true;
@@ -742,6 +749,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final model = _treeModel;
     final tree = model.tree;
     if (key == null || !_treeFromBackend || tree == null || tree.partId != _part?.id) return false;
+    // The seeded root-only tree (P2) holds the stored rows only once they were read back (or the person changed them): before that it is
+    // "no tree yet", and what is stored is copied as it is instead.
+    if (_treeSeeded && !_treeSeedRestored && !model.openKeysTouched) return false;
     unawaited(AssemblyTreeOpenStore.write(key, model.keysToStore()));
     return true;
   }
@@ -1383,7 +1393,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Bug fix: [SelectionListDrawer.bodyNames] resolves a selected
   /// `SelectionEntityKind.body` entity's display name from this one map -
   /// a selected Surface (still tapped/highlighted via that same `body` kind,
-  /// see [_onSurfaceTap]) needs its own "Surface N" name here too, or it
+  /// see [_onLiveTreeRowTap]) needs its own "Surface N" name here too, or it
   /// falls through to [SelectionListDrawer]'s raw-id fallback and gets
   /// mislabeled "Body" plus a truncated id hash - [_bodyNames] alone (real
   /// solid Bodies only, since the Bug 1/2 fix) is no longer the complete
@@ -2562,6 +2572,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// a newer [_refreshMesh] call already superseded it, so a slow, stale
   /// coarse response can never clobber state a later call already settled.
   int _meshRefreshGeneration = 0;
+
+  /// [_refreshFeatures]' own [_meshRefreshGeneration]: only the latest features answer is applied.
+  int _featuresRefreshGeneration = 0;
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1 ("creating a new
   /// coarse-eligible Feature"): the not-yet-persisted coarse-preview Bodies
@@ -10750,7 +10763,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Locks [_selectionFilterOverrides] to Body/face kinds only, for the
   /// duration of both Thicken's and Solid from Surfaces' own source
-  /// pickers - lets a direct viewport tap (or, via [_onSurfaceTap], a Build
+  /// pickers - lets a direct viewport tap (or, via [_onLiveTreeRowTap], a Build
   /// Tree Surfaces-section tap, which routes through the exact same
   /// [_toggleSelectedEntity] call) reach [_toggleSelectedEntity]'s new
   /// `_thickenSourcePickerActive || _solidFromSurfacesPickerActive` branch,
@@ -13277,6 +13290,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // A4: a new document starts with a new tree (its open rows, its session-hidden rows).
       _treeLoadToken++;
       _treeModel = _newTreeModel();
+      _treeSeeded = false;
       _treeHostSelection = null;
       _treeFeaturePaths.clear();
       _sessionHiddenPaths = const {};
@@ -13336,6 +13350,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (part.occurrenceIds.isNotEmpty || widget.initialLens == AssemblyLens.assembly) {
         await _refreshAssemblyTree();
         await _refreshAssemblyMesh();
+      } else {
+        // P2: the Part lens draws the one tree, and a part opened on its own has no assembly tree loaded (no call is made for it).
+        _seedPartOnlyTree(part);
       }
       // Save/project overhaul Phase 4 (`docs/save-project-overhaul-scope.md`
       // §3.4): loading isn't "the user changed something" - a freshly
@@ -13372,8 +13389,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   Future<void> _refreshFeatures() async {
     final part = _part;
     if (part == null) return;
-    final features = await _api.listFeatures(_focusPartId);
-    if (!mounted) return;
+    // P2 (10.3's stale-answer rule): an answer is applied only while it is the latest request and the focus is still the Part it was asked
+    // for; a late answer for the Part focused before (it would put that Part's features on the live row) is dropped.
+    final generation = ++_featuresRefreshGeneration;
+    final partId = _focusPartId;
+    final features = await _api.listFeatures(partId);
+    if (!mounted || generation != _featuresRefreshGeneration || partId != _focusPartIdOrNull) return;
     setState(() {
       _features = features;
       _recomputeCreatePlaneGeometries();
@@ -13396,6 +13417,36 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// sessions never open the Assembly lens at all, so there is no reason to
   /// pay for this fetch on every Part open the way [_refreshFeatures]'s own
   /// Features fetch always must.
+  /// P2: the tree of a part opened on its own, which has no components (so no `assembly-tree` call is made for it): its root alone, as the
+  /// backend would answer, so the Part lens can draw the part as the live root. Its open rows (the folders) are stored and restored like any
+  /// document's (spec section 12). Replaced by the first real load (the Assembly lens, an inserted component).
+  void _seedPartOnlyTree(PartDto part) {
+    if (_treeModel.tree != null || (_focusStack?.depth ?? 0) > 0) return;
+    final token = ++_treeLoadToken;
+    final documentKey = _treeDocumentKey;
+    setState(() {
+      _treeFromBackend = true;
+      _treeStatusUnavailable = false;
+      // Nothing under the root has a status to fetch.
+      _applyTree(AssemblyTreeResponseDto(partId: part.id, partName: part.name, featureCount: _features.length, statusIncluded: true),
+          seeded: true);
+    });
+    _treeSeedRestored = documentKey == null;
+    if (documentKey == null) return;
+    final model = _treeModel;
+    unawaited(AssemblyTreeOpenStore.read(documentKey).then((stored) {
+      // Not for a later load, another model or another document, nor over rows the person already opened or closed.
+      if (!mounted || token != _treeLoadToken || !identical(model, _treeModel) || documentKey != _treeDocumentKey) return;
+      final keys = stored == null || stored.isEmpty ? const <String>[] : model.restoreOpenKeys(stored);
+      // Stored rows the root alone does not have (components, which a later answer brings) leave the seed provisional: the real answer
+      // restores them, and until then nothing is stored over them.
+      _treeSeedRestored = stored == null || keys.length == stored.length;
+      if (keys.isEmpty || model.openKeysTouched) return;
+      setState(() => model.openAll(keys, remember: false));
+      _treeController.refresh();
+    }));
+  }
+
   Future<void> _refreshAssemblyTree() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
@@ -13405,7 +13456,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // when it was last open. Read at the same time as everything else; applied only if this answer is still the latest and nothing changed
     // under it (below).
     final documentKey = _treeDocumentKey;
-    final isFirstAnswer = _treeModel.tree == null || _treeModel.tree!.partId != focusPartId;
+    final isFirstAnswer = _treeSeeded || _treeModel.tree == null || _treeModel.tree!.partId != focusPartId;
     final storedKeys = documentKey != null && isFirstAnswer && focusPartId == _part?.id
         ? AssemblyTreeOpenStore.read(documentKey)
         : Future<List<String>?>.value(null);
@@ -13425,7 +13476,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     final fetched = await structure;
     final stored = await storedKeys; // never throws
-    if (!mounted || token != _treeLoadToken) return;
+    // P2: also not when the focus moved since (the answer is another Part's tree), even before the load for the new focus has started.
+    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id)) return;
     // A backend without the endpoint still shows its components: one level, from the lists.
     final tree = fetched ??
         assemblyTreeFromLists(
@@ -13493,7 +13545,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (mounted && token == _treeLoadToken) setState(() => _treeStatusUnavailable = true);
       return;
     }
-    if (!mounted || token != _treeLoadToken) return;
+    if (!mounted || token != _treeLoadToken || partId != (_focusStack?.current ?? _part?.id)) return;
     setState(() {
       _treeStatusUnavailable = false;
       _treeModel.merge(withStatus);
@@ -13507,13 +13559,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   ///
   /// [restore]: the open keys stored for this document (spec section 12), opened when this is the first answer for the model, unless the person
   /// has already opened or closed rows in it (their own change comes first). Never changes the camera or the selection.
-  void _applyTree(AssemblyTreeResponseDto tree, {List<String>? restore}) {
+  void _applyTree(AssemblyTreeResponseDto tree, {List<String>? restore, bool seeded = false}) {
     if (_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) {
       _treeModel = _newTreeModel(grouping: _treeModel.grouping);
       _treeHostSelection = null;
       _treeFeaturePaths.clear();
     }
-    final isFirstAnswer = _treeModel.tree == null;
+    // The tree [_seedPartOnlyTree] made is not the backend's first answer: the first real one still restores, unless the seed's own restore
+    // already ran over the same rows (a root with nothing under it: then the real answer is a refresh like any other, and nothing is
+    // restored or stored). An answer with components the seed did not have is the first.
+    final isFirstAnswer = _treeModel.tree == null || (_treeSeeded && (!_treeSeedRestored || tree.children.isNotEmpty));
+    _treeSeeded = seeded;
     _treeModel.merge(tree);
     if (isFirstAnswer && restore != null && tree.partId == _part?.id) {
       if (!_treeModel.openKeysTouched) {
@@ -14146,6 +14202,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final part = _part;
     if (part == null) return;
     final generation = ++_meshRefreshGeneration;
+    final partId = _focusPartId;
     if (isInitialLoad) {
       // `docs/lod-strategy/01-design.md` SS4/SS5's "re-opening a Part" flow:
       // fires alongside (not before) the real fetch below - a coarse-eligible
@@ -14158,12 +14215,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
 
     final response = await _api.getPartMesh(
-      _focusPartId,
+      partId,
       hiddenFeatureIds: _hiddenFeatureIds.toList(),
       rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
       meshQuality: _meshQuality,
     );
-    if (!mounted || generation != _meshRefreshGeneration) return;
+    // P2: also dropped when the focus moved since (the bodies of the Part focused before), before the new focus's own refresh starts.
+    if (!mounted || generation != _meshRefreshGeneration || partId != _focusPartIdOrNull) return;
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
     final newBodies = isPlaceholder ? <BodyMeshDto>[] : response;
     final justGotFirstBody = _bodies.isEmpty && newBodies.isNotEmpty && !_hasAutoHiddenReferencePlanes;
@@ -18008,15 +18066,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     await _runGuarded(_refreshMesh);
   }
 
-  /// B3 revision: tapping a Body row in the Build Tree's Bodies section -
-  /// toggles it in [_selectedEntities] exactly like tapping that Body
-  /// directly in the 3D viewport already does (`_toggleSelectedEntity`),
-  /// rather than a separate one-off "always select" action - the same
-  /// selection set drives [SelectionListDrawer] either way, so the two
-  /// selection paths (tree row, viewport tap) stay fully interchangeable.
-  void _onBodyTap(String bodyId) {
-    _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: bodyId));
-  }
 
   /// On-device feedback: long-pressing a Body row used to directly toggle
   /// its Hide/Show state; it now opens a context menu instead, matching the
@@ -18088,15 +18137,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  /// [_onBodyTap]'s Surfaces-section counterpart - a Surface's shape is
-  /// still one entry among [_visibleBodies] (bug fix: only excluded from
-  /// [_computedBodyIds]/the Bodies section, never from the 3D viewport
-  /// itself or its selection plumbing), so the exact same
-  /// `SelectionEntityKind.body` toggle already used for a real solid Body
-  /// selects/highlights it too - no separate selection kind needed.
-  void _onSurfaceTap(String surfaceId) {
-    _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: surfaceId));
-  }
 
   /// [_onBodyLongPress]'s Surfaces-section counterpart - same context-menu
   /// Hide/Show flow, resolved back to the owning `SurfaceFeature` via
@@ -18122,15 +18162,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
-  /// The Curves section's own tap handler - selects/highlights a Curve
-  /// feature's whole displayed wire in the 3D viewport. Unlike
-  /// [_onSurfaceTap] (a Surface is tapped/highlighted via the ordinary
-  /// `body` kind), a Curve feature has its own dedicated
-  /// `SelectionEntityKind.curveFeature` (see that enum value's own doc
-  /// comment) - a curve is not a Body, so it is never picked as one.
-  void _onCurveTap(String curveId) {
-    _toggleSelectedEntity(SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: curveId));
-  }
 
   /// [_onSurfaceLongPress]'s Curves-section counterpart, reached the same
   /// way (via [_multiSelectMore]'s "More" button with exactly one Curve row
@@ -18151,7 +18182,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Desktop input D4: a right click on a Curves-section row. The touch
   /// long-press toggles Hide/Show with no menu; a right click is expected
   /// to open one, so it offers that one action.
-  Future<void> _onCurveContextMenu(String curveId, Offset at) async {
+  Future<void> _onCurveContextMenu(String curveId, Offset? at) async {
     if (_busy) return;
     final feature = _featureById(baseFeatureId(curveId));
     if (feature == null) return;
@@ -18728,11 +18759,19 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // Boolean family, fourth/last entry: same gate as [showMerge]/
       // [showSubtract]/[showCommon] exactly.
       showSplit: _bodyProducingFeatureTypes.contains(feature.type),
+      // Tree P2: a tap on the row selects, so the menu offers Edit (a feature with an edit panel) and, for a coarse-eligible feature, the
+      // level-of-detail pin the old row carried.
+      showEdit: featureTypeHasEditPanel(feature.type),
+      coarsePinned: kCoarseEligibleFeatureTypes.contains(feature.type) ? _pinnedCoarseFeatureIds.contains(feature.id) : null,
       at: at,
     );
     if (!mounted || action == null) return;
 
     switch (action) {
+      case FeatureContextMenuAction.edit:
+        await _onFeatureTap(feature);
+      case FeatureContextMenuAction.toggleCoarsePin:
+        await _toggleCoarsePin(feature);
       case FeatureContextMenuAction.extrude:
         await _proceedToSketchConsumingFeature(feature, _ProfilePickerTarget.extrude);
       case FeatureContextMenuAction.revolve:
@@ -25941,6 +25980,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case AssemblyRowKind.feature:
       case AssemblyRowKind.matesFolder:
       case AssemblyRowKind.patternsFolder:
+      // The live part's rows go to [_onLiveTreeRowTap]; a read-only feature row under another part lands here.
+      case AssemblyRowKind.bodiesFolder:
+      case AssemblyRowKind.planesFolder:
+      case AssemblyRowKind.surfacesFolder:
+      case AssemblyRowKind.curvesFolder:
+      case AssemblyRowKind.body:
+      case AssemblyRowKind.surface:
+      case AssemblyRowKind.curve:
+      case AssemblyRowKind.defaultPlane:
         // Nothing to select: the view marked the row, this screen's selection stays what it was.
         setState(() {});
     }
@@ -25991,6 +26039,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case AssemblyRowKind.feature:
       case AssemblyRowKind.matesFolder:
       case AssemblyRowKind.patternsFolder:
+      // The live part's rows have their own handlers (P2).
+      case AssemblyRowKind.bodiesFolder:
+      case AssemblyRowKind.planesFolder:
+      case AssemblyRowKind.surfacesFolder:
+      case AssemblyRowKind.curvesFolder:
+      case AssemblyRowKind.body:
+      case AssemblyRowKind.surface:
+      case AssemblyRowKind.curve:
+      case AssemblyRowKind.defaultPlane:
         break;
     }
   }
@@ -26013,6 +26070,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case AssemblyRowKind.feature:
       case AssemblyRowKind.matesFolder:
       case AssemblyRowKind.patternsFolder:
+      // The live part's rows have their own handlers (P2).
+      case AssemblyRowKind.bodiesFolder:
+      case AssemblyRowKind.planesFolder:
+      case AssemblyRowKind.surfacesFolder:
+      case AssemblyRowKind.curvesFolder:
+      case AssemblyRowKind.body:
+      case AssemblyRowKind.surface:
+      case AssemblyRowKind.curve:
+      case AssemblyRowKind.defaultPlane:
         break;
     }
   }
@@ -27762,9 +27828,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             child: Column(
               children: [
                 Expanded(
-                  child: _lens == AssemblyLens.assembly && !_treePickerActive
-                      ? _buildAssemblyTreePanel(docked: true)
-                      : _buildFeatureTreePanel(docked: true),
+                  child: _buildTreePanel(docked: true),
                 ),
                 if (_selectionDrawerShown) _buildSelectionDrawer(),
                 if (_componentDrawerShown) _buildComponentDrawer(),
@@ -28405,228 +28469,502 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                   );
   }
 
-  /// The Feature tree. [docked] puts it in the desktop layout's left pane; otherwise it slides over the viewport.
-  Widget _buildFeatureTreePanel({required bool docked}) {
-    return FeatureTreePanel(
-      docked: docked,
-      editAloneLabel: _editAlone?.label,
-      onEditAloneDone: _editAlone == null ? null : () => unawaited(_exitEditAlone()),
-                    visible: _featureTreePanelVisible,
-                    multiSelectHeader: _activeMultiSelect == null
-                        ? null
-                        : MultiSelectActionBar(
-                            count: _activeMultiSelect!.count,
-                            allHidden: _multiSelectAllHidden,
-                            busy: _busy || _multiSelectBusy,
-                            onToggleVisibility: () => unawaited(_multiSelectToggleVisibility()),
-                            onDelete: () => unawaited(_multiSelectDelete()),
-                            onCancel: _exitMultiSelect,
-                            onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
-                          ),
-                    features: _features,
-                    selectedFeatureId: _selectedFeatureId,
-                    // The tree always shows the real hidden state (the eye-slash), also while a flow forces a category
-                    // into view in the viewport.
-                    hiddenFeatureIds: {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds},
-                    // The XY / XZ / YZ rows under Planes: the real per-plane state, also while a flow forces them shown.
-                    hiddenReferencePlanes: _hiddenReferencePlanes,
-                    onReferencePlaneTap: _onPlaneTap,
-                    onReferencePlaneVisibility: _setReferencePlaneHidden,
-                    onFeatureTap: _onFeatureTap,
-                    // Feature 1 (tree multi-select): long-press enters bulk
-                    // multi-select; the old per-row context menu is reached
-                    // via the action bar's "More" button instead (see
-                    // [_multiSelectMore]).
-                    onFeatureLongPress: (feature) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.feature(feature.id)),
-                    // Desktop input D4: a right click opens the row's menu
-                    // directly at the cursor (touch reaches it via "More").
-                    onFeatureContextMenu: (feature, at) => unawaited(_onFeatureLongPress(feature, at: at)),
-                    onBodyContextMenu: (bodyId, at) => unawaited(_onBodyLongPress(bodyId, at: at)),
-                    onSurfaceContextMenu: (surfaceId, at) => unawaited(_onSurfaceLongPress(surfaceId, at: at)),
-                    onCurveContextMenu: (curveId, at) => unawaited(_onCurveContextMenu(curveId, at)),
-                    isMultiSelectMode: _buildMultiSelect.active,
-                    selectedMultiSelectIds: _buildMultiSelect.selectedIds,
-                    onMultiSelectToggle: (key) => _toggleMultiSelectMember(_buildMultiSelect, key),
-                    pendingDetailFeatureIds: _pendingDetailFeatureIds,
-                    pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
-                    onToggleCoarsePin: _toggleCoarsePin,
-                    onClose: () {
-                      if (_buildMultiSelect.active) {
-                        _exitMultiSelect();
-                        setState(() => _featureTreeVisible = false);
-                      } else if (_sketchPickerActive) {
-                        _cancelSketchPicker();
-                      } else if (_surfaceSketchPickerActive) {
-                        _cancelSurfaceSketchPicker();
-                      } else if (_revolveSketchPickerActive) {
-                        _cancelRevolveSketchPicker();
-                      } else if (_sweepSketchPickerActive) {
-                        _cancelSweepSketchPicker();
-                      } else if (_loftSketchPickerActive) {
-                        _cancelLoftSketchPicker();
-                      } else if (_planarSurfaceSketchPickerActive) {
-                        _cancelPlanarSurfaceSketchPicker();
-                      } else if (_revolveSurfaceSketchPickerActive) {
-                        _cancelRevolveSurfaceSketchPicker();
-                      } else if (_sweptSurfaceSketchPickerActive) {
-                        _cancelSweptSurfaceSketchPicker();
-                      } else if (_loftSurfaceSketchPickerActive) {
-                        _cancelLoftSurfaceSketchPicker();
-                      } else if (_ruledSurfaceSketchPickerActive) {
-                        _cancelRuledSurfaceSketchPicker();
-                      } else if (_thickenSourcePickerActive) {
-                        _cancelThickenSourcePicker();
-                      } else if (_knitSurfacePickerActive) {
-                        _cancelKnitSurfacePicker();
-                      } else if (_solidFromSurfacesPickerActive) {
-                        _cancelSolidFromSurfacesPicker();
-                      } else if (_offsetSurfaceSourcePickerActive) {
-                        _cancelOffsetSurfaceSourcePicker();
-                      } else if (_sourceFeaturePickerTarget != null) {
-                        _cancelSourceFeaturePicker();
-                      } else {
-                        setState(() => _featureTreeVisible = false);
-                      }
-                    },
-                    // Prompt F: only one of _sketchPickerActive/
-                    // _surfaceSketchPickerActive/_revolveSketchPickerActive/
-                    // _sweepSketchPickerActive/_planarSurfaceSketchPickerActive/
-                    // _revolveSurfaceSketchPickerActive/
-                    // _sweptSurfaceSketchPickerActive is ever true at a time
-                    // (same "one panel/picker active" invariant every other
-                    // flow in this file relies on), so a chain of ternaries
-                    // picks whichever is live - mirrors the
-                    // previewOverlayBodyId/previewOverlayMesh ternary above.
-                    // Loft/Loft Surface/Ruled Surface's own pickers use
-                    // isFeaturePickerMode instead (see that block's own top
-                    // comment for why), not this one.
-                    isSketchPickerMode: _treeSketchPickerMode,
-                    pickableSketchIds: _sketchPickerActive
-                        ? _pickableSketchIds
-                        : _surfaceSketchPickerActive
-                            ? _pickableSurfaceSketchIds
-                            : _revolveSketchPickerActive
-                                ? _pickableRevolveSketchIds
-                                : _sweepSketchPickerActive
-                                    ? _pickableSweepSketchIds
-                                    : _planarSurfaceSketchPickerActive
-                                        ? _pickablePlanarSurfaceSketchIds
-                                        : _revolveSurfaceSketchPickerActive
-                                            ? _pickableRevolveSurfaceSketchIds
-                                            : _pickableSweptSurfaceSketchIds,
-                    onSketchPicked: _sketchPickerActive
-                        ? _onSketchPicked
-                        : _surfaceSketchPickerActive
-                            ? _onSurfaceSketchPicked
-                            : _revolveSketchPickerActive
-                                ? _onRevolveSketchPicked
-                                : _sweepSketchPickerActive
-                                    ? _onSweepSketchPicked
-                                    : _planarSurfaceSketchPickerActive
-                                        ? _onPlanarSurfaceSketchPicked
-                                        : _revolveSurfaceSketchPickerActive
-                                            ? _onRevolveSurfaceSketchPicked
-                                            : _onSweptSurfaceSketchPicked,
-                    // Loft's own multi-select section picker shares this
-                    // exact mode with the Pattern/Mirror source-feature
-                    // picker (only one of the two is ever active at a time,
-                    // same invariant as the sketch-picker chain above) -
-                    // see the Loft state block's own top comment for why a
-                    // 2+ ordered pick needs this mode instead of
-                    // isSketchPickerMode's single-tap-finalizes shape. Loft
-                    // Surface/Ruled Surface join this same mode, mirroring
-                    // Loft's own choice exactly.
-                    // Thicken/Offset Surface use this mode as a single-pick-commits-immediately picker; Knit/Solid from
-                    // Surfaces, Loft and the Pattern/Mirror source pickers as multi-pick-then-confirm (see [_treeFeaturePickerMode]).
-                    isFeaturePickerMode: _treeFeaturePickerMode,
-                    pickableFeaturePickerIds: _thickenSourcePickerActive ||
-                            _knitSurfacePickerActive ||
-                            _solidFromSurfacesPickerActive ||
-                            _offsetSurfaceSourcePickerActive
-                        ? _pickableSurfaceFeatureIds
-                        : _loftSketchPickerActive
-                            ? _pickableLoftSketchIds
-                            : _loftSurfaceSketchPickerActive
-                                ? _pickableLoftSurfaceSketchIds
-                                : _ruledSurfaceSketchPickerActive
-                                    ? _pickableRuledSurfaceSketchIds
-                                    : _sourceFeaturePickerPickableIds,
-                    selectedFeaturePickerIds: _thickenSourcePickerActive || _offsetSurfaceSourcePickerActive
-                        ? const <String>{}
-                        : _knitSurfacePickerActive
-                            ? {for (final f in _knitSurfacePendingSurfaces) f.id}
-                            : _solidFromSurfacesPickerActive
-                                ? {for (final f in _solidFromSurfacesPendingSurfaces) f.id}
-                                : _loftSketchPickerActive
-                                    ? {for (final f in _loftPendingSections) f.id}
-                                    : _loftSurfaceSketchPickerActive
-                                        ? {for (final f in _loftSurfacePendingSections) f.id}
-                                        : _ruledSurfaceSketchPickerActive
-                                            ? {for (final f in _ruledSurfacePendingSections) f.id}
-                                            : _selectedSourceFeatureIds,
-                    onFeaturePickerToggle: _thickenSourcePickerActive
-                        ? _onThickenSourcePicked
-                        : _offsetSurfaceSourcePickerActive
-                            ? _onOffsetSurfaceSourcePicked
-                            : _knitSurfacePickerActive
-                                ? _toggleKnitSurfacePick
-                                : _solidFromSurfacesPickerActive
-                                    ? _toggleSolidFromSurfacesPick
-                                    : _loftSketchPickerActive
-                                        ? _toggleLoftSectionPick
-                                        : _loftSurfaceSketchPickerActive
-                                            ? _toggleLoftSurfaceSectionPick
-                                            : _ruledSurfaceSketchPickerActive
-                                                ? _toggleRuledSurfaceSectionPick
-                                                : _toggleSourceFeaturePick,
-                    featurePickerLabel: _thickenSourcePickerActive
-                        ? 'Select a surface to thicken'
-                        : _offsetSurfaceSourcePickerActive
-                            ? 'Select a surface to offset'
-                            : _knitSurfacePickerActive
-                                ? 'Select surfaces to knit'
-                                : _solidFromSurfacesPickerActive
-                                    ? 'Select surfaces to combine into a solid'
-                                    : _loftSketchPickerActive
-                                        ? 'Select sketches to loft'
-                                        : _loftSurfaceSketchPickerActive
-                                            ? 'Select sketches to loft'
-                                            : _ruledSurfaceSketchPickerActive
-                                    ? 'Select 2 sketches'
-                                    : 'Select source Features',
-                    bodyIds: _computedBodyIds,
-                    bodyNames: _bodyNames,
-                    onBodyTap: _onBodyTap,
-                    onBodyLongPress: (bodyId) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.body(bodyId)),
-                    hiddenBodyIds: {
-                      for (final body in _bodies)
-                        if (body.hidden && !body.isSurface && !body.isCurve) body.bodyId,
-                    },
-                    surfaceIds: _computedSurfaceIds,
-                    surfaceNames: _surfaceNames,
-                    onSurfaceTap: _onSurfaceTap,
-                    onSurfaceLongPress: (surfaceId) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.surface(surfaceId)),
-                    hiddenSurfaceIds: {
-                      for (final body in _bodies)
-                        if (body.hidden && body.isSurface) body.bodyId,
-                    },
-                    curveIds: _computedCurveIds,
-                    curveNames: _curveNames,
-                    onCurveTap: _onCurveTap,
-                    onCurveLongPress: (curveId) =>
-                        _enterMultiSelect(_buildMultiSelect, TreeMultiSelectKeys.curve(curveId)),
-                    hiddenCurveIds: {
-                      for (final body in _bodies)
-                        if (body.hidden && body.isCurve) body.bodyId,
-                    },
-                  );
+  // --- The build tree on the one tree (P2, `docs/assembly-tree-overhaul-scope.md` 10.6) ----------------------------------------------------
+
+  /// Closing the tree (its close button; the docked pane has none): ends a multi-select or cancels the tree picker that is open first,
+  /// as the old build tree panel did, else hides the tree.
+  void _onTreeClose() {
+    if (_activeMultiSelect != null) {
+      _exitMultiSelect();
+      setState(() => _featureTreeVisible = false);
+    } else if (_sketchPickerActive) {
+      _cancelSketchPicker();
+    } else if (_surfaceSketchPickerActive) {
+      _cancelSurfaceSketchPicker();
+    } else if (_revolveSketchPickerActive) {
+      _cancelRevolveSketchPicker();
+    } else if (_sweepSketchPickerActive) {
+      _cancelSweepSketchPicker();
+    } else if (_loftSketchPickerActive) {
+      _cancelLoftSketchPicker();
+    } else if (_planarSurfaceSketchPickerActive) {
+      _cancelPlanarSurfaceSketchPicker();
+    } else if (_revolveSurfaceSketchPickerActive) {
+      _cancelRevolveSurfaceSketchPicker();
+    } else if (_sweptSurfaceSketchPickerActive) {
+      _cancelSweptSurfaceSketchPicker();
+    } else if (_loftSurfaceSketchPickerActive) {
+      _cancelLoftSurfaceSketchPicker();
+    } else if (_ruledSurfaceSketchPickerActive) {
+      _cancelRuledSurfaceSketchPicker();
+    } else if (_thickenSourcePickerActive) {
+      _cancelThickenSourcePicker();
+    } else if (_knitSurfacePickerActive) {
+      _cancelKnitSurfacePicker();
+    } else if (_solidFromSurfacesPickerActive) {
+      _cancelSolidFromSurfacesPicker();
+    } else if (_offsetSurfaceSourcePickerActive) {
+      _cancelOffsetSurfaceSourcePicker();
+    } else if (_sourceFeaturePickerTarget != null) {
+      _cancelSourceFeaturePicker();
+    } else {
+      setState(() => _featureTreeVisible = false);
+    }
   }
 
-  /// The Assembly tree, as [_buildFeatureTreePanel]: [AssemblyTreeView] (A4 of `docs/assembly-tree-overhaul-scope.md`) over [_treeModel].
-  Widget _buildAssemblyTreePanel({required bool docked}) {
+  // Prompt F: only one of the sketch pickers is ever active at a time (the "one panel / picker active" invariant), so a chain picks
+  // whichever is live. Loft / Loft Surface / Ruled Surface use the feature picker instead.
+  Set<String> get _treePickableSketchIds => _sketchPickerActive
+      ? _pickableSketchIds
+      : _surfaceSketchPickerActive
+          ? _pickableSurfaceSketchIds
+          : _revolveSketchPickerActive
+              ? _pickableRevolveSketchIds
+              : _sweepSketchPickerActive
+                  ? _pickableSweepSketchIds
+                  : _planarSurfaceSketchPickerActive
+                      ? _pickablePlanarSurfaceSketchIds
+                      : _revolveSurfaceSketchPickerActive
+                          ? _pickableRevolveSurfaceSketchIds
+                          : _pickableSweptSurfaceSketchIds;
+
+  void Function(FeatureDto feature) get _treeOnSketchPicked => _sketchPickerActive
+      ? _onSketchPicked
+      : _surfaceSketchPickerActive
+          ? _onSurfaceSketchPicked
+          : _revolveSketchPickerActive
+              ? _onRevolveSketchPicked
+              : _sweepSketchPickerActive
+                  ? _onSweepSketchPicked
+                  : _planarSurfaceSketchPickerActive
+                      ? _onPlanarSurfaceSketchPicked
+                      : _revolveSurfaceSketchPickerActive
+                          ? _onRevolveSurfaceSketchPicked
+                          : _onSweptSurfaceSketchPicked;
+
+  // Thicken / Offset Surface pick one surface and commit at once; Knit / Solid from Surfaces, Loft, Loft Surface, Ruled Surface and the
+  // Pattern / Mirror source pickers tick several and confirm (see [_treeFeaturePickerMode]).
+  bool get _treeFeaturePickerSingle => _thickenSourcePickerActive || _offsetSurfaceSourcePickerActive;
+
+  Set<String> get _treeFeaturePickerPickableIds =>
+      _thickenSourcePickerActive || _knitSurfacePickerActive || _solidFromSurfacesPickerActive || _offsetSurfaceSourcePickerActive
+          ? _pickableSurfaceFeatureIds
+          : _loftSketchPickerActive
+              ? _pickableLoftSketchIds
+              : _loftSurfaceSketchPickerActive
+                  ? _pickableLoftSurfaceSketchIds
+                  : _ruledSurfaceSketchPickerActive
+                      ? _pickableRuledSurfaceSketchIds
+                      : _sourceFeaturePickerPickableIds;
+
+  Set<String> get _treeFeaturePickerSelectedIds => _treeFeaturePickerSingle
+      ? const <String>{}
+      : _knitSurfacePickerActive
+          ? {for (final f in _knitSurfacePendingSurfaces) f.id}
+          : _solidFromSurfacesPickerActive
+              ? {for (final f in _solidFromSurfacesPendingSurfaces) f.id}
+              : _loftSketchPickerActive
+                  ? {for (final f in _loftPendingSections) f.id}
+                  : _loftSurfaceSketchPickerActive
+                      ? {for (final f in _loftSurfacePendingSections) f.id}
+                      : _ruledSurfaceSketchPickerActive
+                          ? {for (final f in _ruledSurfacePendingSections) f.id}
+                          : _selectedSourceFeatureIds;
+
+  void Function(FeatureDto feature) get _treeOnFeaturePickerToggle => _thickenSourcePickerActive
+      ? _onThickenSourcePicked
+      : _offsetSurfaceSourcePickerActive
+          ? _onOffsetSurfaceSourcePicked
+          : _knitSurfacePickerActive
+              ? _toggleKnitSurfacePick
+              : _solidFromSurfacesPickerActive
+                  ? _toggleSolidFromSurfacesPick
+                  : _loftSketchPickerActive
+                      ? _toggleLoftSectionPick
+                      : _loftSurfaceSketchPickerActive
+                          ? _toggleLoftSurfaceSectionPick
+                          : _ruledSurfaceSketchPickerActive
+                              ? _toggleRuledSurfaceSectionPick
+                              : _toggleSourceFeaturePick;
+
+  String get _treeFeaturePickerLabel => _thickenSourcePickerActive
+      ? 'Select a surface to thicken'
+      : _offsetSurfaceSourcePickerActive
+          ? 'Select a surface to offset'
+          : _knitSurfacePickerActive
+              ? 'Select surfaces to knit'
+              : _solidFromSurfacesPickerActive
+                  ? 'Select surfaces to combine into a solid'
+                  : _loftSketchPickerActive || _loftSurfaceSketchPickerActive
+                      ? 'Select sketches to loft'
+                      : _ruledSurfaceSketchPickerActive
+                          ? 'Select 2 sketches'
+                          : 'Select source Features';
+
+  /// The picker the tree shows (spec section 13's picker modes as the model's rules), or null.
+  AssemblyPicker? _treePicker() {
+    if (_treeSketchPickerMode) {
+      return AssemblyPicker.sketch(
+        eligibleSketchIds: _treePickableSketchIds,
+        banner: _sketchPickerActive ? 'Select a sketch to extrude' : 'Select a sketch',
+        ineligibleReason: _sketchPickerActive ? 'Pick a sketch with a closed profile' : 'This sketch cannot be used here',
+      );
+    }
+    if (_treeFeaturePickerMode) {
+      final single = _treeFeaturePickerSingle;
+      return AssemblyPicker(
+        banner: _treeFeaturePickerLabel,
+        multi: !single,
+        pickable: {for (final id in _treeFeaturePickerPickableIds) TreeMultiSelectKeys.feature(id)},
+        picked: {for (final id in _treeFeaturePickerSelectedIds) TreeMultiSelectKeys.feature(id)},
+        otherReason: 'This feature cannot be picked here',
+      );
+    }
+    return null;
+  }
+
+  String? _treePickerSignature;
+
+  /// The live part is drawn while the Part lens is on, and while a tree picker picks from it (a picker can be opened from either lens).
+  bool get _treeLiveShown => _lens == AssemblyLens.part || _treePickerActive;
+
+  /// The key of the live row: the focused Part's row in the tree the model holds. Make Focus re-roots the tree on the focused Part today, so
+  /// that is the root (`""`); a tree rooted at the document while a Part is focused (B3 keeps the whole tree) makes the focused row live.
+  String? get _liveTreeKey {
+    final tree = _treeModel.tree;
+    final focus = _focusPartIdOrNull;
+    if (tree == null || focus == null) return null;
+    if (tree.partId == focus) return '';
+    final path = _focusStack?.currentOccurrencePath ?? const <String>[];
+    if (tree.partId == _part?.id && path.isNotEmpty && _treeModel.nodeAtPath(path)?.resolvedPartId == focus) return path.join('/');
+    return null;
+  }
+
+  /// What the live part was last built from (see [_syncTreeLivePart]): rebuilding it clears the model's cached rows, so it is done only when
+  /// one of these changed.
+  List<Object?>? _treeLiveInputs;
+
+  /// What a lost reference says on the row (its tooltip and the bar), from the old panel's subtitle.
+  static String _lostReferenceReason(FeatureDto f) {
+    if (f.type == 'sketch') {
+      final n = f.lostReferencePointIds.length;
+      return n > 1 ? '$n lost - open to re-attach' : 'open to re-attach';
+    }
+    final n = f.lostReferences.length;
+    return n > 1 ? '$n lost - open to re-select' : 'open to re-select';
+  }
+
+  /// Hands the model the live part (the focused Part's features, folders and states) and the picker, when they changed. Called from the build.
+  /// The live part is kept in both lenses and only shown in the Part lens ([AssemblyTreeModel.livePartShown]), so the Assembly lens does not
+  /// drop its open folders or a selected live row: a lens switch keeps the open rows and the selection, and is not the person's change.
+  void _syncTreeLivePart() {
+    final key = _liveTreeKey;
+    final hidden = _hiddenFeatureIds;
+    final rolled = _rollbackExcludedFeatureIds;
+    final pending = _pendingDetailFeatureIds;
+    String sorted(Iterable<String> ids) => (ids.toList()..sort()).join(',');
+    final inputs = <Object?>[
+      key,
+      _features,
+      _bodies,
+      sorted(hidden),
+      sorted(rolled),
+      sorted(pending),
+      sorted(_hiddenReferencePlanes.map((p) => p.apiValue)),
+    ];
+    final last = _treeLiveInputs;
+    var same = last != null && last.length == inputs.length;
+    for (var i = 0; same && i < inputs.length; i++) {
+      same = i == 1 || i == 2 ? identical(last![i], inputs[i]) : last![i] == inputs[i];
+    }
+    if (!same || !identical(_treeLiveModel, _treeModel)) {
+      _treeLiveInputs = inputs;
+      _treeLiveModel = _treeModel;
+      if (key == null) {
+        if (_treeModel.livePart != null) _treeModel.clearLivePart();
+      } else {
+        final features = _features;
+        AssemblyLiveItem item(String id, Map<String, String> names) =>
+            AssemblyLiveItem(id, names[id] ?? id, hidden: _bodies.any((b) => b.bodyId == id && b.hidden));
+        final bodyNames = _bodyNames;
+        final surfaceNames = _surfaceNames;
+        final curveNames = _curveNames;
+        final bodyIds = _computedBodyIds.toSet();
+        final surfaceIds = _computedSurfaceIds.toSet();
+        final curveIds = _computedCurveIds.toSet();
+        _treeModel.setLivePart(AssemblyLivePart(
+          key,
+          features: [
+            for (var i = 0; i < features.length; i++)
+              AssemblyLiveFeature(
+                id: features[i].id,
+                label: featureDisplayName(features, i),
+                type: features[i].type,
+                lostReference: features[i].hasLostReference ? _lostReferenceReason(features[i]) : null,
+                movedReference: features[i].hasMovedReference,
+                pendingDetail: pending.contains(features[i].id),
+                rolledBack: rolled.contains(features[i].id),
+                hidden: hidden.contains(features[i].id),
+              ),
+          ],
+          // In the order of the display names (a LinkedHashMap: "Body 2" before "Body 10").
+          bodies: [for (final id in bodyNames.keys.where(bodyIds.contains)) item(id, bodyNames)],
+          surfaces: [for (final id in surfaceNames.keys.where(surfaceIds.contains)) item(id, surfaceNames)],
+          curves: [for (final id in curveNames.keys.where(curveIds.contains)) item(id, curveNames)],
+          hiddenDefaultPlanes: {for (final p in _hiddenReferencePlanes) p.apiValue.toLowerCase()},
+        ));
+      }
+    }
+    _treeModel.livePartShown = _treeLiveShown;
+    final picker = key == null || !_treeLiveShown ? null : _treePicker();
+    final signature = picker == null
+        ? null
+        : '${picker.banner}|${picker.multi}|${sorted(picker.pickable)}|${sorted(picker.picked)}|${picker.otherReason}';
+    if (signature != _treePickerSignature || (picker == null) != (_treeModel.picker == null)) {
+      _treePickerSignature = signature;
+      _treeModel.setPicker(picker);
+    }
+  }
+
+  AssemblyTreeModel? _treeLiveModel;
+
+  /// A tap on a live row selected it ([_liveTreeTapKey]) and made this viewport selection: while [_selectedEntities] is still that set the tree
+  /// marks the tapped row (a body, a folder, a sketch with nothing to highlight); otherwise the tree follows the viewport (a picked body or
+  /// face marks the row of the feature that made it).
+  String? _liveTreeTapKey;
+  Set<SelectionEntityRef>? _liveTreeTapEntities;
+
+  /// The live row a viewport selection stands for: a body, face, edge or vertex marks the feature that made its body ([baseFeatureId]), a
+  /// created plane its feature, a default plane its row. Null for anything else.
+  String? _liveRowKeyOfEntity(SelectionEntityRef e) {
+    final live = _treeModel.liveKey;
+    if (live == null) return null;
+    switch (e.kind) {
+      case SelectionEntityKind.face:
+      case SelectionEntityKind.edge:
+      case SelectionEntityKind.vertex:
+      case SelectionEntityKind.body:
+      case SelectionEntityKind.curveFeature:
+        return e.bodyId.isEmpty ? null : _treeModel.liveFeatureKey(baseFeatureId(e.bodyId));
+      case SelectionEntityKind.createPlane:
+        return e.planeFeatureId.isEmpty ? null : _treeModel.liveFeatureKey(e.planeFeatureId);
+      case SelectionEntityKind.referencePlane:
+        final plane = e.referencePlaneKind;
+        return plane == null ? null : '$live#plane:${plane.apiValue.toLowerCase()}';
+      default:
+        return null;
+    }
+  }
+
+  /// The live part's row this screen's selection stands for, or null (then the tree's selection is the component or mate one). A live row the
+  /// person tapped stays the selection in the Assembly lens too (it is not listed there), so it is still selected when the Part lens is back.
+  String? get _liveSelectionHostKey {
+    if (_liveTreeTapKey != null && identical(_selectedEntities, _liveTreeTapEntities)) return _liveTreeTapKey;
+    if (!_treeLiveShown || _treeModel.liveKey == null) return null;
+    for (final e in _selectedEntities.toList().reversed) {
+      final k = _liveRowKeyOfEntity(e);
+      if (k != null) return k;
+    }
+    return null;
+  }
+
+  static ReferencePlaneKind? _planeOfRow(AssemblyTreeRow row) {
+    final id = row.itemId?.toUpperCase();
+    for (final p in ReferencePlaneKind.values) {
+      if (p.apiValue == id) return p;
+    }
+    return null;
+  }
+
+  FeatureDto? _featureOfRow(AssemblyTreeRow row) {
+    final id = row.featureId;
+    return id == null ? null : _featureById(id);
+  }
+
+  /// The viewport selection a tap on a live feature row makes: what the feature made (its bodies, surfaces and curves; a created plane), so
+  /// the existing highlight shows it. Empty for a feature that made nothing to show (a sketch).
+  Set<SelectionEntityRef> _entitiesMadeBy(FeatureDto f) {
+    if (f.type == 'create_plane') return {SelectionEntityRef(kind: SelectionEntityKind.createPlane, planeFeatureId: f.id)};
+    return {
+      for (final b in _bodies)
+        if (baseFeatureId(b.bodyId) == f.id)
+          SelectionEntityRef(kind: b.isCurve ? SelectionEntityKind.curveFeature : SelectionEntityKind.body, bodyId: b.bodyId),
+    };
+  }
+
+  void _selectLiveRow(AssemblyTreeRow row, Set<SelectionEntityRef> entities, {String? featureId}) {
+    setState(() {
+      // The old tap set this too: the Add menu's Extrude / Revolve / Sweep use a selected eligible sketch without opening the picker.
+      if (featureId != null) _selectedFeatureId = featureId;
+      _liveTreeTapKey = row.key;
+      _liveTreeTapEntities = entities;
+      _selectedEntities = entities;
+      _selectedTreePath = null;
+      _selectedMateId = null;
+      _selectOtherCandidates = null;
+      _selectOtherHighlight = null;
+      _treeHostSelection = row.key;
+    });
+  }
+
+  /// A tap on a live row (P2): it selects the row and highlights what it stands for; it never opens an edit panel (Edit is in the bar, the
+  /// menu and on a double-tap). A default plane's tap opens the plane sheet, as tapping the plane in the viewport does.
+  void _onLiveTreeRowTap(AssemblyTreeRow row) {
+    switch (row.kind) {
+      case AssemblyRowKind.feature:
+        final f = _featureOfRow(row);
+        if (f != null) _selectLiveRow(row, _entitiesMadeBy(f), featureId: f.id);
+      case AssemblyRowKind.body:
+      case AssemblyRowKind.surface:
+        _selectLiveRow(row, {SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: row.itemId!)});
+      case AssemblyRowKind.curve:
+        _selectLiveRow(row, {SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: row.itemId!)});
+      case AssemblyRowKind.defaultPlane:
+        final plane = _planeOfRow(row);
+        _selectLiveRow(row, <SelectionEntityRef>{});
+        if (plane != null) _onPlaneTap(plane);
+      default:
+        // A folder: the view opened or closed it.
+        setState(() {});
+    }
+  }
+
+  /// Long-press on a live row: a feature, body, surface or curve starts the build multi-select (as the old panel's rows did); a default
+  /// plane offers Hide / Show.
+  void _onLiveTreeRowLongPress(AssemblyTreeRow row) {
+    if (row.kind == AssemblyRowKind.defaultPlane) {
+      final plane = _planeOfRow(row);
+      if (plane != null) unawaited(_defaultPlaneMenu(plane));
+      return;
+    }
+    final key = _treeModel.multiSelectKeyOfRow(row.key);
+    if (key != null) _enterMultiSelect(_buildMultiSelect, key);
+  }
+
+  /// Right click on a live row: the row's own menu at the cursor (the old panel's context menus).
+  void _onLiveTreeRowContextMenu(AssemblyTreeRow row, Offset at) {
+    final id = row.itemId;
+    switch (row.kind) {
+      case AssemblyRowKind.feature:
+        final f = _featureOfRow(row);
+        if (f != null) unawaited(_onFeatureLongPress(f, at: at));
+      case AssemblyRowKind.body:
+        if (id != null) unawaited(_onBodyLongPress(id, at: at));
+      case AssemblyRowKind.surface:
+        if (id != null) unawaited(_onSurfaceLongPress(id, at: at));
+      case AssemblyRowKind.curve:
+        if (id != null) unawaited(_onCurveContextMenu(id, at));
+      case AssemblyRowKind.defaultPlane:
+        final plane = _planeOfRow(row);
+        if (plane != null) unawaited(_defaultPlaneMenu(plane, at: at));
+      default:
+        break;
+    }
+  }
+
+  /// The phone bar's More on a live row: the same menu a right click opens (a feature's has Edit, Delete with its cascade confirmation, Pin to
+  /// coarse where it applies, and the rest).
+  void _onLiveTreeRowMore(AssemblyTreeRow row) {
+    final id = row.itemId;
+    switch (row.kind) {
+      case AssemblyRowKind.feature:
+        final f = _featureOfRow(row);
+        if (f != null) unawaited(_onFeatureLongPress(f));
+      case AssemblyRowKind.body:
+        if (id != null) unawaited(_onBodyLongPress(id));
+      case AssemblyRowKind.surface:
+        if (id != null) unawaited(_onSurfaceLongPress(id));
+      case AssemblyRowKind.curve:
+        if (id != null) unawaited(_onCurveContextMenu(id, null));
+      default:
+        break;
+    }
+  }
+
+  /// Hide / Show of a live row (the bar, the desktop eye, an eye-off icon): a feature itself; a body, surface or curve through the feature
+  /// that made it (Hide / Show is feature-scoped, [baseFeatureId]); a default plane on its own.
+  Future<void> _toggleLiveRowVisibility(AssemblyTreeRow row) async {
+    switch (row.kind) {
+      case AssemblyRowKind.feature:
+        final f = _featureOfRow(row);
+        if (f != null) await _toggleFeatureVisibility(f);
+      case AssemblyRowKind.body:
+      case AssemblyRowKind.surface:
+      case AssemblyRowKind.curve:
+        final f = row.itemId == null ? null : _featureById(baseFeatureId(row.itemId!));
+        if (f != null) await _toggleFeatureVisibility(f);
+      case AssemblyRowKind.defaultPlane:
+        final plane = _planeOfRow(row);
+        if (plane != null) _setReferencePlaneHidden(plane, !_hiddenReferencePlanes.contains(plane));
+      default:
+        break;
+    }
+  }
+
+  /// Zoom on a body, surface or curve row: selects it and frames the camera on it.
+  void _zoomToLiveRow(AssemblyTreeRow row) {
+    _onLiveTreeRowTap(row);
+    final entities = _selectedEntities;
+    if (entities.isNotEmpty) _viewportKey.currentState?.zoomToEntities(entities);
+  }
+
+  /// Edit (the bar, a double-tap or double-click, the menu): opens the feature's panel rolled back to it, as the old tap did.
+  void _editLiveRow(AssemblyTreeRow row) {
+    final f = _featureOfRow(row);
+    if (f != null) unawaited(_onFeatureTap(f));
+  }
+
+  /// A row the tree's picker takes (a sketch for a pending Extrude, a source for Mirror / Pattern, a surface, a loft section...).
+  void _onLiveTreeRowPick(AssemblyTreeRow row) {
+    final f = _featureOfRow(row);
+    if (f == null) return;
+    if (_treeSketchPickerMode) {
+      _treeOnSketchPicked(f);
+    } else if (_treeFeaturePickerMode) {
+      _treeOnFeaturePickerToggle(f);
+    }
+  }
+
+  /// A default plane's menu (its long-press and right click): Hide / Show only. The default planes are not features: no delete.
+  Future<void> _defaultPlaneMenu(ReferencePlaneKind plane, {Offset? at}) async {
+    final hidden = _hiddenReferencePlanes.contains(plane);
+    final action = await showContextMenu<bool>(context, at: at, [
+      ActionSheetEntry<bool>(action: true, label: hidden ? 'Show' : 'Hide', icon: hidden ? Icons.visibility : Icons.visibility_off),
+    ]);
+    if (action == true && mounted) _setReferencePlaneHidden(plane, !hidden);
+  }
+
+  /// The overlay tree's width as a fraction of the screen, once the person dragged its handle (null: the default width).
+  double? _treeOverlayWidthFraction;
+
+  /// The overlay tree's resize handle (the old build tree panel's): a 24 px target on its right edge, 28% to 75% of the width as before.
+  Widget _treeResizeHandle(double totalWidth) => MouseRegion(
+        cursor: SystemMouseCursors.resizeLeftRight,
+        child: GestureDetector(
+          key: const ValueKey('tree-resize-handle'),
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragUpdate: (details) {
+            if (totalWidth <= 0) return;
+            final current = _treeOverlayWidthFraction ?? assemblyTreeDefaultWidthFraction(MediaQuery.sizeOf(context));
+            setState(() => _treeOverlayWidthFraction = (current + details.delta.dx / totalWidth).clamp(0.28, 0.75));
+          },
+          child: SizedBox(
+            width: 24,
+            child: Center(
+              child: Container(
+                width: 6,
+                height: 64,
+                decoration: BoxDecoration(color: Theme.of(context).colorScheme.outlineVariant, borderRadius: BorderRadius.circular(3)),
+              ),
+            ),
+          ),
+        ),
+      );
+
+  /// The one tree (A4, P2 of `docs/assembly-tree-overhaul-scope.md`): [AssemblyTreeView] over [_treeModel] in both lenses. The lens changes
+  /// the toolbars and which row is live (the Part lens makes the focused Part live: its folders and features, editable and pickable); the tree,
+  /// its open rows, its scroll and its selection stay. [docked] puts it in the desktop layout's left pane; otherwise it floats over the viewport.
+  Widget _buildTreePanel({required bool docked}) {
     // The model keeps this screen's selection and unsaved Parts (cheap: nothing changes when they have not).
     _treeModel.setUnsavedPartIds(_unsavedPartIds);
     // The mate and pattern rows follow the lists when something other than a load changed them (a "Got it" on a mate).
@@ -28638,18 +28976,28 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treePatternsSynced = _componentPatterns;
       _treeModel.setFolderItems('#patterns', patternFolderItems(_componentPatterns));
     }
+    _syncTreeLivePart();
     // Only when this screen's own selection changed: a tap on a folder, group or feature row marks that row and keeps its mark.
     final hostKey = _treeSelectionHostKey;
     if (hostKey != _treeHostSelection) {
       _treeHostSelection = hostKey;
       _treeModel.selectedKey = hostKey;
+      // A body or face picked in the viewport: the tree opens down to its feature's row and scrolls there.
+      final fromViewport = hostKey != null && hostKey == _liveSelectionHostKey && !identical(_selectedEntities, _liveTreeTapEntities);
+      if (fromViewport) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _treeModel.selectedKey == hostKey) _treeController.expandToSelection();
+        });
+      }
     }
+    final live = _treeModel.liveKey != null;
+    final build = _buildMultiSelect;
     AssemblyTreeView view(bool docked, double width) => AssemblyTreeView(
       model: _treeModel,
       controller: _treeController,
       docked: docked,
       width: width,
-      title: 'Assembly Tree',
+      title: _lens == AssemblyLens.assembly ? 'Assembly Tree' : 'Build Tree',
       statusUnavailable: _treeStatusUnavailable,
       // The docked pane is shown or not by the layout itself.
       visible: docked || _featureTreePanelVisible,
@@ -28657,14 +29005,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       onEditAloneDone: _editAlone == null ? null : () => unawaited(_exitEditAlone()),
       focusedLabel: _focusStack?.currentLabel,
       onExitFocus: () => unawaited(_exitAssemblyFocus()),
-      statusLine: _motionStatusText,
-      // The old panel closed the tree itself on a phone; the docked pane has no close.
-      onClose: docked
-          ? null
-          : () {
-              _exitMultiSelect();
-              setState(() => _featureTreeVisible = false);
-            },
+      statusLine: _lens == AssemblyLens.assembly ? _motionStatusText : null,
+      // The docked pane has no close.
+      onClose: docked ? null : _onTreeClose,
       multiSelectHeader: _activeMultiSelect == null
           ? null
           : MultiSelectActionBar(
@@ -28676,51 +29019,110 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
               onCancel: _exitMultiSelect,
               onMore: _activeMultiSelect!.count == 1 ? () => unawaited(_multiSelectMore()) : null,
             ),
-      isMultiSelectMode: _assemblyMultiSelect.active,
-      selectedKeys: _assemblyMultiSelect.selectedIds,
-      // Multi-select works on the components directly in the assembly being edited (their key is their id); a nested row does not take part.
+      isMultiSelectMode: _assemblyMultiSelect.active || build.active,
+      // The build session keeps [TreeMultiSelectKeys] (`feature:<id>`...); the tree ticks row keys (P1's mapping).
+      selectedKeys: build.active
+          ? {
+              for (final k in build.selectedIds)
+                if (_treeModel.rowKeyOfMultiSelect(k) != null) _treeModel.rowKeyOfMultiSelect(k)!
+            }
+          : _assemblyMultiSelect.selectedIds,
+      // The Assembly session works on the components directly in the assembly being edited (their key is their id), the build session on the
+      // live part's features, bodies, surfaces and curves.
       onMultiSelectToggle: (row) {
+        if (build.active) {
+          final key = _treeModel.multiSelectKeyOfRow(row.key);
+          if (key != null) _toggleMultiSelectMember(build, key);
+          return;
+        }
         final path = row.path;
         if (path != null && path.length == 1) _toggleMultiSelectMember(_assemblyMultiSelect, path.first);
       },
-      onRowTap: _onTreeRowTap,
-      onRowLongPress: _onTreeRowLongPress,
-      onRowContextMenu: _onTreeRowContextMenu,
-      onVisibilityToggle: (row) => unawaited(_onTreeRowVisibilityToggle(row)),
+      onRowTap: (row) => row.live ? _onLiveTreeRowTap(row) : _onTreeRowTap(row),
+      onRowLongPress: (row) {
+        if (row.live) return _onLiveTreeRowLongPress(row);
+        // In the Part lens the build session is the one multi-select: a component's long-press opens its menu.
+        if (_lens == AssemblyLens.part && row.path != null && row.path!.isNotEmpty) {
+          return _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, path: t.path));
+        }
+        _onTreeRowLongPress(row);
+      },
+      onRowEdit: live ? _editLiveRow : null,
+      onRowPick: _onLiveTreeRowPick,
+      onRowContextMenu: (row, at) => row.live ? _onLiveTreeRowContextMenu(row, at) : _onTreeRowContextMenu(row, at),
+      onVisibilityToggle: (row) => unawaited(row.live ? _toggleLiveRowVisibility(row) : _onTreeRowVisibilityToggle(row)),
       onFeaturesRequested: (path) => unawaited(_loadTreeFeatures(path)),
       onGroupingChanged: (value) => unawaited(ViewPreferences.setAssemblyTreeGrouping(value)),
       flashItemIds: _flashMateIds,
       flashToken: _flashMateToken,
-      // The phone selection bar: Hide, Isolate, Focus, Alone as the row menu's own actions, and More as the row menu itself.
-      onHideSelected: (row) => unawaited(_onTreeRowVisibilityToggle(row)),
+      // The phone selection bar: Hide, Isolate, Focus, Alone as the row menu's own actions, and More as the row menu itself; a live row's
+      // bar (Edit, Hide / Show, Zoom, More) acts on the feature, body or plane.
+      onHideSelected: (row) => unawaited(row.live ? _toggleLiveRowVisibility(row) : _onTreeRowVisibilityToggle(row)),
       onIsolateSelected: (row) => _withTreeTarget(row, (t) => _isolateOccurrence(t.occurrence, path: t.path)),
-      onZoomSelected: (row) => _withTreeTarget(row, (t) async {
-        _selectTreeTarget(t);
-        _zoomToTreeSelection();
-      }),
+      onZoomSelected: (row) {
+        if (row.live) return _zoomToLiveRow(row);
+        _withTreeTarget(row, (t) async {
+          _selectTreeTarget(t);
+          _zoomToTreeSelection();
+        });
+      },
       onFocusSelected: (row) => _withTreeTarget(row, (t) => _makeFocusOnPath(t.path)),
       onAloneSelected: _editAlone == null ? (row) => _withTreeTarget(row, (t) => _enterEditAlone(t.occurrence, path: t.path)) : null,
-      onMoreSelected: (row) => _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, path: t.path)),
+      onMoreSelected: (row) {
+        if (row.live) return _onLiveTreeRowMore(row);
+        _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, path: t.path));
+      },
+      onEditSelected: live ? _editLiveRow : null,
+      // No persistent rollback point exists yet (the rollback is only ever engaged inside an edit): the button is left out until the
+      // rollback bar (#17).
+      onRollbackSelected: null,
+      coarseEligibleFeatureIds: {
+        for (final f in _features)
+          if (kCoarseEligibleFeatureTypes.contains(f.type)) f.id
+      },
+      pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
+      onToggleCoarsePin: live
+          ? (row) {
+              final f = _featureOfRow(row);
+              if (f != null) unawaited(_toggleCoarsePin(f));
+            }
+          : null,
     );
     // A GlobalKey keeps the view's state (its scroll position, its flash) where it is when other overlays of the screen's Stack come and go
-    // and shift its place among the children.
+    // and shift its place among the children, and across a lens switch (both lenses draw this same tree).
     if (docked) return KeyedSubtree(key: _treeDockedKey, child: view(true, 320));
-    // Floating over the viewport: the width the old panel had by default (66% of a portrait phone, else 40%). It has no resize handle.
+    // Floating over the viewport: the width the old panel had by default (66% of a portrait phone, else 40%), wider or narrower with the
+    // handle on its right edge.
     return KeyedSubtree(
       key: _treeOverlayKey,
       child: LayoutBuilder(
-        builder: (context, constraints) => Align(
-          alignment: Alignment.topLeft,
-          child: SafeArea(child: view(false, assemblyTreeDefaultWidthFraction(MediaQuery.sizeOf(context)) * constraints.maxWidth)),
-        ),
+        builder: (context, constraints) {
+          final fraction = _treeOverlayWidthFraction ?? assemblyTreeDefaultWidthFraction(MediaQuery.sizeOf(context));
+          final width = fraction * constraints.maxWidth;
+          final shown = _featureTreePanelVisible;
+          return Align(
+            alignment: Alignment.topLeft,
+            child: SafeArea(
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  view(false, width),
+                  if (shown) Positioned(top: 0, bottom: 0, left: width - 12, child: _treeResizeHandle(constraints.maxWidth)),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
 
   String? _treeHostSelection;
 
-  /// The row key this screen's own selection stands for in the tree (a mate row, or the selected component's path).
-  String? get _treeSelectionHostKey => _selectedMateId != null ? '#mates#item:$_selectedMateId' : _selectedTreePath?.join('/');
+  /// The row key this screen's own selection stands for in the tree: a live row (P2: the row tapped, or the feature of a body picked in the
+  /// viewport), a mate row, or the selected component's path.
+  String? get _treeSelectionHostKey =>
+      _liveSelectionHostKey ?? (_selectedMateId != null ? '#mates#item:$_selectedMateId' : _selectedTreePath?.join('/'));
 
   /// Whether the assembly tree can be shown right now if it is hidden: the Assembly lens, and no tool panel or hidden chrome keeping it out.
   bool get _treeCanBeShown =>
@@ -29194,30 +29596,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                 // when other tool panels open or component is deselected.
                 if (_componentDrawerShown && !_desktopLayout)
                   _buildComponentDrawer(),
-                // Assembly support Phase 3: only one of FeatureTreePanel/
-                // AssemblyTreePanel is ever built at a time, gated on
-                // [_lens] - both carry their own "Close" `IconButton`, and
-                // `AnimatedSlide` keeps a merely-`visible: false` child
-                // mounted (just translated off-screen), which duplicated
-                // that "Close" button in the tree and made every close-
-                // button `find`/`tap()` in this screen's own tests
-                // ambiguous. Switching lens while the panel is open loses
-                // the slide-in animation for that one transition (the panel
-                // simply swaps), an accepted v1 cost of avoiding the
-                // ambiguity.
-                if (_lens == AssemblyLens.part && !_desktopLayout)
+                // P2: both lenses draw the one tree (the lens switches the toolbars and which row is live), so it is one widget with one
+                // GlobalKey: a lens switch keeps its open rows, its scroll and its selection.
+                if (!_desktopLayout)
                 Positioned.fill(
-                  child: _buildFeatureTreePanel(docked: false),
-                ),
-                // Assembly support Phase 3: [_lens]'s Assembly-mode
-                // counterpart to [FeatureTreePanel] just above - see that
-                // block's own comment for why only one of the two is ever
-                // built at a time. Same `onClose` fallback (no picker modes
-                // of its own yet to cancel first, unlike Feature tree's
-                // long `onClose` chain above).
-                if (_lens == AssemblyLens.assembly && !_desktopLayout)
-                Positioned.fill(
-                  child: _buildAssemblyTreePanel(docked: false),
+                  child: _buildTreePanel(docked: false),
                 ),
                 // Feature 1 (tree multi-select): replaces the Part-lens
                 // SelectionListDrawer (and, in Assembly lens,
