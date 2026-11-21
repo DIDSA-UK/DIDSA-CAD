@@ -174,6 +174,7 @@ void main() {
       model: model,
       onHideSelected: (r) => calls.add('hide:${r.key}'),
       onIsolateSelected: (r) => calls.add('isolate:${r.key}'),
+      onZoomSelected: (r) => calls.add('zoom:${r.key}'),
       onFocusSelected: (r) => calls.add('focus:${r.key}'),
       onAloneSelected: (r) => calls.add('alone:${r.key}'),
       onMoreSelected: (r) => calls.add('more:${r.key}'),
@@ -186,13 +187,13 @@ void main() {
     expect(model.selectedKey, 'b');
     expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
 
-    for (final k in ['hide', 'isolate', 'focus', 'alone', 'more']) {
+    for (final k in ['hide', 'isolate', 'zoom', 'focus', 'alone', 'more']) {
       await tester.tap(find.byKey(ValueKey('tree-bar-$k')));
     }
-    expect(calls, ['tap:b', 'hide:b', 'isolate:b', 'focus:b', 'alone:b', 'more:b']);
+    expect(calls, ['tap:b', 'hide:b', 'isolate:b', 'zoom:b', 'focus:b', 'alone:b', 'more:b']);
   });
 
-  testWidgets('the grouping switch reports its change and the rows follow', (tester) async {
+  testWidgets('the grouping icon button reports its change and the rows follow (no Switch)', (tester) async {
     final model = AssemblyTreeModel(tree: _tree([
       for (var i = 0; i < 4; i++)
         {
@@ -205,8 +206,9 @@ void main() {
 
     expect(model.grouping, isTrue);
     expect(find.text('Bolt M4 x4'), findsOneWidget);
+    expect(find.byType(Switch), findsNothing);
 
-    await tester.tap(find.byKey(const ValueKey('tree-grouping-switch')));
+    await tester.tap(find.byKey(const ValueKey('tree-grouping-toggle')));
     await tester.pump();
     expect(reported, isFalse);
     expect(model.grouping, isFalse);

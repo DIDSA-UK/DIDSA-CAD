@@ -22,6 +22,7 @@ enum CadShortcut {
   newDocument,
   selectAll,
   zoomToFit,
+  zoomToSelection,
   viewFront,
   viewBack,
   viewLeft,
@@ -169,6 +170,12 @@ final Map<CadShortcut, CadShortcutInfo> kCadShortcuts = {
     keys: 'F',
     group: _view,
     activators: [_key(LogicalKeyboardKey.keyF)],
+  ),
+  CadShortcut.zoomToSelection: CadShortcutInfo(
+    label: 'Zoom to selection',
+    keys: 'Shift+F',
+    group: _view,
+    activators: [_key(LogicalKeyboardKey.keyF, shift: true)],
   ),
   CadShortcut.viewFront: CadShortcutInfo(
     label: 'Front',

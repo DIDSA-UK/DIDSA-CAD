@@ -5,6 +5,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart' show listEquals, setEquals;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:path/path.dart' as p;
@@ -661,6 +662,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [_displayAssemblyInstances] and to the rows by the model's `setSessionHiddenKeys`.
   Set<String> _sessionHiddenPaths = const {};
 
+  /// A4.1: what Isolate changed, so isolating the same row again (or "Show all" through it) puts the visibility back as it was.
+  _IsolateSnapshot? _isolateSnapshot;
+
+  /// [_hiddenRowPaths]'s cache: the paths of the rows the backend says are hidden (at any depth), for the tree it was made from.
+  Set<String> _backendHiddenPathsMemo = const {};
+  AssemblyTreeResponseDto? _backendHiddenPathsTree;
+  String _backendHiddenPathsRoot = '';
+
   /// N1d: followed references the backend reported once, kept until the user dismisses them ("Got it"); never polled for, and never
   /// a reason to mark the document dirty (decision N-7).
   final MateFollowedNotes _mateFollowedNotes = MateFollowedNotes();
@@ -1056,6 +1065,32 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return (max - min).length * 0.5;
   }
 
+  /// A4.1: the full paths (from the document root, joined with `/`) of every row that is hidden: for this session, or by the backend's own
+  /// flag at any depth of the tree. [applyHiddenPaths] hides what is at or below each, so hiding a sub-assembly hides everything in it
+  /// whether or not the backend's mesh says so, and showing it again leaves a child that was hidden on its own hidden.
+  Set<String> _hiddenRowPaths() {
+    final tree = _treeModel.tree;
+    final root = _treeRootPath.join('/');
+    if (tree == null) return _sessionHiddenPaths;
+    if (!identical(tree, _backendHiddenPathsTree) || root != _backendHiddenPathsRoot) {
+      final out = <String>{};
+      void walk(List<AssemblyTreeNodeDto> nodes) {
+        for (final n in nodes) {
+          if (n.hidden) out.add(_fullPath(n.path).join('/'));
+          walk(n.children);
+        }
+      }
+
+      walk(tree.children);
+      _backendHiddenPathsMemo = out;
+      _backendHiddenPathsTree = tree;
+      _backendHiddenPathsRoot = root;
+    }
+    if (_backendHiddenPathsMemo.isEmpty) return _sessionHiddenPaths;
+    if (_sessionHiddenPaths.isEmpty) return _backendHiddenPathsMemo;
+    return {..._backendHiddenPathsMemo, ..._sessionHiddenPaths};
+  }
+
   /// Assembly support Phase 5: [_displayOccurrences]'s sibling for Phase 2's
   /// own placed-instance list - folds [_gizmoLiveTransform] into the
   /// gizmo-target Occurrence's own instance entry so the rendered Body
@@ -1085,7 +1120,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         ? const <AssemblyOccurrenceInstanceDto>[]
         : (_sceneMode ? _sceneInstances : _assemblyMesh!.instances);
     // A4: nested rows hidden for this session, by path (a child hidden under one placement stays shown under the other).
-    overlaid = applyHiddenPaths(overlaid, _sessionHiddenPaths);
+    overlaid = applyHiddenPaths(overlaid, _sceneMode ? _sessionHiddenPaths : _hiddenRowPaths());
     // M3: the parts a mate preview is gliding (or has just confirmed) are drawn at their glide pose.
     if (_glideWorld.isNotEmpty) {
       final glideFocus = _focusStack?.currentOccurrencePath ?? const <String>[];
@@ -13138,6 +13173,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treeHostSelection = null;
       _treeFeaturePaths.clear();
       _sessionHiddenPaths = const {};
+      _isolateSnapshot = null;
       _selectedTreePath = null;
       // Assembly support Phase 20: seed the root Part's own per-Part state
       // now that its real id is finally known - [_focusPartId] reads as
@@ -13291,7 +13327,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) _constraintStatusByOccurrenceId = const {};
       _applyTree(tree);
       final path = _selectedTreePath;
-      if (path != null && _treeModel.nodeAtPath(path) == null) {
+      if (path != null && path.isNotEmpty && _treeModel.nodeAtPath(path) == null) {
         _selectedTreePath = null;
         // Bug fix ("selecting a component doesn't highlight it in 3D"): a component-kind `_selectedEntities` entry has no meaning once its
         // own Occurrence is gone - clear it alongside the selection so no orphaned 3D highlight survives.
@@ -25586,7 +25622,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _refreshAssemblyTree();
         // A4: a component picked in the viewport while the tree was not on screen is revealed now.
         final picked = _selectedTreePath;
-        if (mounted && picked != null) _treeController.reveal(picked, select: true);
+        if (mounted && picked != null && picked.isNotEmpty) _treeController.reveal(picked, select: true);
         // Most sessions never open the Assembly lens at all, so this stays
         // uncalled (and [_assemblyMesh] stays `null`) for them, matching
         // [_refreshAssemblyTree]'s own lazy-fetch cost-avoidance.
@@ -25685,6 +25721,50 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return _shownHidden(full, real);
   }
 
+  /// The rows the tree's selection stands for, as paths from the tree's root: the multi-selected components, else the selected row
+  /// (`[]` for the root row, which is everything). Empty when nothing is selected.
+  List<List<String>> get _treeSelectionPaths {
+    final multi = _assemblyMultiSelect;
+    if (multi.active && multi.selectedIds.isNotEmpty) return [for (final id in multi.selectedIds) [id]];
+    final selected = _selectedTreePath;
+    return selected == null ? const [] : [selected];
+  }
+
+  List<String>? _highlightMemoKey;
+  Object? _highlightMemoMesh;
+  Set<String> _highlightMemo = const {};
+
+  /// The placed instances (joined full paths) the tree's selection highlights in the viewport: for a part its own instance, for a
+  /// sub-assembly every part inside it, for the root row everything, for a multi-selection each of its rows' parts. Cached until the
+  /// selection or the mesh changes (it is asked for on every build).
+  Set<String> _treeHighlightKeys() {
+    final mesh = _assemblyMesh;
+    if (_lens != AssemblyLens.assembly || mesh == null) return const {};
+    final paths = _treeSelectionPaths;
+    if (paths.isEmpty) return const {};
+    final memoKey = [_treeRootPath.join('/'), for (final p in paths) p.join('/')];
+    if (identical(mesh, _highlightMemoMesh) && _highlightMemoKey != null && listEquals(memoKey, _highlightMemoKey)) return _highlightMemo;
+    final keys = [for (final p in paths) _fullPath(p).join('/')];
+    _highlightMemoMesh = mesh;
+    _highlightMemoKey = memoKey;
+    return _highlightMemo = {
+      for (final i in mesh.instances)
+        if (keys.any((k) => instanceKeyIsAtOrBelow(i.occurrencePath.join('/'), k))) i.occurrencePath.join('/'),
+    };
+  }
+
+  /// Zoom to selection: frames the camera on the parts of the selected row (a part, a sub-assembly by its path, the root row for
+  /// everything, or several rows in multi-select). False when nothing is selected or the rows have no geometry to frame.
+  bool _zoomToTreeSelection() {
+    final mesh = _assemblyMesh;
+    final paths = _treeSelectionPaths;
+    if (mesh == null || paths.isEmpty) return false;
+    final instances = instancesUnderRows(_displayAssemblyInstances, [for (final p in paths) _fullPath(p).join('/')]);
+    final bounds = boundsOfInstances(instances, mesh.geometry);
+    if (bounds == null) return false;
+    return _viewportKey.currentState?.zoomToBounds(bounds) ?? false;
+  }
+
   void _onTreeRowTap(AssemblyTreeRow row) {
     switch (row.kind) {
       case AssemblyRowKind.assembly:
@@ -25708,6 +25788,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
         if (pattern != null) _openComponentPatternForEdit(pattern);
       case AssemblyRowKind.root:
+        // The root row stands for everything in the tree: it highlights every part (the old panel's root row selected nothing, A4.1 asked for
+        // this). Its path is `[]`, so nothing that works on one component (the gizmo, the drawer) sees a selection.
+        setState(() {
+          _selectedTreePath = const [];
+          _selectedEntities = {};
+          _selectedMateId = null;
+        });
       case AssemblyRowKind.group:
       case AssemblyRowKind.feature:
       case AssemblyRowKind.matesFolder:
@@ -25924,6 +26011,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _makeFocusOnPath(rowPath);
       case ComponentContextMenuAction.exitFocus:
         await _exitFocusOneLevel();
+      case ComponentContextMenuAction.zoomToSelection:
+        _zoomToTreeSelection();
       case ComponentContextMenuAction.hide:
         await _setOccurrenceHidden(occurrence, true, path: rowPath);
       case ComponentContextMenuAction.show:
@@ -26844,55 +26933,100 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     await _openAppearance(pick: _PaintPick(path: fullPath, label: _paintPickLabel(fullPath)));
   }
 
-  /// §6 roadmap Phase 10 (`[5]`): Isolate's real persistence call - mirrors
-  /// `ai_plan.py`'s own `_handle_isolate_component` one level up (client-side
-  /// instead of a dry-run scratch mutation): hides every *other* top-level
-  /// Occurrence and shows [occurrence] itself. Toggled the same way the old
-  /// client-only overlay was - Isolate again on an already-isolated
-  /// Occurrence shows every sibling again - but detected from the real,
-  /// already-fetched [_occurrences] list (every other Occurrence already
-  /// hidden, this one not) rather than a separate client-side flag, since
-  /// there's no longer a client-only "isolated id" to consult.
+  /// Isolate: the row and everything in it stay shown, everything else is hidden. For a row directly in the focused Part that is the other
+  /// top-level components' own `hidden` flag (PATCHed, as before). For a nested row it is also, at each level on the way down, the siblings of
+  /// the row's ancestors, hidden for this session by path (the backend's flag sits on an occurrence every placement shares): isolating a
+  /// part under one placement isolates that placement only, and the other placement of the sub-assembly is hidden with the rest.
   ///
-  /// A4: among the siblings of the row's own parent. A top-level row PATCHes as before; a nested row's siblings are hidden for this session
-  /// only, by path (see [_setOccurrenceHidden]).
+  /// Isolating the same row again puts the visibility back as it was before ([_IsolateSnapshot]); isolating another row first keeps that
+  /// original, so one undo goes all the way back. Without a snapshot (the document arrived already isolated) the undo shows every sibling.
+  /// A nested component the backend itself says is hidden stays hidden: that flag is shared by every placement and is not touched here.
   Future<void> _isolateOccurrence(OccurrenceDto occurrence, {List<String>? path}) async {
     final rowPath = path ?? [occurrence.id];
-    if (rowPath.length > 1) {
-      final parentPath = rowPath.sublist(0, rowPath.length - 1);
-      final siblings = _treeModel.nodeAtPath(parentPath)?.children ?? const <AssemblyTreeNodeDto>[];
-      bool shown(AssemblyTreeNodeDto n) => n.hidden || _sessionHiddenPaths.contains(_fullPath(n.path).join('/'));
-      final alreadyIsolated = siblings.every((n) => n.occurrenceId == occurrence.id ? !shown(n) : shown(n));
-      _setSessionHidden({
-        for (final n in siblings)
-          _fullPath(n.path).join('/'): alreadyIsolated ? false : n.occurrenceId != occurrence.id,
-      });
+    final focusPartId = _focusStack?.current ?? _part?.id;
+    if (focusPartId == null || rowPath.isEmpty) return;
+    final targetKey = _fullPath(rowPath).join('/');
+    final snapshot = _isolateSnapshot;
+
+    // The rows hidden to isolate: at each level the siblings of the row's ancestor (or of the row itself at its own level).
+    final hideTopLevel = <String>[];
+    final hideNested = <String>[];
+    for (var level = 0; level < rowPath.length; level++) {
+      final parentPath = rowPath.sublist(0, level);
+      final siblingIds = level == 0
+          ? [for (final o in _occurrences) o.id]
+          : [for (final n in _treeModel.nodeAtPath(parentPath)?.children ?? const <AssemblyTreeNodeDto>[]) n.occurrenceId];
+      for (final id in siblingIds) {
+        if (id == rowPath[level]) continue;
+        if (level == 0) {
+          hideTopLevel.add(id);
+        } else {
+          hideNested.add(_fullPath([...parentPath, id]).join('/'));
+        }
+      }
+    }
+    bool isShown(String key) => !_sessionHiddenPaths.contains(key);
+    final topById = {for (final o in _occurrences) o.id: o};
+    // Already isolated: this row's snapshot says so, or (no snapshot) everything else is hidden and the row's own line shown.
+    final structurallyIsolated = hideTopLevel.every((id) => topById[id]?.hidden ?? true) &&
+        hideNested.every((k) => !isShown(k)) &&
+        !(topById[rowPath.first]?.hidden ?? false) &&
+        _fullPathPrefixes(rowPath).every(isShown);
+    final undo = (snapshot != null && snapshot.targetKey == targetKey) || (snapshot == null && structurallyIsolated);
+
+    final nextSession = {..._sessionHiddenPaths};
+    final topLevelWanted = <String, bool>{};
+    if (undo) {
+      if (snapshot != null) {
+        topLevelWanted.addAll(snapshot.topLevelHidden);
+        nextSession
+          ..clear()
+          ..addAll(snapshot.sessionHidden);
+      } else {
+        for (final id in hideTopLevel) {
+          topLevelWanted[id] = false;
+        }
+        nextSession.removeAll(hideNested);
+      }
+      _isolateSnapshot = null;
+    } else {
+      final keep = _isolateSnapshot ??= _IsolateSnapshot(targetKey, {}, {..._sessionHiddenPaths});
+      keep.targetKey = targetKey;
+      // What this changes, remembered before it is changed (the first remembered value of a component is the original).
+      for (final o in _occurrences) {
+        keep.topLevelHidden.putIfAbsent(o.id, () => o.hidden);
+      }
+      for (final id in hideTopLevel) {
+        topLevelWanted[id] = true;
+      }
+      topLevelWanted[rowPath.first] = false;
+      // The row and what is in it, and the line down to it, are shown (a row hidden for this session on its own is shown again).
+      nextSession.removeWhere((k) => k == targetKey || k.startsWith('$targetKey/') || _fullPathPrefixes(rowPath).contains(k));
+      nextSession.addAll(hideNested);
+    }
+    if (!setEquals(nextSession, _sessionHiddenPaths)) {
+      _setSessionHidden({for (final k in {..._sessionHiddenPaths, ...nextSession}) k: nextSession.contains(k)});
+    }
+    final patches = {
+      for (final e in topLevelWanted.entries)
+        if (topById.containsKey(e.key) && topById[e.key]!.hidden != e.value) e.key: e.value,
+    };
+    if (patches.isEmpty && !undo) {
+      if (mounted) setState(() {});
       return;
     }
-    final focusPartId = _focusStack?.current ?? _part?.id;
-    if (focusPartId == null) return;
-    bool sessionHidden(OccurrenceDto o) => _sessionHiddenPaths.contains(_fullPath([o.id]).join('/'));
-    bool shownHidden(OccurrenceDto o) => o.hidden || sessionHidden(o);
-    final alreadyIsolated = _occurrences.every(
-      (other) => other.id == occurrence.id ? !shownHidden(other) : shownHidden(other),
-    );
-    // Rows hidden for this session count as hidden, and are shown again when the isolation is undone.
-    final sessionShow = {
-      for (final other in _occurrences)
-        if (sessionHidden(other) && (alreadyIsolated || other.id == occurrence.id)) _fullPath([other.id]).join('/'): false,
-    };
-    if (sessionShow.isNotEmpty) _setSessionHidden(sessionShow);
     await _runGuarded(() async {
-      for (final other in _occurrences) {
-        final shouldBeHidden = alreadyIsolated ? false : other.id != occurrence.id;
-        if (other.hidden != shouldBeHidden) {
-          await _api.updateOccurrenceHidden(focusPartId, other.id, shouldBeHidden);
-        }
+      for (final e in patches.entries) {
+        await _api.updateOccurrenceHidden(focusPartId, e.key, e.value);
       }
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
     });
   }
+
+  /// The full paths (joined) of [rowPath] and each of its ancestors below the tree's root: `[a, b, c]` gives `a`, `a/b`, `a/b/c`.
+  List<String> _fullPathPrefixes(List<String> rowPath) =>
+      [for (var i = 1; i <= rowPath.length; i++) _fullPath(rowPath.sublist(0, i)).join('/')];
 
   /// Pushes the Sketch screen and, once it returns (back button or the
   /// ribbon's Exit Sketch action - both just pop this route), re-fetches
@@ -27221,6 +27355,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       CadShortcut.open: idle(() => unawaited(_onOpenPressed())),
       CadShortcut.newDocument: idle(() => unawaited(_startNewPart())),
       CadShortcut.zoomToFit: viewport?.zoomToFit,
+      CadShortcut.zoomToSelection: viewport == null || (_treeSelectionPaths.isEmpty && _selectedEntities.isEmpty)
+          ? null
+          : () {
+              if (_lens == AssemblyLens.assembly && _treeSelectionPaths.isNotEmpty) {
+                _zoomToTreeSelection();
+              } else {
+                viewport.zoomToEntities(_selectedEntities);
+              }
+            },
       CadShortcut.viewFront: view(StandardView.front),
       CadShortcut.viewBack: view(StandardView.back),
       CadShortcut.viewLeft: view(StandardView.left),
@@ -28405,6 +28548,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // The phone selection bar: Hide, Isolate, Focus, Alone as the row menu's own actions, and More as the row menu itself.
       onHideSelected: (row) => unawaited(_onTreeRowVisibilityToggle(row)),
       onIsolateSelected: (row) => _withTreeTarget(row, (t) => _isolateOccurrence(t.occurrence, path: t.path)),
+      onZoomSelected: (row) => _withTreeTarget(row, (t) async {
+        _selectTreeTarget(t);
+        _zoomToTreeSelection();
+      }),
       onFocusSelected: (row) => _withTreeTarget(row, (t) => _makeFocusOnPath(t.path)),
       onAloneSelected: _editAlone == null ? (row) => _withTreeTarget(row, (t) => _enterEditAlone(t.occurrence, path: t.path)) : null,
       onMoreSelected: (row) => _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, path: t.path)),
@@ -28695,6 +28842,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                   // it either way from there, same as any other time.
                   selectionMode: _selectionMode,
                   selectedEntities: _selectedEntities,
+                  highlightedInstanceKeys: _treeHighlightKeys(),
                   onSelectionToggle: _toggleSelectedEntity,
                   onSelectionPickPoint: (entity, pick) {
                     if (_mateActive) _matePickPoints[entity] = pick;
@@ -30643,6 +30791,15 @@ class _SaveFailure {
 /// The component an Assembly tree row stands for (A4): its [path] of occurrence ids from the tree's root (the focused Part), the Occurrence
 /// record (the real one, with its transform, for a row directly in that Part; one made from the tree's node for a nested row) and the Part
 /// that owns it ([ownerPartId]): where Fix / Float, Rename, Delete and Hide go, which is the parent Part of a nested row.
+/// A4.1: the visibility Isolate started from: [targetKey] (the isolated row's full path, joined), the top-level components' own `hidden`
+/// flags it changed (by occurrence id; the backend's), and the session-hidden rows. Isolating the same row again puts them back.
+class _IsolateSnapshot {
+  String targetKey;
+  final Map<String, bool> topLevelHidden;
+  final Set<String> sessionHidden;
+  _IsolateSnapshot(this.targetKey, this.topLevelHidden, this.sessionHidden);
+}
+
 class _TreeTarget {
   final List<String> path;
   final OccurrenceDto occurrence;

@@ -63,7 +63,7 @@ class AssemblyTreeController {
 /// same `visible` / `docked` / Edit Alone / focus inputs so it can sit where that panel sits.
 ///
 /// It reads and edits the model it is given (open keys, `selectedKey`, `grouping`) and reports every other change through a callback:
-/// the host saves the grouping switch, fetches features, acts on the selection bar. It owns no data.
+/// the host saves the grouping toggle, fetches features, acts on the selection bar. It owns no data.
 class AssemblyTreeView extends StatefulWidget {
   const AssemblyTreeView({
     super.key,
@@ -91,6 +91,7 @@ class AssemblyTreeView extends StatefulWidget {
     this.onHideSelected,
     this.onIsolateSelected,
     this.onFocusSelected,
+    this.onZoomSelected,
     this.onAloneSelected,
     this.onMoreSelected,
     this.statusLine,
@@ -135,7 +136,7 @@ class AssemblyTreeView extends StatefulWidget {
   /// [AssemblyTreeController.refresh]). Also asked for the root, once, when it has features.
   final void Function(List<String> path)? onFeaturesRequested;
 
-  /// The grouping switch changed. The model is already updated; the host saves the choice.
+  /// The grouping toggle changed. The model is already updated; the host saves the choice.
   final ValueChanged<bool>? onGroupingChanged;
 
   /// Multi-select (today's behaviour): while on, a tap or long-press on an occurrence row calls [onMultiSelectToggle] and nothing else;
@@ -150,6 +151,9 @@ class AssemblyTreeView extends StatefulWidget {
   final void Function(AssemblyTreeRow row)? onHideSelected;
   final void Function(AssemblyTreeRow row)? onIsolateSelected;
   final void Function(AssemblyTreeRow row)? onFocusSelected;
+
+  /// Zoom to selection: frame the camera on the selected row's parts (shown next to Focus in the phone selection bar).
+  final void Function(AssemblyTreeRow row)? onZoomSelected;
   final void Function(AssemblyTreeRow row)? onAloneSelected;
   final void Function(AssemblyTreeRow row)? onMoreSelected;
 
@@ -421,6 +425,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         (widget.onHideSelected != null ||
             widget.onIsolateSelected != null ||
             widget.onFocusSelected != null ||
+            widget.onZoomSelected != null ||
             widget.onAloneSelected != null ||
             widget.onMoreSelected != null);
 
@@ -518,24 +523,23 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
             Expanded(
               child: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
-            Tooltip(
-              message: 'Group repeated parts',
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.layers_outlined, size: 18, color: scheme.onSurfaceVariant),
-                  Switch(
-                    key: const ValueKey('tree-grouping-switch'),
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    value: widget.model.grouping,
-                    onChanged: (v) {
-                      widget.model.grouping = v;
-                      setState(() {});
-                      widget.onGroupingChanged?.call(v);
-                    },
-                  ),
-                ],
+            // The grouping toggle is the icon itself: filled and tinted when on, outlined and grey when off (no Switch: it was far too big).
+            IconButton(
+              key: const ValueKey('tree-grouping-toggle'),
+              tooltip: widget.model.grouping ? 'Grouping repeated parts: on' : 'Grouping repeated parts: off',
+              visualDensity: VisualDensity.compact,
+              isSelected: widget.model.grouping,
+              icon: Icon(Icons.layers_outlined, size: 20, color: scheme.onSurfaceVariant),
+              selectedIcon: Icon(Icons.layers, size: 20, color: scheme.primary),
+              style: IconButton.styleFrom(
+                backgroundColor: widget.model.grouping ? scheme.primaryContainer : null,
               ),
+              onPressed: () {
+                final v = !widget.model.grouping;
+                widget.model.grouping = v;
+                setState(() {});
+                widget.onGroupingChanged?.call(v);
+              },
             ),
             IconButton(
               key: const ValueKey('tree-collapse-all'),
@@ -613,6 +617,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           children: [
             button('tree-bar-hide', row.hidden ? Icons.visibility_outlined : Icons.visibility_off_outlined, row.hidden ? 'Show' : 'Hide', widget.onHideSelected),
             button('tree-bar-isolate', Icons.filter_center_focus, 'Isolate', widget.onIsolateSelected),
+            button('tree-bar-zoom', Icons.zoom_out_map, 'Zoom', widget.onZoomSelected),
             button('tree-bar-focus', Icons.center_focus_strong_outlined, 'Focus', widget.onFocusSelected),
             button('tree-bar-alone', Icons.edit_outlined, 'Alone', widget.onAloneSelected),
             button('tree-bar-more', Icons.more_horiz, 'More', widget.onMoreSelected),

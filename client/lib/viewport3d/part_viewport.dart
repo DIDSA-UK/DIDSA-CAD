@@ -833,6 +833,11 @@ class PartViewport extends StatefulWidget {
   /// widget only renders it (see [_syncSelectedEntityNodes]).
   final Set<SelectionEntityRef> selectedEntities;
 
+  /// Placed instances (joined `occurrencePath`s) to highlight as whole components besides [selectedEntities]: what a tree row stands for
+  /// (a sub-assembly row: every part inside it, the root row: everything). [selectedEntities] itself keeps the one entity the rest of the
+  /// screen works with; an instance already in it is not drawn twice.
+  final Set<String> highlightedInstanceKeys;
+
   /// Fired when a tap (Fix 4) commits a non-empty hover hit - the caller
   /// (see [PartScreen]) decides whether this adds or removes the entity
   /// from [selectedEntities] (Item 4's toggle rule).
@@ -1142,6 +1147,7 @@ class PartViewport extends StatefulWidget {
     this.emissiveIntensity = ScenePreferences.defaultEmissiveIntensity,
     this.selectionMode = false,
     this.selectedEntities = const {},
+    this.highlightedInstanceKeys = const {},
     this.onSelectionToggle,
     this.onSelectionPickPoint,
     this.onSelectClick,
@@ -2385,13 +2391,15 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     // hovered occurrence's instance moves (or its geometry changes) - not
     // only when the selection itself changes.
     if (widget.selectedEntities == oldWidget.selectedEntities &&
+        setEquals(widget.highlightedInstanceKeys, oldWidget.highlightedInstanceKeys) &&
         (widget.assemblyGeometry != oldWidget.assemblyGeometry || _highlightedOccurrenceMoved(oldWidget))) {
       setState(() {
         _syncSelectedEntityNodes();
         _syncHoverNode();
       });
     }
-    if (widget.selectedEntities != oldWidget.selectedEntities) {
+    if (widget.selectedEntities != oldWidget.selectedEntities ||
+        !setEquals(widget.highlightedInstanceKeys, oldWidget.highlightedInstanceKeys)) {
       // Fix 2: re-adding the hover node *after* the selected nodes (rather
       // than leaving it wherever it last landed in the Scene's node list)
       // keeps the hover highlight rendering on top of a newly-selected
@@ -4444,8 +4452,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// Desktop input D4: Zoom to selection - centres on [entities]' geometry
   /// and frames it, the view direction kept (as [zoomToFit] keeps it).
   /// Returns false when none of them has geometry to frame.
-  bool zoomToEntities(Iterable<SelectionEntityRef> entities) {
-    final bounds = boundsOfPoints(_worldPointsOf(entities));
+  bool zoomToEntities(Iterable<SelectionEntityRef> entities) => zoomToBounds(boundsOfPoints(_worldPointsOf(entities)));
+
+  /// Centres on [bounds] and frames it, the view direction kept; false (and nothing moves) for null bounds. The tree's Zoom to selection
+  /// computes the bounds of the selected row's placed parts itself and comes here.
+  bool zoomToBounds(MeshBounds? bounds) {
     if (bounds == null) return false;
     // A lone vertex has no extent: frame a small patch of the model instead.
     final model = _framingBounds();
@@ -6835,6 +6846,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Set<String> _highlightedOccurrenceKeys() => {
         for (final e in widget.selectedEntities)
           if (e.occurrenceId.isNotEmpty) e.occurrenceId,
+        ...widget.highlightedInstanceKeys,
         if (_hoverHit != null && _hoverHit!.entity.occurrenceId.isNotEmpty) _hoverHit!.entity.occurrenceId,
         if (widget.highlightOverride != null && widget.highlightOverride!.occurrenceId.isNotEmpty)
           widget.highlightOverride!.occurrenceId,
@@ -7146,6 +7158,16 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           // `selected:` check), not one of this method's three overlay
           // Nodes - nothing to accumulate here.
           break;
+      }
+    }
+
+    if (!draggingComponent) {
+      final alreadyDrawn = {
+        for (final e in widget.selectedEntities)
+          if (e.kind == SelectionEntityKind.component) e.occurrenceId,
+      };
+      for (final key in widget.highlightedInstanceKeys) {
+        if (!alreadyDrawn.contains(key)) faceTriangles.addAll(_worldTrianglesForOccurrence(key));
       }
     }
 
