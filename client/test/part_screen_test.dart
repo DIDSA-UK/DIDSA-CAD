@@ -139,6 +139,9 @@ class _FakeDocumentBackend {
   /// Part ids the fake's `assembly-mesh` carries (empty) geometry for, so a test can have several Parts in the scene.
   List<String> assemblyGeometryPartIds = const [];
 
+  /// Parts the fake's `assembly-mesh` gives one body to (this mesh), so a test can frame real extents.
+  Map<String, Map<String, dynamic>> assemblyBodyMeshes = {};
+
   /// Occurrences of a sub-assembly (a Part other than `part-1`), by Part id: `GET .../parts/{id}/occurrences` answers them.
   Map<String, List<Map<String, dynamic>>> subOccurrences = {};
 
@@ -1152,7 +1155,13 @@ class _FakeDocumentBackend {
       final forRoot = assemblyMeshMatch.group(1) == 'part-1';
       return _json({
         'geometry': [
-          for (final id in assemblyGeometryPartIds) {'part_id': id, 'bodies': <dynamic>[]},
+          for (final id in {...assemblyGeometryPartIds, ...assemblyBodyMeshes.keys})
+            {
+              'part_id': id,
+              'bodies': [
+                if (assemblyBodyMeshes[id] != null) {'body_id': 'b', 'source': 'computed', 'mesh': assemblyBodyMeshes[id]},
+              ],
+            },
         ],
         'instances': [
           if (forRoot)
@@ -1581,7 +1590,10 @@ class _TreeProbe {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
     // The popup's own entry (the phone's selection bar has a Hide and an Isolate too).
-    await tester.tap(find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text(label)));
+    final entry = find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text(label));
+    // The menu opens over 300 ms, and its last rows are not there to hit until it has: the longer the menu, the later.
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(entry);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 250));
   }
@@ -7606,6 +7618,11 @@ void main() {
       List<Map<String, dynamic>>? seedMates,
       List<Map<String, dynamic>>? seedComponentPatterns,
     }) async {
+      // The component menu has grown (Zoom to selection): its last rows need a taller window than 800 x 600.
+      tester.view.physicalSize = const Size(800, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final backend = _FakeDocumentBackend(
         seedOccurrences: seedOccurrences,
         seedMates: seedMates,
@@ -11353,7 +11370,8 @@ void main() {
 
     /// Opens the fixture in the Assembly lens. [around] sees every request after the fake has answered it (the answer is fixed by then) and
     /// may hold it, to make an answer arrive late.
-    Future<_FakeDocumentBackend> openNested(WidgetTester tester, {Future<void> Function(http.Request request)? around}) async {
+    Future<_FakeDocumentBackend> openNested(WidgetTester tester,
+        {Future<void> Function(http.Request request)? around, void Function(_FakeDocumentBackend backend)? configure}) async {
       final backend = _FakeDocumentBackend(seedOccurrences: [
         occ('asm-1', part: 'sub', ref: 'parts/sub.didsa'),
         occ('asm-2', part: 'sub', ref: 'parts/sub.didsa'),
@@ -11366,6 +11384,7 @@ void main() {
         for (final a in ['asm-1', 'asm-2'])
           for (final c in ['c1', 'c2']) instance([a, c]),
       ];
+      if (configure != null) configure(backend);
       final documentApi = DocumentApiClient(
         httpClient: MockClient((request) async {
           final response = backend.handle(request);
@@ -11468,7 +11487,7 @@ void main() {
       expect(instanceHidden(tester, ['asm-2', 'c1']), isFalse);
     });
 
-    testWidgets('Isolate on a nested row hides its siblings under that placement only', (tester) async {
+    testWidgets('Isolate on a nested row isolates that placement: its siblings and the rest of the assembly are hidden', (tester) async {
       await openNested(tester);
       final probe = _TreeProbe(tester);
       probe.model.openAll(const ['asm-1', 'asm-2']);
@@ -11477,7 +11496,244 @@ void main() {
 
       expect(instanceHidden(tester, ['asm-1', 'c2']), isTrue);
       expect(instanceHidden(tester, ['asm-1', 'c1']), isFalse);
-      expect(instanceHidden(tester, ['asm-2', 'c2']), isFalse, reason: 'the other placement is not isolated');
+      // A4.1: isolate hides everything else, so the other placement goes too (that placement alone is isolated).
+      expect(instanceHidden(tester, ['asm-2', 'c2']), isTrue, reason: 'the other placement is hidden with the rest');
+      expect(instanceHidden(tester, ['asm-2', 'c1']), isTrue);
+    });
+
+    /// Three levels: asm-1 and asm-2 place `sub` (a part c1 and a sub-assembly g that holds d1 and d2), beside a lone `plate`.
+    Future<_FakeDocumentBackend> openDeep(WidgetTester tester, {bool plateHidden = false}) async {
+      final backend = _FakeDocumentBackend(seedOccurrences: [
+        occ('asm-1', part: 'sub', ref: 'parts/sub.didsa'),
+        occ('asm-2', part: 'sub', ref: 'parts/sub.didsa'),
+        occ('plate', hidden: plateHidden),
+      ]);
+      backend.subOccurrences = {
+        'sub': [occ('c1'), occ('g', part: 'inner', ref: 'parts/inner.didsa')],
+        'inner': [occ('d1'), occ('d2')],
+      };
+      backend.extraAssemblyInstances = [
+        for (final a in ['asm-1', 'asm-2']) ...[
+          instance([a, 'c1']),
+          instance([a, 'g']),
+          instance([a, 'g', 'd1']),
+          instance([a, 'g', 'd2']),
+        ],
+      ];
+      final documentApi = DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)));
+      final sketchBackend = _FakeSketchBackend();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: PartScreen(
+            documentApi: documentApi,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      );
+      await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+      await switchLens(tester, 'Assembly');
+      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+      _TreeProbe(tester).model.openAll(const ['asm-1', 'asm-2', 'asm-1/g', 'asm-2/g']);
+      await settle(tester);
+      return backend;
+    }
+
+    Set<String> hiddenInstances(WidgetTester tester) => {
+          for (final i in instances(tester))
+            if (i.hidden) i.occurrencePath.join('/'),
+        };
+
+    Set<String> highlighted(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).highlightedInstanceKeys;
+
+    testWidgets('a row tap highlights its parts by full path: a sub-assembly row all of its own, the root row everything', (tester) async {
+      await openNested(tester);
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+
+      await probe.tapRow('asm-2/c1');
+      await settle(tester);
+      expect(highlighted(tester), {'asm-2/c1'}, reason: 'a row under the second placement highlights that placement only');
+
+      await _TreeProbe(tester).tapRow('asm-2');
+      await settle(tester);
+      expect(highlighted(tester), {'asm-2', 'asm-2/c1', 'asm-2/c2'}, reason: 'a sub-assembly row highlights every part in it, not the other placement');
+
+      await _TreeProbe(tester).tapRow('plate');
+      await settle(tester);
+      expect(highlighted(tester), {'plate'});
+
+      await _TreeProbe(tester).tapRow('');
+      await settle(tester);
+      expect(highlighted(tester), {for (final i in instances(tester)) i.occurrencePath.join('/')}, reason: 'the root row is everything');
+      expect(_TreeProbe(tester).model.selectedKey, '');
+    });
+
+    testWidgets('hiding a nested sub-assembly hides everything in it (that placement only); showing it restores its children, except one hidden on its own',
+        (tester) async {
+      final backend = await openDeep(tester);
+      final probe = _TreeProbe(tester);
+      final writesBefore = backend.writes.length;
+
+      // d1 is hidden on its own first.
+      probe.view.onVisibilityToggle!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1/g/d1'));
+      await settle(tester);
+      expect(hiddenInstances(tester), {'asm-1/g/d1'});
+
+      _TreeProbe(tester).view.onVisibilityToggle!(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/g'));
+      await settle(tester);
+      expect(hiddenInstances(tester), {'asm-1/g', 'asm-1/g/d1', 'asm-1/g/d2'}, reason: 'the sub-assembly and every child; the other placement and c1 are shown');
+      expect(backend.writes.length, writesBefore, reason: 'a nested Hide is for this session');
+
+      _TreeProbe(tester).view.onVisibilityToggle!(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/g'));
+      await settle(tester);
+      expect(hiddenInstances(tester), {'asm-1/g/d1'}, reason: 'showing the parent restores the children except the one hidden on its own');
+    });
+
+    testWidgets('hiding a top-level sub-assembly (the backend flag) hides everything in it, even when the mesh does not say so; Show brings it back',
+        (tester) async {
+      final backend = await openDeep(tester);
+      final probe = _TreeProbe(tester);
+
+      probe.view.onVisibilityToggle!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1'));
+      await _pumpUntil(tester, () => backend.writes.any((w) => w.contains('/part-1/occurrences/asm-1')));
+      await settle(tester);
+      expect(hiddenInstances(tester), {'asm-1', 'asm-1/c1', 'asm-1/g', 'asm-1/g/d1', 'asm-1/g/d2'});
+      expect(instanceHidden(tester, ['asm-2', 'g', 'd1']), isFalse);
+
+      _TreeProbe(tester).view.onVisibilityToggle!(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1'));
+      await _pumpUntil(tester, () => backend.writes.where((w) => w.contains('/part-1/occurrences/asm-1')).length == 2);
+      await settle(tester);
+      expect(hiddenInstances(tester), isEmpty);
+    });
+
+    testWidgets('Isolate on a sub-assembly shows it and all its children and hides everything else; isolating it again restores what was hidden before',
+        (tester) async {
+      await openDeep(tester, plateHidden: true);
+      final probe = _TreeProbe(tester);
+      // d2 hidden on its own before the isolate: the undo must give it back as it was.
+      probe.view.onVisibilityToggle!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1/g/d2'));
+      await settle(tester);
+      expect(hiddenInstances(tester), {'plate', 'asm-1/g/d2'});
+
+      await _TreeProbe(tester).menuAction('asm-1', 'Isolate');
+      await settle(tester);
+      expect(hiddenInstances(tester), {'asm-2', 'asm-2/c1', 'asm-2/g', 'asm-2/g/d1', 'asm-2/g/d2', 'plate'},
+          reason: 'asm-1 and all of its children are shown (d2 too); every other component is hidden');
+
+      await _TreeProbe(tester).menuAction('asm-1', 'Isolate');
+      await settle(tester);
+      expect(hiddenInstances(tester), {'plate', 'asm-1/g/d2'}, reason: 'the visibility from before the isolate is back');
+    });
+
+    testWidgets('Isolate on a nested sub-assembly isolates that placement only, and the undo restores the earlier state', (tester) async {
+      await openDeep(tester);
+      await _TreeProbe(tester).menuAction('asm-1/g', 'Isolate');
+      await settle(tester);
+      expect(hiddenInstances(tester), {'asm-1/c1', 'asm-2', 'asm-2/c1', 'asm-2/g', 'asm-2/g/d1', 'asm-2/g/d2', 'plate'},
+          reason: 'g and its children under asm-1 are shown (so is asm-1 itself); the other placement, c1 and plate are hidden');
+
+      // Isolating a part below it moves the isolate, and one undo goes back to the very start.
+      await _TreeProbe(tester).menuAction('asm-1/g/d1', 'Isolate');
+      await settle(tester);
+      expect(hiddenInstances(tester).contains('asm-1/g/d2'), isTrue);
+      expect(hiddenInstances(tester).contains('asm-1/g/d1'), isFalse);
+      expect(hiddenInstances(tester).contains('asm-1/g'), isFalse, reason: 'the parents on the way down stay shown');
+
+      await _TreeProbe(tester).menuAction('asm-1/g/d1', 'Isolate');
+      await settle(tester);
+      expect(hiddenInstances(tester), isEmpty);
+    });
+
+    testWidgets('Zoom to selection frames the selected row: a nested part, a sub-assembly by path, several rows, and the root row', (tester) async {
+      // One 1 x 1 triangle per part, placed apart: asm-1's parts at x 10 and 20, asm-2's at y 50 and 60.
+      final triangle = {
+        'vertices': [
+          [0.0, 0.0, 0.0],
+          [1.0, 0.0, 0.0],
+          [0.0, 1.0, 0.0],
+        ],
+        'normals': [
+          [0.0, 0.0, 1.0],
+          [0.0, 0.0, 1.0],
+          [0.0, 0.0, 1.0],
+        ],
+        'triangle_indices': [
+          [0, 1, 2],
+        ],
+      };
+      Map<String, dynamic> at(List<String> path, double x, double y) => {
+            ...instance(path),
+            'world_transform': {
+              'translation': [x, y, 0.0],
+              'rotation_axis': [0.0, 0.0, 1.0],
+              'rotation_angle_degrees': 0.0,
+            },
+          };
+      await openNested(tester, configure: (backend) {
+        backend.assemblyBodyMeshes = {'c1-part': triangle, 'c2-part': triangle};
+        backend.extraAssemblyInstances = [
+          at(['asm-1', 'c1'], 10, 0),
+          at(['asm-1', 'c2'], 20, 0),
+          at(['asm-2', 'c1'], 0, 50),
+          at(['asm-2', 'c2'], 0, 60),
+        ];
+      });
+      final probe = _TreeProbe(tester);
+      probe.model.openAll(const ['asm-1', 'asm-2']);
+      await settle(tester);
+
+      PartViewportState viewport() => tester.state<PartViewportState>(find.byType(PartViewport));
+      void expectTarget(double x, double y, String reason) {
+        final t = viewport().debugCameraTarget;
+        expect(t.x, closeTo(x, 1e-6), reason: reason);
+        expect(t.y, closeTo(y, 1e-6), reason: reason);
+      }
+
+      // A nested part: its own triangle (x 10..11, y 0..1).
+      await probe.menuAction('asm-1/c1', 'Zoom to selection');
+      expectTarget(10.5, 0.5, 'asm-1/c1 alone');
+
+      // A sub-assembly by path: both of its parts (x 10..21), not asm-2's.
+      await _TreeProbe(tester).tapRow('asm-1');
+      await settle(tester);
+      await _TreeProbe(tester).menuAction('asm-1', 'Zoom to selection');
+      expectTarget(15.5, 0.5, 'asm-1 and its children');
+
+      // The second placement frames the second placement.
+      await _TreeProbe(tester).menuAction('asm-2', 'Zoom to selection');
+      expectTarget(0.5, 55.5, 'asm-2 and its children');
+
+      // The root row frames everything (x 0..21, y 0..61).
+      await _TreeProbe(tester).tapRow('');
+      await settle(tester);
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+      await settle(tester);
+      expectTarget(10.5, 30.5, 'the root row, by the Shift+F shortcut');
+    });
+
+    testWidgets('the tree header has no Switch; the grouping icon is the button, with a tooltip and a clear on / off look', (tester) async {
+      await openNested(tester);
+      final header = find.descendant(of: find.byType(AssemblyTreeView), matching: find.byType(Switch));
+      expect(header, findsNothing);
+
+      final toggle = find.byKey(const ValueKey('tree-grouping-toggle'));
+      expect(toggle, findsOneWidget);
+      expect(tester.widget<IconButton>(toggle).isSelected, isTrue);
+      expect(tester.widget<IconButton>(toggle).tooltip, contains('on'));
+      expect(_TreeProbe(tester).model.grouping, isTrue);
+
+      // The floating tree is slid off the screen while closed, so the button is pressed, not tapped.
+      tester.widget<IconButton>(toggle).onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(_TreeProbe(tester).model.grouping, isFalse);
+      expect(tester.widget<IconButton>(toggle).isSelected, isFalse);
+      expect(tester.widget<IconButton>(toggle).tooltip, contains('off'));
+      expect(ViewPreferences.assemblyTreeGrouping, isFalse, reason: 'saved, as the switch was');
+      SharedPreferences.setMockInitialValues({});
+      await ViewPreferences.load();
     });
 
     testWidgets('Fix on a nested row PATCHes its parent Part, and the row says so at once', (tester) async {

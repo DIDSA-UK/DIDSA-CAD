@@ -23,6 +23,7 @@ enum ComponentContextMenuAction {
   editAlone,
   makeFocus,
   exitFocus,
+  zoomToSelection,
   moveRotate,
   hide,
   show,
@@ -90,6 +91,13 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       action: isFocused ? ComponentContextMenuAction.exitFocus : ComponentContextMenuAction.makeFocus,
       label: isFocused ? 'Exit Focus' : 'Make Focus',
       icon: isFocused ? Icons.output_outlined : Icons.center_focus_strong_outlined,
+    ),
+    // A4.1: frames the camera on this row's parts (a sub-assembly: everything in it).
+    const ActionSheetEntry(
+      action: ComponentContextMenuAction.zoomToSelection,
+      label: 'Zoom to selection',
+      icon: Icons.zoom_out_map,
+      shortcut: 'Shift+F',
     ),
     ActionSheetEntry(
       action: ComponentContextMenuAction.moveRotate,

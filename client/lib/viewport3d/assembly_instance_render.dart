@@ -89,3 +89,39 @@ List<MatePreviewGhost> matePreviewGhosts({
   }
   return ghosts;
 }
+
+/// Whether the placed instance at [instanceKey] (its joined `occurrencePath`) is the one at [rowKey] (a tree row's full path, joined) or
+/// sits below it. `''` (the root of an unfocused tree) is every instance.
+bool instanceKeyIsAtOrBelow(String instanceKey, String rowKey) =>
+    rowKey.isEmpty || instanceKey == rowKey || instanceKey.startsWith('$rowKey/');
+
+/// The placed instances at or below each of [rowKeys] (full paths, joined). A hidden instance is left out unless that would leave
+/// nothing (framing a hidden part is better than doing nothing).
+List<AssemblyOccurrenceInstanceDto> instancesUnderRows(List<AssemblyOccurrenceInstanceDto> instances, Iterable<String> rowKeys) {
+  final keys = rowKeys.toList();
+  final under = [
+    for (final i in instances)
+      if (keys.any((k) => instanceKeyIsAtOrBelow(i.occurrencePath.join('/'), k))) i,
+  ];
+  final shown = [for (final i in under) if (!i.hidden) i];
+  return shown.isNotEmpty ? shown : under;
+}
+
+/// The world-space bounds of [instances]' real geometry (each instance's Part geometry through its world transform); null when none of them
+/// has any. What Zoom to selection frames for a tree row.
+MeshBounds? boundsOfInstances(List<AssemblyOccurrenceInstanceDto> instances, List<AssemblyBodyGeometryDto> geometry) {
+  final points = <vm.Vector3>[];
+  for (final instance in instances) {
+    final transform = matrix4FromRigidTransform(instance.worldTransform);
+    for (final part in geometry) {
+      if (part.partId != instance.partId) continue;
+      for (final body in part.bodies) {
+        if (!isRenderableAssemblyBody(body)) continue;
+        for (final p in meshExtentPoints(body.mesh)) {
+          points.add(transform.transformed3(p));
+        }
+      }
+    }
+  }
+  return boundsOfPoints(points);
+}
