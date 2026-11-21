@@ -27,9 +27,28 @@ Map<String, dynamic> _rowJson(AssemblyTreeRow r) => {
       'suppressed': r.suppressed,
     };
 
-// Case kinds of vectors version 2 (spec sections 11 to 13) that this model does not implement yet. Skipped by name until the
-// chunk that adds them: B2 removes `filter` and `restore`, P1 the three `live_part` kinds. A kind in neither list fails.
-const _skippedKinds = {'filter', 'restore', 'live_part', 'live_part_filter', 'live_part_restore'};
+// Case kinds of vectors version 2 (spec section 13, the live part) that this model does not implement yet. Skipped by name until P1 adds
+// them. A kind in neither this list nor the ones run below fails.
+const _skippedKinds = {'live_part', 'live_part_filter', 'live_part_restore'};
+
+// A filter's rows: the spec's row fields plus `match`.
+Map<String, dynamic> _filterRowJson(AssemblyTreeRow r) => {..._rowJson(r), 'match': r.match};
+
+// The inputs every `rows`-shaped case (rows, filter) gives: unsaved Part ids, open keys, fetched features.
+AssemblyTreeModel _modelFor(Map<String, dynamic> c) {
+  final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
+  model.setUnsavedPartIds((c['unsaved_part_ids'] as List).cast<String>());
+  for (final k in (c['open'] as List).cast<String>()) {
+    model.setOpen(k, true);
+  }
+  for (final e in (c['features'] as Map<String, dynamic>).entries) {
+    final path = e.key.isEmpty ? <String>[] : e.key.split('/');
+    model.setFeatures(path, [
+      for (final f in e.value as List) AssemblyFeature(f['id'] as String, f['label'] as String),
+    ]);
+  }
+  return model;
+}
 
 void main() {
   final cases = (_vectors['cases'] as List).cast<Map<String, dynamic>>();
@@ -42,24 +61,27 @@ void main() {
   group('vectors', () {
     for (final c in cases) {
       final kind = c['kind'] as String;
-      test('$kind: ${c['name']}', skip: _skippedKinds.contains(kind) ? 'spec sections 11 to 13: not implemented yet (B2, P1)' : null, () {
-        if (kind != 'rows' && kind != 'reveal') fail('unknown vector case kind: $kind');
-        final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
-        if (c['kind'] == 'rows') {
-          model.setUnsavedPartIds((c['unsaved_part_ids'] as List).cast<String>());
-          for (final k in (c['open'] as List).cast<String>()) {
-            model.setOpen(k, true);
-          }
-          for (final e in (c['features'] as Map<String, dynamic>).entries) {
-            final path = e.key.isEmpty ? <String>[] : e.key.split('/');
-            model.setFeatures(path, [
-              for (final f in e.value as List) AssemblyFeature(f['id'] as String, f['label'] as String),
-            ]);
-          }
-          final rows = model.visibleRows().map(_rowJson).toList();
-          expect(rows, c['expected'], reason: c['why'] as String?);
-        } else {
-          expect(model.reveal((c['path'] as List).cast<String>()), c['expected'], reason: c['why'] as String?);
+      test('$kind: ${c['name']}', skip: _skippedKinds.contains(kind) ? 'spec section 13: not implemented yet (P1)' : null, () {
+        final why = c['why'] as String?;
+        switch (kind) {
+          case 'rows':
+            expect(_modelFor(c).visibleRows().map(_rowJson).toList(), c['expected'], reason: why);
+          case 'reveal':
+            final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
+            expect(model.reveal((c['path'] as List).cast<String>()), c['expected'], reason: why);
+          case 'filter':
+            final model = _modelFor(c);
+            final openBefore = model.openKeys;
+            final result = model.filteredRows(c['query'] as String);
+            final expected = c['expected'] as Map<String, dynamic>;
+            expect(result.rows.map(_filterRowJson).toList(), expected['rows'], reason: why);
+            expect(result.unknown, expected['unknown'], reason: why);
+            expect(model.openKeys, openBefore, reason: 'the filter does not change the open keys');
+          case 'restore':
+            final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
+            expect(model.restoreOpenKeys((c['stored'] as List).cast<String>(), limit: c['limit'] as int), c['expected'], reason: why);
+          default:
+            fail('unknown vector case kind: $kind');
         }
       });
     }
@@ -306,4 +328,140 @@ void main() {
     });
   });
 
+
+  group('B2 additions', () {
+    test('the filter needs nothing but a tree: no query is the ordinary rows; only unknown tokens match nothing', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setOpen('wheel_l', true);
+      final none = model.filteredRows('   ');
+      expect(none.active, isFalse);
+      expect(identical(none.rows, model.visibleRows()), isTrue);
+      expect(none.rows.any((r) => r.match), isFalse);
+
+      final unknown = model.filteredRows(':nope :Nope :other');
+      expect(unknown.active, isTrue);
+      expect([for (final r in unknown.rows) r.key], ['']);
+      expect(unknown.unknown, [':nope', ':other']);
+    });
+
+    test('a filter is cached until something changes, and the open keys are not touched by it', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setOpen('mast', true);
+      final first = model.filteredRows('lens');
+      expect(identical(model.filteredRows('lens'), first), isTrue);
+      expect(model.openKeys, {'mast'});
+      expect(model.openKeysTouched, isTrue, reason: 'only because this test opened a row');
+      model.setFeatures(['mast', 'arm', 'head', 'lens'], [const AssemblyFeature('f1', 'Lens sketch')]);
+      final second = model.filteredRows('lens');
+      expect(identical(second, first), isFalse);
+      expect(second.rows.where((r) => r.kind == AssemblyRowKind.feature && r.match), hasLength(1));
+      model.grouping = false;
+      expect(identical(model.filteredRows('lens'), second), isFalse);
+    });
+
+    test('a filter says when some part has features it could not read', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      final hasFeatures = model.tree!.featureCount > 0 || _anyFeatureCount(model.tree!.children);
+      expect(hasFeatures, isTrue, reason: 'the fixture has parts with features');
+      expect(model.filteredRows('a').featuresNotRead, isTrue);
+    });
+
+    test('open keys: every change is reported and counted as the person\'s own; a restore is neither', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      var changes = 0;
+      model.onOpenKeysChanged = () => changes++;
+      expect(model.openKeysTouched, isFalse);
+      model.openAll(['wheel_l'], remember: false);
+      expect(changes, 0);
+      expect(model.openKeysTouched, isFalse);
+      expect(model.isOpen('wheel_l'), isTrue);
+
+      model.setOpen('wheel_l', true); // already open: nothing changed
+      expect(changes, 0);
+      model.setOpen('mast', true);
+      expect(changes, 1);
+      model.toggle('mast');
+      expect(changes, 2);
+      model.closeAll();
+      expect(changes, 3);
+      model.closeAll(); // nothing to close: no change to store, but it was still the person's answer
+      expect(changes, 3);
+
+      final fresh = AssemblyTreeModel(tree: _tree('rover'));
+      fresh.closeAll();
+      expect(fresh.openKeysTouched, isTrue, reason: 'collapse all of nothing is still the person asking for it collapsed');
+    });
+
+    test('an open that changes nothing is not the person\'s change; a collapse all is, even of nothing', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.openAll(const []);
+      model.setOpen('mast', false);
+      expect(model.expandToSelection(), isFalse);
+      expect(model.openKeysTouched, isFalse);
+      model.setOpen('mast', true);
+      expect(model.openKeysTouched, isTrue);
+
+      final nothingOpen = AssemblyTreeModel(tree: _tree('rover'));
+      nothingOpen.closeAll(); // nothing to close, and still the person asking for it collapsed
+      expect(nothingOpen.openKeysTouched, isTrue);
+    });
+
+    test('merge dropping the keys of a row that is gone is not reported', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.openAll(['mast', 'gone/row'], remember: false);
+      var changes = 0;
+      model.onOpenKeysChanged = () => changes++;
+      model.merge(_tree('rover'));
+      expect(model.openKeys, {'mast'});
+      expect(changes, 0);
+    });
+
+    test('restore keeps what can open, in tree order, with the limit; restoring changes nothing until the host opens the keys', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      final kept = model.restoreOpenKeys(['wheel_l', 'gone', 'mast', 'chassis', 'mast/arm', 'mast/arm/head/lens#feature:f1', '', '#mates']);
+      expect(kept, containsAll(['wheel_l', 'mast', 'mast/arm']));
+      expect(kept, isNot(contains('gone')));
+      expect(kept, isNot(contains('')));
+      expect(kept.indexOf('mast'), lessThan(kept.indexOf('mast/arm')), reason: 'visible-row order, not the stored order');
+      expect(model.openKeys, isEmpty);
+      expect(model.restoreOpenKeys(['wheel_l', 'mast', 'mast/arm'], limit: 2), hasLength(2));
+      expect(AssemblyTreeModel().restoreOpenKeys(['mast']), isEmpty, reason: 'no tree yet');
+    });
+
+    test('keys to store: all of them, or the first 2,000 in tree order past the limit', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.openAll(['mast/arm', 'mast', 'wheel_l']);
+      expect(model.keysToStore().toSet(), {'mast/arm', 'mast', 'wheel_l'});
+      final capped = model.keysToStore(limit: 2);
+      expect(capped, model.restoreOpenKeys(model.openKeys).take(2).toList(), reason: 'the first two of the tree-ordered keys');
+    });
+
+    test('expand to selection opens the path (and the group the row sits in) and says whether it changed anything', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      expect(model.expandToSelection(), isFalse, reason: 'nothing selected');
+      model.selectedKey = 'mast/arm/head/lens';
+      expect(model.selectionRevealKeys(), ['mast', 'mast/arm', 'mast/arm/head']);
+      expect(model.openKeys, isEmpty);
+      expect(model.expandToSelection(), isTrue);
+      expect(model.openKeys, {'mast', 'mast/arm', 'mast/arm/head'});
+      expect(model.indexOf('mast/arm/head/lens'), greaterThan(0));
+      expect(model.expandToSelection(), isFalse, reason: 'already open');
+    });
+
+    test('expand to selection for a feature row opens its owner too, and for a group row its parent', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setFeatures(['mast', 'arm', 'head', 'lens'], [const AssemblyFeature('f1', 'Sketch')]);
+      model.selectedKey = 'mast/arm/head/lens#feature:f1';
+      expect(model.selectionRevealKeys(), ['mast', 'mast/arm', 'mast/arm/head', 'mast/arm/head/lens']);
+      model.selectedKey = 'wheel_l/#group:b1';
+      expect(model.selectionRevealKeys(), ['wheel_l']);
+      model.selectedKey = '#group:s1';
+      expect(model.selectionRevealKeys(), isEmpty, reason: 'a top-level group needs nothing');
+      model.selectedKey = '';
+      expect(model.selectionRevealKeys(), isEmpty);
+    });
+  });
+
 }
+
+bool _anyFeatureCount(List<AssemblyTreeNodeDto> nodes) => nodes.any((n) => (n.featureCount ?? 0) > 0 || _anyFeatureCount(n.children));

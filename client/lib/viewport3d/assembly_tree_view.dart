@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 
 import '../ai/ai_theme.dart' show AiPalette;
@@ -32,6 +33,10 @@ class AssemblyTreeController {
     }
     s._reveal(path, select: select);
   }
+
+  /// Opens the tree down to the selected row and scrolls to it (the header's "Expand to selection"). Nothing without a selection, and nothing
+  /// while the view is not built: the host shows the tree first and calls this after the frame.
+  void expandToSelection() => _state?._expandToSelection();
 
   /// Rebuilds the rows from the model's current state. Also retries what was waiting for data: a [reveal] made before the tree loaded, and
   /// the root's features when the tree has just arrived.
@@ -95,6 +100,7 @@ class AssemblyTreeView extends StatefulWidget {
     this.onAloneSelected,
     this.onMoreSelected,
     this.statusLine,
+    this.statusUnavailable = false,
     this.flashItemIds = const {},
     this.flashToken = 0,
   });
@@ -157,6 +163,9 @@ class AssemblyTreeView extends StatefulWidget {
   final void Function(AssemblyTreeRow row)? onAloneSelected;
   final void Function(AssemblyTreeRow row)? onMoreSelected;
 
+  /// The status call failed, or the backend cannot give one: the filter says "status unavailable" instead of "still loading".
+  final bool statusUnavailable;
+
   /// One quiet line under the header (A4: the motion summary, "Group: 5 DOF"...); null or empty shows nothing.
   final String? statusLine;
 
@@ -190,6 +199,15 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   /// A row to scroll to once the list exists (a docked tree that is not shown has none).
   String? _pendingScrollKey;
 
+  /// The filter (B2, spec section 11). Desktop shows the field always; a phone shows an icon that turns the header into the field
+  /// ([_filterOpen]). [_query] is what is typed; the filter is on while it holds more than spaces.
+  final TextEditingController _filterText = TextEditingController();
+  final FocusNode _filterFocus = FocusNode();
+  String _query = '';
+  bool _filterOpen = false;
+
+  bool get _filtering => _query.trim().isNotEmpty;
+
   @override
   void initState() {
     super.initState();
@@ -208,6 +226,19 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (old.model != widget.model) {
       _requested.clear();
       _seenTree = widget.model.tree;
+    }
+    // Multi-select replaces the header (and with it the filter field): a filter that kept narrowing the rows with nothing to show it would
+    // be a trap, so it ends there.
+    // It ends on the condition that hides the field: the header being replaced (not only the mode flag).
+    if (old.multiSelectHeader == null && widget.multiSelectHeader != null && (_filtering || _filterOpen)) {
+      final wasFiltering = _filtering;
+      _filterText.clear();
+      _filterOpen = false;
+      _query = '';
+      // The rows are the open keys' from this build on; after it the list goes back to the top and reveals the selected row, as clearing does.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _filterChanged(wasFiltering);
+      });
     }
     _syncModel();
     if (widget.flashToken != old.flashToken && widget.flashItemIds.isNotEmpty) {
@@ -233,6 +264,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     widget.controller?._detach(this);
     _flash.dispose();
     _scroll.dispose();
+    _filterText.dispose();
+    _filterFocus.dispose();
     super.dispose();
   }
 
@@ -281,7 +314,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     });
   }
 
-  bool _canToggle(AssemblyTreeRow r) => r.expandable && r.kind != AssemblyRowKind.root;
+  // While a filter is on the chevrons are inert (spec section 11): what is open is not changed from a list that shows only the matches.
+  bool _canToggle(AssemblyTreeRow r) => r.expandable && r.kind != AssemblyRowKind.root && !_filtering;
 
   void _toggle(AssemblyTreeRow row) {
     if (!_canToggle(row)) return;
@@ -296,8 +330,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       return;
     }
     widget.model.selectedKey = row.key;
-    final groupLike = row.kind == AssemblyRowKind.group || row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder;
-    if (groupLike) {
+    final groupLike =
+        row.kind == AssemblyRowKind.group || row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder;
+    if (groupLike && !_filtering) {
       widget.model.toggle(row.key);
       if (!row.open) _askForFeatures(row.path);
     }
@@ -347,7 +382,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final key = _pendingScrollKey;
     if (!mounted || key == null || !_scroll.hasClients) return;
     _pendingScrollKey = null;
-    final i = widget.model.indexOf(key);
+    final i = _indexOfRow(key);
     if (i < 0) return;
     final h = _rowHeight();
     final p = _scroll.position;
@@ -382,6 +417,53 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
   }
 
+  /// Expand to selection (spec section 12): opens the ancestors of the selected row (and, with grouping on, its group) and scrolls to it.
+  void _expandToSelection() {
+    final m = widget.model;
+    final sel = m.selectedKey;
+    if (sel == null || sel.isEmpty) return;
+    final path = m.selectedPath;
+    if (path != null && path.isNotEmpty) {
+      _doReveal(path, select: false);
+    } else {
+      m.expandToSelection();
+      _scheduleScroll(sel);
+    }
+    setState(() {});
+  }
+
+  void _setQuery(String value) {
+    final wasFiltering = _filtering;
+    setState(() => _query = value);
+    _filterChanged(wasFiltering);
+  }
+
+  void _filterChanged(bool wasFiltering) {
+    if (wasFiltering != _filtering && _scroll.hasClients) _scroll.jumpTo(0);
+    // Clearing the filter reveals the selected row (spec section 11): it may sit in a collapsed branch the matches had opened up.
+    if (wasFiltering && !_filtering) _expandToSelection();
+  }
+
+  /// Clears the filter; a phone also turns the header back from the field to the title.
+  void _closeFilter() {
+    _filterText.clear();
+    _filterFocus.unfocus();
+    _filterOpen = false;
+    _setQuery('');
+  }
+
+  void _openFilter() {
+    setState(() => _filterOpen = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _filterFocus.requestFocus();
+    });
+  }
+
+  int _indexOfRow(String key) {
+    if (!_filtering) return widget.model.indexOf(key);
+    return widget.model.filteredRows(_query).rows.indexWhere((r) => r.key == key);
+  }
+
   double _rowHeight() => LayoutModeScope.isDesktop(context) ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
 
   /// One colour per rigid set in the whole tree (sorted by set id, so it does not move as rows open), cached per loaded tree.
@@ -397,7 +479,14 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       if (s != null) ids.add(s);
       stack.addAll(n.children);
     }
-    const palette = <Color>[Color(0xFF1E88E5), Color(0xFFF4511E), Color(0xFF43A047), Color(0xFF8E24AA), Color(0xFFFDD835), Color(0xFF00ACC1)];
+    const palette = <Color>[
+      Color(0xFF1E88E5),
+      Color(0xFFF4511E),
+      Color(0xFF43A047),
+      Color(0xFF8E24AA),
+      Color(0xFFFDD835),
+      Color(0xFF00ACC1)
+    ];
     final sorted = ids.toList()..sort();
     // Six fixed colours, then golden-angle hues, so no two of the first dozens of sets share one (a huge number of sets can still look alike).
     Color colourAt(int i) => i < palette.length ? palette[i] : HSLColor.fromAHSL(1, (i * 137.508) % 360, 0.65, i.isEven ? 0.45 : 0.6).toColor();
@@ -409,13 +498,14 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   Widget build(BuildContext context) {
     final desktop = LayoutModeScope.isDesktop(context);
     final model = widget.model;
-    final rows = model.visibleRows();
+    final filter = _filtering ? model.filteredRows(_query) : null;
+    final rows = filter?.rows ?? model.visibleRows();
     final h = desktop ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
     final colours = _rigidColours();
     final scheme = Theme.of(context).colorScheme;
     if (_pendingScrollKey != null) WidgetsBinding.instance.addPostFrameCallback((_) => _flushScroll());
 
-    final selectedIndex = model.selectedKey == null ? -1 : model.indexOf(model.selectedKey!);
+    final selectedIndex = model.selectedKey == null ? -1 : _indexOfRow(model.selectedKey!);
     final selectedRow = selectedIndex < 0 ? null : rows[selectedIndex];
     final showBar = !desktop &&
         !widget.isMultiSelectMode &&
@@ -436,6 +526,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           widget.multiSelectHeader ?? _header(context, desktop),
+          // Desktop: the filter box is always there; a phone has the field in the header while it is open.
+          if (widget.multiSelectHeader == null && desktop) _desktopFilterRow(context),
+          if (filter != null) _filterNotes(context, filter),
           // Not while the floating tree is closed: the pill at the top of the viewport is the way out then.
           if (widget.editAloneLabel != null && widget.onEditAloneDone != null && (widget.visible || widget.docked))
             EditAloneRow(label: widget.editAloneLabel!, onDone: widget.onEditAloneDone!),
@@ -455,37 +548,43 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           Expanded(
             child: rows.isEmpty
                 ? const Center(child: Text('Nothing to show yet'))
-                : ListView.builder(
-                    key: const ValueKey('assembly-tree-list'),
-                    controller: _scroll,
-                    itemExtent: h,
-                    itemCount: rows.length,
-                    itemBuilder: (context, i) {
-                      final r = rows[i];
-                      final flashing = r.kind == AssemblyRowKind.mate && r.itemId != null && widget.flashItemIds.contains(r.itemId);
-                      Widget rowWidget(double pulse) => _TreeRow(
-                        key: ValueKey('tree-row:${r.key}'),
-                        pulse: pulse,
-                        row: r,
-                        height: h,
-                        desktop: desktop,
-                        selected: widget.isMultiSelectMode ? widget.selectedKeys.contains(r.key) : r.key == model.selectedKey,
-                        multiSelect: widget.isMultiSelectMode,
-                        bracket: _bracketFor(r, colours),
-                        canToggle: _canToggle(r),
-                        showEye: widget.onVisibilityToggle != null,
-                        onToggle: () => _toggle(r),
-                        onTap: () => _tap(r),
-                        onLongPress: () => _longPress(r),
-                        onContextMenu: widget.isMultiSelectMode || widget.onRowContextMenu == null
-                            ? null
-                            : (at) => widget.onRowContextMenu!(r, at),
-                        onEye: () => widget.onVisibilityToggle?.call(r),
-                      );
-                      // Only a row that is flashing listens to the animation; every other row is built once.
-                      return flashing ? AnimatedBuilder(animation: _flash, builder: (context, _) => rowWidget(_flashPulse)) : rowWidget(0);
-                    },
-                  ),
+                : filter != null && rows.length == 1 && filter.unknown.isEmpty
+                    ? Center(
+                        child: Text('Nothing matches',
+                            key: const ValueKey('tree-filter-empty'), style: TextStyle(color: scheme.onSurfaceVariant)))
+                    : ListView.builder(
+                        key: const ValueKey('assembly-tree-list'),
+                        controller: _scroll,
+                        itemExtent: h,
+                        itemCount: rows.length,
+                        itemBuilder: (context, i) {
+                          final r = rows[i];
+                          final flashing = r.kind == AssemblyRowKind.mate && r.itemId != null && widget.flashItemIds.contains(r.itemId);
+                          Widget rowWidget(double pulse) => _TreeRow(
+                                key: ValueKey('tree-row:${r.key}'),
+                                pulse: pulse,
+                                row: r,
+                                height: h,
+                                desktop: desktop,
+                                selected: widget.isMultiSelectMode ? widget.selectedKeys.contains(r.key) : r.key == model.selectedKey,
+                                multiSelect: widget.isMultiSelectMode,
+                                bracket: _bracketFor(r, colours),
+                                canToggle: _canToggle(r),
+                                showEye: widget.onVisibilityToggle != null,
+                                onToggle: () => _toggle(r),
+                                onTap: () => _tap(r),
+                                onLongPress: () => _longPress(r),
+                                onContextMenu: widget.isMultiSelectMode || widget.onRowContextMenu == null
+                                    ? null
+                                    : (at) => widget.onRowContextMenu!(r, at),
+                                onEye: () => widget.onVisibilityToggle?.call(r),
+                              );
+                          // Only a row that is flashing listens to the animation; every other row is built once.
+                          return flashing
+                              ? AnimatedBuilder(animation: _flash, builder: (context, _) => rowWidget(_flashPulse))
+                              : rowWidget(0);
+                        },
+                      ),
           ),
           if (showBar) _selectionBar(context, selectedRow),
         ],
@@ -512,8 +611,35 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     return set == null ? null : colours[set];
   }
 
+  /// One line, on a phone too: the title and four small icons (filter, grouping, expand to selection, collapse all) and Close. While the
+  /// phone's filter is open the line is the field instead.
   Widget _header(BuildContext context, bool desktop) {
     final scheme = Theme.of(context).colorScheme;
+    if (!desktop && _filterOpen) return _phoneFilterHeader(context);
+    // 36 dp on a phone (the 48 dp default made five of them a quarter of the width); desktop keeps the compact default.
+    Widget button({
+      required String key,
+      required String tooltip,
+      required IconData icon,
+      Color? colour,
+      IconData? selectedIcon,
+      bool selected = false,
+      VoidCallback? onPressed,
+    }) =>
+        IconButton(
+          key: ValueKey(key),
+          tooltip: tooltip,
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: BoxConstraints.tightFor(width: desktop ? 36 : 36, height: desktop ? 36 : 40),
+          isSelected: selected,
+          icon: Icon(icon, size: 20, color: colour),
+          selectedIcon: selectedIcon == null ? null : Icon(selectedIcon, size: 20, color: scheme.primary),
+          style: selected ? IconButton.styleFrom(backgroundColor: scheme.primaryContainer) : null,
+          onPressed: onPressed,
+        );
+    final selectedKey = widget.model.selectedKey;
+    final canExpand = !_filtering && selectedKey != null && selectedKey.isNotEmpty;
     return Padding(
       padding: const EdgeInsets.only(left: 12, right: 4),
       child: SizedBox(
@@ -523,17 +649,21 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
             Expanded(
               child: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
+            if (!desktop)
+              button(
+                  key: 'tree-filter-toggle',
+                  tooltip: 'Filter',
+                  icon: Icons.search,
+                  colour: scheme.onSurfaceVariant,
+                  onPressed: _openFilter),
             // The grouping toggle is the icon itself: filled and tinted when on, outlined and grey when off (no Switch: it was far too big).
-            IconButton(
-              key: const ValueKey('tree-grouping-toggle'),
+            button(
+              key: 'tree-grouping-toggle',
               tooltip: widget.model.grouping ? 'Grouping repeated parts: on' : 'Grouping repeated parts: off',
-              visualDensity: VisualDensity.compact,
-              isSelected: widget.model.grouping,
-              icon: Icon(Icons.layers_outlined, size: 20, color: scheme.onSurfaceVariant),
-              selectedIcon: Icon(Icons.layers, size: 20, color: scheme.primary),
-              style: IconButton.styleFrom(
-                backgroundColor: widget.model.grouping ? scheme.primaryContainer : null,
-              ),
+              icon: Icons.layers_outlined,
+              colour: scheme.onSurfaceVariant,
+              selectedIcon: Icons.layers,
+              selected: widget.model.grouping,
               onPressed: () {
                 final v = !widget.model.grouping;
                 widget.model.grouping = v;
@@ -541,25 +671,126 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                 widget.onGroupingChanged?.call(v);
               },
             ),
-            IconButton(
-              key: const ValueKey('tree-collapse-all'),
-              tooltip: 'Collapse all',
-              visualDensity: VisualDensity.compact,
-              icon: const Icon(Icons.unfold_less, size: 20),
-              onPressed: () {
-                _collapseAll();
-              },
+            button(
+              key: 'tree-expand-to-selection',
+              tooltip: 'Expand to selection',
+              icon: Icons.my_location,
+              onPressed: canExpand ? _expandToSelection : null,
             ),
-            if (widget.onClose != null)
-              IconButton(
-                key: const ValueKey('tree-close'),
-                tooltip: 'Close',
-                visualDensity: VisualDensity.compact,
-                icon: const Icon(Icons.close, size: 20),
-                onPressed: widget.onClose,
-              ),
+            // Both change what is open, which the filter's list does not show: off while a filter is on.
+            button(key: 'tree-collapse-all', tooltip: 'Collapse all', icon: Icons.unfold_less, onPressed: _filtering ? null : _collapseAll),
+            if (widget.onClose != null) button(key: 'tree-close', tooltip: 'Close', icon: Icons.close, onPressed: widget.onClose),
           ],
         ),
+      ),
+    );
+  }
+
+  static const String _filterHint = 'Name, or :errors :missing :hidden ...';
+
+  TextField _filterField({required bool desktop, Widget? prefix}) {
+    final scheme = Theme.of(context).colorScheme;
+    return TextField(
+      key: const ValueKey('tree-filter-field'),
+      controller: _filterText,
+      focusNode: _filterFocus,
+      onChanged: _setQuery,
+      textInputAction: TextInputAction.search,
+      autocorrect: false,
+      enableSuggestions: false,
+      style: TextStyle(fontSize: desktop ? 13 : 15),
+      decoration: InputDecoration(
+        isDense: true,
+        hintText: _filterHint,
+        hintStyle: TextStyle(fontSize: desktop ? 12 : 14, color: scheme.onSurfaceVariant),
+        prefixIcon: prefix ?? Icon(Icons.search, size: 18, color: scheme.onSurfaceVariant),
+        prefixIconConstraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        suffixIcon: _query.isEmpty
+            ? null
+            : IconButton(
+                key: const ValueKey('tree-filter-clear'),
+                tooltip: 'Clear filter',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(width: 32, height: 32),
+                icon: const Icon(Icons.clear, size: 18),
+                onPressed: desktop
+                    ? () {
+                        _filterText.clear();
+                        _setQuery('');
+                      }
+                    : _closeFilter,
+              ),
+        suffixIconConstraints: const BoxConstraints(minWidth: 32, minHeight: 32),
+        contentPadding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+    );
+  }
+
+  /// Esc: a phone closes the field; desktop clears what is typed, and with nothing typed leaves the field.
+  Widget _escapeCloses(Widget field, {required bool desktop}) => CallbackShortcuts(
+        bindings: {
+          const SingleActivator(LogicalKeyboardKey.escape): () {
+            if (!desktop) return _closeFilter();
+            if (_query.isNotEmpty) {
+              _filterText.clear();
+              _setQuery('');
+            } else {
+              _filterFocus.unfocus();
+            }
+          },
+        },
+        child: field,
+      );
+
+  Widget _phoneFilterHeader(BuildContext context) => Padding(
+        key: const ValueKey('tree-filter-header'),
+        padding: const EdgeInsets.only(left: 8, right: 4),
+        child: SizedBox(
+          height: 48,
+          child: Row(
+            children: [
+              Expanded(child: SizedBox(height: 36, child: _escapeCloses(_filterField(desktop: false), desktop: false))),
+              IconButton(
+                key: const ValueKey('tree-filter-close'),
+                tooltip: 'Close filter',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(width: 36, height: 40),
+                icon: const Icon(Icons.close, size: 20),
+                onPressed: _closeFilter,
+              ),
+            ],
+          ),
+        ),
+      );
+
+  Widget _desktopFilterRow(BuildContext context) => Padding(
+        key: const ValueKey('tree-filter-row'),
+        padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+        child: SizedBox(height: 32, child: _escapeCloses(_filterField(desktop: true), desktop: true)),
+      );
+
+  /// One quiet line under the header while a filter is on: tokens nobody knows, and what the filter cannot see yet.
+  Widget _filterNotes(BuildContext context, AssemblyFilterResult filter) {
+    final scheme = Theme.of(context).colorScheme;
+    final model = widget.model;
+    final words = _query.toLowerCase().split(RegExp(r'\s+'));
+    final notes = <String>[
+      if (filter.unknown.isNotEmpty) 'Unknown filter ${filter.unknown.join(' ')}',
+      if ((words.contains(':errors') || words.contains(':warnings')) && (!model.statusIncluded || model.statusIncomplete))
+        widget.statusUnavailable || model.statusIncomplete
+            ? 'Status unavailable: :errors and :warnings find only missing files and cycles'
+            : 'Status is still loading: :errors and :warnings find only missing files and cycles for now',
+      if (filter.featuresNotRead) 'Features are searched only in parts you have opened',
+    ];
+    if (notes.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(notes.join('. '),
+            key: const ValueKey('tree-filter-notes'), style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
       ),
     );
   }
@@ -615,7 +846,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         top: false,
         child: Row(
           children: [
-            button('tree-bar-hide', row.hidden ? Icons.visibility_outlined : Icons.visibility_off_outlined, row.hidden ? 'Show' : 'Hide', widget.onHideSelected),
+            button('tree-bar-hide', row.hidden ? Icons.visibility_outlined : Icons.visibility_off_outlined, row.hidden ? 'Show' : 'Hide',
+                widget.onHideSelected),
             button('tree-bar-isolate', Icons.filter_center_focus, 'Isolate', widget.onIsolateSelected),
             button('tree-bar-zoom', Icons.zoom_out_map, 'Zoom', widget.onZoomSelected),
             button('tree-bar-focus', Icons.center_focus_strong_outlined, 'Focus', widget.onFocusSelected),
@@ -727,7 +959,7 @@ class _TreeRowState extends State<_TreeRow> {
     };
     final labelStyle = TextStyle(
       fontSize: desktop ? 13 : 15,
-      fontWeight: r.kind == AssemblyRowKind.root ? FontWeight.w600 : FontWeight.normal,
+      fontWeight: r.kind == AssemblyRowKind.root || r.match ? FontWeight.w600 : FontWeight.normal,
       // A mate or pattern a pattern edit or the backend suppressed is dimmed, not struck through (it is not a part).
       fontStyle: r.suppressed && !isItem ? FontStyle.italic : FontStyle.normal,
       decoration: r.suppressed && !isItem ? TextDecoration.lineThrough : null,
@@ -735,11 +967,12 @@ class _TreeRowState extends State<_TreeRow> {
       color: r.state == AssemblyRowState.missing ? palette.danger : (r.tone == AssemblyItemTone.info ? null : toneColour),
     );
     final noteStyle = TextStyle(fontSize: desktop ? 11 : 12, color: toneColour ?? scheme.onSurfaceVariant);
-    final IconData kindIcon = isItem && r.kind == AssemblyRowKind.mate && (r.tone == AssemblyItemTone.error || r.tone == AssemblyItemTone.warning)
-        ? Icons.warning_amber_rounded
-        : isItem && r.tone == AssemblyItemTone.info
-            ? Icons.info_outline
-            : _kindIcon(r.kind);
+    final IconData kindIcon =
+        isItem && r.kind == AssemblyRowKind.mate && (r.tone == AssemblyItemTone.error || r.tone == AssemblyItemTone.warning)
+            ? Icons.warning_amber_rounded
+            : isItem && r.tone == AssemblyItemTone.info
+                ? Icons.info_outline
+                : _kindIcon(r.kind);
 
     Widget content = Row(
       children: [
@@ -754,6 +987,8 @@ class _TreeRowState extends State<_TreeRow> {
         const SizedBox(width: 8),
         Expanded(
           child: Opacity(
+            // A filter's match (not the ancestors listed to show where it is): bold, on a tint.
+            key: r.match ? ValueKey('tree-match:${r.key}') : null,
             opacity: dim,
             child: r.note == null
                 ? Text(r.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle)
@@ -777,7 +1012,8 @@ class _TreeRowState extends State<_TreeRow> {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(r.label, maxLines: 1, overflow: TextOverflow.ellipsis, style: labelStyle),
-                              Text(r.note!, key: ValueKey('tree-note:${r.key}'), maxLines: 1, overflow: TextOverflow.ellipsis, style: noteStyle),
+                              Text(r.note!,
+                                  key: ValueKey('tree-note:${r.key}'), maxLines: 1, overflow: TextOverflow.ellipsis, style: noteStyle),
                             ],
                           ),
                   ),
@@ -820,7 +1056,9 @@ class _TreeRowState extends State<_TreeRow> {
           ? scheme.error.withValues(alpha: 0.35 * widget.pulse)
           : widget.selected
               ? scheme.secondaryContainer.withValues(alpha: 0.7)
-              : Colors.transparent,
+              : r.match
+                  ? scheme.tertiaryContainer.withValues(alpha: 0.5)
+                  : Colors.transparent,
       child: InkWell(
         onTap: widget.onTap,
         onLongPress: widget.onLongPress,
@@ -886,8 +1124,11 @@ class _TreeRowState extends State<_TreeRow> {
       AssemblyRowState.overConstrained => (Icons.warning_amber_rounded, palette.danger, 'Over-constrained - mates conflict'),
       AssemblyRowState.near => (Icons.warning_amber_rounded, palette.warning, 'Over-constrained - the mates agree to within tolerance'),
       AssemblyRowState.unsaved => (null, null, 'Unsaved changes'),
-      AssemblyRowState.underConstrained =>
-        (Icons.lock_open, scheme.onSurfaceVariant, dof == null ? 'Under-constrained' : 'Under-constrained - $dof degree${dof == 1 ? '' : 's'} of freedom'),
+      AssemblyRowState.underConstrained => (
+          Icons.lock_open,
+          scheme.onSurfaceVariant,
+          dof == null ? 'Under-constrained' : 'Under-constrained - $dof degree${dof == 1 ? '' : 's'} of freedom'
+        ),
       AssemblyRowState.fixed => (Icons.push_pin, scheme.onSurfaceVariant, 'Fixed'),
       AssemblyRowState.fullyConstrained => (Icons.lock_outline, scheme.primary, 'Fully constrained'),
       AssemblyRowState.none => (null, null, null),

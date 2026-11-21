@@ -32,6 +32,7 @@ import 'support/fake_project_store.dart';
 import 'support/in_memory_stores.dart';
 import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_helpers.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_open_store.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
 import 'package:didsa_cad_client/viewport3d/selection_list_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
@@ -316,7 +317,8 @@ class _FakeDocumentBackend {
       ];
     }
 
-    final rootOccs = partId == 'part-1' ? occurrences : (subOccurrences[partId] ?? const <dynamic>[]);
+    // A root that was imported under a new id (a Save As copy reopened) has the occurrences it was imported with.
+    final rootOccs = partId == 'part-1' ? occurrences : (subOccurrences[partId] ?? (extraParts[partId]?['occurrences'] as List<dynamic>?) ?? const <dynamic>[]);
     count(rootOccs, {partId});
     final children = level(partId, rootOccs, const [], {partId});
     final mateList = partId == 'part-1' ? mates : const <Map<String, dynamic>>[];
@@ -1543,7 +1545,14 @@ class _TreeProbe {
   final WidgetTester tester;
 
   AssemblyTreeView get view => tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView));
-  AssemblyTreeModel get model => view.model;
+  AssemblyTreeModel get model {
+    final m = view.model;
+    lastModel = m;
+    return m;
+  }
+
+  /// The model the view had when it was last read: a folded desktop pane builds no view, but the model is still the screen's.
+  static AssemblyTreeModel? lastModel;
 
   static OccurrenceDto occurrenceOf(AssemblyTreeNodeDto n) => OccurrenceDto(
         id: n.occurrenceId,
@@ -8413,6 +8422,36 @@ void main() {
       expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
 
+    testWidgets('a first Save All that clashes still keys the rows by the root file (queued, then Keep mine)', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final backend = await pumpServerScreen(tester);
+      final key = 'assembly_tree_open:project:${root.persistedKey}|Part 1.didsa';
+      Future<Set<String>> storedKeys() async =>
+          (await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open:'))))!.toSet();
+
+      _TreeProbe(tester).model.setOpen('first', true);
+      await tester.pump();
+      expect(await storedKeys(), isEmpty, reason: 'no file yet: no key');
+
+      // Another device wrote the file before this session's first save: the save is queued as a clash.
+      store.writeJson('Gearbox', 'Part 1.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}}, device: 'Quest 3');
+      backend.partOneName = 'Edited here';
+      await tapFileMenu(tester, 'Save All');
+      expect(find.byKey(const ValueKey('sync-conflict-dialog')), findsOneWidget);
+      await tester.pump();
+      expect(await storedKeys(), contains(key), reason: 'the root file is in the queue: the rows are keyed by it, and the rows follow');
+
+      await tester.tap(find.byKey(const ValueKey('conflict-keepMine-Part 1.didsa')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('conflict-apply')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      _TreeProbe(tester).model.setOpen('second', true);
+      await tester.pump();
+      final text = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getString(key));
+      expect(text, contains('second'), reason: 'and a change after Keep mine is stored under it');
+    });
+
     testWidgets('Decide later leaves the clash queued: nothing written, and the chip offers the dialog again', (tester) async {
       final backend = await pumpServerScreen(tester);
       await tapFileMenu(tester, 'Save All');
@@ -11371,7 +11410,15 @@ void main() {
     /// Opens the fixture in the Assembly lens. [around] sees every request after the fake has answered it (the answer is fixed by then) and
     /// may hold it, to make an answer arrive late.
     Future<_FakeDocumentBackend> openNested(WidgetTester tester,
-        {Future<void> Function(http.Request request)? around, void Function(_FakeDocumentBackend backend)? configure}) async {
+        {Future<void> Function(http.Request request)? around,
+        void Function(_FakeDocumentBackend backend)? configure,
+        String? filePath,
+        String? fileName,
+        ProjectRoot? projectRoot,
+        Map<String, String> relativePaths = const {},
+        _FakeStorageService? storage,
+        LayoutModeController? layout,
+        bool waitForTree = true}) async {
       final backend = _FakeDocumentBackend(seedOccurrences: [
         occ('asm-1', part: 'sub', ref: 'parts/sub.didsa'),
         occ('asm-2', part: 'sub', ref: 'parts/sub.didsa'),
@@ -11393,17 +11440,38 @@ void main() {
         }),
       );
       final sketchBackend = _FakeSketchBackend();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: PartScreen(
+      if (layout != null) {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+      }
+      Widget screen = PartScreen(
             documentApi: documentApi,
             sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-          ),
-        ),
-      );
+            initialFilePath: filePath,
+            initialFileName: fileName,
+            initialProjectRoot: projectRoot,
+            initialRelativePathByPartId: relativePaths,
+            storageService: storage,
+            assemblyDocumentClient: storage == null
+                ? null
+                : AssemblyDocumentClient(
+                    storageService: storage,
+                    documentApiClient: documentApi,
+                    composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
+                  ),
+          );
+      if (layout != null) screen = LayoutModeScope(controller: layout, child: screen);
+      await tester.pumpWidget(MaterialApp(home: screen));
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await switchLens(tester, 'Assembly');
-      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+      if (layout != null) {
+        await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+      } else {
+        await switchLens(tester, 'Assembly');
+      }
+      if (waitForTree) await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
       return backend;
     }
 
@@ -12062,6 +12130,434 @@ void main() {
       );
       await _pumpUntil(tester, () => find.byType(AssemblyTreeView).evaluate().isNotEmpty && _TreeProbe(tester).model.tree != null);
       expect(rowKeys(tester), ['', 'plate', 'lid']);
+    });
+
+    // B2: remembered open rows (spec section 12).
+    group('remembered open rows', () {
+      Completer<void>? gate;
+
+      /// Holds the first answer of `assembly-tree` without `status` (the structure) until [gate] completes.
+      Future<void> holdStructure(http.Request request) async {
+        if (gate != null && request.url.path.endsWith('/assembly-tree') && request.url.queryParameters['status'] != 'true') {
+          await gate!.future;
+        }
+      }
+
+      Future<void> closeScreen(WidgetTester tester) async {
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump();
+      }
+
+      /// A header button of the tree, pressed as the person would (the floating tree is slid off the screen while closed, so it is called, not tapped).
+      void pressTreeButton(WidgetTester tester, String key) => tester.widget<IconButton>(find.byKey(ValueKey(key))).onPressed!();
+
+      Future<List<String>?> storedKey(WidgetTester tester, String key) async {
+        final keys = await tester.runAsync(() => AssemblyTreeOpenStore.read(key));
+        return keys;
+      }
+
+      Future<List<String>?> stored(WidgetTester tester, String path) => storedKey(tester, 'file:$path');
+
+      setUp(() {
+        SharedPreferences.setMockInitialValues({});
+        _TreeProbe.lastModel = null;
+      });
+      tearDown(() => gate = null);
+
+      testWidgets('open rows survive closing the document and opening it again; another document does not get them', (tester) async {
+        await openNested(tester, filePath: '/docs/a.didsa');
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        expect(await stored(tester, '/docs/a.didsa'), ['asm-1']);
+        await closeScreen(tester);
+
+        await openNested(tester, filePath: '/docs/a.didsa');
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-1/c1', 'asm-1/c2', 'asm-2', 'plate'], reason: 'the same document: its rows are open again');
+        expect(_TreeProbe(tester).model.selectedKey, isNull, reason: 'restoring does not select anything');
+        expect(_TreeProbe(tester).model.openKeysTouched, isFalse);
+        await closeScreen(tester);
+
+        await openNested(tester, filePath: '/docs/b.didsa');
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate'], reason: 'another document starts collapsed');
+        await closeScreen(tester);
+
+        await openNested(tester); // no file yet: nothing to remember under
+        _TreeProbe(tester).model.openAll(const ['asm-2']);
+        await tester.pump();
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'asm-2/c1', 'asm-2/c2', 'plate']);
+        expect(await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.contains('asm-2'))), isEmpty);
+      });
+
+      testWidgets('keys of rows that are gone are dropped from what is restored, and a refresh of the same tree does not restore again', (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'assembly_tree_open:file:/docs/a.didsa': jsonEncode(['asm-1', 'gone', 'asm-2/c1#feature:f1', 'plate', '']),
+        });
+        final backend = await openNested(tester, filePath: '/docs/a.didsa');
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
+
+        // The person closes it; a later load of the same tree (the lens switched away and back) must not open it again.
+        _TreeProbe(tester).model.setOpen('asm-1', false);
+        await tester.pump();
+        final before = backend.assemblyTreeRequests.length;
+        await switchLens(tester, 'Part');
+        await switchLens(tester, 'Assembly');
+        await _pumpUntil(tester, () => backend.assemblyTreeRequests.length >= before + 2);
+        expect(backend.assemblyTreeRequests.length, greaterThanOrEqualTo(before + 2), reason: 'the tree was loaded again');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.openKeys, isEmpty);
+      });
+
+      testWidgets('collapse all and expand to selection are stored, and the stored rows come back', (tester) async {
+        await openNested(tester, filePath: '/docs/a.didsa');
+        final probe = _TreeProbe(tester);
+        probe.model.openAll(const ['asm-1', 'asm-2']);
+        await tester.pump();
+        expect(await stored(tester, '/docs/a.didsa'), unorderedEquals(['asm-1', 'asm-2']));
+
+        await probe.tapRow('asm-2/c1');
+        await settle(tester);
+        pressTreeButton(tester, 'tree-collapse-all');
+        await tester.pump();
+        // Collapse all keeps the selected row listed (its ancestors reopen), so that is what is remembered.
+        expect(await stored(tester, '/docs/a.didsa'), ['asm-2']);
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'asm-2/c1', 'asm-2/c2', 'plate']);
+
+        probe.model.setOpen('asm-2', false);
+        await tester.pump();
+        expect(await stored(tester, '/docs/a.didsa'), isEmpty, reason: 'everything collapsed is remembered too');
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate']);
+
+        pressTreeButton(tester, 'tree-expand-to-selection');
+        await tester.pump();
+        await tester.pump();
+        expect(await stored(tester, '/docs/a.didsa'), ['asm-2']);
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'asm-2/c1', 'asm-2/c2', 'plate']);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+      });
+
+      testWidgets('a tree answer for the previous document is dropped: it neither opens its rows in the new one nor stores over it', (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'assembly_tree_open:file:/docs/a.didsa': jsonEncode(['asm-1']),
+          'assembly_tree_open:file:/docs/b.didsa': jsonEncode(['asm-2']),
+        });
+        gate = Completer<void>();
+        await openNested(tester, filePath: '/docs/a.didsa', around: holdStructure, waitForTree: false);
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(_TreeProbe(tester).model.tree, isNull, reason: 'document A has not heard back yet');
+
+        // The person opens document B in its place (a new screen: the previous document's state is gone).
+        await closeScreen(tester);
+        final late = gate!;
+        gate = null;
+        await openNested(tester, filePath: '/docs/b.didsa');
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'asm-2/c1', 'asm-2/c2', 'plate'], reason: 'B has its own rows, not A\'s');
+
+        late.complete(); // A's answer lands now
+        await settle(tester);
+        await settle(tester);
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'asm-2/c1', 'asm-2/c2', 'plate']);
+        expect(await stored(tester, '/docs/a.didsa'), ['asm-1']);
+        expect(await stored(tester, '/docs/b.didsa'), ['asm-2']);
+      });
+
+      testWidgets('an older load that lands after a newer one changes nothing: rows the person closed after the restore stay closed', (tester) async {
+        SharedPreferences.setMockInitialValues({'assembly_tree_open:file:/docs/a.didsa': jsonEncode(['asm-1'])});
+        var held = 0;
+        final first = Completer<void>();
+        Future<void> holdFirst(http.Request request) async {
+          if (request.url.path.endsWith('/assembly-tree') && request.url.queryParameters['status'] != 'true' && held++ == 0) await first.future;
+        }
+
+        await openNested(tester, filePath: '/docs/a.didsa', around: holdFirst, waitForTree: false);
+        await tester.pump(const Duration(milliseconds: 200));
+        // A second load (the lens switched away and back) answers first, and restores.
+        await switchLens(tester, 'Part');
+        await switchLens(tester, 'Assembly');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
+        _TreeProbe(tester).model.setOpen('asm-1', false);
+        await tester.pump();
+
+        first.complete();
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.openKeys, isEmpty, reason: 'the first load is stale now');
+        expect(await stored(tester, '/docs/a.didsa'), isEmpty);
+      });
+
+      testWidgets('what the person opened or closed before the first answer is kept, and stored over the old rows', (tester) async {
+        SharedPreferences.setMockInitialValues({'assembly_tree_open:file:/docs/a.didsa': jsonEncode(['asm-1'])});
+        gate = Completer<void>();
+        await openNested(tester, filePath: '/docs/a.didsa', around: holdStructure, waitForTree: false);
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(_TreeProbe(tester).model.tree, isNull);
+
+        // Before anything is listed the person asks for everything collapsed.
+        pressTreeButton(tester, 'tree-collapse-all');
+        await tester.pump();
+        gate!.complete();
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.openKeys, isEmpty, reason: 'the stored asm-1 does not overwrite the person\'s collapse all');
+        expect(rowKeys(tester), ['', 'asm-1', 'asm-2', 'plate']);
+        expect(await stored(tester, '/docs/a.didsa'), isEmpty);
+      });
+
+      testWidgets('an open made before the first answer is kept and not merged with the stored rows', (tester) async {
+        SharedPreferences.setMockInitialValues({'assembly_tree_open:file:/docs/a.didsa': jsonEncode(['asm-1'])});
+        gate = Completer<void>();
+        await openNested(tester, filePath: '/docs/a.didsa', around: holdStructure, waitForTree: false);
+        await tester.pump(const Duration(milliseconds: 200));
+        _TreeProbe(tester).model.setOpen('asm-2', true);
+        gate!.complete();
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.openKeys, {'asm-2'});
+        expect(await stored(tester, '/docs/a.didsa'), ['asm-2']);
+      });
+
+      testWidgets('a project-shaped document (opened through its project folder and root file, not a file path) remembers its rows', (tester) async {
+        const root = DesktopProjectRoot('/fake/project');
+        const key = 'project:/fake/project|top.didsa';
+        await openNested(tester, projectRoot: root, relativePaths: const {'part-1': 'top.didsa'});
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        expect(await storedKey(tester, key), ['asm-1']);
+        await closeScreen(tester);
+
+        await openNested(tester, projectRoot: root, relativePaths: const {'part-1': 'top.didsa'});
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'}, reason: 'the same project file: its rows are open again');
+        await closeScreen(tester);
+
+        await openNested(tester, projectRoot: root, relativePaths: const {'part-1': 'other.didsa'});
+        expect(_TreeProbe(tester).model.openKeys, isEmpty, reason: 'another file of the project');
+      });
+
+      testWidgets('a document known only by a bare file name stores nothing (the same name in two folders would share rows)', (tester) async {
+        await openNested(tester, fileName: 'a.didsa');
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        final keys = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open')));
+        expect(keys, isEmpty);
+      });
+
+      testWidgets('an expand to selection that opens nothing, before the first answer, does not stop the restore', (tester) async {
+        SharedPreferences.setMockInitialValues({'assembly_tree_open:file:/docs/a.didsa': jsonEncode(['asm-1'])});
+        gate = Completer<void>();
+        await openNested(tester, filePath: '/docs/a.didsa', around: holdStructure, waitForTree: false);
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(_TreeProbe(tester).model.tree, isNull);
+
+        expect(_TreeProbe(tester).model.expandToSelection(), isFalse, reason: 'no tree, nothing selected: nothing to open');
+        gate!.complete();
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'}, reason: 'the stored rows were restored, not overwritten with none');
+        expect(await stored(tester, '/docs/a.didsa'), ['asm-1']);
+      });
+
+      testWidgets('Save As keeps the restored rows for the copy, though the person touched nothing; the copy opens with them', (tester) async {
+        final storage = _FakeStorageService();
+        SharedPreferences.setMockInitialValues({
+          'assembly_tree_open:project:/fake/project|top.DIDSAprt': jsonEncode(['asm-1']),
+        });
+        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'}, storage: storage, configure: (b) {
+          // No file to look for, so the reopened copy keeps these components as they are.
+          for (final o in [...b.occurrences, for (final l in b.subOccurrences.values) ...l]) {
+            o['external_ref'] = null;
+          }
+        });
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'}, reason: 'restored');
+        expect(_TreeProbe(tester).model.openKeysTouched, isFalse);
+
+        tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveAsNative!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.enterText(find.byType(TextFormField), 'copy.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(storage.files.keys, contains('copy.DIDSAprt'));
+        // The copy opens in its own screen; its first answer stores what it restored (its tree has the same components, so the rows stay).
+        expect(await storedKey(tester, 'project:/fake/project|copy.DIDSAprt'), ['asm-1'], reason: 'the rows follow the document to its new file');
+        await closeScreen(tester);
+
+        // What the reopened copy is handed: its project folder and its root file.
+        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'copy.DIDSAprt'});
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
+      });
+
+      testWidgets('a document opened by name, then Create Component, stores nothing: the root Create Component picks up is not where the document is', (tester) async {
+        final storage = _FakeStorageService();
+        await openNested(tester, fileName: 'a.didsa', storage: storage);
+        await tapStartCommand(tester, 'Create Component');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        final keys = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open')));
+        expect(keys, isEmpty, reason: 'no key the next session could compute again');
+      });
+
+      testWidgets('Save All of a new document keys its rows by the file it wrote; reopening that file opens them', (tester) async {
+        final storage = _FakeStorageService();
+        await openNested(tester, storage: storage);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        expect(await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open'))), isEmpty,
+            reason: 'no file yet: nothing to key by');
+
+        await openToolbar(tester);
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Save All'));
+        await tester.pump();
+        await tester.tap(find.text('Save All'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(storage.files.keys, contains('top.DIDSAprt'));
+
+        expect(await storedKey(tester, 'project:/fake/project|top.DIDSAprt'), ['asm-1'], reason: 'the rows follow the document to the file it was just written to');
+        await closeScreen(tester);
+
+        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'});
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
+      });
+
+      /// A right click on the top-level component [id] in the viewport, and the menu's entry [label] (null: only look at the menu).
+      Future<void> viewportMenu(WidgetTester tester, String id, String? label) async {
+        tester.widget<PartViewport>(find.byType(PartViewport)).onContextMenuRequested!(
+              HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: id), rayT: 1),
+              const Offset(600, 400),
+            );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.pump(const Duration(milliseconds: 100));
+        if (label == null) return;
+        await tester.tap(find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text(label)));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+      }
+
+      testWidgets('desktop, pane hidden, an older selection in the tree: Expand to selection works from the pressed row, not the older one', (tester) async {
+        await openNested(tester, filePath: '/docs/a.didsa', layout: LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true));
+        // An older selection, nested: a pick in 3D opens its branch.
+        tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+              const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-2/c1'),
+            );
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+        final pane = find.byKey(const ValueKey('desktop-left-pane'));
+        await tester.tap(find.byTooltip('Hide the tree'));
+        await tester.pump();
+        expect(pane, findsNothing, reason: 'folded away: the tree is not built, so its selection is not kept up to date');
+        final model = _TreeProbe.lastModel!;
+        model.setOpen('asm-2', false);
+        expect(model.selectedKey, 'asm-2/c1', reason: 'the stale selection the menu must not use');
+
+        await viewportMenu(tester, 'asm-1', 'Expand to selection');
+        expect(pane, findsOneWidget, reason: 'the tree comes back, or nothing is seen to happen');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1', reason: 'the pressed row, as the tree would show it');
+        expect(_TreeProbe(tester).model.isOpen('asm-2'), isFalse, reason: 'the older selection is not revealed');
+        expect(await stored(tester, '/docs/a.didsa'), isEmpty, reason: 'and what is stored is what is open');
+      });
+
+      testWidgets('the Part lens: the menu has no Expand to selection (no tree to show)', (tester) async {
+        await openNested(tester);
+        await switchLens(tester, 'Part');
+        await viewportMenu(tester, 'asm-1', null);
+        expect(find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text('Zoom to selection')), findsOneWidget, reason: 'the menu is open');
+        expect(find.text('Expand to selection'), findsNothing);
+      });
+
+      testWidgets('Expand to selection in the 3D menu opens a closed tree first (the phone\'s overlay)', (tester) async {
+        await openNested(tester);
+        tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+              const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-2/c1'),
+            );
+        await settle(tester);
+        final probe = _TreeProbe(tester);
+        expect(probe.view.visible, isFalse, reason: 'the overlay is closed');
+
+        await probe.menuAction('asm-2/c1', 'Expand to selection');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue, reason: 'it opens, or nothing is seen to happen');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+      });
+
+      testWidgets('a document that was set up survives any number of untouched opens of others: an open writes nothing', (tester) async {
+        final before = AssemblyTreeOpenStore.maxDocuments;
+        AssemblyTreeOpenStore.maxDocuments = 3;
+        addTearDown(() => AssemblyTreeOpenStore.maxDocuments = before);
+        await tester.runAsync(() => AssemblyTreeOpenStore.write('file:/docs/keep.didsa', ['asm-1']));
+        for (var i = 0; i < 5; i++) {
+          await openNested(tester, filePath: '/docs/other$i.didsa');
+          await closeScreen(tester);
+        }
+        expect(await stored(tester, '/docs/keep.didsa'), ['asm-1'], reason: 'five untouched opens, room for three documents');
+        final index = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getStringList('assembly_tree_open_documents'));
+        expect(index, ['file:/docs/keep.didsa']);
+
+        // A document that was opened and changed does count.
+        await openNested(tester, filePath: '/docs/other.didsa');
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        expect(await stored(tester, '/docs/other.didsa'), ['asm-1']);
+      });
+
+      testWidgets('a Save As before the first tree answer moves the stored rows to the copy, and stores no defaults in their place', (tester) async {
+        final storage = _FakeStorageService();
+        const keyA = 'assembly_tree_open:project:/fake/project|top.DIDSAprt';
+        const keyB = 'assembly_tree_open:project:/fake/project|copy.DIDSAprt';
+        SharedPreferences.setMockInitialValues({keyA: jsonEncode(['asm-1'])});
+        gate = Completer<void>();
+        final held = gate!;
+        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'}, storage: storage, around: holdStructure, waitForTree: false, configure: (b) {
+          for (final o in [...b.occurrences, for (final l in b.subOccurrences.values) ...l]) {
+            o['external_ref'] = null;
+          }
+        });
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(_TreeProbe(tester).model.tree, isNull, reason: 'the first answer is held');
+        gate = null; // the copy's own screen is not held
+
+        tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveAsNative!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.enterText(find.byType(TextFormField), 'copy.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(storage.files.keys, contains('copy.DIDSAprt'));
+
+        held.complete(); // the first screen's answer lands now (it was replaced by the copy's screen)
+        await settle(tester);
+        await settle(tester);
+        Future<String?> raw(String key) async => await tester.runAsync<String?>(() async => (await SharedPreferences.getInstance()).getString(key));
+        expect(await raw(keyB), '["asm-1"]', reason: 'the copy has the rows of the document it was saved from');
+        expect(await raw(keyA), '["asm-1"]', reason: 'and the original keeps its own');
+      });
+
+      testWidgets('a tree built from the lists (the endpoint failed) neither restores nor stores', (tester) async {
+        SharedPreferences.setMockInitialValues({'assembly_tree_open:file:/docs/a.didsa': jsonEncode(['asm-1'])});
+        await openNested(tester, filePath: '/docs/a.didsa', configure: (b) => b.assemblyTreeMissing = true);
+        expect(_TreeProbe(tester).model.openKeys, isEmpty);
+        _TreeProbe(tester).model.setOpen('asm-2', true);
+        await tester.pump();
+        expect(await stored(tester, '/docs/a.didsa'), ['asm-1'], reason: 'a one-level tree must not rewrite what the real tree remembered');
+      });
     });
   });
 

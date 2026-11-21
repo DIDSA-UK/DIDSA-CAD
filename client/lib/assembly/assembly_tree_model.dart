@@ -121,6 +121,10 @@ class AssemblyTreeRow {
   final String? note;
   final AssemblyItemTone? tone;
 
+  /// With a filter on (spec section 11): this row is a match, not just an ancestor listed to show where the match is. Always false
+  /// without a filter, and for the root.
+  final bool match;
+
   const AssemblyTreeRow({
     required this.key,
     required this.kind,
@@ -139,7 +143,30 @@ class AssemblyTreeRow {
     this.itemId,
     this.note,
     this.tone,
+    this.match = false,
   });
+
+  /// This row with [match] set (the filter's output; rows are immutable).
+  AssemblyTreeRow withMatch(bool value) => AssemblyTreeRow(
+        key: key,
+        kind: kind,
+        depth: depth,
+        label: label,
+        state: state,
+        bubble: bubble,
+        expandable: expandable,
+        open: open,
+        count: count,
+        path: path,
+        hidden: hidden,
+        suppressed: suppressed,
+        statusFailed: statusFailed,
+        featureId: featureId,
+        itemId: itemId,
+        note: note,
+        tone: tone,
+        match: value,
+      );
 
   @override
   String toString() => 'AssemblyTreeRow($key, ${kind.wire}, depth $depth, "$label", ${state.wire})';
@@ -199,6 +226,90 @@ class _G {
   _G(this.key, this.base);
 }
 
+/// The result of [AssemblyTreeModel.filteredRows] (spec section 11): the rows to draw, and the tokens the query used that no filter knows.
+class AssemblyFilterResult {
+  /// With no filter (an empty query) these are the ordinary [AssemblyTreeModel.visibleRows], every `match` false.
+  final List<AssemblyTreeRow> rows;
+
+  /// Unknown `:tokens`, lower case, once each, in query order ("unknown filter :foo").
+  final List<String> unknown;
+
+  /// Whether the query held anything: false for an empty or all-space query.
+  final bool active;
+
+  /// Some part has features that were not read (it was never opened), so the filter could not look at them (spec section 11: say so).
+  final bool featuresNotRead;
+
+  const AssemblyFilterResult(this.rows, this.unknown, {required this.active, this.featuresNotRead = false});
+}
+
+/// At most this many open keys are remembered per document (spec section 12).
+const int kAssemblyTreeMaxStoredKeys = 2000;
+
+/// What a filter token tests (spec section 11): the row, and whether its occurrence is `fixed` whatever its state.
+typedef _TokenTest = bool Function(AssemblyTreeRow row, bool fixed);
+
+const _errorStates = {AssemblyRowState.missing, AssemblyRowState.cycle, AssemblyRowState.broken, AssemblyRowState.overConstrained};
+
+// Written out one by one, in the spec's order, so the two can be compared line by line. `:sketches` needs a feature's `type`, which rows have
+// only with the live part (spec section 13, P1): it is known here and finds nothing yet.
+final Map<String, _TokenTest> _filterTokens = {
+  ':missing': (r, f) => r.state == AssemblyRowState.missing,
+  ':errors': (r, f) => _errorStates.contains(r.state),
+  ':warnings': (r, f) => r.state == AssemblyRowState.near,
+  ':unsaved': (r, f) => r.state == AssemblyRowState.unsaved,
+  ':fixed': (r, f) => f,
+  ':hidden': (r, f) => r.hidden,
+  ':suppressed': (r, f) => r.suppressed,
+  ':parts': (r, f) => r.kind == AssemblyRowKind.part,
+  ':assemblies': (r, f) => r.kind == AssemblyRowKind.assembly,
+  ':features': (r, f) => r.kind == AssemblyRowKind.feature,
+  ':sketches': (r, f) => false,
+};
+
+/// Rows that never match themselves (spec section 11). Mate and pattern item rows are not in the spec's rows; they are never listed
+/// by a filter either (the folders are not listed).
+const _nonMatchingKinds = {
+  AssemblyRowKind.root,
+  AssemblyRowKind.group,
+  AssemblyRowKind.matesFolder,
+  AssemblyRowKind.patternsFolder,
+  AssemblyRowKind.mate,
+  AssemblyRowKind.pattern,
+};
+
+/// What a row walk records about each row it emits: its parent's key (null for the root) and its occurrence's `fixed` flag.
+class _Trace {
+  final String? parent;
+  final bool fixed;
+  const _Trace(this.parent, this.fixed);
+}
+
+/// One walk of the rows (spec section 7): which keys are open, whether grouping is on, and, for the filter, which keys are listed. The
+/// ordinary [AssemblyTreeModel.visibleRows] is the walk of the model's own open keys; the filter and restore walk with everything open.
+class _Walk {
+  final List<AssemblyTreeRow> rows = [];
+  final Set<String> open;
+  final bool openAll;
+  final bool grouping;
+
+  /// When set, only these keys are emitted (a row that is not listed is skipped with everything below it).
+  final Set<String>? listed;
+  final Map<String, _Trace>? trace;
+
+  _Walk({required this.open, required this.grouping, this.openAll = false, this.listed, this.trace});
+
+  bool isOpen(String key) => openAll || open.contains(key);
+
+  /// Emits [row] under [parent]; false when a filter does not list it.
+  bool add(AssemblyTreeRow row, String? parent, {bool fixed = false}) {
+    if (listed != null && !listed!.contains(row.key)) return false;
+    rows.add(row);
+    trace?[row.key] = _Trace(parent, fixed);
+    return true;
+  }
+}
+
 class AssemblyTreeModel {
   AssemblyTreeModel({AssemblyTreeResponseDto? tree, bool grouping = true, Set<String> unsavedPartIds = const {}})
       : _grouping = grouping,
@@ -223,6 +334,11 @@ class AssemblyTreeModel {
 
   List<AssemblyTreeRow>? _rows;
   Map<String, int>? _index;
+
+  /// The filter's working copy: every row with everything open (and what each row's parent is), and the results by query. Cleared by anything
+  /// that changes a row.
+  _Walk? _everything;
+  final Map<String, AssemblyFilterResult> _filtered = {};
 
   // ----- State in -----
 
@@ -262,25 +378,47 @@ class AssemblyTreeModel {
   Set<String> get openKeys => Set.unmodifiable(_open);
   bool isOpen(String key) => _open.contains(key);
 
-  void setOpen(String key, bool open) {
-    if (open ? !_open.add(key) : !_open.remove(key)) return;
-    _invalidate();
+  /// Called after the open keys were changed by [setOpen], [toggle], [openAll] or [closeAll] (not by [merge] dropping keys of rows that are
+  /// gone, nor by an [openAll] with `remember: false`). The host stores the keys (spec section 12).
+  void Function()? onOpenKeysChanged;
+
+  /// Whether the person changed the open keys since this model was made: a change that opened or closed something, or a collapse all (even of
+  /// nothing: that is still the person asking for it collapsed). An open of what was open already (an expand to selection with nothing to
+  /// open) is not. A restore of stored keys is skipped when it is true: the person's own change comes first (spec section 12).
+  bool get openKeysTouched => _openTouched;
+  bool _openTouched = false;
+
+  void _opened(bool changed, {bool remember = true, bool deliberate = false}) {
+    if (!remember) {
+      if (changed) _invalidate();
+      return;
+    }
+    if (changed || deliberate) _openTouched = true;
+    if (changed) {
+      _invalidate();
+      onOpenKeysChanged?.call();
+    }
   }
+
+  void setOpen(String key, bool open) => _opened(open ? _open.add(key) : _open.remove(key));
 
   void toggle(String key) => setOpen(key, !_open.contains(key));
 
-  void openAll(Iterable<String> keys) {
+  /// Opens [keys]. With `remember: false` this is a restore (or the like), not a change the person made: it is not stored and does not
+  /// count as one.
+  void openAll(Iterable<String> keys, {bool remember = true}) {
     var changed = false;
     for (final k in keys) {
       changed = _open.add(k) || changed;
     }
-    if (changed) _invalidate();
+    _opened(changed, remember: remember);
   }
 
+  /// Empties the open keys (the root stays open: it always is).
   void closeAll() {
-    if (_open.isEmpty) return;
+    final changed = _open.isNotEmpty;
     _open.clear();
-    _invalidate();
+    _opened(changed, deliberate: true);
   }
 
   /// The selected row key (any row: occurrence, group, feature, folder) or null. Kept across [merge] while the row still exists.
@@ -381,6 +519,137 @@ class AssemblyTreeModel {
   /// Opens what [reveal] returns.
   void revealAndOpen(List<String> path) => openAll(reveal(path));
 
+  // ----- Expand to selection (spec section 12) -----
+
+  /// The keys to open so the selected row is listed: [reveal] for an occurrence row, and for a feature row its owner too, for a group row
+  /// its parent. Empty with no selection, for the root, or when the row is unknown. Does not change the open set.
+  List<String> selectionRevealKeys() {
+    final key = selectedKey;
+    if (key == null || key.isEmpty) return const [];
+    final path = selectedPath;
+    if (path != null) return reveal(path);
+    List<String> ownerKeys(String owner) {
+      if (owner.isEmpty) return const [];
+      final ownerPath = _byKey[owner]?.dto.path;
+      return ownerPath == null ? const [] : [...reveal(ownerPath), owner];
+    }
+
+    final f = key.indexOf('#feature:');
+    if (f >= 0) return ownerKeys(key.substring(0, f));
+    if (_groupsByKey.containsKey(key)) {
+      final slash = key.lastIndexOf('/');
+      return ownerKeys(slash < 0 ? '' : key.substring(0, slash));
+    }
+    return const [];
+  }
+
+  /// Opens what [selectionRevealKeys] returns; true when that changed anything.
+  bool expandToSelection() {
+    final before = _open.length;
+    openAll(selectionRevealKeys());
+    return _open.length != before;
+  }
+
+  // ----- Remembered open rows (spec section 12) -----
+
+  /// The stored keys that still name a row that can open, in the order of the tree's rows with everything open and grouping on (so it
+  /// is the same whatever the current grouping), at most [limit]. A group key is checked as if grouping were on, so switching grouping off
+  /// and on loses nothing. Never kept: the root, feature keys. Does not change the open set: the host opens what this returns
+  /// (`openAll(keys, remember: false)`). Empty with no tree.
+  List<String> restoreOpenKeys(Iterable<String> stored, {int limit = kAssemblyTreeMaxStoredKeys}) {
+    if (_tree == null) return const [];
+    final wanted = stored is Set<String> ? stored : stored.toSet();
+    if (wanted.isEmpty) return const [];
+    final rows = _walk(_Walk(open: const {}, grouping: true, openAll: true));
+    const kinds = {
+      AssemblyRowKind.assembly,
+      AssemblyRowKind.part,
+      AssemblyRowKind.group,
+      AssemblyRowKind.matesFolder,
+      AssemblyRowKind.patternsFolder,
+    };
+    final kept = <String>[];
+    for (final r in rows) {
+      if (kept.length >= limit) break;
+      if (r.expandable && kinds.contains(r.kind) && wanted.contains(r.key)) kept.add(r.key);
+    }
+    return kept;
+  }
+
+  /// The open keys to store: all of them, or past the cap the first [limit] in the order of [restoreOpenKeys].
+  List<String> keysToStore({int limit = kAssemblyTreeMaxStoredKeys}) =>
+      _open.length <= limit ? _open.toList() : restoreOpenKeys(_open, limit: limit);
+
+  // ----- Filter (spec section 11) -----
+
+  /// The rows for [query]: the root, every row that matches, and every ancestor of a match (with grouping on, the group a match sits in),
+  /// each with `match` set; an empty query is no filter (the ordinary rows). Words starting with `:` are tokens (`:errors`...); an unknown
+  /// one is listed in `unknown`. The open keys are not changed and the Mates and Patterns folders are not listed. Cached until something changes.
+  AssemblyFilterResult filteredRows(String query) {
+    final cached = _filtered[query];
+    if (cached != null) return cached;
+    final result = _filter(query);
+    if (_filtered.length >= 16) _filtered.remove(_filtered.keys.first);
+    return _filtered[query] = result;
+  }
+
+  AssemblyFilterResult _filter(String query) {
+    if (_tree == null) return const AssemblyFilterResult([], [], active: false);
+    final terms = <String>[];
+    final tokens = <String>[];
+    final unknown = <String>[];
+    for (final word in query.toLowerCase().split(RegExp(r'\s+'))) {
+      if (word.isEmpty) continue;
+      final bucket = word.startsWith(':') ? (_filterTokens.containsKey(word) ? tokens : unknown) : terms;
+      if (!bucket.contains(word)) bucket.add(word);
+    }
+    if (terms.isEmpty && tokens.isEmpty && unknown.isEmpty) return AssemblyFilterResult(visibleRows(), const [], active: false);
+
+    final everything = _everything ??= _everythingWalk();
+    final trace = everything.trace!;
+    final matches = <String>{};
+    if (terms.isNotEmpty || tokens.isNotEmpty) {
+      for (final r in everything.rows) {
+        if (_nonMatchingKinds.contains(r.kind)) continue;
+        final label = r.label.toLowerCase();
+        if (terms.every(label.contains) && tokens.every((t) => _filterTokens[t]!(r, trace[r.key]!.fixed))) matches.add(r.key);
+      }
+    }
+    final listed = <String>{''};
+    for (final m in matches) {
+      String? k = m;
+      while (k != null && listed.add(k)) {
+        k = trace[k]!.parent;
+      }
+    }
+    // A listed row is open when something below it is listed.
+    final open = {
+      for (final k in listed)
+        if (k.isNotEmpty) trace[k]!.parent!
+    };
+    final rows = _walk(_Walk(open: open, grouping: _grouping, listed: listed));
+    return AssemblyFilterResult(
+      List.unmodifiable([for (final r in rows) r.withMatch(matches.contains(r.key))]),
+      unknown,
+      active: true,
+      featuresNotRead: _featuresNotRead(),
+    );
+  }
+
+  bool _featuresNotRead() {
+    if ((_tree?.featureCount ?? 0) > 0 && !_features.containsKey('')) return true;
+    for (final n in _preorder) {
+      if (!n.missing && (n.dto.featureCount ?? 0) > 0 && !_features.containsKey(n.key)) return true;
+    }
+    return false;
+  }
+
+  _Walk _everythingWalk() {
+    final w = _Walk(open: const {}, grouping: _grouping, openAll: true, trace: {});
+    _walk(w);
+    return w;
+  }
+
   // ----- Refresh -----
 
   /// Loads the first response, or replaces the tree with a newer one (a structure refresh, or the `status=true` answer arriving after the
@@ -402,6 +671,8 @@ class AssemblyTreeModel {
   void _invalidate() {
     _rows = null;
     _index = null;
+    _everything = null;
+    _filtered.clear();
   }
 
   bool _ownerExists(String key) => key.isEmpty || _byKey.containsKey(key);
@@ -600,100 +871,124 @@ class AssemblyTreeModel {
       p == null ? 0 : p.missing + p.cycles + (p.broken ?? 0) + (p.overConstrained ?? 0);
 
   List<AssemblyTreeRow> _buildRows() {
-    final t = _tree;
-    if (t == null) return const [];
-    final rows = <AssemblyTreeRow>[];
-    rows.add(AssemblyTreeRow(
-      key: '',
-      kind: AssemblyRowKind.root,
-      depth: 0,
-      label: t.partName,
-      state: _unsaved.contains(t.partId) ? AssemblyRowState.unsaved : AssemblyRowState.none,
-      open: true,
-      path: const [],
-      statusFailed: t.statusFailed,
-    ));
-    _emitLevel(_grouping ? _topLayout : _top, 1, rows);
-    final mates = t.mates;
-    if (mates != null && mates.count > 0) {
-      rows.add(AssemblyTreeRow(
-        key: '#mates',
-        kind: AssemblyRowKind.matesFolder,
-        depth: 1,
-        label: 'Mates',
-        state: AssemblyRowState.none,
-        bubble: _bubbleFrom(mates.broken ?? 0, mates.near ?? 0, 0),
-        expandable: true,
-        open: _open.contains('#mates'),
-        count: mates.count,
-        statusFailed: t.statusFailed,
-      ));
-      if (_open.contains('#mates')) _emitItems('#mates', AssemblyRowKind.mate, rows);
-    }
-    final patterns = t.patterns;
-    if (patterns != null && patterns.count > 0) {
-      rows.add(AssemblyTreeRow(
-        key: '#patterns',
-        kind: AssemblyRowKind.patternsFolder,
-        depth: 1,
-        label: 'Patterns',
-        state: AssemblyRowState.none,
-        expandable: true,
-        open: _open.contains('#patterns'),
-        count: patterns.count,
-      ));
-      if (_open.contains('#patterns')) _emitItems('#patterns', AssemblyRowKind.pattern, rows);
-    }
-    _emitFeatures('', 1, rows);
-    return List.unmodifiable(rows);
+    if (_tree == null) return const [];
+    return List.unmodifiable(_walk(_Walk(open: _open, grouping: _grouping)));
   }
 
-  void _emitLevel(List<Object> items, int depth, List<AssemblyTreeRow> rows) {
+  /// Spec section 7 for one [_Walk]: the root, its children, the Mates and Patterns folders (not while a filter lists rows), the root's features.
+  List<AssemblyTreeRow> _walk(_Walk w) {
+    final t = _tree!;
+    w.add(
+      AssemblyTreeRow(
+        key: '',
+        kind: AssemblyRowKind.root,
+        depth: 0,
+        label: t.partName,
+        state: _unsaved.contains(t.partId) ? AssemblyRowState.unsaved : AssemblyRowState.none,
+        open: true,
+        path: const [],
+        statusFailed: t.statusFailed,
+      ),
+      null,
+    );
+    _emitLevel(w.grouping ? _topLayout : _top, 1, '', w);
+    if (w.listed == null) {
+      final mates = t.mates;
+      if (mates != null && mates.count > 0) {
+        final open = w.isOpen('#mates');
+        w.add(
+          AssemblyTreeRow(
+            key: '#mates',
+            kind: AssemblyRowKind.matesFolder,
+            depth: 1,
+            label: 'Mates',
+            state: AssemblyRowState.none,
+            bubble: _bubbleFrom(mates.broken ?? 0, mates.near ?? 0, 0),
+            expandable: true,
+            open: open,
+            count: mates.count,
+            statusFailed: t.statusFailed,
+          ),
+          '',
+        );
+        if (open && !w.openAll) _emitItems('#mates', AssemblyRowKind.mate, w);
+      }
+      final patterns = t.patterns;
+      if (patterns != null && patterns.count > 0) {
+        final open = w.isOpen('#patterns');
+        w.add(
+          AssemblyTreeRow(
+            key: '#patterns',
+            kind: AssemblyRowKind.patternsFolder,
+            depth: 1,
+            label: 'Patterns',
+            state: AssemblyRowState.none,
+            expandable: true,
+            open: open,
+            count: patterns.count,
+          ),
+          '',
+        );
+        if (open && !w.openAll) _emitItems('#patterns', AssemblyRowKind.pattern, w);
+      }
+    }
+    _emitFeatures('', 1, w);
+    return w.rows;
+  }
+
+  void _emitLevel(List<Object> items, int depth, String parentKey, _Walk w) {
     for (final item in items) {
       if (item is _G) {
-        _emitGroup(item, depth, rows);
+        _emitGroup(item, depth, parentKey, w);
       } else {
-        _emitNode(item as _N, depth, rows);
+        _emitNode(item as _N, depth, parentKey, w);
       }
     }
   }
 
-  void _emitNode(_N n, int depth, List<AssemblyTreeRow> rows) {
+  void _emitNode(_N n, int depth, String parentKey, _Walk w) {
     final d = n.dto;
     final expandable = _canOpen(n);
-    final open = expandable && _open.contains(n.key);
+    final open = expandable && w.isOpen(n.key);
     AssemblyBubble? bubble;
     if (expandable) {
       bubble = open
           ? _bubbleFrom(d.mates?.broken ?? 0, d.mates?.near ?? 0, 0)
           : _bubbleFrom(_problemErrors(d.problems), d.problems?.near ?? 0, n.unsavedBelow);
     }
-    rows.add(AssemblyTreeRow(
-      key: n.key,
-      kind: switch (d.kind) {
-        'assembly' => AssemblyRowKind.assembly,
-        'missing' => AssemblyRowKind.missing,
-        _ => AssemblyRowKind.part,
-      },
-      depth: depth,
-      label: n.label,
-      state: _stateOf(n),
-      bubble: bubble,
-      expandable: expandable,
-      open: open,
-      path: d.path,
-      hidden: d.hidden || _sessionHidden.contains(n.key),
-      suppressed: d.suppressed,
-      statusFailed: d.statusFailed,
-    ));
-    if (!open) return;
-    _emitLevel(_grouping ? n.layout : n.children, depth + 1, rows);
-    _emitFeatures(n.key, depth + 1, rows);
+    final shown = w.add(
+      AssemblyTreeRow(
+        key: n.key,
+        kind: switch (d.kind) {
+          'assembly' => AssemblyRowKind.assembly,
+          'missing' => AssemblyRowKind.missing,
+          _ => AssemblyRowKind.part,
+        },
+        depth: depth,
+        label: n.label,
+        state: _stateOf(n),
+        bubble: bubble,
+        expandable: expandable,
+        open: open,
+        path: d.path,
+        hidden: d.hidden || _sessionHidden.contains(n.key),
+        suppressed: d.suppressed,
+        statusFailed: d.statusFailed,
+      ),
+      parentKey,
+      fixed: d.fixed,
+    );
+    if (!shown || !open) return;
+    _emitLevel(w.grouping ? n.layout : n.children, depth + 1, n.key, w);
+    _emitFeatures(n.key, depth + 1, w);
   }
 
-  void _emitGroup(_G g, int depth, List<AssemblyTreeRow> rows) {
-    final open = _open.contains(g.key);
-    final live = [for (final m in g.members) if (!m.dto.suppressed) m];
+  void _emitGroup(_G g, int depth, String parentKey, _Walk w) {
+    final open = w.isOpen(g.key);
+    final live = [
+      for (final m in g.members)
+        if (!m.dto.suppressed) m
+    ];
     final stateMembers = live.isEmpty ? g.members : live;
     var state = AssemblyRowState.none;
     var hidden = true;
@@ -721,55 +1016,64 @@ class AssemblyTreeModel {
       }
       bubble = _bubbleFrom(error, warning, unsaved);
     }
-    rows.add(AssemblyTreeRow(
-      key: g.key,
-      kind: AssemblyRowKind.group,
-      depth: depth,
-      label: '${g.base} x${g.members.length}',
-      state: state,
-      bubble: bubble,
-      expandable: true,
-      open: open,
-      count: g.members.length,
-      hidden: hidden,
-      suppressed: suppressed,
-    ));
-    if (!open) return;
+    final shown = w.add(
+      AssemblyTreeRow(
+        key: g.key,
+        kind: AssemblyRowKind.group,
+        depth: depth,
+        label: '${g.base} x${g.members.length}',
+        state: state,
+        bubble: bubble,
+        expandable: true,
+        open: open,
+        count: g.members.length,
+        hidden: hidden,
+        suppressed: suppressed,
+      ),
+      parentKey,
+    );
+    if (!shown || !open) return;
     for (final m in g.members) {
-      _emitNode(m, depth + 1, rows);
+      _emitNode(m, depth + 1, g.key, w);
     }
   }
 
-  void _emitItems(String folderKey, AssemblyRowKind kind, List<AssemblyTreeRow> rows) {
+  void _emitItems(String folderKey, AssemblyRowKind kind, _Walk w) {
     final items = _folderItems[folderKey];
     if (items == null) return;
     for (final it in items) {
-      rows.add(AssemblyTreeRow(
-        key: '$folderKey#item:${it.id}',
-        kind: kind,
-        depth: 2,
-        label: it.label,
-        state: AssemblyRowState.none,
-        suppressed: it.suppressed,
-        itemId: it.id,
-        note: it.note,
-        tone: it.tone,
-      ));
+      w.add(
+        AssemblyTreeRow(
+          key: '$folderKey#item:${it.id}',
+          kind: kind,
+          depth: 2,
+          label: it.label,
+          state: AssemblyRowState.none,
+          suppressed: it.suppressed,
+          itemId: it.id,
+          note: it.note,
+          tone: it.tone,
+        ),
+        folderKey,
+      );
     }
   }
 
-  void _emitFeatures(String ownerKey, int depth, List<AssemblyTreeRow> rows) {
+  void _emitFeatures(String ownerKey, int depth, _Walk w) {
     final fs = _features[ownerKey];
     if (fs == null) return;
     for (final f in fs) {
-      rows.add(AssemblyTreeRow(
-        key: '$ownerKey#feature:${f.id}',
-        kind: AssemblyRowKind.feature,
-        depth: depth,
-        label: f.label,
-        state: AssemblyRowState.none,
-        featureId: f.id,
-      ));
+      w.add(
+        AssemblyTreeRow(
+          key: '$ownerKey#feature:${f.id}',
+          kind: AssemblyRowKind.feature,
+          depth: depth,
+          label: f.label,
+          state: AssemblyRowState.none,
+          featureId: f.id,
+        ),
+        ownerKey,
+      );
     }
   }
 }
