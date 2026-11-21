@@ -7618,6 +7618,11 @@ void main() {
       List<Map<String, dynamic>>? seedMates,
       List<Map<String, dynamic>>? seedComponentPatterns,
     }) async {
+      // The component menu has grown (Zoom to selection): its last rows need a taller window than 800 x 600.
+      tester.view.physicalSize = const Size(800, 1000);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
       final backend = _FakeDocumentBackend(
         seedOccurrences: seedOccurrences,
         seedMates: seedMates,
