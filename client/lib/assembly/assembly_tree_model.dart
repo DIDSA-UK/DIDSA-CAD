@@ -382,17 +382,18 @@ class AssemblyTreeModel {
   /// gone, nor by an [openAll] with `remember: false`). The host stores the keys (spec section 12).
   void Function()? onOpenKeysChanged;
 
-  /// Whether the open keys were changed on purpose since this model was made (even to what they already were: a collapse all of nothing
-  /// is still an answer). A restore of stored keys is skipped when it is true: the person's own change comes first (spec section 12).
+  /// Whether the person changed the open keys since this model was made: a change that opened or closed something, or a collapse all (even of
+  /// nothing: that is still the person asking for it collapsed). An open of what was open already (an expand to selection with nothing to
+  /// open) is not. A restore of stored keys is skipped when it is true: the person's own change comes first (spec section 12).
   bool get openKeysTouched => _openTouched;
   bool _openTouched = false;
 
-  void _opened(bool changed, {bool remember = true}) {
+  void _opened(bool changed, {bool remember = true, bool deliberate = false}) {
     if (!remember) {
       if (changed) _invalidate();
       return;
     }
-    _openTouched = true;
+    if (changed || deliberate) _openTouched = true;
     if (changed) {
       _invalidate();
       onOpenKeysChanged?.call();
@@ -417,7 +418,7 @@ class AssemblyTreeModel {
   void closeAll() {
     final changed = _open.isNotEmpty;
     _open.clear();
-    _opened(changed);
+    _opened(changed, deliberate: true);
   }
 
   /// The selected row key (any row: occurrence, group, feature, folder) or null. Kept across [merge] while the row still exists.

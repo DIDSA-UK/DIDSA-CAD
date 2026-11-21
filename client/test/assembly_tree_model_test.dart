@@ -392,6 +392,16 @@ void main() {
       expect(fresh.openKeysTouched, isTrue, reason: 'collapse all of nothing is still the person asking for it collapsed');
     });
 
+    test('an open that changes nothing is not the person\'s change; a collapse all is, even of nothing', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.openAll(const []);
+      model.setOpen('mast', false);
+      expect(model.expandToSelection(), isFalse);
+      expect(model.openKeysTouched, isFalse);
+      model.setOpen('mast', true);
+      expect(model.openKeysTouched, isTrue);
+    });
+
     test('merge dropping the keys of a row that is gone is not reported', () {
       final model = AssemblyTreeModel(tree: _tree('rover'));
       model.openAll(['mast', 'gone/row'], remember: false);

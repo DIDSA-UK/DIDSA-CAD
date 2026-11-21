@@ -661,27 +661,40 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return model;
   }
 
-  /// The key the open rows of this document are stored under (B2): the file it was opened from or saved to, within its project folder when it
-  /// has one. Null for a document that has no file yet (nothing is stored for it).
+  /// The key the open rows of this document are stored under (B2): the file it was opened from or saved to; or, for a project (File > Open of a
+  /// project file, a project folder, a Save As reopen), the project folder and the root Part's file within it. Null for a document that has no
+  /// file yet, and for one known only by a bare file name (the same name in two folders would share rows): nothing is stored for those.
   String? get _treeDocumentKey {
     final path = _lastSavedFilePath;
     if (path != null) return 'file:$path';
-    final name = _lastSavedFileName;
-    if (name == null) return null;
     final root = _projectRoot?.persistedKey;
-    return root == null ? 'name:$name' : 'project:$root|$name';
+    if (root == null) return null;
+    final rootId = _part?.id;
+    final file = (rootId == null ? null : _relativePathByPartId[rootId]) ?? _lastSavedFileName;
+    return file == null ? null : _projectTreeKey(root, file);
   }
+
+  static String _projectTreeKey(String rootKey, String relativePath) => 'project:$rootKey|$relativePath';
 
   /// Whether the tree in the model came from `assembly-tree` (not built from the flat lists when that call failed: such a tree is one level
   /// deep, and what it would store or drop is not what the document's tree holds).
   bool _treeFromBackend = true;
 
+  /// The status call failed (or the backend has no `assembly-tree`): the filter's `:errors` / `:warnings` will not get more than the structure
+  /// shows, so it says "status unavailable" rather than "still loading".
+  bool _treeStatusUnavailable = false;
+
   /// Stores [model]'s open rows for this document (spec section 12). Only the document's own tree: a focused Part's tree is another tree, and
   /// Edit Alone's is not stored. Nothing for a document with no file yet, or a model that has since been replaced.
   void _rememberTreeOpenKeys(AssemblyTreeModel model) {
-    final key = _treeDocumentKey;
-    if (key == null || !identical(model, _treeModel) || !_treeFromBackend) return;
-    if (model.tree?.partId != _part?.id) return;
+    if (identical(model, _treeModel)) _storeTreeRowsAs(_treeDocumentKey);
+  }
+
+  /// Stores the rows open in the document's own tree under [key]: a change the person made, and also (Save As, a first save) the same rows
+  /// under the document's new key, restored or touched. Nothing without a key, or without the document's own tree from the backend in the model.
+  void _storeTreeRowsAs(String? key) {
+    final model = _treeModel;
+    if (key == null || !_treeFromBackend || model.tree?.partId != _part?.id) return;
     unawaited(AssemblyTreeOpenStore.write(key, model.keysToStore()));
   }
 
@@ -12090,7 +12103,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         : (_lastSavedFileName ?? suggestedFileName);
     _lastSavedFilePath = _canPersistFilePathForReuse && saved.scheme == 'file' ? saved.toFilePath() : null;
     // B2: the document has a name now (or another one): the rows open in its tree are remembered under it.
-    if (_treeModel.openKeysTouched) _rememberTreeOpenKeys(_treeModel);
+    _storeTreeRowsAs(_treeDocumentKey);
     return true;
   }
 
@@ -12216,6 +12229,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _relativePathByPartId = {..._relativePathByPartId, part.id: path};
         _markPartWritten(part.id);
       });
+      _storeTreeRowsAs(_treeDocumentKey);
     });
     if (!written && !hadRoot && mounted) setState(() => _projectRoot = null);
     if (written && mounted) {
@@ -12305,6 +12319,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           return;
         }
         _lastSavedFileName = targetPath;
+        _storeTreeRowsAs(_treeDocumentKey);
         setState(() => _isDirty = false);
         reopenFileName = targetPath;
       });
@@ -12620,6 +12635,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (!saved || !mounted) return;
 
     if (isRootPart) {
+      // The copy opens in a new screen under its own key: the rows open here go with it.
+      _storeTreeRowsAs(_projectTreeKey(root.persistedKey, newPath));
       await _openComposedProject(root, newPath);
       return;
     }
@@ -13370,6 +13387,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // (for the same Part: another Part's status is not this one's).
       if (_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) _constraintStatusByOccurrenceId = const {};
       _treeFromBackend = fetched != null;
+      _treeStatusUnavailable = fetched == null;
       // Not for a tree built from the lists (see [_treeFromBackend]), nor when the document is no longer the one the keys were read for.
       _applyTree(tree, restore: fetched != null && documentKey == _treeDocumentKey ? stored : null);
       final path = _selectedTreePath;
@@ -13416,10 +13434,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     try {
       withStatus = await _api.getAssemblyTree(partId, status: true);
     } catch (_) {
+      if (mounted && token == _treeLoadToken) setState(() => _treeStatusUnavailable = true);
       return;
     }
     if (!mounted || token != _treeLoadToken) return;
     setState(() {
+      _treeStatusUnavailable = false;
       _treeModel.merge(withStatus);
       _constraintStatusByOccurrenceId = topLevelConstraintStatus(withStatus);
       _syncTreeSideData();
@@ -26072,6 +26092,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case ComponentContextMenuAction.zoomToSelection:
         _zoomToTreeSelection();
       case ComponentContextMenuAction.expandToSelection:
+        // A closed tree (the phone's overlay, the desktop's pane) opens first, or nothing would be seen to happen.
+        if (_desktopLayout ? !_desktopPaneVisible : !_featureTreeVisible) {
+          setState(() {
+            if (_desktopLayout) {
+              _desktopPaneVisible = true;
+            } else {
+              _featureTreeVisible = true;
+            }
+          });
+        }
         _treeController.expandToSelection();
       case ComponentContextMenuAction.hide:
         await _setOccurrenceHidden(occurrence, true, path: rowPath);
@@ -28565,6 +28595,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       docked: docked,
       width: width,
       title: 'Assembly Tree',
+      statusUnavailable: _treeStatusUnavailable,
       // The docked pane is shown or not by the layout itself.
       visible: docked || _featureTreePanelVisible,
       editAloneLabel: _editAlone?.label,

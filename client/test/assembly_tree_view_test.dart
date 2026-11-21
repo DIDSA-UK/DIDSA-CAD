@@ -761,6 +761,50 @@ void main() {
       expect(rect.bottom, lessThanOrEqualTo(list.bottom + 0.5));
     });
 
+    testWidgets('a status token says "unavailable" when the status failed, and nothing once it is here', (tester) async {
+      AssemblyTreeModel noStatus() => AssemblyTreeModel(
+            tree: AssemblyTreeResponseDto.fromJson({
+              'part_id': 'root',
+              'part_name': 'Root',
+              'kind': 'assembly',
+              'status_included': false,
+              'children': [_node('a', ['a'], name: 'Arm')],
+            }),
+          );
+      Widget view(AssemblyTreeModel m, {bool unavailable = false}) =>
+          _host(AssemblyTreeView(model: m, docked: true, statusUnavailable: unavailable), layout: LayoutPreference.desktop);
+      await tester.pumpWidget(view(noStatus(), unavailable: true));
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':warnings');
+      await tester.pump();
+      expect(find.textContaining('Status unavailable'), findsOneWidget);
+      expect(find.textContaining('still loading'), findsNothing);
+
+      await tester.pumpWidget(view(deep()));
+      await tester.pump();
+      expect(find.textContaining('Status'), findsNothing, reason: 'the tree has its status');
+    });
+
+    testWidgets('multi-select ends the filter: its field is gone, so the rows must not stay narrowed', (tester) async {
+      final model = deep();
+      Widget view({required bool multi}) => _host(
+            AssemblyTreeView(model: model, docked: true, isMultiSelectMode: multi, multiSelectHeader: multi ? const Text('2 selected') : null),
+            layout: LayoutPreference.desktop,
+          );
+      await tester.pumpWidget(view(multi: false));
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'pin');
+      await tester.pump();
+      expect(keysShown(), ['', 'a', 'a/b', 'a/b/c']);
+
+      await tester.pumpWidget(view(multi: true));
+      await tester.pump();
+      expect(keysShown(), ['', 'a', 'z', 'y'], reason: 'the filter ended with the multi-select');
+
+      await tester.pumpWidget(view(multi: false));
+      await tester.pump();
+      expect(tester.widget<TextField>(find.byKey(const ValueKey('tree-filter-field'))).controller!.text, isEmpty);
+      expect(keysShown(), ['', 'a', 'z', 'y']);
+    });
+
     group('phone header', () {
       Future<void> phoneSize(WidgetTester tester, Size size) async {
         tester.view.physicalSize = size;

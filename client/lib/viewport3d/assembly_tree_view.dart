@@ -99,6 +99,7 @@ class AssemblyTreeView extends StatefulWidget {
     this.onAloneSelected,
     this.onMoreSelected,
     this.statusLine,
+    this.statusUnavailable = false,
     this.flashItemIds = const {},
     this.flashToken = 0,
   });
@@ -161,6 +162,9 @@ class AssemblyTreeView extends StatefulWidget {
   final void Function(AssemblyTreeRow row)? onAloneSelected;
   final void Function(AssemblyTreeRow row)? onMoreSelected;
 
+  /// The status call failed, or the backend cannot give one: the filter says "status unavailable" instead of "still loading".
+  final bool statusUnavailable;
+
   /// One quiet line under the header (A4: the motion summary, "Group: 5 DOF"...); null or empty shows nothing.
   final String? statusLine;
 
@@ -221,6 +225,13 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (old.model != widget.model) {
       _requested.clear();
       _seenTree = widget.model.tree;
+    }
+    // Multi-select replaces the header (and with it the filter field): a filter that kept narrowing the rows with nothing to show it would
+    // be a trap, so it ends there.
+    if (!old.isMultiSelectMode && widget.isMultiSelectMode && (_filtering || _filterOpen)) {
+      _filterText.clear();
+      _query = '';
+      _filterOpen = false;
     }
     _syncModel();
     if (widget.flashToken != old.flashToken && widget.flashItemIds.isNotEmpty) {
@@ -756,8 +767,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final words = _query.toLowerCase().split(RegExp(r'\s+'));
     final notes = <String>[
       if (filter.unknown.isNotEmpty) 'Unknown filter ${filter.unknown.join(' ')}',
-      if (!model.statusIncluded && (words.contains(':errors') || words.contains(':warnings')))
-        'Status is still loading: :errors and :warnings find only missing files and cycles for now',
+      if ((words.contains(':errors') || words.contains(':warnings')) && (!model.statusIncluded || model.statusIncomplete))
+        widget.statusUnavailable || model.statusIncomplete
+            ? 'Status unavailable: :errors and :warnings find only missing files and cycles'
+            : 'Status is still loading: :errors and :warnings find only missing files and cycles for now',
       if (filter.featuresNotRead) 'Features are searched only in parts you have opened',
     ];
     if (notes.isEmpty) return const SizedBox.shrink();
