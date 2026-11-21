@@ -719,7 +719,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// under the document's new key, restored or touched. Nothing without a key, or without the document's own tree from the backend in the model.
   void _storeTreeRowsAs(String? key) {
     final model = _treeModel;
-    if (key == null || !_treeFromBackend || model.tree?.partId != _part?.id) return;
+    final tree = model.tree;
+    if (key == null || !_treeFromBackend || tree == null || tree.partId != _part?.id) return;
     unawaited(AssemblyTreeOpenStore.write(key, model.keysToStore()));
   }
 
