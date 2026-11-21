@@ -27,17 +27,23 @@ Map<String, dynamic> _rowJson(AssemblyTreeRow r) => {
       'suppressed': r.suppressed,
     };
 
+// Case kinds of vectors version 2 (spec sections 11 to 13) that this model does not implement yet. Skipped by name until the
+// chunk that adds them: B2 removes `filter` and `restore`, P1 the three `live_part` kinds. A kind in neither list fails.
+const _skippedKinds = {'filter', 'restore', 'live_part', 'live_part_filter', 'live_part_restore'};
+
 void main() {
   final cases = (_vectors['cases'] as List).cast<Map<String, dynamic>>();
 
   test('the vectors file is the version this model knows', () {
-    expect(_vectors['version'], 1);
+    expect(_vectors['version'], 2);
     expect([for (final s in AssemblyRowState.values) s.wire], _vectors['states']);
   });
 
   group('vectors', () {
     for (final c in cases) {
-      test('${c['kind']}: ${c['name']}', () {
+      final kind = c['kind'] as String;
+      test('$kind: ${c['name']}', skip: _skippedKinds.contains(kind) ? 'spec sections 11 to 13: not implemented yet (B2, P1)' : null, () {
+        if (kind != 'rows' && kind != 'reveal') fail('unknown vector case kind: $kind');
         final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
         if (c['kind'] == 'rows') {
           model.setUnsavedPartIds((c['unsaved_part_ids'] as List).cast<String>());
