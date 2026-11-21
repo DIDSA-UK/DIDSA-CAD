@@ -42,4 +42,24 @@ void main() {
     });
     expect(await AssemblyTreeOpenStore.read('a'), ['x']);
   });
+
+  test('an entry written while another document evicts the oldest is not the one evicted', () async {
+    for (var i = 0; i < AssemblyTreeOpenStore.maxDocuments; i++) {
+      await AssemblyTreeOpenStore.write('doc$i', ['k$i']);
+    }
+    // doc0 is the oldest. It is written again at the same moment another document comes in and has to evict someone.
+    await Future.wait([AssemblyTreeOpenStore.write('doc0', ['again']), AssemblyTreeOpenStore.write('new', ['n'])]);
+    expect(await AssemblyTreeOpenStore.read('doc0'), ['again']);
+    expect(await AssemblyTreeOpenStore.read('new'), ['n']);
+    expect(await AssemblyTreeOpenStore.read('doc1'), isNull, reason: 'the oldest after doc0 went');
+  });
+
+  test('copy puts what is stored for one key under another, and says when there was nothing', () async {
+    expect(await AssemblyTreeOpenStore.copy('from', 'to'), isFalse);
+    expect(await AssemblyTreeOpenStore.read('to'), isNull);
+    await AssemblyTreeOpenStore.write('from', ['a', 'a/b']);
+    expect(await AssemblyTreeOpenStore.copy('from', 'to'), isTrue);
+    expect(await AssemblyTreeOpenStore.read('to'), ['a', 'a/b']);
+    expect(await AssemblyTreeOpenStore.read('from'), ['a', 'a/b'], reason: 'the old key keeps its rows');
+  });
 }

@@ -42,11 +42,23 @@ class AssemblyTreeOpenStore {
   static Future<void> write(String documentKey, List<String> keys) async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('$_entryPrefix$documentKey', jsonEncode(keys));
-      await _touch(prefs, documentKey);
+      // The entry and the index are changed with no `await` between (the cache takes both synchronously): another document's update cannot
+      // evict this entry in the gap, after it is written and before it counts as the newest.
+      final entry = prefs.setString('$_entryPrefix$documentKey', jsonEncode(keys));
+      final index = _touch(prefs, documentKey);
+      await Future.wait([entry, index]);
     } catch (_) {
       // Remembering is a convenience: a store that does not work leaves the tree as it is.
     }
+  }
+
+  /// Copies what is stored for [from] to [to] (the document got another key while its own tree was not the one in the model). False when nothing
+  /// is stored for [from].
+  static Future<bool> copy(String from, String to) async {
+    final keys = await read(from);
+    if (keys == null) return false;
+    await write(to, keys);
+    return true;
   }
 
   /// Makes [documentKey] the most recently used, and drops the entries past [maxDocuments]. Never throws.

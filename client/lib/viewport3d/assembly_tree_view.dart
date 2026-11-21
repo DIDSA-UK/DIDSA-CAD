@@ -20,7 +20,6 @@ class AssemblyTreeController {
   _AssemblyTreeViewState? _state;
   List<String>? _pendingPath;
   bool _pendingSelect = false;
-  bool _pendingExpand = false;
 
   /// Opens every ancestor (and the group row, with grouping on) of the occurrence at [path], then scrolls its row into view. With
   /// [select] the row is also marked selected (the model's `selectedKey`). A path the tree does not know does nothing. Called before the view
@@ -35,16 +34,9 @@ class AssemblyTreeController {
     s._reveal(path, select: select);
   }
 
-  /// Opens the tree down to the selected row and scrolls to it (the header's "Expand to selection"). Nothing without a selection. Called while
-  /// the view is not built (a hidden pane), it is kept and applied when the view attaches.
-  void expandToSelection() {
-    final s = _state;
-    if (s == null) {
-      _pendingExpand = true;
-      return;
-    }
-    s._expandToSelection();
-  }
+  /// Opens the tree down to the selected row and scrolls to it (the header's "Expand to selection"). Nothing without a selection, and nothing
+  /// while the view is not built: the host shows the tree first and calls this after the frame.
+  void expandToSelection() => _state?._expandToSelection();
 
   /// Rebuilds the rows from the model's current state. Also retries what was waiting for data: a [reveal] made before the tree loaded, and
   /// the root's features when the tree has just arrived.
@@ -63,12 +55,7 @@ class AssemblyTreeController {
         if (_state == s && s.mounted) s._reveal(p, select: _pendingSelect);
       });
     }
-    if (_pendingExpand) {
-      _pendingExpand = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_state == s && s.mounted) s._expandToSelection();
-      });
-    }
+
   }
 
   void _detach(_AssemblyTreeViewState s) {

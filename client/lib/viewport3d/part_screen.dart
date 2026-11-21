@@ -688,9 +688,19 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _syncTreeKey() {
     if (!mounted) return;
     final key = _treeDocumentKey;
-    if (key == _treeKeyStoredUnder) return;
-    _treeKeyStoredUnder = key;
-    _storeTreeRowsAs(key);
+    final old = _treeKeyStoredUnder;
+    if (key == old) return;
+    if (key == null) {
+      _treeKeyStoredUnder = null;
+    } else if (_storeTreeRowsAs(key)) {
+      _treeKeyStoredUnder = key;
+    } else if (old != null && _treeModel.tree != null) {
+      // The model holds another tree (a focused Part's, Edit Alone's, one built from the lists): what the document's own tree remembered goes
+      // to the new key as it is.
+      unawaited(AssemblyTreeOpenStore.copy(old, key));
+      _treeKeyStoredUnder = key;
+    }
+    // Otherwise there is no tree in the model yet: the key stays pending, and the first answer stores under it.
   }
 
   @override
@@ -717,11 +727,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Stores the rows open in the document's own tree under [key]: a change the person made, and also (Save As, a first save) the same rows
   /// under the document's new key, restored or touched. Nothing without a key, or without the document's own tree from the backend in the model.
-  void _storeTreeRowsAs(String? key) {
+  bool _storeTreeRowsAs(String? key) {
     final model = _treeModel;
     final tree = model.tree;
-    if (key == null || !_treeFromBackend || tree == null || tree.partId != _part?.id) return;
+    if (key == null || !_treeFromBackend || tree == null || tree.partId != _part?.id) return false;
     unawaited(AssemblyTreeOpenStore.write(key, model.keysToStore()));
+    return true;
   }
 
   /// Bumped by every tree load (and by a local Fix / Float): an answer that is not from the latest one is dropped, for the structure call
@@ -12477,8 +12488,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
             _markPartWritten(id);
           });
         } on SyncConflictException {
-          // The store says another device changed this file: the save waits in the queue as a clash (below).
+          // The store says another device changed this file: the save waits in the queue as a clash (below). The root's file is in this
+          // folder's queue now: its rows are keyed by it.
           clashed = true;
+          if (id == _part?.id) setState(() => _rootFileRoot = root);
         } on StorageException catch (e) {
           failures.add(_SaveFailure(partId: id, name: names[id]!, relativePath: paths[id]!, reason: e.message));
         }
@@ -16329,6 +16342,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
     if (!mounted) return;
     if (clashed && root is ServerProjectRoot) {
+      // The clash holds this Save All's files in the queue, the root's among them: its rows are keyed by it.
+      if (_part != null && relativePathByPartId.containsKey(_part!.id)) setState(() => _rootFileRoot = root);
       await _resolveServerConflicts(root);
       return;
     }
@@ -16467,6 +16482,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       }
       final report = await remote.sync(root);
       if (!mounted) return;
+      // Keep mine for the root's file: it is in the project now (a clash from a save that was queued).
+      final rootFile = _part == null ? null : _relativePathByPartId[_part!.id];
+      if (rootFile != null && choices[rootFile] == ConflictChoice.keepMine) setState(() => _rootFileRoot = root);
       if (report.conflicts.isNotEmpty) continue;
       if (report.error != null) {
         setState(() => _errorMessage = report.error);
@@ -26110,6 +26128,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       at: at,
       showEditAlone: _editAlone == null,
       nested: nested,
+      showExpandToSelection: _treeCanBeShown,
     );
     if (mounted) setState(() => _componentContextMenuOpen = false);
     if (!mounted || action == null) return;
@@ -26124,19 +26143,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case ComponentContextMenuAction.zoomToSelection:
         _zoomToTreeSelection();
       case ComponentContextMenuAction.expandToSelection:
-        // The rows open in the model whatever is on screen, and the scroll waits for the view if it is not built (a hidden pane); a closed tree
-        // that can be shown is shown, or nothing would be seen to happen.
-        _treeModel.expandToSelection();
-        if (_desktopLayout ? !_desktopPaneVisible : !_featureTreePanelVisible) {
-          setState(() {
-            if (_desktopLayout) {
-              _desktopPaneVisible = true;
-            } else {
-              _featureTreeVisible = true;
-            }
-          });
-        }
-        _treeController.expandToSelection();
+        _expandTreeToSelection();
       case ComponentContextMenuAction.hide:
         await _setOccurrenceHidden(occurrence, true, path: rowPath);
       case ComponentContextMenuAction.show:
@@ -28618,7 +28625,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treeModel.setFolderItems('#patterns', patternFolderItems(_componentPatterns));
     }
     // Only when this screen's own selection changed: a tap on a folder, group or feature row marks that row and keeps its mark.
-    final hostKey = _selectedMateId != null ? '#mates#item:$_selectedMateId' : _selectedTreePath?.join('/');
+    final hostKey = _treeSelectionHostKey;
     if (hostKey != _treeHostSelection) {
       _treeHostSelection = hostKey;
       _treeModel.selectedKey = hostKey;
@@ -28697,6 +28704,33 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   String? _treeHostSelection;
+
+  /// The row key this screen's own selection stands for in the tree (a mate row, or the selected component's path).
+  String? get _treeSelectionHostKey => _selectedMateId != null ? '#mates#item:$_selectedMateId' : _selectedTreePath?.join('/');
+
+  /// Whether the assembly tree can be shown right now if it is hidden: the Assembly lens, and no tool panel or hidden chrome keeping it out.
+  bool get _treeCanBeShown =>
+      _lens == AssemblyLens.assembly && !_chromeHidden && (_desktopLayout ? !_desktopToolPanelOpen : !_anyToolSessionActive);
+
+  /// The 3D menu's Expand to selection: shows the tree if it is hidden, makes the tree's selection this screen's, opens the rows down to it, and
+  /// scrolls to it after the frame (the view of a hidden pane is built by then).
+  void _expandTreeToSelection() {
+    if (!_treeCanBeShown) return;
+    setState(() {
+      if (_desktopLayout) {
+        _desktopPaneVisible = true;
+      } else {
+        _featureTreeVisible = true;
+      }
+      final hostKey = _treeSelectionHostKey;
+      _treeHostSelection = hostKey;
+      _treeModel.selectedKey = hostKey;
+      _treeModel.expandToSelection();
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _treeController.expandToSelection();
+    });
+  }
   List<MateDto>? _treeMatesSynced;
   List<ComponentPatternDto>? _treePatternsSynced;
   final GlobalKey _treeOverlayKey = GlobalKey(debugLabel: 'assembly-tree-overlay');

@@ -82,6 +82,8 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
   bool showEditAlone = true,
   // A4: the row is nested below the assembly being edited. Move/Rotate and Pattern work on the components directly in it.
   bool nested = false,
+  // B2: Expand to selection only where the assembly tree can be shown (the Assembly lens, no tool panel or hidden chrome keeping it out).
+  bool showExpandToSelection = true,
 }) {
   return showContextMenu<ComponentContextMenuAction>(context, at: at, [
     if (showEditAlone)
@@ -102,11 +104,12 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       icon: Icons.zoom_out_map,
       shortcut: 'Shift+F',
     ),
-    const ActionSheetEntry(
-      action: ComponentContextMenuAction.expandToSelection,
-      label: 'Expand to selection',
-      icon: Icons.my_location,
-    ),
+    if (showExpandToSelection)
+      const ActionSheetEntry(
+        action: ComponentContextMenuAction.expandToSelection,
+        label: 'Expand to selection',
+        icon: Icons.my_location,
+      ),
     ActionSheetEntry(
       action: ComponentContextMenuAction.moveRotate,
       label: 'Move/Rotate',

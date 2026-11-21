@@ -317,7 +317,8 @@ class _FakeDocumentBackend {
       ];
     }
 
-    final rootOccs = partId == 'part-1' ? occurrences : (subOccurrences[partId] ?? const <dynamic>[]);
+    // A root that was imported under a new id (a Save As copy reopened) has the occurrences it was imported with.
+    final rootOccs = partId == 'part-1' ? occurrences : (subOccurrences[partId] ?? (extraParts[partId]?['occurrences'] as List<dynamic>?) ?? const <dynamic>[]);
     count(rootOccs, {partId});
     final children = level(partId, rootOccs, const [], {partId});
     final mateList = partId == 'part-1' ? mates : const <Map<String, dynamic>>[];
@@ -1544,7 +1545,14 @@ class _TreeProbe {
   final WidgetTester tester;
 
   AssemblyTreeView get view => tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView));
-  AssemblyTreeModel get model => view.model;
+  AssemblyTreeModel get model {
+    final m = view.model;
+    lastModel = m;
+    return m;
+  }
+
+  /// The model the view had when it was last read: a folded desktop pane builds no view, but the model is still the screen's.
+  static AssemblyTreeModel? lastModel;
 
   static OccurrenceDto occurrenceOf(AssemblyTreeNodeDto n) => OccurrenceDto(
         id: n.occurrenceId,
@@ -8414,6 +8422,36 @@ void main() {
       expect(await _syncIcon(tester), Icons.cloud_done_outlined);
     });
 
+    testWidgets('a first Save All that clashes still keys the rows by the root file (queued, then Keep mine)', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      final backend = await pumpServerScreen(tester);
+      final key = 'assembly_tree_open:project:${root.persistedKey}|Part 1.didsa';
+      Future<Set<String>> storedKeys() async =>
+          (await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open:'))))!.toSet();
+
+      _TreeProbe(tester).model.setOpen('first', true);
+      await tester.pump();
+      expect(await storedKeys(), isEmpty, reason: 'no file yet: no key');
+
+      // Another device wrote the file before this session's first save: the save is queued as a clash.
+      store.writeJson('Gearbox', 'Part 1.didsa', {'schema_version': 1, 'document': {'id': 'd', 'root_part_id': 'x', 'parts': []}}, device: 'Quest 3');
+      backend.partOneName = 'Edited here';
+      await tapFileMenu(tester, 'Save All');
+      expect(find.byKey(const ValueKey('sync-conflict-dialog')), findsOneWidget);
+      await tester.pump();
+      expect(await storedKeys(), contains(key), reason: 'the root file is in the queue: the rows are keyed by it, and the rows follow');
+
+      await tester.tap(find.byKey(const ValueKey('conflict-keepMine-Part 1.didsa')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('conflict-apply')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      _TreeProbe(tester).model.setOpen('second', true);
+      await tester.pump();
+      final text = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getString(key));
+      expect(text, contains('second'), reason: 'and a change after Keep mine is stored under it');
+    });
+
     testWidgets('Decide later leaves the clash queued: nothing written, and the chip offers the dialog again', (tester) async {
       final backend = await pumpServerScreen(tester);
       await tapFileMenu(tester, 'Save All');
@@ -12320,7 +12358,12 @@ void main() {
         SharedPreferences.setMockInitialValues({
           'assembly_tree_open:project:/fake/project|top.DIDSAprt': jsonEncode(['asm-1']),
         });
-        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'}, storage: storage);
+        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'}, storage: storage, configure: (b) {
+          // No file to look for, so the reopened copy keeps these components as they are.
+          for (final o in [...b.occurrences, for (final l in b.subOccurrences.values) ...l]) {
+            o['external_ref'] = null;
+          }
+        });
         expect(_TreeProbe(tester).model.openKeys, {'asm-1'}, reason: 'restored');
         expect(_TreeProbe(tester).model.openKeysTouched, isFalse);
 
@@ -12333,8 +12376,8 @@ void main() {
         await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
-
         expect(storage.files.keys, contains('copy.DIDSAprt'));
+        // The copy opens in its own screen; its first answer stores what it restored (its tree has the same components, so the rows stay).
         expect(await storedKey(tester, 'project:/fake/project|copy.DIDSAprt'), ['asm-1'], reason: 'the rows follow the document to its new file');
         await closeScreen(tester);
 
@@ -12388,29 +12431,50 @@ void main() {
         expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
       });
 
-      testWidgets('desktop: Expand to selection in the 3D menu with the tree pane hidden shows the pane again', (tester) async {
-        await openNested(tester, layout: LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true));
-        final pane = find.byKey(const ValueKey('desktop-left-pane'));
-        expect(pane, findsOneWidget);
-        await tester.tap(find.byTooltip('Hide the tree'));
-        await tester.pump();
-        expect(pane, findsNothing, reason: 'the pane is folded away: the tree view is not built');
-
-        // A right click on a component in the viewport is the menu that is left; its handler is what is under test.
+      /// A right click on the top-level component [id] in the viewport, and the menu's entry [label] (null: only look at the menu).
+      Future<void> viewportMenu(WidgetTester tester, String id, String? label) async {
         tester.widget<PartViewport>(find.byType(PartViewport)).onContextMenuRequested!(
-              const HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1'), rayT: 1),
+              HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: id), rayT: 1),
               const Offset(600, 400),
             );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
-        final entry = find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text('Expand to selection'));
         await tester.pump(const Duration(milliseconds: 100));
-        await tester.tap(entry);
+        if (label == null) return;
+        await tester.tap(find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text(label)));
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 250));
+      }
 
+      testWidgets('desktop, pane hidden, an older selection in the tree: Expand to selection works from the pressed row, not the older one', (tester) async {
+        await openNested(tester, filePath: '/docs/a.didsa', layout: LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true));
+        // An older selection, nested: a pick in 3D opens its branch.
+        tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+              const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-2/c1'),
+            );
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+        final pane = find.byKey(const ValueKey('desktop-left-pane'));
+        await tester.tap(find.byTooltip('Hide the tree'));
+        await tester.pump();
+        expect(pane, findsNothing, reason: 'folded away: the tree is not built, so its selection is not kept up to date');
+        final model = _TreeProbe.lastModel!;
+        model.setOpen('asm-2', false);
+        expect(model.selectedKey, 'asm-2/c1', reason: 'the stale selection the menu must not use');
+
+        await viewportMenu(tester, 'asm-1', 'Expand to selection');
         expect(pane, findsOneWidget, reason: 'the tree comes back, or nothing is seen to happen');
-        expect(_TreeProbe(tester).model.selectedKey, 'asm-1');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1', reason: 'the pressed row, as the tree would show it');
+        expect(_TreeProbe(tester).model.isOpen('asm-2'), isFalse, reason: 'the older selection is not revealed');
+        expect(await stored(tester, '/docs/a.didsa'), isEmpty, reason: 'and what is stored is what is open');
+      });
+
+      testWidgets('the Part lens: the menu has no Expand to selection (no tree to show)', (tester) async {
+        await openNested(tester);
+        await switchLens(tester, 'Part');
+        await viewportMenu(tester, 'asm-1', null);
+        expect(find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text('Zoom to selection')), findsOneWidget, reason: 'the menu is open');
+        expect(find.text('Expand to selection'), findsNothing);
       });
 
       testWidgets('Expand to selection in the 3D menu opens a closed tree first (the phone\'s overlay)', (tester) async {

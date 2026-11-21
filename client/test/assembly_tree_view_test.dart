@@ -806,12 +806,15 @@ void main() {
       expect(keysShown(), ['', 'a', 'z', 'y']);
     });
 
-    testWidgets('an expand to selection asked for before the view exists is applied when it attaches', (tester) async {
+    testWidgets('an expand to selection asked for while the view is not built does nothing: the host shows the tree first and asks after the frame', (tester) async {
       final model = deep()..selectedKey = 'a/b/c';
       final controller = AssemblyTreeController()..expandToSelection();
-      expect(model.openKeys, isEmpty);
       await tester.pumpWidget(desktopView(model, controller: controller));
       await tester.pump();
+      await tester.pump();
+      expect(model.openKeys, isEmpty, reason: 'nothing was kept');
+      expect(keysShown(), ['', 'a', 'z', 'y']);
+      controller.expandToSelection(); // attached now
       await tester.pump();
       expect(keysShown(), ['', 'a', 'a/b', 'a/b/c', 'z', 'y']);
     });
