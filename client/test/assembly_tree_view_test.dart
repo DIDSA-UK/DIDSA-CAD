@@ -1,4 +1,5 @@
 import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
@@ -617,6 +618,211 @@ void main() {
       await tester.pumpWidget(_host(AssemblyTreeView(model: model, onVisibilityToggle: (_) {})));
       expect(find.byKey(const ValueKey('tree-eye-off:b')), findsOneWidget);
       expect(find.byKey(const ValueKey('tree-eye-off:a')), findsNothing);
+    });
+  });
+
+  group('B2: filter and expand to selection', () {
+    // Root > Arm (assembly) > Mid (assembly) > Pin, plus Plate and Pin-2 at the top.
+    AssemblyTreeModel deep() => AssemblyTreeModel(tree: _tree([
+          _node('a', ['a'], kind: 'assembly', name: 'Arm', children: [
+            _node('b', ['a', 'b'], kind: 'assembly', name: 'Mid', children: [_node('c', ['a', 'b', 'c'], name: 'Pin')]),
+          ]),
+          _node('z', ['z'], name: 'Plate'),
+          _node('y', ['y'], name: 'Spare', hidden: true),
+        ]));
+
+    Widget desktopView(AssemblyTreeModel model, {AssemblyTreeController? controller}) =>
+        _host(AssemblyTreeView(model: model, controller: controller, docked: true), layout: LayoutPreference.desktop);
+
+    List<String> keysShown() => [
+          for (final e in _rows().evaluate()) ((e.widget.key as ValueKey).value as String).substring('tree-row:'.length),
+        ];
+
+    testWidgets('desktop: a deep match is listed with its ancestors (only the match marked), and clearing the filter gives the rows back', (tester) async {
+      final model = deep();
+      await tester.pumpWidget(desktopView(model));
+      expect(keysShown(), ['', 'a', 'z', 'y']);
+
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'pin');
+      await tester.pump();
+      expect(keysShown(), ['', 'a', 'a/b', 'a/b/c']);
+      expect(find.byKey(const ValueKey('tree-match:a/b/c')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tree-match:a')), findsNothing, reason: 'an ancestor is plain');
+      expect(find.byKey(const ValueKey('tree-match:a/b')), findsNothing);
+      expect(model.openKeys, isEmpty, reason: 'the filter does not change what is open');
+
+      // The chevrons are inert while a filter is on (a row that cannot be toggled has none), and a tap on a row only selects it.
+      expect(find.byKey(const ValueKey('tree-chevron:a')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('tree-row:a')));
+      await tester.pump();
+      expect(keysShown(), ['', 'a', 'a/b', 'a/b/c']);
+      expect(model.isOpen('a'), isFalse);
+      expect(model.selectedKey, 'a');
+
+      await tester.tap(find.byKey(const ValueKey('tree-filter-clear')));
+      await tester.pump();
+      expect(keysShown(), ['', 'a', 'z', 'y']);
+      expect(model.openKeys, isEmpty);
+    });
+
+    testWidgets('a token filters by state, and an unknown token says so', (tester) async {
+      final model = deep();
+      await tester.pumpWidget(desktopView(model));
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':hidden');
+      await tester.pump();
+      expect(keysShown(), ['', 'y']);
+
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':Foo pin');
+      await tester.pump();
+      expect(keysShown(), ['', 'a', 'a/b', 'a/b/c']);
+      expect(find.textContaining('Unknown filter :foo'), findsOneWidget);
+
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'zzz');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('tree-filter-empty')), findsOneWidget);
+    });
+
+    testWidgets('a status token before the status has arrived says it is still loading', (tester) async {
+      final model = AssemblyTreeModel(
+        tree: AssemblyTreeResponseDto.fromJson({
+          'part_id': 'root',
+          'part_name': 'Root',
+          'kind': 'assembly',
+          'status_included': false,
+          'children': [_node('a', ['a'], name: 'Arm')],
+        }),
+      );
+      await tester.pumpWidget(desktopView(model));
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':errors');
+      await tester.pump();
+      expect(find.textContaining('Status is still loading'), findsOneWidget);
+    });
+
+    testWidgets('desktop: Esc clears the filter, and clearing it reveals the selected row', (tester) async {
+      final model = deep()..selectedKey = 'a/b/c';
+      await tester.pumpWidget(desktopView(model));
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'plate');
+      await tester.pump();
+      expect(keysShown(), ['', 'z']);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pump();
+      expect(tester.widget<TextField>(find.byKey(const ValueKey('tree-filter-field'))).controller!.text, isEmpty);
+      // Section 11: the selected row is revealed when the filter goes, so it is where the person left it.
+      expect(keysShown(), ['', 'a', 'a/b', 'a/b/c', 'z', 'y']);
+      expect(model.selectedKey, 'a/b/c');
+    });
+
+    testWidgets('expand and collapse are off while a filter is on, and expand is off with no selection', (tester) async {
+      final model = deep();
+      await tester.pumpWidget(desktopView(model));
+      bool enabled(String key) => tester.widget<IconButton>(find.byKey(ValueKey(key))).onPressed != null;
+      expect(enabled('tree-expand-to-selection'), isFalse);
+      expect(enabled('tree-collapse-all'), isTrue);
+      model.selectedKey = 'a/b/c';
+      await tester.pumpWidget(desktopView(model));
+      expect(enabled('tree-expand-to-selection'), isTrue);
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'pin');
+      await tester.pump();
+      expect(enabled('tree-expand-to-selection'), isFalse);
+      expect(enabled('tree-collapse-all'), isFalse);
+    });
+
+    testWidgets('expand to selection opens a 4-deep path among 2,000 rows and scrolls to the row', (tester) async {
+      final tops = [
+        for (var i = 0; i < 40; i++)
+          _node('a$i', ['a$i'], kind: 'assembly', children: [
+            _node('b', ['a$i', 'b'], kind: 'assembly', children: [
+              _node('c', ['a$i', 'b', 'c'], kind: 'assembly', children: [
+                for (var j = 0; j < 50; j++) _node('p$i-$j', ['a$i', 'b', 'c', 'p$i-$j']),
+              ]),
+            ]),
+          ]),
+      ];
+      final model = AssemblyTreeModel(tree: _tree(tops));
+      model.openAll([for (var i = 0; i < 40; i++) 'a$i']); // every top-level assembly shows its 'b': more than a screenful, the path below is closed
+      const target = 'a30/b/c/p30-45';
+      model.selectedKey = target;
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model)));
+      expect(_row(target), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('tree-expand-to-selection')));
+      await tester.pump();
+      await tester.pump();
+
+      expect(model.isOpen('a30/b'), isTrue);
+      expect(model.isOpen('a30/b/c'), isTrue);
+      expect(model.selectedKey, target);
+      final rowFinder = _row(target);
+      expect(rowFinder, findsOneWidget);
+      final list = tester.getRect(find.byKey(const ValueKey('assembly-tree-list')));
+      final rect = tester.getRect(rowFinder);
+      expect(rect.top, greaterThanOrEqualTo(list.top - 0.5));
+      expect(rect.bottom, lessThanOrEqualTo(list.bottom + 0.5));
+    });
+
+    group('phone header', () {
+      Future<void> phoneSize(WidgetTester tester, Size size) async {
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.resetPhysicalSize);
+        addTearDown(tester.view.resetDevicePixelRatio);
+      }
+
+      for (final width in [360.0, 320.0]) {
+        testWidgets('is one line at $width dp: the title and five small icons, nothing oversized, and no overflow', (tester) async {
+          await phoneSize(tester, Size(width, 780));
+          final model = deep()..selectedKey = 'a';
+          await tester.pumpWidget(_host(AssemblyTreeView(model: model, width: width, onClose: () {})));
+          expect(tester.takeException(), isNull);
+          final keys = ['tree-filter-toggle', 'tree-grouping-toggle', 'tree-expand-to-selection', 'tree-collapse-all', 'tree-close'];
+          final title = tester.getRect(find.text('Assembly'));
+          final rects = [for (final k in keys) tester.getRect(find.byKey(ValueKey(k)))];
+          for (final r in rects) {
+            expect(r.height, lessThanOrEqualTo(40), reason: 'no oversized control (A4.1)');
+            expect(r.width, lessThanOrEqualTo(40));
+            expect((r.center.dy - title.center.dy).abs(), lessThan(1), reason: 'one line');
+            expect(r.right, lessThanOrEqualTo(width));
+          }
+          expect(title.right, lessThanOrEqualTo(rects.first.left), reason: 'the title keeps its own room');
+          expect(title.width, greaterThan(40), reason: 'and is not squeezed away');
+        });
+      }
+
+      testWidgets('the filter icon turns the header into the field (still one line); close or Esc gives the title back and clears the filter', (tester) async {
+        await phoneSize(tester, const Size(360, 780));
+        final model = deep();
+        await tester.pumpWidget(_host(AssemblyTreeView(model: model, width: 360)));
+        expect(find.byKey(const ValueKey('tree-filter-field')), findsNothing);
+
+        await tester.tap(find.byKey(const ValueKey('tree-filter-toggle')));
+        await tester.pump();
+        await tester.pump();
+        expect(find.byKey(const ValueKey('tree-filter-field')), findsOneWidget);
+        expect(find.text('Assembly'), findsNothing);
+        expect(tester.getSize(find.byKey(const ValueKey('tree-filter-header'))).height, 48, reason: 'the header is the same height');
+        expect(tester.takeException(), isNull);
+
+        await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'pin');
+        await tester.pump();
+        expect(keysShown(), ['', 'a', 'a/b', 'a/b/c']);
+
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        expect(find.byKey(const ValueKey('tree-filter-field')), findsNothing);
+        expect(find.text('Assembly'), findsOneWidget);
+        expect(keysShown(), ['', 'a', 'z', 'y']);
+
+        await tester.tap(find.byKey(const ValueKey('tree-filter-toggle')));
+        await tester.pump();
+        await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'plate');
+        await tester.pump();
+        expect(keysShown(), ['', 'z']);
+        await tester.tap(find.byKey(const ValueKey('tree-filter-close')));
+        await tester.pump();
+        expect(keysShown(), ['', 'a', 'z', 'y']);
+        expect(find.text('Assembly'), findsOneWidget);
+      });
     });
   });
 }

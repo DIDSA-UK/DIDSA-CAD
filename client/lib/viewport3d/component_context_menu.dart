@@ -24,6 +24,9 @@ enum ComponentContextMenuAction {
   makeFocus,
   exitFocus,
   zoomToSelection,
+
+  /// B2: opens the tree down to the selected row (a row picked in 3D can sit in a collapsed branch) and scrolls to it.
+  expandToSelection,
   moveRotate,
   hide,
   show,
@@ -98,6 +101,11 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
       label: 'Zoom to selection',
       icon: Icons.zoom_out_map,
       shortcut: 'Shift+F',
+    ),
+    const ActionSheetEntry(
+      action: ComponentContextMenuAction.expandToSelection,
+      label: 'Expand to selection',
+      icon: Icons.my_location,
     ),
     ActionSheetEntry(
       action: ComponentContextMenuAction.moveRotate,
