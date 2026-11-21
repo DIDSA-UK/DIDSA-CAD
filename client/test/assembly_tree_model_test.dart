@@ -12,12 +12,12 @@ final Map<String, dynamic> _vectors =
 AssemblyTreeResponseDto _tree(String name) =>
     AssemblyTreeResponseDto.fromJson((_vectors['trees'] as Map<String, dynamic>)[name] as Map<String, dynamic>);
 
-Map<String, dynamic> _rowJson(AssemblyTreeRow r) => {
+Map<String, dynamic> _rowJson(AssemblyTreeRow r, {bool live = false}) => {
       'key': r.key,
-      'kind': r.kind.wire,
+      'kind': r.kindWire,
       'depth': r.depth,
       'label': r.label,
-      'state': r.state.wire,
+      'state': r.stateWire,
       'bubble': r.bubble == null ? null : {'level': r.bubble!.level.name, 'count': r.bubble!.count},
       'expandable': r.expandable,
       'open': r.open,
@@ -25,18 +25,18 @@ Map<String, dynamic> _rowJson(AssemblyTreeRow r) => {
       'path': r.path,
       'hidden': r.hidden,
       'suppressed': r.suppressed,
+      // With a live part every expected row has `type` (null off feature rows).
+      if (live) 'type': r.type,
     };
 
-// Case kinds of vectors version 2 (spec section 13, the live part) that this model does not implement yet. Skipped by name until P1 adds
-// them. A kind in neither this list nor the ones run below fails.
-const _skippedKinds = {'live_part', 'live_part_filter', 'live_part_restore'};
-
 // A filter's rows: the spec's row fields plus `match`.
-Map<String, dynamic> _filterRowJson(AssemblyTreeRow r) => {..._rowJson(r), 'match': r.match};
+Map<String, dynamic> _filterRowJson(AssemblyTreeRow r, {bool live = false}) => {..._rowJson(r, live: live), 'match': r.match};
 
 // The inputs every `rows`-shaped case (rows, filter) gives: unsaved Part ids, open keys, fetched features.
 AssemblyTreeModel _modelFor(Map<String, dynamic> c) {
   final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
+  final live = c['live'] as Map<String, dynamic>?;
+  if (live != null) model.setLivePart(AssemblyLivePart.fromJson(live));
   model.setUnsavedPartIds((c['unsaved_part_ids'] as List).cast<String>());
   for (final k in (c['open'] as List).cast<String>()) {
     model.setOpen(k, true);
@@ -61,24 +61,29 @@ void main() {
   group('vectors', () {
     for (final c in cases) {
       final kind = c['kind'] as String;
-      test('$kind: ${c['name']}', skip: _skippedKinds.contains(kind) ? 'spec section 13: not implemented yet (P1)' : null, () {
+      test('$kind: ${c['name']}', () {
         final why = c['why'] as String?;
         switch (kind) {
           case 'rows':
-            expect(_modelFor(c).visibleRows().map(_rowJson).toList(), c['expected'], reason: why);
+          case 'live_part':
+            expect(_modelFor(c).visibleRows().map((r) => _rowJson(r, live: c.containsKey('live'))).toList(), c['expected'], reason: why);
           case 'reveal':
             final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
             expect(model.reveal((c['path'] as List).cast<String>()), c['expected'], reason: why);
           case 'filter':
+          case 'live_part_filter':
             final model = _modelFor(c);
             final openBefore = model.openKeys;
             final result = model.filteredRows(c['query'] as String);
             final expected = c['expected'] as Map<String, dynamic>;
-            expect(result.rows.map(_filterRowJson).toList(), expected['rows'], reason: why);
+            expect(result.rows.map((r) => _filterRowJson(r, live: c.containsKey('live'))).toList(), expected['rows'], reason: why);
             expect(result.unknown, expected['unknown'], reason: why);
             expect(model.openKeys, openBefore, reason: 'the filter does not change the open keys');
           case 'restore':
+          case 'live_part_restore':
             final model = AssemblyTreeModel(tree: _tree(c['tree'] as String), grouping: c['grouping'] as bool);
+            final live = c['live'] as Map<String, dynamic>?;
+            if (live != null) model.setLivePart(AssemblyLivePart.fromJson(live));
             expect(model.restoreOpenKeys((c['stored'] as List).cast<String>(), limit: c['limit'] as int), c['expected'], reason: why);
           default:
             fail('unknown vector case kind: $kind');
@@ -462,6 +467,157 @@ void main() {
     });
   });
 
+
+  group('P1 additions', () {
+    AssemblyLivePart live(String key) => AssemblyLivePart(
+          key,
+          features: const [
+            AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch'),
+            AssemblyLiveFeature(id: 'e1', label: 'Extrude 1', type: 'extrude', lostReference: 'The sketch was deleted'),
+            AssemblyLiveFeature(id: 'p1', label: 'Plane 1', type: 'create_plane'),
+            AssemblyLiveFeature(id: 's2', label: 'Sketch 2', type: 'sketch', hidden: true),
+          ],
+          bodies: const [AssemblyLiveItem('e1', 'Body 1')],
+          curves: const [AssemblyLiveItem('c1', 'Curve 1', hidden: true)],
+        );
+
+    test('a row that becomes live opens, which is not the person\'s change; closing it sticks; a refresh keeps it', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      var reported = 0;
+      model.onOpenKeysChanged = () => reported++;
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.openKeys, {'mast/arm/head'});
+      expect(reported, 0);
+      expect(model.openKeysTouched, isFalse);
+      model.setLivePart(live('mast/arm/head')); // new data, same row: the open state is left alone
+      model.setOpen('mast/arm/head', false);
+      expect(reported, 1);
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.isOpen('mast/arm/head'), isFalse);
+      model.clearLivePart();
+      expect(model.livePart, isNull);
+    });
+
+    test('a live part set before the tree arrives opens its row when the tree does; a row that does not exist is ignored', () {
+      final model = AssemblyTreeModel();
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.visibleRows(), isEmpty);
+      model.merge(_tree('rover'));
+      expect(model.isOpen('mast/arm/head'), isTrue);
+      final other = AssemblyTreeModel(tree: _tree('rover'));
+      other.setLivePart(live('gone/part'));
+      expect(other.liveKey, isNull);
+      expect(other.openKeys, isEmpty);
+      expect(other.hasFeatures(const ['gone', 'part']), isFalse);
+    });
+
+    test('the live row counts as having its features, and a refresh drops the open folders that are gone', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      expect(model.hasFeatures(const []), isTrue);
+      model.setOpen('#curves', true);
+      model.setOpen('#surfaces', true); // no surfaces: no such folder
+      model.merge(_tree('single_part'));
+      expect(model.openKeys, {'#curves'});
+    });
+
+    test('the state slot, kind and type of live rows; the live features replace setFeatures', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setFeatures(const [], [const AssemblyFeature('old', 'Old')]);
+      model.setLivePart(live(''));
+      final rows = {for (final r in model.visibleRows()) r.key: r};
+      expect(rows.containsKey('#feature:old'), isFalse);
+      expect(rows['#feature:e1']!.stateWire, 'lost_reference');
+      expect(rows['#feature:e1']!.lostReason, 'The sketch was deleted');
+      expect(rows['#feature:s2']!.stateWire, 'hidden');
+      expect(rows['#feature:s2']!.type, 'sketch');
+      expect(rows['#bodies']!.kindWire, 'bodies_folder');
+      expect(rows['#bodies']!.kind, AssemblyRowKind.group);
+      expect(rows['#planes']!.count, 4);
+    });
+
+    test('multi-select keys round-trip, and a plane feature in the Planes folder gives its feature\'s key', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      for (final k in ['#feature:s1', '#feature:e1', '#feature:p1', '#body:e1', '#curve:c1']) {
+        final ms = model.multiSelectKeyOfRow(k)!;
+        expect(model.rowKeyOfMultiSelect(ms), k, reason: k);
+      }
+      // A body and a feature with one id stay two different keys.
+      expect(model.multiSelectKeyOfRow('#body:e1'), 'body:e1');
+      expect(model.multiSelectKeyOfRow('#feature:e1'), 'feature:e1');
+      expect(model.multiSelectKeyOfRow('#plane:feature:p1'), 'feature:p1');
+      expect(model.rowKeyOfMultiSelect('feature:p1'), '#feature:p1');
+      expect(model.multiSelectKeyOfRow('#plane:xy'), isNull);
+      expect(model.multiSelectKeyOfRow('#planes'), isNull);
+      expect(model.multiSelectKeyOfRow(''), isNull);
+      expect(model.rowKeyOfMultiSelect('feature:nope'), isNull);
+    });
+
+    test('the sketch picker: eligible sketches pickable, everything else locked with the reason; folders and occurrences untouched', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.openAll(['#planes', '#bodies']);
+      model.setPicker(AssemblyPicker.sketch(eligibleSketchIds: ['s1']));
+      final rows = {for (final r in model.visibleRows()) r.key: r};
+      expect(rows['#feature:s1']!.pick, AssemblyPickState.pickable);
+      expect(rows['#feature:s2']!.pick, AssemblyPickState.locked);
+      expect(rows['#feature:s2']!.pickReason, 'Pick a sketch with a closed profile');
+      expect(rows['#feature:e1']!.pick, AssemblyPickState.locked);
+      expect(rows['#body:e1']!.pick, AssemblyPickState.locked);
+      expect(rows['#plane:xy']!.pick, AssemblyPickState.locked);
+      expect(rows['#planes']!.pick, AssemblyPickState.none);
+      expect(rows['']!.pick, AssemblyPickState.none);
+      expect(model.filteredRows('sketch').rows.firstWhere((r) => r.key == '#feature:s1').pick, AssemblyPickState.pickable);
+      model.setPicker(null);
+      expect(model.visibleRows().every((r) => r.pick == AssemblyPickState.none), isTrue);
+    });
+
+    test('the source picker ticks, a convert pick locks later sketches with their reason, the sketcher lock gives every row one', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.setPicker(AssemblyPicker.sources(pickableFeatureIds: ['s1', 'e1'], pickedFeatureIds: ['e1']));
+      var rows = {for (final r in model.visibleRows()) r.key: r};
+      expect(rows['#feature:e1']!.pick, AssemblyPickState.picked);
+      expect(rows['#feature:s1']!.pick, AssemblyPickState.pickable);
+      expect(rows['#feature:s2']!.pick, AssemblyPickState.locked);
+      model.setPicker(AssemblyPicker.convert(pickableSketchIds: ['s1'], laterSketchIds: ['s2']));
+      rows = {for (final r in model.visibleRows()) r.key: r};
+      expect(rows['#feature:s1']!.pick, AssemblyPickState.pickable);
+      expect(rows['#feature:s2']!.pickReason, 'This sketch comes after the one being edited');
+      expect(rows['#feature:e1']!.pickReason, 'Exit the sketch first');
+      model.setPicker(AssemblyPicker.locked('Exit the sketch first'));
+      rows = {for (final r in model.visibleRows()) r.key: r};
+      expect(rows['#feature:s1']!.pickReason, 'Exit the sketch first');
+      expect(model.picker!.banner, isNull);
+    });
+
+    test('expand to selection for a live row opens the live row and its folder', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head'));
+      model.closeAll();
+      model.selectedKey = 'mast/arm/head#curve:c1';
+      expect(model.selectionRevealKeys(), ['mast', 'mast/arm', 'mast/arm/head', 'mast/arm/head#curves']);
+      model.selectedKey = 'mast/arm/head#feature:s1';
+      expect(model.selectionRevealKeys(), ['mast', 'mast/arm', 'mast/arm/head']);
+      model.merge(_tree('rover'));
+      expect(model.selectedKey, 'mast/arm/head#feature:s1');
+    });
+
+    test('a live feature id that is a default plane name and a body id with # are kept whole', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(AssemblyLivePart('', features: const [
+        AssemblyLiveFeature(id: 'xy', label: 'Plane xy', type: 'create_plane'),
+      ], bodies: const [
+        AssemblyLiveItem('f#1', 'Two'),
+      ]));
+      model.openAll(['#planes', '#bodies']);
+      final keys = [for (final r in model.visibleRows()) r.key];
+      expect(keys, containsAll(['#plane:xy', '#plane:feature:xy', '#feature:xy', '#body:f#1']));
+      expect(keys.toSet().length, keys.length);
+      expect(model.rowKeyOfMultiSelect('body:f#1'), '#body:f#1');
+    });
+  });
 }
 
 bool _anyFeatureCount(List<AssemblyTreeNodeDto> nodes) => nodes.any((n) => (n.featureCount ?? 0) > 0 || _anyFeatureCount(n.children));

@@ -40,6 +40,9 @@ class ViewPreferences {
   // The Assembly tree's "Group repeated parts" switch (A4, `docs/assembly-tree-overhaul-scope.md` section 8, answer 6): on by default.
   static const String assemblyTreeGroupingPrefKey = 'view_assembly_tree_grouping';
   static const bool defaultAssemblyTreeGrouping = true;
+  // The tree's desktop "pin to coarse" column (P1): off by default. An icon toggle in the tree header; it moves into the Columns menu in Phase C.
+  static const String assemblyTreePinColumnPrefKey = 'view_assembly_tree_pin_column';
+  static const bool defaultAssemblyTreePinColumn = false;
 
   /// Was `#1E1E2E` (Studio Dark) through Stage 18, then `#F5F5F0`
   /// (Off-white) through Stage 19a - now Charcoal (matches
@@ -99,6 +102,7 @@ class ViewPreferences {
   static bool _sketchLineOutline = defaultSketchLineOutline;
   static bool _darkenSeeThroughInterior = defaultDarkenSeeThroughInterior;
   static bool _assemblyTreeGrouping = defaultAssemblyTreeGrouping;
+  static bool _assemblyTreePinColumn = defaultAssemblyTreePinColumn;
 
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
@@ -113,6 +117,7 @@ class ViewPreferences {
   static bool get sketchLineOutline => _sketchLineOutline;
   static bool get darkenSeeThroughInterior => _darkenSeeThroughInterior;
   static bool get assemblyTreeGrouping => _assemblyTreeGrouping;
+  static bool get assemblyTreePinColumn => _assemblyTreePinColumn;
 
   /// Populates the in-memory cache from `shared_preferences`, falling back to
   /// the defaults above for any key never [save]d. [renderModePrefKey] is
@@ -140,6 +145,7 @@ class ViewPreferences {
     _darkenSeeThroughInterior =
         prefs.getBool(darkenSeeThroughInteriorPrefKey) ?? defaultDarkenSeeThroughInterior;
     _assemblyTreeGrouping = prefs.getBool(assemblyTreeGroupingPrefKey) ?? defaultAssemblyTreeGrouping;
+    _assemblyTreePinColumn = prefs.getBool(assemblyTreePinColumnPrefKey) ?? defaultAssemblyTreePinColumn;
   }
 
   static Future<void> setBgColourHex(String hex) async {
@@ -212,6 +218,12 @@ class ViewPreferences {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(assemblyTreeGroupingPrefKey, value);
     _assemblyTreeGrouping = value;
+  }
+
+  static Future<void> setAssemblyTreePinColumn(bool value) async {
+    _assemblyTreePinColumn = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(assemblyTreePinColumnPrefKey, value);
   }
 
   static Future<void> setSketchLineOutline(bool value) async {
