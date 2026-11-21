@@ -259,6 +259,35 @@ def folder_key(node_key: str, folder: str) -> str:
     return node_key + "#" + folder
 
 
+# --- The live part (spec section 13) -------------------------------------------------------------------------------------
+
+FEATURE_STATES = ["lost_reference", "moved_reference", "pending_detail", "rolled_back", "hidden", "none"]
+DEFAULT_PLANES = [("xy", "XY plane"), ("xz", "XZ plane"), ("yz", "YZ plane")]
+FOLDERS = [("bodies", "Bodies", "body"), ("planes", "Planes", None), ("surfaces", "Surfaces", "surface"), ("curves", "Curves", "curve")]
+
+
+def feature_state(feature: dict[str, Any]) -> str:
+    """The one state a live feature row shows, most severe first (`FEATURE_STATES`). `lost_reference` is the reason (a string)
+    or null; the other flags are booleans. A missing flag is false. `hidden` is also the row's own `hidden` field."""
+    if feature.get("lost_reference") is not None:
+        return "lost_reference"
+    if feature.get("moved_reference"):
+        return "moved_reference"
+    if feature.get("pending_detail"):
+        return "pending_detail"
+    if feature.get("rolled_back"):
+        return "rolled_back"
+    if feature.get("hidden"):
+        return "hidden"
+    return "none"
+
+
+def plane_feature_key(owner_key: str, feature_id: str) -> str:
+    """A plane feature in the Planes folder: always `K#plane:feature:<id>`, so it can never share a key with a default plane
+    (`K#plane:xy`, `xz`, `yz`), whatever a hand-written file calls its features."""
+    return owner_key + "#plane:feature:" + feature_id
+
+
 # --- Visible rows -------------------------------------------------------------------------------------------------------
 
 def _row(key, kind, depth, label, state="none", bubble_=None, expandable=False, is_open=False, count=None, path=None, hidden=False, suppressed=False):
@@ -288,27 +317,88 @@ def visible_rows(
     grouping: bool = True,
     unsaved_part_ids: set[str] | frozenset[str] = frozenset(),
     features: dict[str, list[dict[str, Any]]] | None = None,
+    live: dict[str, Any] | None = None,
+    *,
+    listed: set[str] | None = None,
+    trace: dict[str, dict[str, Any]] | None = None,
+    open_all: bool = False,
 ) -> list[dict[str, Any]]:
-    """The flat list of rows to draw, top to bottom (spec "Visible rows")."""
+    """The flat list of rows to draw, top to bottom (spec "Visible rows").
+
+    `live` (section 13) adds the live part's folders and features, and a `type` to every row. `listed`, `trace` and `open_all`
+    are for the filter and for restore (sections 11 and 12): with `listed` only those keys are emitted; `open_all` opens
+    everything that can open; `trace` receives, per emitted key, its parent's key and its row's `fixed` flag."""
     unsaved = frozenset(unsaved_part_ids)
     features = features or {}
-    rows = [_row("", "root", 0, tree["part_name"], state="unsaved" if tree["part_id"] in unsaved else "none", expandable=False, is_open=True, path=[])]
+    live_key = live["key"] if live is not None else None
+    rows: list[dict[str, Any]] = []
+
+    def is_open_key(key: str) -> bool:
+        return open_all or key in open_keys
+
+    def add(row: dict[str, Any], parent: str | None, fixed: bool = False, type_: str | None = None) -> bool:
+        if listed is not None and row["key"] not in listed:
+            return False
+        if live is not None:
+            row["type"] = type_
+        rows.append(row)
+        if trace is not None:
+            trace[row["key"]] = {"parent": parent, "fixed": fixed}
+        return True
+
+    add(_row("", "root", 0, tree["part_name"], state="unsaved" if tree["part_id"] in unsaved else "none", expandable=False, is_open=True, path=[]), None)
 
     def emit_features(node_key: str, depth: int) -> None:
         for feature in features.get(node_key, []):
-            rows.append(_row(feature_key(node_key, feature["id"]), "feature", depth, feature["label"]))
+            add(_row(feature_key(node_key, feature["id"]), "feature", depth, feature["label"]), node_key)
 
-    def emit_occurrence(node: dict[str, Any], name: str, depth: int) -> None:
+    def emit_live(node_key: str, depth: int) -> None:
+        """Section 13: the folders, then the features in build order."""
+        feats = live.get("features", [])
+        contents = {"bodies": live.get("bodies", []), "surfaces": live.get("surfaces", []), "curves": live.get("curves", [])}
+        for name, label, item_kind in FOLDERS:
+            if name == "planes":
+                plane_features = [f for f in feats if f.get("type") == "create_plane"]
+                count = len(DEFAULT_PLANES) + len(plane_features)
+            else:
+                count = len(contents[name])
+                if count == 0:
+                    continue
+            fkey = folder_key(node_key, name)
+            opened = is_open_key(fkey)
+            if not add(_row(fkey, f"{name}_folder", depth, label, expandable=True, is_open=opened, count=count), node_key) or not opened:
+                continue
+            if name == "planes":
+                hidden = live.get("default_planes_hidden", {})
+                for plane_id, plane_label in DEFAULT_PLANES:
+                    h = bool(hidden.get(plane_id, False))
+                    add(_row(f"{node_key}#plane:{plane_id}", "default_plane", depth + 1, plane_label, state="hidden" if h else "none", hidden=h), fkey)
+                for f in plane_features:
+                    add(_row(plane_feature_key(node_key, f["id"]), "feature", depth + 1, f["label"], state=feature_state(f), hidden=bool(f.get("hidden"))), fkey, type_=f.get("type"))
+            else:
+                for item in contents[name]:
+                    h = bool(item.get("hidden"))
+                    add(_row(f"{node_key}#{item_kind}:{item['id']}", item_kind, depth + 1, item["label"], state="hidden" if h else "none", hidden=h), fkey)
+        for f in feats:
+            add(_row(feature_key(node_key, f["id"]), "feature", depth, f["label"], state=feature_state(f), hidden=bool(f.get("hidden"))), node_key, type_=f.get("type"))
+
+    def emit_tail(node_key: str, depth: int) -> None:
+        if live is not None and node_key == live_key:
+            emit_live(node_key, depth)
+        else:
+            emit_features(node_key, depth)
+
+    def emit_occurrence(node: dict[str, Any], name: str, depth: int, parent: str) -> None:
         key = occurrence_key(node["path"])
-        expandable = _expandable(node)
-        is_open = expandable and key in open_keys
+        expandable = _expandable(node) or (live is not None and key == live_key and node["kind"] != "missing")
+        is_open = expandable and is_open_key(key)
         if not expandable:
             counts = None
         elif is_open:
             counts = own_level_counts(node)
         else:
             counts = subtree_counts(node, unsaved)
-        rows.append(
+        shown = add(
             _row(
                 key,
                 node["kind"],
@@ -321,50 +411,54 @@ def visible_rows(
                 path=list(node["path"]),
                 hidden=node["hidden"],
                 suppressed=node["suppressed"],
-            )
+            ),
+            parent,
+            fixed=node["fixed"],
         )
-        if is_open:
+        if shown and is_open:
             emit_level(node, key, depth + 1)
-            emit_features(key, depth + 1)
+            emit_tail(key, depth + 1)
 
     def emit_level(node: dict[str, Any], node_key: str, depth: int) -> None:
         children = node.get("children", [])
         names = sibling_names(children)
         for item in sibling_items(children, grouping):
             if "node" in item:
-                emit_occurrence(item["node"], item["name"], depth)
+                emit_occurrence(item["node"], item["name"], depth, node_key)
                 continue
             members = [children[i] for i in item["group"]]
-            live = [m for m in members if not m["suppressed"]]  # the group's state: its worst unsuppressed member (all suppressed: its worst)
+            live_members = [m for m in members if not m["suppressed"]]  # the group's state: its worst unsuppressed member (all suppressed: its worst)
             key = group_key(node_key, members[0]["occurrence_id"])
-            is_open = key in open_keys
-            rows.append(
+            is_open = is_open_key(key)
+            shown = add(
                 _row(
                     key,
                     "group",
                     depth,
                     f"{item['base']} x{len(members)}",
-                    state=worst_state([state_slot(m, unsaved) for m in (live or members)]),
+                    state=worst_state([state_slot(m, unsaved) for m in (live_members or members)]),
                     bubble_=None if is_open else bubble(group_counts(members, unsaved)),
                     expandable=True,
                     is_open=is_open,
                     count=len(members),
                     hidden=all(m["hidden"] for m in members),
                     suppressed=all(m["suppressed"] for m in members),
-                )
+                ),
+                node_key,
             )
-            if is_open:
+            if shown and is_open:
                 for i in item["group"]:
-                    emit_occurrence(children[i], names[i]["name"], depth + 1)
+                    emit_occurrence(children[i], names[i]["name"], depth + 1, key)
 
     emit_level(tree, "", 1)
-    mates = tree.get("mates")
-    if mates and mates["count"] > 0:
-        rows.append(_row(folder_key("", "mates"), "mates_folder", 1, "Mates", bubble_=bubble(own_level_counts(tree)), expandable=True, is_open=folder_key("", "mates") in open_keys, count=mates["count"]))
-    patterns = tree.get("patterns")
-    if patterns and patterns["count"] > 0:
-        rows.append(_row(folder_key("", "patterns"), "patterns_folder", 1, "Patterns", expandable=True, is_open=folder_key("", "patterns") in open_keys, count=patterns["count"]))
-    emit_features("", 1)
+    if listed is None:  # the Mates and Patterns folders are never listed while a filter is on
+        mates = tree.get("mates")
+        if mates and mates["count"] > 0:
+            add(_row(folder_key("", "mates"), "mates_folder", 1, "Mates", bubble_=bubble(own_level_counts(tree)), expandable=True, is_open=is_open_key(folder_key("", "mates")), count=mates["count"]), "")
+        patterns = tree.get("patterns")
+        if patterns and patterns["count"] > 0:
+            add(_row(folder_key("", "patterns"), "patterns_folder", 1, "Patterns", expandable=True, is_open=is_open_key(folder_key("", "patterns")), count=patterns["count"]), "")
+    emit_tail("", 1)
     return rows
 
 
@@ -383,6 +477,91 @@ def reveal(tree: dict[str, Any], path: list[str], grouping: bool = True) -> list
         if depth < len(path) - 1:
             keys.append(occurrence_key(path[: depth + 1]))
     return keys
+
+
+# --- Filter (spec section 11) -------------------------------------------------------------------------------------------
+
+ERROR_STATES = frozenset({"missing", "cycle", "broken", "over_constrained", "lost_reference"})
+WARNING_STATES = frozenset({"near", "moved_reference"})
+# token -> test(row, fixed flag). Written out one by one so the spec's list and this one can be compared line by line.
+TOKENS = {
+    ":missing": lambda r, fixed: r["state"] == "missing",
+    ":errors": lambda r, fixed: r["state"] in ERROR_STATES,
+    ":warnings": lambda r, fixed: r["state"] in WARNING_STATES,
+    ":unsaved": lambda r, fixed: r["state"] == "unsaved",
+    ":fixed": lambda r, fixed: fixed,
+    ":hidden": lambda r, fixed: r["hidden"],
+    ":suppressed": lambda r, fixed: r["suppressed"],
+    ":parts": lambda r, fixed: r["kind"] == "part",
+    ":assemblies": lambda r, fixed: r["kind"] == "assembly",
+    ":features": lambda r, fixed: r["kind"] == "feature",
+    ":sketches": lambda r, fixed: r.get("type") == "sketch",
+}
+NON_MATCHING_KINDS = frozenset({"root", "group", "mates_folder", "patterns_folder", "bodies_folder", "planes_folder", "surfaces_folder", "curves_folder"})
+
+
+def parse_query(query: str) -> tuple[list[str], list[str], list[str]]:
+    """(name terms, known tokens, unknown tokens), all lower case, in query order, each listed once. Words are split on runs of
+    whitespace; a word starting with `:` is a token."""
+    terms: list[str] = []
+    tokens: list[str] = []
+    unknown: list[str] = []
+    for word in query.lower().split():
+        bucket = (tokens if word in TOKENS else unknown) if word.startswith(":") else terms
+        if word not in bucket:
+            bucket.append(word)
+    return terms, tokens, unknown
+
+
+def filter_rows(
+    tree: dict[str, Any],
+    query: str,
+    open_keys: set[str] | frozenset[str] = frozenset(),
+    grouping: bool = True,
+    unsaved_part_ids: set[str] | frozenset[str] = frozenset(),
+    features: dict[str, list[dict[str, Any]]] | None = None,
+    live: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`{"rows", "unknown"}`: section 7's (or section 13's) rows narrowed to the root, the matches and their ancestors. Every row
+    has `match`. An empty query is no filter (the rows for `open_keys`, every `match` false). A query with words but no
+    criteria (only unknown tokens) is a filter that matches nothing."""
+    terms, tokens, unknown = parse_query(query)
+    if not query.split():
+        rows = visible_rows(tree, open_keys, grouping, unsaved_part_ids, features, live)
+        return {"rows": [{**row, "match": False} for row in rows], "unknown": []}
+    trace: dict[str, dict[str, Any]] = {}
+    everything = visible_rows(tree, frozenset(), grouping, unsaved_part_ids, features, live, open_all=True, trace=trace)
+    matches = set()
+    if terms or tokens:
+        for row in everything:
+            if row["kind"] in NON_MATCHING_KINDS:
+                continue
+            if all(term in row["label"].lower() for term in terms) and all(TOKENS[t](row, trace[row["key"]]["fixed"]) for t in tokens):
+                matches.add(row["key"])
+    listed = {""}
+    for key in matches:
+        while key is not None and key not in listed:
+            listed.add(key)
+            key = trace[key]["parent"]
+    opened = {trace[key]["parent"] for key in listed if key != ""}  # a listed row is open when something below it is listed
+    rows = visible_rows(tree, opened, grouping, unsaved_part_ids, features, live, listed=listed)
+    return {"rows": [{**row, "match": row["key"] in matches} for row in rows], "unknown": unknown}
+
+
+# --- Remembered open rows (spec section 12) -------------------------------------------------------------------------------
+
+MAX_STORED_KEYS = 2000
+OPEN_KINDS = frozenset({"assembly", "part", "group", "mates_folder", "patterns_folder", "bodies_folder", "planes_folder", "surfaces_folder", "curves_folder"})
+
+
+def restore(tree: dict[str, Any], stored: list[str], live: dict[str, Any] | None = None, limit: int = MAX_STORED_KEYS) -> list[str]:
+    """The stored open keys that still name a row that can open, in the visible-row order of the tree with everything open
+    (grouping on: group keys are checked under that setting, so switching grouping off and on loses nothing), at most `limit`.
+    Feature, body, surface, curve and plane keys are never open keys; the root's `""` is always open and never stored."""
+    wanted = set(stored)
+    rows = visible_rows(tree, frozenset(), True, frozenset(), {}, live, open_all=True)
+    kept = [r["key"] for r in rows if r["key"] in wanted and r["kind"] in OPEN_KINDS and r["expandable"]]
+    return kept[:limit]
 
 
 # --- Building a response from a small model (the backend's walk) --------------------------------------------------------

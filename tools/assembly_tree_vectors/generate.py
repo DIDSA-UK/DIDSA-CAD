@@ -14,6 +14,9 @@ The file is self-contained, so DIDSA-VR copies it as-is (`tests/fixtures/assembl
   `unsaved_part_ids`, `features` per row key) and `expected` (the rows, top to bottom, every field);
   `kind: "reveal"` gives a `path` and `grouping` and `expected` (the keys to open, in order).
   `why` says what the case pins. Deterministic: no randomness, keys sorted.
+- Version 2 adds (spec sections 11 to 13): `kind: "filter"` (the rows inputs plus `query`; `expected`: `{rows, unknown}`, every row
+  with `match`), `"restore"` (`stored`, `grouping`, `limit`; `expected`: the kept keys), `"live_part"` (the rows inputs plus
+  `live`; every row has `type`), `"live_part_filter"` and `"live_part_restore"`. The 36 version 1 cases come first, unchanged.
 """
 from __future__ import annotations
 
@@ -29,7 +32,8 @@ OUT = REPO / "docs" / "assembly-tree" / "vectors.json"
 # The backend's copy of a few models as native documents, with the trees the reference builds for them (no status): the
 # endpoint must answer exactly these (backend/tests/test_assembly_tree.py). The CI image holds backend/ only, hence a copy.
 BACKEND_OUT = REPO / "backend" / "tests" / "data" / "assembly_tree_rollup_vectors.json"
-VERSION = 1
+VERSION = 2  # vectors.json: 2 adds the filter, restore and live-part cases (spec sections 11-13); the 36 version 1 cases are first and unchanged
+BACKEND_VERSION = 1  # the backend roll-up file did not change
 
 
 def occ(id_, part, **fields):
@@ -264,6 +268,9 @@ REPEATS = {
     }
 }
 
+# ---- version 2: three identical bolts, not enough to group (a group key stored earlier no longer names a row) -----------------
+THREE_BOLTS = {"parts": {"wheel": part("Wheel", [occ("b1", "bolt", constraint=FULL), occ("b2", "bolt", constraint=FULL), occ("b3", "bolt", constraint=FULL)], feature_count=0), "bolt": part("Bolt M4")}}
+
 TREES = {
     "rover": ref.build_tree(ROVER, "rover", status=True),
     "rover_no_status": ref.build_tree(ROVER, "rover", status=False),
@@ -278,6 +285,7 @@ TREES = {
     "suppressed": ref.build_tree(SUPPRESSED, "top", status=True),
     "single_part": ref.build_tree(SINGLE, "solo", status=True),
     "repeats": ref.build_tree(REPEATS, "root", status=True),
+    "wheel_three_bolts": ref.build_tree(THREE_BOLTS, "wheel", status=True),
 }
 
 FEATURES_LENS = {"mast/arm/head/lens": [{"id": "f1", "label": "Sketch 1"}, {"id": "f2", "label": "Revolve 1"}, {"id": "f3", "label": "Fillet 1"}]}
@@ -369,11 +377,196 @@ CASES = [
 ]
 
 
+# ---- version 2: filter (section 11), restore (section 12), the live part (section 13) ----------------------------------
+def filter_case(name, why, tree, query, open_keys=(), grouping=True, unsaved=(), features=None, live=None):
+    return {
+        "kind": "live_part_filter" if live is not None else "filter",
+        "name": name,
+        "why": why,
+        "tree": tree,
+        "query": query,
+        "open": list(open_keys),
+        "grouping": grouping,
+        "unsaved_part_ids": list(unsaved),
+        "features": features or {},
+        **({"live": live} if live is not None else {}),
+    }
+
+
+def restore_case(name, why, tree, stored, grouping=True, limit=ref.MAX_STORED_KEYS, live=None):
+    return {
+        "kind": "live_part_restore" if live is not None else "restore",
+        "name": name,
+        "why": why,
+        "tree": tree,
+        "stored": list(stored),
+        "grouping": grouping,
+        "limit": limit,
+        **({"live": live} if live is not None else {}),
+    }
+
+
+def live_case(name, why, tree, live, open_keys=(), grouping=True, unsaved=(), features=None):
+    return {**rows_case(name, why, tree, open_keys, grouping, unsaved, features), "kind": "live_part", "live": live}
+
+
+def lf(id_, label, type_, **flags):
+    return {"id": id_, "label": label, "type": type_, **flags}
+
+
+PLANES_SHOWN = {"xy": False, "xz": False, "yz": False}
+# A part opened on its own: build order sketch, extrude, plane, sketch, fillet; one body.
+LIVE_ALONE = {
+    "key": "",
+    "features": [
+        lf("f1", "Sketch 1", "sketch"),
+        lf("f2", "Extrude 1", "extrude"),
+        lf("f3", "Plane 1", "create_plane"),
+        lf("f4", "Sketch 2", "sketch", hidden=True),
+        lf("f5", "Fillet 1", "fillet"),
+    ],
+    "bodies": [{"id": "b1", "label": "Body 1", "hidden": False}, {"id": "b2", "label": "Bracket tab", "hidden": True}],
+    "surfaces": [],
+    "curves": [{"id": "c1", "label": "Curve 1", "hidden": False}],
+    "default_planes_hidden": {"xy": False, "xz": True, "yz": False},
+}
+LIVE_EMPTY = {"key": "", "features": [lf("f1", "Sketch 1", "sketch"), lf("f2", "Extrude 1", "extrude")], "bodies": [], "surfaces": [], "curves": [], "default_planes_hidden": PLANES_SHOWN}
+# Every feature state, and two or three on one feature (the most severe wins).
+LIVE_STATES = {
+    "key": "",
+    "features": [
+        lf("s_lost", "Lost", "extrude", lost_reference="The sketch edge was deleted"),
+        lf("s_moved", "Moved", "fillet", moved_reference=True),
+        lf("s_pending", "Pending", "revolve", pending_detail=True),
+        lf("s_rolled", "Rolled back", "sketch", rolled_back=True),
+        lf("s_hidden", "Hidden", "sketch", hidden=True),
+        lf("s_none", "Plain", "extrude"),
+        lf("s_lost_moved_hidden", "Lost and moved and hidden", "fillet", lost_reference="The face moved away", moved_reference=True, hidden=True),
+        lf("s_moved_pending", "Moved and pending", "chamfer", moved_reference=True, pending_detail=True),
+        lf("s_pending_rolled", "Pending and rolled back", "extrude", pending_detail=True, rolled_back=True),
+        lf("s_rolled_hidden", "Rolled back and hidden", "sketch", rolled_back=True, hidden=True),
+    ],
+    "bodies": [],
+    "surfaces": [],
+    "curves": [],
+    "default_planes_hidden": PLANES_SHOWN,
+}
+# The live part three levels down in the rover (mast / arm / head places a lens and a missing cable).
+LIVE_HEAD = {
+    "key": "mast/arm/head",
+    "features": [
+        lf("h1", "Sketch 1", "sketch"),
+        lf("h2", "Extrude 1", "extrude", lost_reference="The sketch was deleted"),
+        lf("h3", "Fillet 1", "fillet", moved_reference=True),
+    ],
+    "bodies": [{"id": "hb1", "label": "Head body", "hidden": False}],
+    "surfaces": [{"id": "hs1", "label": "Skin", "hidden": True}],
+    "curves": [],
+    "default_planes_hidden": PLANES_SHOWN,
+}
+LIVE_LENS = {"key": "mast/arm/head/lens", "features": [lf("l1", "Sketch 1", "sketch"), lf("l2", "Revolve 1", "revolve")], "bodies": [{"id": "lb1", "label": "Lens body", "hidden": False}], "surfaces": [], "curves": [], "default_planes_hidden": PLANES_SHOWN}
+# A hand-written file can carry a plane feature whose id is xy: plane features are keyed #plane:feature:<id>, so no clash.
+LIVE_XY = {"key": "", "features": [lf("xy", "Plane XY copy", "create_plane"), lf("f2", "Sketch 1", "sketch")], "bodies": [], "surfaces": [], "curves": [], "default_planes_hidden": PLANES_SHOWN}
+FEATURES_FETCHED = {"mast/arm/head/lens": FEATURES_LENS["mast/arm/head/lens"], "chassis": [{"id": "g1", "label": "Sketch 1"}, {"id": "g2", "label": "Boss 1"}]}
+
+CASES += [
+    # --- filter: name terms
+    filter_case("filter_empty_query", "An empty query is no filter: section 7's rows for the open keys, every match false.", "rover", "", ["wheel_l"]),
+    filter_case("filter_spaces_only", "Only spaces is also no filter.", "rover", "   ", ["mast"]),
+    filter_case("filter_deep_collapsed", "A name term deep in a collapsed branch: every ancestor is listed and open, the rest of each level is not; the open keys play no part.", "rover", "lens"),
+    filter_case("filter_ignores_open_keys", "The same query with other rows open gives the same rows.", "rover", "lens", ["wheel_l", "chassis"]),
+    filter_case("filter_case_insensitive", "Case does not matter.", "rover", "LEN"),
+    filter_case("filter_in_group", "A match inside a group lists the group row (open) and only the matching members, under the open wheel.", "rover", "bolt m4 <3>"),
+    filter_case("filter_two_terms", "Two name terms must both be in the label (AND); the order of the words does not matter.", "rover", "<2> screw"),
+    filter_case("filter_instance_number", "`<2>` finds the second instance of every repeated Part, inside groups and out.", "rover", "<2>"),
+    filter_case("filter_term_no_match", "Nothing matches: the root alone.", "rover", "zzz"),
+    filter_case("filter_grouping_off", "Grouping off: no group rows; the members are listed by their ancestors.", "rover", "bolt <1>", grouping=False),
+    filter_case("filter_group_and_own_label", "A group's own label never matches (`x4`), and neither does the root's (`rover`).", "rover", "x4 rover"),
+    # --- filter: tokens
+    filter_case("filter_missing", "`:missing`: the missing battery, and the missing cable below mast / arm / head.", "rover", ":missing"),
+    filter_case("filter_errors", "`:errors`: missing, cycle, broken, over-constrained rows (the bubble's error set). A fixed, near or unsaved row is not one.", "rover", ":errors"),
+    filter_case("filter_errors_no_status", "`:errors` without status finds only what section 5 lists for that case: the missing files.", "rover_no_status", ":errors"),
+    filter_case("filter_warnings", "`:warnings`: state near.", "rover", ":warnings"),
+    filter_case("filter_unsaved", "`:unsaved`: state unsaved (the client's set).", "rover", ":unsaved", unsaved=["bolt"]),
+    filter_case("filter_fixed", "`:fixed`: the fixed flag, whatever the state (the mast's base is fixed and constrained both ways).", "rover", ":fixed"),
+    filter_case("filter_fixed_flag_without_status", "`:fixed` without status still works: it is the flag.", "rover_no_status", ":fixed"),
+    filter_case("filter_hidden", "`:hidden`: rows with the eye-off.", "rover", ":hidden"),
+    filter_case("filter_suppressed", "`:suppressed`: a suppressed sub-assembly; its children are not suppressed themselves, so they do not match.", "suppressed", ":suppressed"),
+    filter_case("filter_parts", "`:parts`: kind part (not assemblies, not missing).", "rover", ":parts"),
+    filter_case("filter_assemblies", "`:assemblies`: kind assembly.", "rover", ":assemblies"),
+    filter_case("filter_token_and_name", "A token and a name term: both must hold.", "rover", ":hidden screw"),
+    filter_case("filter_two_tokens", "Two tokens: both must hold (AND).", "rover", ":parts :hidden"),
+    filter_case("filter_token_case", "Tokens are case-insensitive too.", "rover", ":MISSING"),
+    filter_case("filter_unknown_token", "An unknown token is left out of the matching and listed, lower case, once, in query order.", "rover", ":Foo lens :bar :foo"),
+    filter_case("filter_only_unknown_token", "Only an unknown token: a filter with no criteria matches nothing, and says what it did not understand.", "rover", ":foo"),
+    filter_case("filter_lone_colon", "A lone `:` is an unknown token.", "rover", ":"),
+    # --- filter: features, fetched and not
+    filter_case("filter_fetched_and_unfetched_features", "Feature rows match only where features were fetched: the lens's and the chassis's Sketch 1 are found; the mast base (one feature, not fetched) is not.", "rover", "sketch", features=FEATURES_FETCHED),
+    filter_case("filter_features_token", "`:features`: every fetched feature row.", "rover", ":features", features=FEATURES_FETCHED),
+    filter_case("filter_sketches_without_live_part", "`:sketches` needs a feature `type`: rows from section 7's `features` have none, so nothing matches.", "rover", ":sketches", features=FEATURES_FETCHED),
+    filter_case("filter_root_features", "A part opened on its own: the root's features match by name.", "single_part", "fillet", features=FEATURES_ROOT),
+    # --- restore
+    restore_case(
+        "restore_keeps_what_still_exists",
+        "Kept: rows that can open. Dropped: a row that was deleted, a missing file, a feature key, a folder that does not exist; the order is the visible-row order of the tree with everything open, not the stored order.",
+        "rover",
+        ["#patterns", "wheel_l/#group:b1", "gone/row", "batt", "mast/arm/head/lens#feature:f1", "mast", "chassis", "#mates", "wheel_l", "#group:s1", "mast/arm/head#bodies"],
+    ),
+    restore_case("restore_group_key_with_grouping_off", "A group key is kept while grouping is off (it only names a row when grouping is on): switching grouping off and on loses nothing.", "rover", ["wheel_l", "wheel_l/#group:b1", "#group:s1"], grouping=False),
+    restore_case("restore_group_that_no_longer_forms", "A group key whose group no longer has four members is dropped; the first member's own key stays (a part with features opens).", "wheel_three_bolts", ["#group:b1", "b1"]),
+    restore_case("restore_row_that_can_no_longer_open", "A row that cannot open any more (the depth cap stops l1 / l2 / l3, which has no features) is dropped; its ancestors stay.", "deep_capped", ["l1", "l1/l2", "l1/l2/l3"]),
+    restore_case("restore_root_is_not_stored", "The root's key is never an open key.", "rover", ["", "mast"]),
+    restore_case("restore_limit", "At most `limit` keys (2,000 in the app): the first ones in visible-row order are kept, the rest dropped.", "rover", ["mast", "wheel_l", "wheel_r", "#mates", "#patterns", "chassis"], limit=3),
+    # --- the live part
+    live_case("live_part_alone_collapsed", "A part opened on its own: Planes always shows (3 default planes + 1 plane feature), Bodies and Curves have items, Surfaces is empty and not listed; folders start collapsed; then the features in build order.", "single_part", LIVE_ALONE),
+    live_case("live_part_alone_folders_open", "The folders open: bodies, then the three default planes and the plane feature, then curves; the plane feature also stays in the build order, under its own key.", "single_part", LIVE_ALONE, ["#bodies", "#planes", "#curves"]),
+    live_case("live_part_alone_empty_folders", "Nothing to put in Bodies, Surfaces or Curves: only Planes is listed.", "single_part", LIVE_EMPTY, ["#planes"]),
+    live_case("live_part_every_feature_state", "Every feature state, and several states on one feature: the most severe state wins (lost > moved > pending > rolled back > hidden), `hidden` stays true on the row.", "single_part", LIVE_STATES),
+    live_case("live_part_plane_feature_named_xy", "A plane feature whose id is `xy` (only a hand-written file can have one): the default plane keeps `#plane:xy`; every plane feature in the Planes folder is `#plane:feature:<id>` (here `#plane:feature:xy`), its build-order row `#feature:xy`.", "single_part", LIVE_XY, ["#planes"]),
+    live_case("live_part_three_levels_down_collapsed", "The live row is not open: nothing under it is listed, exactly as for any row.", "rover", LIVE_HEAD),
+    live_case("live_part_three_levels_down", "The live part is mast / arm / head, open: its child occurrences first (lens, the missing cable), then its folders, then its features at the same depth; a Part in the same tree stays read-only (the lens's features are section 7's, `type` null).", "rover", LIVE_HEAD, ["mast", "mast/arm", "mast/arm/head", "mast/arm/head/lens"], features=FEATURES_LENS),
+    live_case("live_part_three_levels_down_folders_open", "...with Bodies, Planes and Surfaces open.", "rover", LIVE_HEAD, ["mast", "mast/arm", "mast/arm/head", "mast/arm/head#bodies", "mast/arm/head#planes", "mast/arm/head#surfaces"]),
+    live_case("live_part_leaf_four_deep", "A live part with no child occurrences, four levels down: the folders and features at depth 5.", "rover", LIVE_LENS, ["mast", "mast/arm", "mast/arm/head", "mast/arm/head/lens"]),
+    live_case("live_part_at_root_of_assembly", "The root is live and an assembly: its occurrences, then its Mates and Patterns folders, then the live folders and features.", "rover", {**LIVE_ALONE, "features": LIVE_ALONE["features"][:2]}, ["chassis"]),
+    live_case("live_part_key_names_no_row", "The live key names no row of this tree: the inputs are ignored (a `type` null on every row).", "rover", {**LIVE_ALONE, "key": "gone/part"}, ["wheel_l"]),
+    live_case("live_part_on_missing_row", "A missing row cannot be live and cannot open: nothing is added.", "rover", {**LIVE_ALONE, "key": "batt"}, ["batt"]),
+    # --- the live part and the filter
+    filter_case("live_filter_lost_reference_in_collapsed_live_part", "`:errors` also matches a lost reference: the collapsed live part is listed open as an ancestor, with the one feature under it (the folders hold no match); the broken mast and missing files match as before.", "rover", ":errors", live=LIVE_HEAD),
+    filter_case("live_filter_warnings_moved_reference", "`:warnings` also matches a moved reference.", "rover", ":warnings", live=LIVE_HEAD),
+    filter_case("live_filter_match_inside_bodies", "A match inside Bodies lists the folder (open) and the body, and the live part above it.", "rover", "head body", live=LIVE_HEAD),
+    filter_case("live_filter_default_plane", "A default plane can match by label; a folder never does.", "single_part", "xz", live=LIVE_ALONE),
+    filter_case("live_filter_plane_feature_twice", "A plane feature is two rows (build order and the Planes folder): both match, each listed under its parent.", "single_part", "plane 1", live=LIVE_ALONE),
+    filter_case("live_filter_folder_label_never_matches", "The word `bodies` is a folder's label: folders never match, so the rows are the root alone.", "single_part", "bodies", live=LIVE_ALONE),
+    filter_case("live_filter_sketches", "`:sketches`: feature rows of type sketch.", "single_part", ":sketches", live=LIVE_ALONE),
+    filter_case("live_filter_features", "`:features`: every feature row, the plane feature in both places.", "single_part", ":features", live=LIVE_ALONE),
+    filter_case("live_filter_hidden", "`:hidden`: hidden features, bodies and default planes (the flag, whatever the state).", "single_part", ":hidden", live=LIVE_ALONE),
+    filter_case("live_filter_hidden_beneath_a_worse_state", "A hidden feature whose state is worse still matches `:hidden`, and also `:errors`.", "single_part", ":hidden :errors", live=LIVE_STATES),
+    filter_case("live_filter_every_state_errors", "`:errors` finds lost references only (not moved ones).", "single_part", ":errors", live=LIVE_STATES),
+    filter_case("live_filter_term_and_token", "A name term and a token on live rows.", "single_part", "sketch :hidden", live=LIVE_ALONE),
+    filter_case("live_filter_open_keys_ignored", "The open keys play no part under a filter, for live rows too.", "single_part", "curve", ["#planes", "#bodies"], live=LIVE_ALONE),
+    filter_case("live_filter_empty_query", "An empty query is the live rows for the open keys, every match false.", "single_part", "", ["#planes"], live=LIVE_ALONE),
+    # --- the live part and restore
+    restore_case(
+        "live_restore_folder_key_and_feature_key",
+        "Folder keys of the live part are open keys (kept when the folder shows); feature, body, plane keys never are; Surfaces has one item, so its key is kept; Curves is empty and not a row, so its key is dropped.",
+        "rover",
+        ["mast/arm/head#feature:h1", "mast/arm/head#planes", "mast/arm/head#bodies", "mast/arm/head#surfaces", "mast/arm/head#body:hb1", "mast/arm/head#plane:xy", "mast/arm/head", "mast/arm/head#curves"],
+        live=LIVE_HEAD,
+    ),
+    restore_case("live_restore_without_the_live_part", "The same folder keys without a live part name no rows: dropped.", "rover", ["mast/arm/head#planes", "mast/arm/head"]),
+]
+
+
 def expected(case: dict) -> object:
     tree = TREES[case["tree"]]
+    live = case.get("live")
     if case["kind"] == "reveal":
         return ref.reveal(tree, case["path"], case["grouping"])
-    return ref.visible_rows(tree, set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"])
+    if case["kind"] in ("restore", "live_part_restore"):
+        return ref.restore(tree, case["stored"], live, case["limit"])
+    if case["kind"] in ("filter", "live_part_filter"):
+        return ref.filter_rows(tree, case["query"], set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"], live)
+    return ref.visible_rows(tree, set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"], live)
 
 
 def native_document(model: dict, root_id: str) -> dict:
@@ -416,7 +609,7 @@ BACKEND_MODELS = [
 
 def build_backend() -> dict:
     return {
-        "version": VERSION,
+        "version": BACKEND_VERSION,
         "about": "Generated by tools/assembly_tree_vectors/generate.py; never edit by hand. Each case: import `document`, GET "
         "/parts/{root}/assembly-tree with `params`, expect `expected` (the reference's tree, no status).",
         "cases": [
