@@ -609,6 +609,10 @@ class AssemblyTreeModel {
 
   /// The live key whose row was last opened because it became live (so closing it again is the person's choice).
   String? _liveOpenedFor;
+
+  /// The live row's key while it is open only because it became live (nobody opened it): kept out of [keysToStore] until the person opens or
+  /// closes it themselves.
+  String? _autoOpenKey;
   AssemblyPicker? _picker;
   Map<String, _LiveRef>? _liveRefs;
   Map<String, String>? _liveMs;
@@ -688,13 +692,21 @@ class AssemblyTreeModel {
     }
   }
 
-  void setOpen(String key, bool open) => _opened(open ? _open.add(key) : _open.remove(key));
+  void setOpen(String key, bool open) {
+    if (key == _autoOpenKey) _autoOpenKey = null; // the person's own choice from here on
+    _opened(open ? _open.add(key) : _open.remove(key));
+  }
 
   void toggle(String key) => setOpen(key, !_open.contains(key));
 
   /// Opens [keys]. With `remember: false` this is a restore (or the like), not a change the person made: it is not stored and does not
   /// count as one.
   void openAll(Iterable<String> keys, {bool remember = true}) {
+    if (remember) {
+      for (final k in keys) {
+        if (k == _autoOpenKey) _autoOpenKey = null;
+      }
+    }
     var changed = false;
     for (final k in keys) {
       changed = _open.add(k) || changed;
@@ -704,6 +716,7 @@ class AssemblyTreeModel {
 
   /// Empties the open keys (the root stays open: it always is).
   void closeAll() {
+    _autoOpenKey = null;
     final changed = _open.isNotEmpty;
     _open.clear();
     _opened(changed, deliberate: true);
@@ -757,12 +770,20 @@ class AssemblyTreeModel {
   String? get liveKey => _liveValid ? _live!.key : null;
 
   /// Makes [live] the live part: its folders and features replace what [setFeatures] gave that row. When the row becomes live (a different row
-  /// from the one before) its key is added to the open keys so it shows open; that is not the person's change (nothing is stored and
-  /// [openKeysTouched] stays as it was), and the person may close it. Later calls for the same row refresh the data and leave its open state.
+  /// from the one before) its key is added to the open keys so it shows open; that is not the person's change: nothing is reported,
+  /// [openKeysTouched] stays as it was, and [keysToStore] leaves the key out until the person opens or closes it themselves. Later calls for the
+  /// same row refresh the data and leave its open state. Like [merge], it drops a selected row and open folders the live part no longer has.
   void setLivePart(AssemblyLivePart? live) {
     _live = live;
     if (live == null) _liveOpenedFor = null;
     _invalidate();
+    // Like merge(): what the live part no longer has goes (a selected row, a folder that emptied and so starts collapsed when it fills again).
+    if (_tree != null) {
+      _open.removeWhere((k) => !_rowKeyExists(k));
+      final sel = selectedKey;
+      if (sel != null && !_selectionExists(sel)) selectedKey = null;
+      if (_autoOpenKey != null && !_open.contains(_autoOpenKey)) _autoOpenKey = null;
+    }
     _openLive();
   }
 
@@ -773,7 +794,10 @@ class AssemblyTreeModel {
     if (l == null || !_liveValid) return;
     if (_liveOpenedFor == l.key) return;
     _liveOpenedFor = l.key;
-    if (l.key.isNotEmpty) openAll([l.key], remember: false);
+    if (l.key.isNotEmpty && !_open.contains(l.key)) {
+      openAll([l.key], remember: false);
+      _autoOpenKey = l.key;
+    }
   }
 
   /// A feature row's key in the live part, for the id [featureId] (the build-order row); null when it is not a live feature.
@@ -987,7 +1011,10 @@ class AssemblyTreeModel {
 
   /// The open keys to store: all of them, or past the cap the first [limit] in the order of [restoreOpenKeys].
   List<String> keysToStore({int limit = kAssemblyTreeMaxStoredKeys}) =>
-      _open.length <= limit ? _open.toList() : restoreOpenKeys(_open, limit: limit);
+      _storable().length <= limit ? _storable().toList() : restoreOpenKeys(_storable(), limit: limit);
+
+  /// The open keys without a live row that is open only because it became live.
+  Set<String> _storable() => _autoOpenKey == null ? _open : (_open.toSet()..remove(_autoOpenKey));
 
   // ----- Filter (spec section 11) -----
 

@@ -88,8 +88,71 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     await tester.tap(_row('#feature:s1'));
     await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
-    expect(calls, ['edit:#feature:s1']);
+    expect(calls, ['tap:#feature:s1', 'edit:#feature:s1']);
   });
+
+  testWidgets('a double-tap selects through the host before it edits; a body row has no double-tap and no delayed tap', (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final model = _model(openFolders: true);
+    final calls = <String>[];
+    await tester.pumpWidget(_host(AssemblyTreeView(
+      model: model,
+      onRowTap: (r) => calls.add('tap:${r.key}'),
+      onRowEdit: (r) => calls.add('edit:${r.key}'),
+    )));
+    await tester.tap(_row('#feature:s1'));
+    await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
+    calls.clear();
+    await tester.tap(_row('#feature:e1'));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(_row('#feature:e1'));
+    await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 50));
+    expect(calls, ['tap:#feature:e1', 'edit:#feature:e1']);
+    expect(model.selectedKey, '#feature:e1');
+    calls.clear();
+    await tester.tap(_row('#body:b1')); // no wait for a second tap
+    await tester.pump();
+    expect(calls, ['tap:#body:b1']);
+    await tester.tap(_row('#plane:xy'));
+    await tester.pump();
+    expect(calls.last, 'tap:#plane:xy');
+  });
+
+  testWidgets('no double-tap Edit in multi-select', (tester) async {
+    final model = _model();
+    final calls = <String>[];
+    await tester.pumpWidget(_host(AssemblyTreeView(
+      model: model,
+      isMultiSelectMode: true,
+      onMultiSelectToggle: (r) => calls.add('toggle:${r.key}'),
+      onRowEdit: (r) => calls.add('edit:${r.key}'),
+    )));
+    await tester.tap(_row('#feature:s1'));
+    await tester.pump();
+    expect(calls, ['toggle:#feature:s1']);
+  });
+
+  for (final lock in [false, true]) {
+    testWidgets('under a ${lock ? 'lock' : 'sketch picker'} a tap on a row the picker does not take keeps the selection and tells nobody', (tester) async {
+      final model = _model();
+      model.selectedKey = '#feature:s1';
+      model.setPicker(lock ? AssemblyPicker.locked('Exit the sketch first') : AssemblyPicker.sketch(eligibleSketchIds: ['s1']));
+      final calls = <String>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onRowTap: (r) => calls.add(r.key), onRowPick: (r) => calls.add('pick:${r.key}'))));
+      await tester.tap(_row('')); // the root: pick none
+      await tester.pump();
+      expect(model.selectedKey, '#feature:s1');
+      expect(calls, isEmpty);
+      // A folder still opens.
+      await tester.tap(_row('#planes'));
+      await tester.pump();
+      expect(model.isOpen('#planes'), isTrue);
+      expect(model.selectedKey, '#feature:s1');
+      expect(calls, isEmpty);
+    });
+  }
 
   testWidgets('a double-click edits on desktop', (tester) async {
     final model = _model();

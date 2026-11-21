@@ -604,6 +604,47 @@ void main() {
       expect(model.selectedKey, 'mast/arm/head#feature:s1');
     });
 
+    test('setLivePart prunes like merge: a selected live row that is gone, and open folders that are gone', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.setOpen('#curves', true);
+      model.setOpen('#bodies', true);
+      model.selectedKey = '#curve:c1';
+      model.setLivePart(AssemblyLivePart('', features: const [
+        AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch'),
+      ], bodies: const [
+        AssemblyLiveItem('e1', 'Body 1'),
+      ])); // the curve is gone, so its folder is
+      expect(model.selectedKey, isNull);
+      expect(model.openKeys, {'#bodies'});
+      // The curves come back: the folder starts collapsed.
+      model.setLivePart(live(''));
+      expect(model.isOpen('#curves'), isFalse);
+      expect(model.visibleRows().any((r) => r.key == '#curve:c1'), isFalse);
+      // A kept selection stays; clearing the live part drops a live selection.
+      model.selectedKey = '#feature:s1';
+      model.setLivePart(live(''));
+      expect(model.selectedKey, '#feature:s1');
+      model.clearLivePart();
+      expect(model.selectedKey, isNull);
+    });
+
+    test('a row open only because it became live is not stored until the person opens or closes it', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.isOpen('mast/arm/head'), isTrue);
+      model.setOpen('mast', true);
+      expect(model.keysToStore(), ['mast']);
+      model.setOpen('mast/arm/head', false);
+      model.setOpen('mast/arm/head', true);
+      expect(model.keysToStore(), containsAll(['mast', 'mast/arm/head']));
+      // A live row the person had open already is theirs.
+      final other = AssemblyTreeModel(tree: _tree('rover'));
+      other.setOpen('mast/arm/head', true);
+      other.setLivePart(live('mast/arm/head'));
+      expect(other.keysToStore(), ['mast/arm/head']);
+    });
+
     test('a live feature id that is a default plane name and a body id with # are kept whole', () {
       final model = AssemblyTreeModel(tree: _tree('single_part'));
       model.setLivePart(AssemblyLivePart('', features: const [

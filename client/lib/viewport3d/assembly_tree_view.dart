@@ -381,7 +381,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       }
       return;
     }
-    widget.model.selectedKey = row.key;
+    // While a picker is open a row it does not take only opens or closes (a folder, a group); the selection is the picker's business.
+    final picking = widget.model.picker != null;
+    if (!picking) widget.model.selectedKey = row.key;
     final groupLike =
         row.kind == AssemblyRowKind.group || row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder;
     if (groupLike && !_filtering) {
@@ -389,7 +391,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       if (!row.open) _askForFeatures(row.path);
     }
     setState(() {});
-    widget.onRowTap?.call(row);
+    if (!picking) widget.onRowTap?.call(row);
   }
 
   void _longPress(AssemblyTreeRow row) {
@@ -404,8 +406,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   /// A double-tap / double-click: Edit, on a live feature row.
   void _edit(AssemblyTreeRow row) {
     if (widget.isMultiSelectMode || widget.model.picker != null) return;
-    widget.model.selectedKey = row.key;
-    setState(() {});
+    // The double-tap wins the gesture, so the single tap never ran: select through the host first (the viewport highlight follows).
+    _tap(row);
     widget.onRowEdit?.call(row);
   }
 
@@ -642,7 +644,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                                     : null,
                                 onPin: () => widget.onToggleCoarsePin?.call(r),
                                 pickMulti: picker?.multi ?? false,
-                                onDoubleTap: widget.onRowEdit != null && r.isLive && r.kind == AssemblyRowKind.feature && picker == null
+                                onDoubleTap: widget.onRowEdit != null &&
+                                        r.liveKind == AssemblyLiveKind.feature &&
+                                        picker == null &&
+                                        !widget.isMultiSelectMode
                                     ? () => _edit(r)
                                     : null,
                                 bracket: _bracketFor(r, colours),
