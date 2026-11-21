@@ -432,8 +432,8 @@ B6 VR row build (no dependency; can start now) ──> B7 ──> B8 VR room con
 
 - A chunk starts only after the chunks it depends on are **merged to `main`**, and starts from `main`.
 - The Flutter chunks run one at a time (all of them touch `part_screen.dart`); the VR chain runs alongside.
-- VR #97 (`tests/e2e_assembly_tree_render.gd`, the A5 render check; 9.7 calls it `tools/assembly_tree_render_check/`, which
-  does not exist) merged 21 Nov, so VR workers can run it.
+- VR #97, the A5 render check, merged 21 Nov as `tools/assembly_tree_render_check/assembly_tree_render_check.gd` (its PR
+  first had it as `tests/e2e_assembly_tree_render.gd`); VR workers run it from there.
 - **Owner device checks** after every user-facing chunk: B2 (phone and desktop), P2 (the Part lens on desktop and
   phone: a part opened alone, and a part focused inside an assembly), P3 (the sketcher's tree, convert pick), B3 (desktop, and a tablet or a phone in
   landscape), B4 and B5 (phone portrait), B6, B7 and B8 (headset). B1 has none.
@@ -526,7 +526,7 @@ As 9.3, plus what Phase A taught:
 - **Keep the contract's behaviour:** status is off by default; structure first, status in the background; the states as
   given, `cycle`, `near`, `fully_constrained` and `status_failed` included.
 - **Screenshots where a render is possible:** Flutter through `tools/gui_harness/` (Linux release build under Xvfb; see its
-  README), VR through `tests/e2e_assembly_tree_render.gd` (Xvfb + Mesa against a live backend). Put them in the PR. A Mesa or
+  README), VR through `tools/assembly_tree_render_check/` (Xvfb + Mesa against a live backend). Put them in the PR. A Mesa or
   Xvfb render is not a phone or the headset; say which you have.
 - **Repo rules that tripped Phase A:** DIDSA-VR test registration (`tests/run_all.sh`, a row in `tests/README.md`,
   `tests/e2e_ci_list.txt` for live-backend tests); generated vectors are never edited by hand; no model identifiers in
@@ -848,15 +848,15 @@ storing Edit Alone's open rows.
 
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
-| B1 contract additions | not started | | | |
-| B2 Flutter #10 + #8 | not started | | | |
+| B1 contract additions | merged 21 Nov | #397 | mid-tier | Two send-backs. The `#` occurrence-id guard the manager asked for was removed (it broke Undo for a hand-edited id); spec 8 now says such ids give undefined results. Planes-folder keys always `K#plane:feature:<id>`. 102 cases, the 36 v1 cases unchanged. |
+| B2 Flutter #10 + #8 | in review | #398 | strongest | Send-back 1: remembered rows never stored for a project document; Save As drops restored rows; an empty expand counts as a user change. |
 | P1 live part (model, view) | not started | | | |
 | P2 Part lens on the one tree | not started | | | Owner device check after |
 | P3 sketcher's tree, old panel gone | not started | | | Owner device check after |
 | B3 Flutter #5 | not started | | | |
 | B4 Flutter phone sheet | not started | | | |
 | B5 Flutter phone deep trees | not started | | | |
-| B6 VR row build | not started | | | VR #97 (render check) merged 21 Nov |
+| B6 VR row build | in review | VR #99 | mid-tier | Send-back 1: PARTS tab pool reads the Build pane's scroll; folder bubble moved before the label; a press across a rebind acts on another row. Timing: 2,002 rows, Mesa 848+321 ms -> about 70+80 ms. |
 | B7 VR #10 + #8 | not started | | | |
 | B8 VR room context, hints | not started | | | Hint order as proposed (owner, 21 Nov) |
 
