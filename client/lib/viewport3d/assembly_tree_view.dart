@@ -20,6 +20,7 @@ class AssemblyTreeController {
   _AssemblyTreeViewState? _state;
   List<String>? _pendingPath;
   bool _pendingSelect = false;
+  bool _pendingExpand = false;
 
   /// Opens every ancestor (and the group row, with grouping on) of the occurrence at [path], then scrolls its row into view. With
   /// [select] the row is also marked selected (the model's `selectedKey`). A path the tree does not know does nothing. Called before the view
@@ -34,8 +35,16 @@ class AssemblyTreeController {
     s._reveal(path, select: select);
   }
 
-  /// Opens the tree down to the selected row and scrolls to it (the header's "Expand to selection"). Nothing without a selection.
-  void expandToSelection() => _state?._expandToSelection();
+  /// Opens the tree down to the selected row and scrolls to it (the header's "Expand to selection"). Nothing without a selection. Called while
+  /// the view is not built (a hidden pane), it is kept and applied when the view attaches.
+  void expandToSelection() {
+    final s = _state;
+    if (s == null) {
+      _pendingExpand = true;
+      return;
+    }
+    s._expandToSelection();
+  }
 
   /// Rebuilds the rows from the model's current state. Also retries what was waiting for data: a [reveal] made before the tree loaded, and
   /// the root's features when the tree has just arrived.
@@ -52,6 +61,12 @@ class AssemblyTreeController {
       _pendingPath = null;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (_state == s && s.mounted) s._reveal(p, select: _pendingSelect);
+      });
+    }
+    if (_pendingExpand) {
+      _pendingExpand = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_state == s && s.mounted) s._expandToSelection();
       });
     }
   }
@@ -228,10 +243,16 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
     // Multi-select replaces the header (and with it the filter field): a filter that kept narrowing the rows with nothing to show it would
     // be a trap, so it ends there.
-    if (!old.isMultiSelectMode && widget.isMultiSelectMode && (_filtering || _filterOpen)) {
+    // It ends on the condition that hides the field: the header being replaced (not only the mode flag).
+    if (old.multiSelectHeader == null && widget.multiSelectHeader != null && (_filtering || _filterOpen)) {
+      final wasFiltering = _filtering;
       _filterText.clear();
-      _query = '';
       _filterOpen = false;
+      _query = '';
+      // The rows are the open keys' from this build on; after it the list goes back to the top and reveals the selected row, as clearing does.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _filterChanged(wasFiltering);
+      });
     }
     _syncModel();
     if (widget.flashToken != old.flashToken && widget.flashItemIds.isNotEmpty) {
@@ -428,6 +449,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   void _setQuery(String value) {
     final wasFiltering = _filtering;
     setState(() => _query = value);
+    _filterChanged(wasFiltering);
+  }
+
+  void _filterChanged(bool wasFiltering) {
     if (wasFiltering != _filtering && _scroll.hasClients) _scroll.jumpTo(0);
     // Clearing the filter reveals the selected row (spec section 11): it may sit in a collapsed branch the matches had opened up.
     if (wasFiltering && !_filtering) _expandToSelection();

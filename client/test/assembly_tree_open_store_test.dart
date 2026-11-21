@@ -24,4 +24,22 @@ void main() {
     expect(await AssemblyTreeOpenStore.read('doc2'), ['k2']);
     expect(await AssemblyTreeOpenStore.read('new'), ['n']);
   });
+
+  test('writes and reads at the same time lose no document from the index', () async {
+    await Future.wait([
+      for (var i = 0; i < 10; i++) AssemblyTreeOpenStore.write('doc$i', ['k$i']),
+      for (var i = 0; i < 10; i++) AssemblyTreeOpenStore.read('doc${i % 3}'),
+    ]);
+    final index = (await SharedPreferences.getInstance()).getStringList('assembly_tree_open_documents')!;
+    expect(index.toSet(), {for (var i = 0; i < 10; i++) 'doc$i'}, reason: 'every document written is in the index');
+    expect(index.length, 10, reason: 'and once');
+  });
+
+  test('a read whose bookkeeping fails still returns what was stored', () async {
+    SharedPreferences.setMockInitialValues({
+      'assembly_tree_open:a': '["x"]',
+      'assembly_tree_open_documents': 'not a list', // the index cannot be read as a list: updating it throws
+    });
+    expect(await AssemblyTreeOpenStore.read('a'), ['x']);
+  });
 }

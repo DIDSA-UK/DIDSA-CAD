@@ -786,8 +786,9 @@ void main() {
 
     testWidgets('multi-select ends the filter: its field is gone, so the rows must not stay narrowed', (tester) async {
       final model = deep();
+      // The header is what hides the field, so that is what ends the filter (the mode flag is not set in this test).
       Widget view({required bool multi}) => _host(
-            AssemblyTreeView(model: model, docked: true, isMultiSelectMode: multi, multiSelectHeader: multi ? const Text('2 selected') : null),
+            AssemblyTreeView(model: model, docked: true, multiSelectHeader: multi ? const Text('2 selected') : null),
             layout: LayoutPreference.desktop,
           );
       await tester.pumpWidget(view(multi: false));
@@ -803,6 +804,16 @@ void main() {
       await tester.pump();
       expect(tester.widget<TextField>(find.byKey(const ValueKey('tree-filter-field'))).controller!.text, isEmpty);
       expect(keysShown(), ['', 'a', 'z', 'y']);
+    });
+
+    testWidgets('an expand to selection asked for before the view exists is applied when it attaches', (tester) async {
+      final model = deep()..selectedKey = 'a/b/c';
+      final controller = AssemblyTreeController()..expandToSelection();
+      expect(model.openKeys, isEmpty);
+      await tester.pumpWidget(desktopView(model, controller: controller));
+      await tester.pump();
+      await tester.pump();
+      expect(keysShown(), ['', 'a', 'a/b', 'a/b/c', 'z', 'y']);
     });
 
     group('phone header', () {

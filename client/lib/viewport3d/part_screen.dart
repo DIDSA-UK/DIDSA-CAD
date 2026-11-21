@@ -661,17 +661,42 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return model;
   }
 
-  /// The key the open rows of this document are stored under (B2): the file it was opened from or saved to; or, for a project (File > Open of a
-  /// project file, a project folder, a Save As reopen), the project folder and the root Part's file within it. Null for a document that has no
-  /// file yet, and for one known only by a bare file name (the same name in two folders would share rows): nothing is stored for those.
+  /// The key the open rows of this document are stored under (B2), worked out here and nowhere else: only a key the next session can compute
+  /// again. The file it was opened from or saved to ([_lastSavedFilePath]); or, for a project, the project folder the root Part's file was
+  /// opened from or written into ([_rootFileRoot]) and that file's path in it. A root picked up later for a document from elsewhere
+  /// (Create Component, Save All's folder prompt before it has written the root) gives no key, and neither does a bare file name (the same
+  /// name in two folders would share rows): nothing is stored for those.
   String? get _treeDocumentKey {
     final path = _lastSavedFilePath;
     if (path != null) return 'file:$path';
-    final root = _projectRoot?.persistedKey;
-    if (root == null) return null;
+    final root = _rootFileRoot;
     final rootId = _part?.id;
-    final file = (rootId == null ? null : _relativePathByPartId[rootId]) ?? _lastSavedFileName;
-    return file == null ? null : _projectTreeKey(root, file);
+    final file = rootId == null ? null : _relativePathByPartId[rootId];
+    return root == null || file == null ? null : _projectTreeKey(root.persistedKey, file);
+  }
+
+  /// The project folder the root Part's own file was opened from (a screen made by `_openComposedProject`) or written into (a first save, a
+  /// Save or Save All): see [_treeDocumentKey]. Not [_projectRoot], which Create Component and the save prompts can set for a document from elsewhere.
+  ProjectRoot? _rootFileRoot;
+
+  /// The key the rows in the model were last stored under, or the document had when it was opened: see [_syncTreeKey].
+  String? _treeKeyStoredUnder;
+
+  /// Stores the rows in the model under the document's key when that key has changed since they were last stored (a first save, Save As, Save All,
+  /// a folder change): the rows follow the document to its new file. Run after every `setState` (see [setState]) and where the path is set outside one,
+  /// so no save path has to remember it. Nothing is stored without the document's own tree from the backend in the model ([_storeTreeRowsAs]).
+  void _syncTreeKey() {
+    if (!mounted) return;
+    final key = _treeDocumentKey;
+    if (key == _treeKeyStoredUnder) return;
+    _treeKeyStoredUnder = key;
+    _storeTreeRowsAs(key);
+  }
+
+  @override
+  void setState(VoidCallback fn) {
+    super.setState(fn);
+    _syncTreeKey();
   }
 
   static String _projectTreeKey(String rootKey, String relativePath) => 'project:$rootKey|$relativePath';
@@ -12102,8 +12127,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         ? savedName
         : (_lastSavedFileName ?? suggestedFileName);
     _lastSavedFilePath = _canPersistFilePathForReuse && saved.scheme == 'file' ? saved.toFilePath() : null;
-    // B2: the document has a name now (or another one): the rows open in its tree are remembered under it.
-    _storeTreeRowsAs(_treeDocumentKey);
+    _syncTreeKey(); // the document has another file now: its rows go with it
     return true;
   }
 
@@ -12227,9 +12251,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       setState(() {
         _projectRoot = root;
         _relativePathByPartId = {..._relativePathByPartId, part.id: path};
+        _rootFileRoot = root;
         _markPartWritten(part.id);
       });
-      _storeTreeRowsAs(_treeDocumentKey);
     });
     if (!written && !hadRoot && mounted) setState(() => _projectRoot = null);
     if (written && mounted) {
@@ -12319,7 +12343,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           return;
         }
         _lastSavedFileName = targetPath;
-        _storeTreeRowsAs(_treeDocumentKey);
         setState(() => _isDirty = false);
         reopenFileName = targetPath;
       });
@@ -12448,7 +12471,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         try {
           await _assemblyDocumentClient.savePart(root, id, paths[id]!, extras: _extrasFor(id));
           written.add(id);
-          setState(() => _markPartWritten(id));
+          setState(() {
+            if (id == _part?.id) _rootFileRoot = root; // the root's file is in this folder now
+            _markPartWritten(id);
+          });
         } on SyncConflictException {
           // The store says another device changed this file: the save waits in the queue as a clash (below).
           clashed = true;
@@ -13216,6 +13242,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         debugPrint('[PartScreen] createPart done: ${part.id}');
       }
       _part = part;
+      // The root's file is where this screen was opened from, when it was opened from a project.
+      if (widget.initialRelativePathByPartId.containsKey(part.id)) _rootFileRoot = widget.initialProjectRoot;
       _focusStack = AssemblyFocusStack(part.id);
       _editAlone = null;
       // A4: a new document starts with a new tree (its open rows, its session-hidden rows).
@@ -16311,6 +16339,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         ..showSnackBar(const SnackBar(content: Text('Save All cancelled: nothing was written')));
       return;
     }
+    // The root's own file is in this folder now, whatever happened to the others: its rows are keyed by it.
+    final rootFile = _part == null ? null : relativePathByPartId[_part!.id];
+    if (rootFile != null && (saveResult.savedRelativePaths.contains(rootFile) || saveResult.queuedRelativePaths.contains(rootFile))) setState(() => _rootFileRoot = root);
     if (saveResult.hasFailures) {
       final failedNames = saveResult.failures.map((f) => f.relativePath).join(', ');
       setState(() => _errorMessage = 'Saved ${saveResult.savedRelativePaths.length} of '
@@ -26092,8 +26123,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case ComponentContextMenuAction.zoomToSelection:
         _zoomToTreeSelection();
       case ComponentContextMenuAction.expandToSelection:
-        // A closed tree (the phone's overlay, the desktop's pane) opens first, or nothing would be seen to happen.
-        if (_desktopLayout ? !_desktopPaneVisible : !_featureTreeVisible) {
+        // The rows open in the model whatever is on screen, and the scroll waits for the view if it is not built (a hidden pane); a closed tree
+        // that can be shown is shown, or nothing would be seen to happen.
+        _treeModel.expandToSelection();
+        if (_desktopLayout ? !_desktopPaneVisible : !_featureTreePanelVisible) {
           setState(() {
             if (_desktopLayout) {
               _desktopPaneVisible = true;

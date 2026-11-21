@@ -400,6 +400,10 @@ void main() {
       expect(model.openKeysTouched, isFalse);
       model.setOpen('mast', true);
       expect(model.openKeysTouched, isTrue);
+
+      final nothingOpen = AssemblyTreeModel(tree: _tree('rover'));
+      nothingOpen.closeAll(); // nothing to close, and still the person asking for it collapsed
+      expect(nothingOpen.openKeysTouched, isTrue);
     });
 
     test('merge dropping the keys of a row that is gone is not reported', () {

@@ -11379,6 +11379,7 @@ void main() {
         ProjectRoot? projectRoot,
         Map<String, String> relativePaths = const {},
         _FakeStorageService? storage,
+        LayoutModeController? layout,
         bool waitForTree = true}) async {
       final backend = _FakeDocumentBackend(seedOccurrences: [
         occ('asm-1', part: 'sub', ref: 'parts/sub.didsa'),
@@ -11401,9 +11402,12 @@ void main() {
         }),
       );
       final sketchBackend = _FakeSketchBackend();
-      await tester.pumpWidget(
-        MaterialApp(
-          home: PartScreen(
+      if (layout != null) {
+        tester.view.physicalSize = const Size(1280, 800);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+      }
+      Widget screen = PartScreen(
             documentApi: documentApi,
             sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
             initialFilePath: filePath,
@@ -11418,11 +11422,17 @@ void main() {
                     documentApiClient: documentApi,
                     composer: AssemblyGraphComposer(storageService: storage, fileCache: _NoopFileCache()),
                   ),
-          ),
-        ),
-      );
+          );
+      if (layout != null) screen = LayoutModeScope(controller: layout, child: screen);
+      await tester.pumpWidget(MaterialApp(home: screen));
       await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
-      await switchLens(tester, 'Assembly');
+      if (layout != null) {
+        await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+      } else {
+        await switchLens(tester, 'Assembly');
+      }
       if (waitForTree) await _pumpUntil(tester, () => _TreeProbe(tester).model.tree != null);
       return backend;
     }
@@ -12331,6 +12341,76 @@ void main() {
         // What the reopened copy is handed: its project folder and its root file.
         await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'copy.DIDSAprt'});
         expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
+      });
+
+      testWidgets('a document opened by name, then Create Component, stores nothing: the root Create Component picks up is not where the document is', (tester) async {
+        final storage = _FakeStorageService();
+        await openNested(tester, fileName: 'a.didsa', storage: storage);
+        await tapStartCommand(tester, 'Create Component');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        final keys = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open')));
+        expect(keys, isEmpty, reason: 'no key the next session could compute again');
+      });
+
+      testWidgets('Save All of a new document keys its rows by the file it wrote; reopening that file opens them', (tester) async {
+        final storage = _FakeStorageService();
+        await openNested(tester, storage: storage);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        expect(await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open'))), isEmpty,
+            reason: 'no file yet: nothing to key by');
+
+        await openToolbar(tester);
+        await tester.tap(find.text('File'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.ensureVisible(find.text('Save All'));
+        await tester.pump();
+        await tester.tap(find.text('Save All'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.enterText(find.byType(TextFormField), 'top.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(storage.files.keys, contains('top.DIDSAprt'));
+
+        expect(await storedKey(tester, 'project:/fake/project|top.DIDSAprt'), ['asm-1'], reason: 'the rows follow the document to the file it was just written to');
+        await closeScreen(tester);
+
+        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'});
+        expect(_TreeProbe(tester).model.openKeys, {'asm-1'});
+      });
+
+      testWidgets('desktop: Expand to selection in the 3D menu with the tree pane hidden shows the pane again', (tester) async {
+        await openNested(tester, layout: LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true));
+        final pane = find.byKey(const ValueKey('desktop-left-pane'));
+        expect(pane, findsOneWidget);
+        await tester.tap(find.byTooltip('Hide the tree'));
+        await tester.pump();
+        expect(pane, findsNothing, reason: 'the pane is folded away: the tree view is not built');
+
+        // A right click on a component in the viewport is the menu that is left; its handler is what is under test.
+        tester.widget<PartViewport>(find.byType(PartViewport)).onContextMenuRequested!(
+              const HoverHit(entity: SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1'), rayT: 1),
+              const Offset(600, 400),
+            );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        final entry = find.descendant(of: find.byType(PopupMenuItem<ComponentContextMenuAction>), matching: find.text('Expand to selection'));
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.tap(entry);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+
+        expect(pane, findsOneWidget, reason: 'the tree comes back, or nothing is seen to happen');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1');
       });
 
       testWidgets('Expand to selection in the 3D menu opens a closed tree first (the phone\'s overlay)', (tester) async {
