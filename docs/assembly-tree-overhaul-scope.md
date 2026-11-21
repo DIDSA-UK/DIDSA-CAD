@@ -5,7 +5,7 @@ The prompt was that sub-assemblies and parts don't expand: you cannot see the ch
 leading CAD products do, what ours do today, a ranked list of what's missing and how to add it, and how the tree should treat
 the upstream assembly in Make Focus and Edit Alone, on desktop and on a phone.
 
-**Status:** scoped; the owner answered every question on 20 Nov (section 8). Phase A briefs in section 9. Nothing built.
+**Status:** Phase A built and closed 21 Nov (section 9). Phase B briefs in section 10 (draft, awaiting the owner's approval).
 
 **Visual concepts** (desktop, Focus, Edit Alone, phone sheet, deep nesting on a phone, VR room tree) are in the published page
 <https://claude.ai/artifact/9bvc9fbpAnC2uhoq5vxpBW> (private to the owner until shared). This file is the text of record.
@@ -408,6 +408,275 @@ Also: the old panel's tests are moved or retired (say which), `flutter analyze` 
 
 **Phase A closed 21 Nov 2026.** Every chunk needed one send-back; the owner's device checks found what review could not
 (row → viewport highlight, Hide / Isolate reaching a sub-assembly's children, the grouping switch's size, zoom to selection).
+
+## 10. Phase B: implementation briefs
+
+Phase B is #5 (Focus and Edit Alone context), #9 (phone portrait sheet), #10 (collapse all, expand to selection, remembered
+state) and #8 (search and filter). It runs as Phase A did (section 9): a manager hands out these briefs, checks results and
+keeps 10.7; workers build one chunk each. This section is the source of truth for Phase B; where it says "as 9.x", that
+subsection applies with `A` read as `B`.
+
+**VR is in Phase B**, in three small chunks: a faster row build (B6), search and remembered state (B7), and the world tree's
+room context plus the row-hint order (B8). The room's own docked tree, with its context strip, stays with VR T2 in Phase C
+(section 7). The room console already says "Placed N times: editing it here changes all of them", so VR's "used N x" exists.
+
+### 10.1 Order and gates
+
+```
+B1 contract additions (DIDSA-CAD: spec + reference + vectors v2)
+ ├── B2 Flutter #10 + #8 ──> B3 Flutter #5 ──> B4 Flutter phone sheet ──> B5 Flutter phone deep trees
+ └── B7 VR #10 + #8 (also after B6)
+B6 VR row build (no dependency; can start now) ──> B7 ──> B8 VR room context and row hints
+```
+
+- A chunk starts only after the chunks it depends on are **merged to `main`**, and starts from `main`.
+- The Flutter chunks run one at a time (all of them touch `part_screen.dart`); the VR chain runs alongside.
+- **Before B6:** VR #97 (`tests/e2e_assembly_tree_render.gd`, the A5 render check; 9.7 calls it `tools/assembly_tree_render_check/`,
+  which does not exist) is still open. Merge it (after a manager check) so VR workers can run it.
+- **Owner device checks** after every user-facing chunk: B2 (phone and desktop), B3 (desktop, and a tablet or a phone in
+  landscape), B4 and B5 (phone portrait), B6, B7 and B8 (headset). B1 has none.
+
+### 10.2 Contract additions (B1; fixed once B1 merges)
+
+B1 adds two sections to `docs/assembly-tree/spec.md` and two case kinds to the vectors, so Flutter and VR filter and restore
+the same way. Nothing in sections 1-10 of the spec changes, the endpoint does not change, and the 36 existing cases stay as
+they are. After B1 merges, changes go through the manager, as 9.2 says.
+
+**Spec section 11, Filter (#8).** Input: a query string, plus everything section 7 takes. Output: rows and `unknown`.
+
+- **Parsing:** split on whitespace. A word starting with `:` is a token; any other word is a name term. Case does not matter.
+  An empty query (or only spaces) means no filter: section 7's rows.
+- **Tokens:** `:missing` (state `missing`); `:errors` (state `missing`, `cycle`, `broken` or `over_constrained`: the bubble's
+  `error` set); `:warnings` (state `near`); `:unsaved` (state `unsaved`); `:fixed` (the `fixed` flag, whatever the state);
+  `:hidden`; `:suppressed`; `:parts` (kind `part`); `:assemblies` (kind `assembly`). `:mates` waits for Phase C (mates are not
+  rows yet). An unknown token is left out of the matching and listed in `unknown` (in query order,
+  lower case), so a client can say "unknown filter :foo".
+- **Which rows can match:** every occurrence row at any depth, whatever the open keys; feature rows only where features were
+  fetched (a client cannot find features it has not read; it says so in the filter's hint). Group rows, folders and the root
+  never match themselves.
+- **A row matches** when its `label` contains every name term (substring, so `<2>` finds instance 2) and it meets every known
+  token (AND).
+- **Listed:** the root; every match; every ancestor of a match: occurrence rows and, with grouping on, the group row a match
+  or an ancestor sits in. Order and depth as section 7. Folders are not listed while a filter is on. Each row gains
+  `match` (true / false; the root false). A listed row is `open` when something below it is listed; a match with nothing
+  listed below is `open: false` (its `expandable` as usual). Bubbles follow section 6 with these `open` values.
+- **The filter does not change the open keys.** Clearing it gives section 7's rows for the same open keys. Opening or closing
+  a row while a filter is on is not offered (the chevron is inert). Selecting a row and then clearing the filter reveals it
+  (section 8).
+- **Without `status`,** `:errors` and `:warnings` can only find what section 5 lists for that case; a client says the status
+  is still loading.
+
+**Spec section 12, Remembered open rows (#10).**
+
+- **What is stored:** the open keys (section 8) of one document's tree, per document, in the client's own storage. Which
+  document key a client uses (file path, cloud project and path) is the client's choice; the stored keys are the spec's.
+  At most 2,000 keys; beyond that, keys are kept in visible-row order (everything open) and the rest dropped.
+- **Restore** (opening a document, and the existing refresh rule of section 8): keep a stored key when it names a row of the
+  new tree that can open, under **either** grouping setting (so switching grouping off and on loses nothing); drop the rest.
+  Feature keys are never open keys. Output in visible-row order with everything open, so it is deterministic.
+- **Collapse all** empties the open keys (the root stays open). **Expand to selection** adds section 8's reveal keys for the
+  selected path. Both are stored.
+- Restoring does not move the camera or change the selection. Edit Alone's re-rooted tree (B3) is not stored: it starts with
+  its root open and reveals the selection.
+
+**Vectors, version 2:** new case kinds `filter` (section 7's inputs plus `query`; `expected`: `{rows, unknown}`) and
+`restore` (inputs `stored`, `grouping`; `expected`: the kept keys). Both generated by `tools/assembly_tree_vectors/`, never
+by hand. A client's vector test runs every kind it implements and **fails on a kind it does not know**, except where its chunk
+says to skip one by name until a later chunk. B1 updates `client/test/assembly_tree_model_test.dart` only to skip `filter` and
+`restore` by name (B2 removes the skip). VR keeps its v1 copy until B7 copies v2.
+
+### 10.3 Every worker
+
+As 9.3, plus what Phase A taught:
+
+- **PR title** `Tree B<n>: <summary>`; body as 10.4.
+- **Background answers:** any request whose answer can land after a newer edit, a newer request or a different document
+  (tree, status, features, a restore on open) must drop stale answers with a token or sequence number, and a test must
+  deliver a late answer and show it dropped. (A4, A5 and A5.1 each found one.)
+- **Keep the contract's behaviour:** status is off by default; structure first, status in the background; the states as
+  given, `cycle`, `near`, `fully_constrained` and `status_failed` included.
+- **Screenshots where a render is possible:** Flutter through `tools/gui_harness/` (Linux release build under Xvfb; see its
+  README), VR through `tests/e2e_assembly_tree_render.gd` (Xvfb + Mesa against a live backend). Put them in the PR. A Mesa or
+  Xvfb render is not a phone or the headset; say which you have.
+- **Repo rules that tripped Phase A:** DIDSA-VR test registration (`tests/run_all.sh`, a row in `tests/README.md`,
+  `tests/e2e_ci_list.txt` for live-backend tests); generated vectors are never edited by hand; no model identifiers in
+  anything pushed.
+
+### 10.4 Report format
+
+As 9.4 with `Chunk: B<n>`, plus one line before "Not verified":
+`Screenshots: <files or links, what renderer, or "none possible: why">`.
+
+### 10.5 Manager checks before merging
+
+As 9.5, plus: run `/code-review` on the PR **and again on every fix round** before saying merge (A4's unchecked fix round
+needed a follow-up); after a user-facing chunk merges, give the owner the device check from 10.1 with what to try.
+
+### 10.6 The briefs
+
+#### B1. Contract additions: filter and restore (DIDSA-CAD)
+
+**Suggested model:** strongest. **Size:** S. **Depends on:** nothing (Phase A merged).
+
+**Build:** spec sections 11 and 12 as 10.2 sets them (worded for a client author who never reads the backend); the filter
+and restore functions in `tools/assembly_tree_vectors/reference.py`, their tests in `test_reference.py`, the generator
+writing `version: 2` with the new cases; `vectors.json` regenerated. Cases at least: a name term deep in a collapsed branch
+(ancestors listed open); a match inside a group (group row listed); two name terms (AND); `<2>`; each token; a token plus a
+name; an unknown token; `:errors` with and without status; a fetched and an unfetched feature; an empty query equal to
+section 7; restore with a deleted row, a group key with grouping off, a key of a row that can no longer open, a feature key.
+The one-line skip in `client/test/assembly_tree_model_test.dart`.
+
+**Done when:** `test_reference.py` passes and fails when `vectors.json` differs from the generator; the 36 v1 cases are
+byte-for-byte as before apart from `version`; `flutter test test/assembly_tree_model_test.dart` passes; the vectors workflow
+is green.
+
+**Don't touch:** the endpoint, spec sections 1-10, client code (other than the skip), DIDSA-VR.
+
+#### B2. Flutter: remembered state, expand to selection, search (#10, #8) (DIDSA-CAD `client/`)
+
+**Suggested model:** strongest (it reaches `part_screen.dart`). **Size:** M. **Depends on:** B1.
+
+**Build:**
+- `AssemblyTreeModel`: `filteredRows(query)` (spec 11) and `restoreOpenKeys(stored)` (spec 12), passing the new vectors;
+  remove B1's skip.
+- `AssemblyTreeView` header: a filter field (an icon that opens it on a phone, a box on desktop; Esc / clear closes it) with
+  the hint "Name, or :errors :missing :hidden ..."; an `unknown` note; matches marked, ancestors plain; "Expand to selection"
+  next to collapse all (and in the row menu). Keep the header one line on a phone (the A4.1 lesson: no oversized controls).
+- `part_screen.dart`: store open keys per document (`ViewPreferences` or a small store beside it, keyed by the document's
+  file / project identity), restored when the tree first arrives; collapse all and expand to selection stored. A tree
+  answer for an earlier document, or one landing after the user already opened or closed rows, must not overwrite them.
+
+**Done when:** model tests pass every v2 vector; view tests: the filter lists a deep match with its ancestors and clearing
+it restores the rows, an unknown token shows its note, expand to selection opens a 4-deep path and scrolls; `part_screen_test`
+"Assembly tree" adds: open keys survive a reopen, a stale tree answer for the previous document is dropped, a user
+collapse before the tree arrives is kept, collapse all is stored. `flutter analyze` clean, whole `flutter test` passes.
+
+**Don't touch:** the contract, Focus / Edit Alone (B3), the phone sheet (B4).
+
+#### B3. Flutter: Focus and Edit Alone context (#5) (DIDSA-CAD `client/`)
+
+**Suggested model:** strongest. **Size:** M. **Depends on:** B2.
+
+**Build** (section 4; desktop and side-panel layouts; phone portrait gets its form in B5):
+- **Make Focus keeps the whole tree** from the root (it swaps the tree to the focused Part today): rows outside the focused
+  branch dimmed (as the viewport fades them), a rail in the assembly-lens colour beside the focused branch, the focused row
+  revealed. Tapping a dimmed row selects it and offers "Focus here" (pops or pushes `AssemblyFocusStack` to that path).
+- **Breadcrumb strip** above the tree: every level of `AssemblyFocusStack`'s label path; a crumb pops to that depth. It
+  replaces the one-level "back" label; the root crumb is the root row (rule 5: not drawn twice).
+- **Edit Alone re-roots the tree on the target**: one strip "Editing <name> [Done]", a read-only line "in Rover > Mast"
+  (each crumb leaves Edit Alone at that level) and "used N x" when the target's Part is placed more than once. It replaces
+  `EditAloneRow` and the separate root row. Not stored (spec 12).
+- Focus changes while a tree or status answer is in flight: the late answer is dropped or applied to the right root.
+
+**Done when:** `part_screen_test` covers: Focus on a nested row keeps the root's rows, dims the outside, rails the branch;
+a crumb pops two levels; "Focus here" from a dimmed row; Edit Alone shows only the target's subtree with "in ..." and
+"used 2 x"; a crumb in the Edit Alone line leaves Edit Alone at that level; a late answer from before a focus change is
+dropped. Desktop screenshots of Focus and Edit Alone from `tools/gui_harness/`. Analyze and the whole suite pass.
+
+**Don't touch:** the contract, the phone portrait layout (B4, B5), VR.
+
+#### B4. Flutter: phone portrait sheet (#9) (DIDSA-CAD `client/`)
+
+**Suggested model:** strongest. **Size:** M. **Depends on:** B3.
+
+**Build** (sections 5 and 8.2; phone portrait only, landscape and tablets keep the side panel):
+- The tree as a bottom sheet with three heights: **peek** (the header and the selected row with its bar), **half**, **full**;
+  the root row becomes the sheet title. Rows 48 dp, no buttons. It drops to peek when a tool panel opens and comes back after.
+- **One selection surface per layout.** Today a selected top-level row on a phone shows both the old
+  `AssemblyComponentSelectionDrawer` and the new selection bar. In portrait the sheet's peek with its bar is the only one:
+  the drawer does not open, for tree selections or viewport picks. Every drawer action must land in the bar or More
+  (Hide, Isolate, Focus, Zoom, Alone; More: Fix / Float, Move / Rotate, Colour, Rename, Mate, Pattern, Delete; feature rows:
+  Edit, Roll back, Hide). The PR lists each drawer action and where it went. In landscape / tablet the drawer stays and
+  gains what only the bar had (Zoom, Alone), and the tree there shows no bar.
+- The filter field (B2) sits in the sheet header; opening it goes to full.
+
+**Done when:** widget tests: the three heights and the drag between them; a viewport pick shows the peek, not the drawer; a
+tool panel drops it to peek; every listed drawer action reachable from the bar or More; landscape shows the drawer and no
+bar. Screenshots at a phone portrait size (gui_harness window sized, e.g., 390 x 844) of peek, half, full. Analyze and suite.
+
+**Don't touch:** the contract, deep-tree behaviour and Focus in portrait (B5), the desktop tree.
+
+#### B5. Flutter: phone deep trees and Focus in portrait (#9, #5) (DIDSA-CAD `client/`)
+
+**Suggested model:** mid-tier. **Size:** S-M. **Depends on:** B4.
+
+**Build:** in the portrait sheet: ancestors pin to the top while scrolling (like contact-list headers) and tapping one
+collapses back to it; indent capped at 4 levels (12 dp each), deeper rows stop moving right (the pinned chain shows where
+you are); under Focus, rows outside the focused branch are not shown: they reduce to the pinned ancestor chain (8.3).
+
+**Done when:** widget tests: a row 7 deep has the indent of depth 4; scrolling a long branch keeps its ancestors pinned and
+a tap on one collapses to it; under Focus the outside rows are absent and the chain is shown; `reveal` still scrolls to
+the right row with pinned headers in the way. Screenshots of a 7-deep tree. Analyze and suite.
+
+**Don't touch:** the contract, the desktop / side-panel tree.
+
+#### B6. VR: build only the rows on screen (DIDSA-VR)
+
+**Suggested model:** mid-tier. **Size:** S-M. **Depends on:** VR #97 merged.
+
+**Why:** the window builds every row of an open level (about 0.4 s for 2,000 rows on a CPU renderer), a frame hitch in a
+headset; B7 makes big lists more frequent (a restored open set, a filter listing many matches).
+
+**Build:** in `scripts/assembly_tree_window.gd`, a fixed row height and a pool of row controls reused as the list scrolls
+(only the visible rows plus a margin exist); selection, the pulse, reveal (scroll to the row), the bottom bar and refresh in
+place behave as before. Measure before and after: building and scrolling 2,000 rows, headless and on Mesa.
+
+**Done when:** a new headless test shows a 2,000-row open level creates no more than the pool's controls and that reveal
+of a row 4 deep scrolls it into view; the render check's eight scenarios still pass; the timing before / after is in the PR.
+`tests/ci.sh` clean; tests registered.
+
+**Don't touch:** the model's rules, rooms, the design table's PARTS tab, DIDSA-CAD.
+
+#### B7. VR: remembered state, expand to selection, search (#10, #8) (DIDSA-VR)
+
+**Suggested model:** mid-tier. **Size:** M. **Depends on:** B1, B6.
+
+**Build:** copy vectors v2 into `tests/fixtures/assembly_tree_vectors.json` (source commit in `tests/fixtures/README.md`);
+`occurrence_tree_model.gd` gets `filtered_rows` (spec 11) and `restore_open_keys` (spec 12). The window header gets a search
+button that opens the popup keyboard (`main.open_keyboard_for`), the query shown under the title with a clear button;
+"Collapse" and "To selection" buttons; open keys stored per document in user settings (`app_settings.gd`, its own section),
+restored when the tree first arrives, with the stale-answer rule (`_refresh_token` / `_mutation_seq` are the precedent).
+
+**Done when:** `tests/occurrence_tree_model.gd` passes every v2 vector; `tests/occurrence_tree_actions.gd` adds a filter,
+clearing it, collapse, to selection, and a restore after reopening (with a late answer for the old document dropped);
+`tests/e2e_assembly_tree.gd` restores open rows across a reopen against a live backend; render-check screenshots of a
+filtered tree. `tests/ci.sh` clean; tests registered.
+
+**Don't touch:** the contract, rooms, DIDSA-CAD.
+
+#### B8. VR: room context in the world tree; row-hint order (#5) (DIDSA-VR)
+
+**Suggested model:** mid-tier. **Size:** S. **Depends on:** B7.
+
+**Build:**
+- While a room is open, the world tree dims every row outside it: rows that are a placement of the room's Part (rooms are per
+  Part, `room_manager.is_open_for`) and the rows below them stay full, the rest dimmed; the room's rows get the rail. The
+  bottom bar for a room row keeps "Placed N times" from the console.
+- **Row-hint order** (the owner's question from A5.1). Proposed: a problem state's word (`missing`, `cycle`, `broken`,
+  `over`, `near`) stays first; otherwise `suppressed` comes before the state word (a suppressed part is not solved, so its
+  state means little), and the rigid-set note before `under n` / `full` / `fixed`; `hidden` last. The bottom bar keeps the
+  full reasons. *To be confirmed by the owner before B8 starts.*
+
+**Done when:** headless tests for the dimming (two placements of the room's Part both full; a sibling dimmed; closing the room
+undims) and the hint order on a narrow row; render-check screenshots. `tests/ci.sh` clean; tests registered.
+
+**Don't touch:** the contract, the room's own tree (Phase C, T2), DIDSA-CAD.
+
+**Left for later:** the room's docked tree and its context strip (Phase C with T2); `:mates` (Phase C, when mates are rows);
+storing Edit Alone's open rows.
+
+### 10.7 Progress
+
+| Chunk | Status | PR | Model used | Notes |
+|---|---|---|---|---|
+| B1 contract additions | not started | | | |
+| B2 Flutter #10 + #8 | not started | | | |
+| B3 Flutter #5 | not started | | | |
+| B4 Flutter phone sheet | not started | | | |
+| B5 Flutter phone deep trees | not started | | | |
+| B6 VR row build | not started | | | Needs VR #97 merged first |
+| B7 VR #10 + #8 | not started | | | |
+| B8 VR room context, hints | not started | | | Hint order awaits the owner |
 
 ## Sources
 
