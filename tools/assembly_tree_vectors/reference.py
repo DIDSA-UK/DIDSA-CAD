@@ -283,10 +283,9 @@ def feature_state(feature: dict[str, Any]) -> str:
 
 
 def plane_feature_key(owner_key: str, feature_id: str) -> str:
-    """A plane feature in the Planes folder. A feature id the backend mints is never `xy`, `xz` or `yz`, but a hand-written file
-    can carry one: the default plane keeps `K#plane:xy` and the feature takes `K#plane:feature:xy`."""
-    plain = {plane_id for plane_id, _ in DEFAULT_PLANES}
-    return owner_key + "#plane:" + ("feature:" if feature_id in plain else "") + feature_id
+    """A plane feature in the Planes folder: always `K#plane:feature:<id>`, so it can never share a key with a default plane
+    (`K#plane:xy`, `xz`, `yz`), whatever a hand-written file calls its features."""
+    return owner_key + "#plane:feature:" + feature_id
 
 
 # --- Visible rows -------------------------------------------------------------------------------------------------------

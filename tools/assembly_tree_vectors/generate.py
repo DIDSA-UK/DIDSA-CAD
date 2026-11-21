@@ -465,7 +465,7 @@ LIVE_HEAD = {
     "default_planes_hidden": PLANES_SHOWN,
 }
 LIVE_LENS = {"key": "mast/arm/head/lens", "features": [lf("l1", "Sketch 1", "sketch"), lf("l2", "Revolve 1", "revolve")], "bodies": [{"id": "lb1", "label": "Lens body", "hidden": False}], "surfaces": [], "curves": [], "default_planes_hidden": PLANES_SHOWN}
-# A hand-written file can carry a plane feature whose id is xy: the default plane keeps its key.
+# A hand-written file can carry a plane feature whose id is xy: plane features are keyed #plane:feature:<id>, so no clash.
 LIVE_XY = {"key": "", "features": [lf("xy", "Plane XY copy", "create_plane"), lf("f2", "Sketch 1", "sketch")], "bodies": [], "surfaces": [], "curves": [], "default_planes_hidden": PLANES_SHOWN}
 FEATURES_FETCHED = {"mast/arm/head/lens": FEATURES_LENS["mast/arm/head/lens"], "chassis": [{"id": "g1", "label": "Sketch 1"}, {"id": "g2", "label": "Boss 1"}]}
 
@@ -522,7 +522,7 @@ CASES += [
     live_case("live_part_alone_folders_open", "The folders open: bodies, then the three default planes and the plane feature, then curves; the plane feature also stays in the build order, under its own key.", "single_part", LIVE_ALONE, ["#bodies", "#planes", "#curves"]),
     live_case("live_part_alone_empty_folders", "Nothing to put in Bodies, Surfaces or Curves: only Planes is listed.", "single_part", LIVE_EMPTY, ["#planes"]),
     live_case("live_part_every_feature_state", "Every feature state, and several states on one feature: the most severe state wins (lost > moved > pending > rolled back > hidden), `hidden` stays true on the row.", "single_part", LIVE_STATES),
-    live_case("live_part_plane_feature_named_xy", "A plane feature whose id is `xy` (only a hand-written file can have one): the default plane keeps `#plane:xy`, the feature in the Planes folder is `#plane:feature:xy`, its build-order row `#feature:xy`.", "single_part", LIVE_XY, ["#planes"]),
+    live_case("live_part_plane_feature_named_xy", "A plane feature whose id is `xy` (only a hand-written file can have one): the default plane keeps `#plane:xy`; every plane feature in the Planes folder is `#plane:feature:<id>` (here `#plane:feature:xy`), its build-order row `#feature:xy`.", "single_part", LIVE_XY, ["#planes"]),
     live_case("live_part_three_levels_down_collapsed", "The live row is not open: nothing under it is listed, exactly as for any row.", "rover", LIVE_HEAD),
     live_case("live_part_three_levels_down", "The live part is mast / arm / head, open: its child occurrences first (lens, the missing cable), then its folders, then its features at the same depth; a Part in the same tree stays read-only (the lens's features are section 7's, `type` null).", "rover", LIVE_HEAD, ["mast", "mast/arm", "mast/arm/head", "mast/arm/head/lens"], features=FEATURES_LENS),
     live_case("live_part_three_levels_down_folders_open", "...with Bodies, Planes and Surfaces open.", "rover", LIVE_HEAD, ["mast", "mast/arm", "mast/arm/head", "mast/arm/head#bodies", "mast/arm/head#planes", "mast/arm/head#surfaces"]),

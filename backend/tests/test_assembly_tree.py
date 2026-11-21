@@ -403,16 +403,3 @@ def test_endpoint_matches_the_reference_build_tree(case):
     (`reference.build_tree`): the endpoint must give the same tree, roll-up included, so the two cannot drift apart."""
     assert client.post("/document/import/native", json=case["document"]).status_code == 200
     assert _tree(case["root"], **case["params"]) == case["expected"]
-
-
-def test_an_occurrence_id_with_a_hash_is_refused_422():
-    """Spec section 8: `#` never occurs in an occurrence id (row keys use it as a separator), and the create path enforces it."""
-    root = _import("hash", [_part("hash", "Hash"), _part("bolt", "Bolt")])
-    path = f"/document/parts/{root}/occurrences"
-    for bad in ("a#b", "#group:x", "b#"):
-        response = client.post(path, json=_occ(bad, "bolt"))
-        assert response.status_code == 422, (bad, response.text)
-    assert client.get(path).json() == [] or all("#" not in o["id"] for o in client.get(path).json())
-    ok = client.post(path, json=_occ("b-1", "bolt"))
-    assert ok.status_code == 201, ok.text
-    assert [o["id"] for o in client.get(path).json()] == ["b-1"]

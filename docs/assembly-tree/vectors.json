@@ -10483,7 +10483,7 @@
      "depth": 2,
      "expandable": false,
      "hidden": false,
-     "key": "#plane:f3",
+     "key": "#plane:feature:f3",
      "kind": "feature",
      "label": "Plane 1",
      "open": false,
@@ -11233,7 +11233,7 @@
    ],
    "tree": "single_part",
    "unsaved_part_ids": [],
-   "why": "A plane feature whose id is `xy` (only a hand-written file can have one): the default plane keeps `#plane:xy`, the feature in the Planes folder is `#plane:feature:xy`, its build-order row `#feature:xy`."
+   "why": "A plane feature whose id is `xy` (only a hand-written file can have one): the default plane keeps `#plane:xy`; every plane feature in the Planes folder is `#plane:feature:<id>` (here `#plane:feature:xy`), its build-order row `#feature:xy`."
   },
   {
    "expected": [
@@ -14495,7 +14495,7 @@
       "depth": 2,
       "expandable": false,
       "hidden": false,
-      "key": "#plane:f3",
+      "key": "#plane:feature:f3",
       "kind": "feature",
       "label": "Plane 1",
       "match": true,
@@ -14839,7 +14839,7 @@
       "depth": 2,
       "expandable": false,
       "hidden": false,
-      "key": "#plane:f3",
+      "key": "#plane:feature:f3",
       "kind": "feature",
       "label": "Plane 1",
       "match": true,
@@ -15764,7 +15764,7 @@
       "depth": 2,
       "expandable": false,
       "hidden": false,
-      "key": "#plane:f3",
+      "key": "#plane:feature:f3",
       "kind": "feature",
       "label": "Plane 1",
       "match": false,

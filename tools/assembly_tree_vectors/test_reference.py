@@ -388,18 +388,22 @@ class VersionTwo(unittest.TestCase):
         keys = [r["key"] for r in case("live_part_alone_folders_open")["expected"]]
         self.assertEqual(
             keys[:12],
-            ["", "#bodies", "#body:b1", "#body:b2", "#planes", "#plane:xy", "#plane:xz", "#plane:yz", "#plane:f3", "#curves", "#curve:c1", "#feature:f1"],
+            ["", "#bodies", "#body:b1", "#body:b2", "#planes", "#plane:xy", "#plane:xz", "#plane:yz", "#plane:feature:f3", "#curves", "#curve:c1", "#feature:f1"],
         )
         rows = {r["key"]: r for r in case("live_part_alone_folders_open")["expected"]}
         self.assertEqual((rows["#plane:xz"]["kind"], rows["#plane:xz"]["state"], rows["#plane:xz"]["hidden"]), ("default_plane", "hidden", True))
-        self.assertEqual((rows["#plane:f3"]["kind"], rows["#plane:f3"]["type"], rows["#feature:f3"]["type"]), ("feature", "create_plane", "create_plane"))
+        self.assertEqual((rows["#plane:feature:f3"]["kind"], rows["#plane:feature:f3"]["type"], rows["#feature:f3"]["type"]), ("feature", "create_plane", "create_plane"))
         self.assertEqual(rows["#body:b2"]["state"], "hidden")
         self.assertEqual({r["type"] for r in rows.values() if r["kind"] != "feature"}, {None})
 
     def test_a_plane_feature_can_never_take_a_default_planes_key(self):
-        self.assertEqual(ref.plane_feature_key("", "f3"), "#plane:f3")
+        self.assertEqual(ref.plane_feature_key("", "f3"), "#plane:feature:f3")  # always, not only for xy / xz / yz
         for plane in ("xy", "xz", "yz"):
             self.assertEqual(ref.plane_feature_key("a/b", plane), f"a/b#plane:feature:{plane}")
+        for c in cases_of("live_part", "live_part_filter"):
+            keys = [r["key"] for r in rows_of(c) if r["kind"] == "feature" and "#plane:" in r["key"]]
+            self.assertTrue(all("#plane:feature:" in k for k in keys), c["name"])
+            self.assertFalse(any(r["kind"] == "feature" and r["key"].rsplit("#plane:", 1)[-1] in ("xy", "xz", "yz") for r in rows_of(c) if "#plane:" in r["key"]), c["name"])
         keys = [r["key"] for r in case("live_part_plane_feature_named_xy")["expected"]]
         self.assertEqual(len(keys), len(set(keys)))
 
@@ -431,7 +435,7 @@ class VersionTwo(unittest.TestCase):
         bodies = rows_of(case("live_filter_match_inside_bodies"))
         self.assertEqual([r["key"] for r in bodies][-2:], ["mast/arm/head#bodies", "mast/arm/head#body:hb1"])
         self.assertEqual([(r["match"], r["open"]) for r in bodies][-2:], [(False, True), (True, False)])
-        self.assertEqual([r["key"] for r in rows_of(case("live_filter_plane_feature_twice")) if r["match"]], ["#plane:f3", "#feature:f3"])
+        self.assertEqual([r["key"] for r in rows_of(case("live_filter_plane_feature_twice")) if r["match"]], ["#plane:feature:f3", "#feature:f3"])
         self.assertEqual(keys_of("live_filter_folder_label_never_matches"), [""])
         self.assertEqual([r["key"] for r in rows_of(case("live_filter_sketches")) if r["match"]], ["#feature:f1", "#feature:f4"])
         hidden = [r["key"] for r in rows_of(case("live_filter_hidden")) if r["match"]]

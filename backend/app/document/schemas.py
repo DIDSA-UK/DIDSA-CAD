@@ -3737,16 +3737,6 @@ class OccurrenceCreate(BaseModel):
     fixed: bool = False
     color: str | None = None
     resolved_part_id: str | None = None
-
-    @field_validator("id")
-    @classmethod
-    def _id_has_no_hash(cls, value: str) -> str:
-        """`docs/assembly-tree/spec.md` section 8: row keys join occurrence ids and use `#` as a separator (`#group:`, `#feature:`,
-        `#pattern:`), so an occurrence id never contains one."""
-        if "#" in value:
-            raise ValueError("an occurrence id cannot contain '#'")
-        return value
-
     # Finding moved files (`docs/moved-files-scope.md`): the deleted Occurrence's `ref_part_id`, restored as it was
     # (stored whether or not `resolved_part_id` resolves).
     ref_part_id: str | None = None

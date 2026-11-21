@@ -266,11 +266,14 @@ document is Phase B.
 | Group | the parent's key, `/` (omitted at the root), `#group:` and the first member's `occurrence_id` | `wheel_l/#group:b1`, `#group:s1` |
 | Feature | the owning row's key, `#feature:` and the feature id | `mast/arm/head/lens#feature:f2`, `#feature:f1` |
 | Folder | the owning row's key and `#mates` / `#patterns` | `#mates` |
-| Live part's folders and items (section 13) | the live row's key `K` and `#bodies` / `#planes` / `#surfaces` / `#curves`; `K#body:<id>`, `K#surface:<id>`, `K#curve:<id>`; `K#plane:xy` / `xz` / `yz`; `K#plane:<feature id>` | `mast/arm/head#bodies`, `#plane:xy`, `#body:b1` |
+| Live part's folders and items (section 13) | the live row's key `K` and `#bodies` / `#planes` / `#surfaces` / `#curves`; `K#body:<id>`, `K#surface:<id>`, `K#curve:<id>`; `K#plane:xy` / `xz` / `yz`; `K#plane:feature:<feature id>` | `mast/arm/head#bodies`, `#plane:xy`, `#plane:feature:f3`, `#body:b1` |
 
-`#` never occurs in an occurrence id (pattern copies use `#pattern:`), so keys cannot collide. The backend enforces it where a client
-supplies an id: `POST /parts/{id}/occurrences` answers 422 for an id containing `#`. (A native file imported with such an id is not
-checked; a client that meets one treats the row's key as it is, and may find two rows sharing a key.) Keys use stored ids only
+Ids the backend and both clients make (uuid4) never contain `#` or `/`, and pattern copies use `#pattern:`, so keys do not collide.
+The backend does not check an id it is given (`POST /parts/{id}/occurrences` restores an id Undo took from the document a moment
+before, and `import_native` takes ids as written), so a hand-edited `.didsa` can still carry a `#` or a `/`. Keys can then collide
+(`/` joins path ids: `a/b` at the root and the child `b` of `a` are one key; `#` is the separator of group, feature and folder
+keys), and the rows, filter, reveal and restore results for those rows are undefined. A client must not crash on one: it treats the
+key as it is. Keys use stored ids only
 (occurrence and feature ids are kept in the file), so they survive a refresh and a reopen; `resolved_part_id` is
 session-local and is never part of a key.
 
@@ -300,6 +303,8 @@ what the generator writes; CI: `.github/workflows/assembly-tree-vectors.yml`). F
     `match`); `"restore"` (`stored`, `grouping`, `limit`; `expected`: the kept keys); `"live_part"` (the `rows` inputs plus `live`,
     section 13; every row has `type`); `"live_part_filter"` (`live` and `query`) and `"live_part_restore"` (`live`, `stored`,
     `grouping`, `limit`). A client runs every kind it implements and fails on a kind it does not know.
+  DIDSA-VR's `tests/occurrence_tree_model.gd` checks `version == 1` and runs every case that is not `rows` as a reveal, so B7 changes
+  it when it copies version 2 (`filter` and `restore` implemented; the three `live_part` kinds skipped by name).
 
 A client passes when, for every case, its rows (or keys) equal `expected` exactly.
 
@@ -415,15 +420,15 @@ plane", "YZ plane", in that order), then the plane features (`type` `create_plan
 stay in the build order below. When a row becomes live a client adds its key to the open keys (it shows open); the user can close it.
 
 **Keys** (section 8 has the table): folders `K#bodies`, `K#planes`, `K#surfaces`, `K#curves`; `K#body:<id>`, `K#surface:<id>`,
-`K#curve:<id>`; default planes `K#plane:xy` / `xz` / `yz`; a plane feature in the Planes folder `K#plane:<feature id>`, its
-build-order row `K#feature:<id>`. Ids are the backend's: a feature id is a UUID; a body id can contain `#` (`<feature id>#<n>`, when a feature makes several bodies). A client appends the whole id after the prefix and never splits a key, so that is harmless.
+`K#curve:<id>`; default planes `K#plane:xy` / `xz` / `yz`; every plane feature in the Planes folder `K#plane:feature:<feature id>`
+(always, so the two kinds of plane row can never share a key), its build-order row `K#feature:<id>`. Ids are the backend's: a feature id is a UUID; a body id can contain `#` (`<feature id>#<n>`, when a feature makes several bodies). A client appends the whole id after the prefix and never splits a key, so that is harmless.
 
 **A feature id can never be `xy`, `xz` or `yz`.** Every route that
 creates a feature mints its id with `uuid.uuid4()` (the one fixed id in the backend, `ImportFeature`'s `convert`, is not a plane
 name), and no request body supplies the id of a new feature. One door is not shut: a native `.didsa` file written or edited by
 hand can carry any string as a feature id (`native_format._feature_from_dict` takes it as it is) and an import does not check it.
-So the spec does not rely on the rule: a plane feature whose id is `xy`, `xz` or `yz` is keyed `K#plane:feature:<id>` in the Planes folder,
-and the default plane keeps `K#plane:xy`. Its build-order key is unchanged (`K#feature:xy`).
+So the spec does not rely on the rule: every plane feature in the Planes folder is keyed `K#plane:feature:<id>`, whatever its id, and
+the default planes keep `K#plane:xy` / `xz` / `yz`, so the two can never share a key. The build-order key is `K#feature:<id>`.
 
 **The state slot of a feature row,** one per row, the most severe first:
 
