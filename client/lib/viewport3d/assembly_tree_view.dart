@@ -55,7 +55,6 @@ class AssemblyTreeController {
         if (_state == s && s.mounted) s._reveal(p, select: _pendingSelect);
       });
     }
-
   }
 
   void _detach(_AssemblyTreeViewState s) {

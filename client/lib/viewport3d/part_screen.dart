@@ -679,7 +679,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Save or Save All): see [_treeDocumentKey]. Not [_projectRoot], which Create Component and the save prompts can set for a document from elsewhere.
   ProjectRoot? _rootFileRoot;
 
-  /// The key the rows in the model were last stored under, or the document had when it was opened: see [_syncTreeKey].
+  /// The key the rows in the model were last stored under, or the key the document was opened with (what the store holds under it is what the
+  /// tree restores, so nothing needs writing): see [_syncTreeKey].
   String? _treeKeyStoredUnder;
 
   /// Stores the rows in the model under the document's key when that key has changed since they were last stored (a first save, Save As, Save All,
@@ -694,13 +695,21 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treeKeyStoredUnder = null;
     } else if (_storeTreeRowsAs(key)) {
       _treeKeyStoredUnder = key;
-    } else if (old != null && _treeModel.tree != null) {
-      // The model holds another tree (a focused Part's, Edit Alone's, one built from the lists): what the document's own tree remembered goes
-      // to the new key as it is.
+    } else if (old != null) {
+      // The model holds no tree of the document's own (none yet, a focused Part's, Edit Alone's, one built from the lists): what was stored
+      // under the key it had goes to the new key as it is, and defaults are not stored in its place.
       unawaited(AssemblyTreeOpenStore.copy(old, key));
       _treeKeyStoredUnder = key;
     }
-    // Otherwise there is no tree in the model yet: the key stays pending, and the first answer stores under it.
+    // Otherwise the document had no key before and there is no tree yet: the key stays pending, and the first answer stores under it.
+  }
+
+  /// Carries the rows of this document to [newKey], the key of another document (the copy a Save As opens): stored from the model when it holds
+  /// the document's tree, else what is stored under the key this document has.
+  void _carryTreeRowsTo(String newKey) {
+    if (_storeTreeRowsAs(newKey)) return;
+    final from = _treeKeyStoredUnder ?? _treeDocumentKey;
+    if (from != null) unawaited(AssemblyTreeOpenStore.copy(from, newKey));
   }
 
   @override
@@ -722,7 +731,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Stores [model]'s open rows for this document (spec section 12). Only the document's own tree: a focused Part's tree is another tree, and
   /// Edit Alone's is not stored. Nothing for a document with no file yet, or a model that has since been replaced.
   void _rememberTreeOpenKeys(AssemblyTreeModel model) {
-    if (identical(model, _treeModel)) _storeTreeRowsAs(_treeDocumentKey);
+    if (!identical(model, _treeModel)) return;
+    final key = _treeDocumentKey;
+    if (_storeTreeRowsAs(key)) _treeKeyStoredUnder = key;
   }
 
   /// Stores the rows open in the document's own tree under [key]: a change the person made, and also (Save As, a first save) the same rows
@@ -12676,7 +12687,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
     if (isRootPart) {
       // The copy opens in a new screen under its own key: the rows open here go with it.
-      _storeTreeRowsAs(_projectTreeKey(root.persistedKey, newPath));
+      _carryTreeRowsTo(_projectTreeKey(root.persistedKey, newPath));
       await _openComposedProject(root, newPath);
       return;
     }
@@ -13258,6 +13269,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _part = part;
       // The root's file is where this screen was opened from, when it was opened from a project.
       if (widget.initialRelativePathByPartId.containsKey(part.id)) _rootFileRoot = widget.initialProjectRoot;
+      // The key the document opened with: the first tree answer restores what is stored under it and writes nothing back; a key change before
+      // that answer (a Save As) moves the stored rows to the new key.
+      _treeKeyStoredUnder = _treeDocumentKey;
       _focusStack = AssemblyFocusStack(part.id);
       _editAlone = null;
       // A4: a new document starts with a new tree (its open rows, its session-hidden rows).
@@ -28710,7 +28724,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Whether the assembly tree can be shown right now if it is hidden: the Assembly lens, and no tool panel or hidden chrome keeping it out.
   bool get _treeCanBeShown =>
-      _lens == AssemblyLens.assembly && !_chromeHidden && (_desktopLayout ? !_desktopToolPanelOpen : !_anyToolSessionActive);
+      _lens == AssemblyLens.assembly &&
+      !_chromeHidden &&
+      (_desktopLayout ? !_desktopToolPanelOpen && !_treePickerActive : !_anyToolSessionActive);
 
   /// The 3D menu's Expand to selection: shows the tree if it is hidden, makes the tree's selection this screen's, opens the rows down to it, and
   /// scrolls to it after the frame (the view of a hidden pane is built by then).

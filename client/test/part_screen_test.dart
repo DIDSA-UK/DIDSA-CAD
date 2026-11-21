@@ -12158,7 +12158,10 @@ void main() {
 
       Future<List<String>?> stored(WidgetTester tester, String path) => storedKey(tester, 'file:$path');
 
-      setUp(() => SharedPreferences.setMockInitialValues({}));
+      setUp(() {
+        SharedPreferences.setMockInitialValues({});
+        _TreeProbe.lastModel = null;
+      });
       tearDown(() => gate = null);
 
       testWidgets('open rows survive closing the document and opening it again; another document does not get them', (tester) async {
@@ -12490,6 +12493,61 @@ void main() {
         await settle(tester);
         expect(_TreeProbe(tester).view.visible, isTrue, reason: 'it opens, or nothing is seen to happen');
         expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+      });
+
+      testWidgets('a document that was set up survives any number of untouched opens of others: an open writes nothing', (tester) async {
+        final before = AssemblyTreeOpenStore.maxDocuments;
+        AssemblyTreeOpenStore.maxDocuments = 3;
+        addTearDown(() => AssemblyTreeOpenStore.maxDocuments = before);
+        await tester.runAsync(() => AssemblyTreeOpenStore.write('file:/docs/keep.didsa', ['asm-1']));
+        for (var i = 0; i < 5; i++) {
+          await openNested(tester, filePath: '/docs/other$i.didsa');
+          await closeScreen(tester);
+        }
+        expect(await stored(tester, '/docs/keep.didsa'), ['asm-1'], reason: 'five untouched opens, room for three documents');
+        final index = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getStringList('assembly_tree_open_documents'));
+        expect(index, ['file:/docs/keep.didsa']);
+
+        // A document that was opened and changed does count.
+        await openNested(tester, filePath: '/docs/other.didsa');
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await tester.pump();
+        expect(await stored(tester, '/docs/other.didsa'), ['asm-1']);
+      });
+
+      testWidgets('a Save As before the first tree answer moves the stored rows to the copy, and stores no defaults in their place', (tester) async {
+        final storage = _FakeStorageService();
+        const keyA = 'assembly_tree_open:project:/fake/project|top.DIDSAprt';
+        const keyB = 'assembly_tree_open:project:/fake/project|copy.DIDSAprt';
+        SharedPreferences.setMockInitialValues({keyA: jsonEncode(['asm-1'])});
+        gate = Completer<void>();
+        final held = gate!;
+        await openNested(tester, projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'}, storage: storage, around: holdStructure, waitForTree: false, configure: (b) {
+          for (final o in [...b.occurrences, for (final l in b.subOccurrences.values) ...l]) {
+            o['external_ref'] = null;
+          }
+        });
+        await tester.pump(const Duration(milliseconds: 200));
+        expect(_TreeProbe(tester).model.tree, isNull, reason: 'the first answer is held');
+        gate = null; // the copy's own screen is not held
+
+        tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveAsNative!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.enterText(find.byType(TextFormField), 'copy.DIDSAprt');
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        await tester.tap(find.widgetWithText(FilledButton, 'Save As'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 250));
+        expect(storage.files.keys, contains('copy.DIDSAprt'));
+
+        held.complete(); // the first screen's answer lands now (it was replaced by the copy's screen)
+        await settle(tester);
+        await settle(tester);
+        Future<String?> raw(String key) async => await tester.runAsync<String?>(() async => (await SharedPreferences.getInstance()).getString(key));
+        expect(await raw(keyB), '["asm-1"]', reason: 'the copy has the rows of the document it was saved from');
+        expect(await raw(keyA), '["asm-1"]', reason: 'and the original keeps its own');
       });
 
       testWidgets('a tree built from the lists (the endpoint failed) neither restores nor stores', (tester) async {

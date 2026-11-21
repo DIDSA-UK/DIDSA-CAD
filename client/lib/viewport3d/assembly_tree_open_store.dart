@@ -15,8 +15,8 @@ class AssemblyTreeOpenStore {
   static const String _entryPrefix = 'assembly_tree_open:';
   static const String _indexKey = 'assembly_tree_open_documents';
 
-  /// Documents remembered at once; the one used (read or stored) longest ago goes first.
-  static const int maxDocuments = 40;
+  /// Documents remembered at once (a test lowers it); the one used (read or stored) longest ago goes first.
+  static int maxDocuments = 40;
 
   /// The keys stored for [documentKey], or null when there are none (a document never stored, or one whose entry cannot be read).
   static Future<List<String>?> read(String documentKey) async {
