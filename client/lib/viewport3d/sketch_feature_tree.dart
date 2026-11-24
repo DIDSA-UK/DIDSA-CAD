@@ -1,3 +1,5 @@
+import 'dart:async' show unawaited;
+
 import 'package:material_ui/material_ui.dart';
 
 import '../api/document_api_client.dart';
@@ -26,6 +28,7 @@ class SketchFeatureTree extends StatefulWidget {
     this.grouping = true,
     this.lockedReason = 'Exit the sketch first',
     this.onToggleVisibility,
+    this.onFeaturesRequested,
     this.docked = false,
   });
 
@@ -53,6 +56,11 @@ class SketchFeatureTree extends StatefulWidget {
 
   /// Hide / Show of a live row (a feature, a body, surface or curve, a default plane). Null leaves the eyes out.
   final void Function(AssemblyTreeRow row)? onToggleVisibility;
+
+  /// A part row (or the root) was opened and its features are not in this tree: the Part screen reads them into [fetchedFrom] and this tree
+  /// takes them from there (B3). Returns whether they were read; when not, the row asks again the next time it is opened. Asked only while
+  /// [fetchedFrom] has this tree's root (its paths name the same rows then). Null leaves such a row without its features.
+  final Future<bool> Function(List<String> path)? onFeaturesRequested;
 
   /// The desktop left pane (it fills it); otherwise the tree floats over the viewport with a resize handle on its right edge.
   final bool docked;
@@ -92,7 +100,12 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
     final model = AssemblyTreeModel(tree: widget.tree, grouping: widget.grouping);
     model.openAll(openKeys, remember: false);
     final source = _source;
-    if (source != null) model.copyFetchedFrom(source);
+    if (source != null) {
+      model.copyFetchedFrom(source);
+    } else {
+      // Which Parts are unsaved does not depend on the root: both trees mark the same Parts.
+      model.setUnsavedPartIds(widget.fetchedFrom?.unsavedPartIds ?? const <String>[]);
+    }
     model.setLivePart(widget.livePart);
     model.selectedKey = model.liveFeatureKey(widget.sketchFeatureId);
     _pickerSignature = null;
@@ -118,10 +131,27 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
       });
     }
     final source = _source;
-    if (source != null) _model.copyFetchedFrom(source);
+    if (source != null) {
+      _model.copyFetchedFrom(source);
+    } else {
+      _model.setUnsavedPartIds(widget.fetchedFrom?.unsavedPartIds ?? const <String>[]);
+    }
     if (!identical(old.livePart, widget.livePart)) _model.setLivePart(widget.livePart);
     if (old.grouping != widget.grouping) _model.grouping = widget.grouping;
     _model.selectedKey = _model.liveFeatureKey(widget.sketchFeatureId);
+  }
+
+  /// The view asked for a row's features: the Part screen fetches them (this tree fetches nothing itself), and a request that could not be
+  /// made or failed is forgotten so opening the row asks again, as the Part screen's own tree does.
+  void _onFeaturesRequested(List<String> path) {
+    final ask = widget.onFeaturesRequested;
+    if (ask == null || _source == null) {
+      _controller.forgetFeaturesRequest(path);
+      return;
+    }
+    unawaited(ask(path).then((loaded) {
+      if (!loaded && mounted) _controller.forgetFeaturesRequest(path);
+    }));
   }
 
   /// The picker the rows follow: the lock, or Convert Entities' picks (spec section 13's convert pick).
@@ -162,6 +192,7 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
           width: width,
           title: 'Build Tree',
           onClose: widget.onClose,
+          onFeaturesRequested: _onFeaturesRequested,
           onRowPick: (row) => _onPick(row, convert),
           onVisibilityToggle: toggle == null
               ? null

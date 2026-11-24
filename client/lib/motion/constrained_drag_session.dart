@@ -283,7 +283,9 @@ class ConstrainedDragSession {
         includeConstraintModel: !(useLocalRetraction && _local != null),
       );
     } on ApiException catch (e) {
-      failure = e.statusCode == null ? 'transport' : 'http_${e.statusCode}';
+      final code = e.statusCode;
+      // A 2xx the client could not read (a garbled answer) is not an HTTP failure: counted as its own reason, not as "http_200".
+      failure = code == null ? 'transport' : (code >= 200 && code < 300 ? 'unreadable' : 'http_$code');
     } catch (_) {
       failure = 'transport';
     }

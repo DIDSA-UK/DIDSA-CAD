@@ -42,7 +42,33 @@ class AssemblyFocusStack {
   /// fix).
   List<String> _labelPath = const [];
 
+  /// The Part id pushed with each level of [_occurrencePath] (parallel to it).
+  List<String> _partPath = const [];
+
   AssemblyFocusStack(this.rootPartId);
+
+  /// B3: the display name of every focused level, the outermost first (the breadcrumb strip's crumbs after the root's).
+  List<String> get labelPath => _labelPath;
+
+  /// B3: every focused level as (Part id, occurrence id, label), the outermost first: what [setLevels] takes back.
+  List<(String, String, String)> get levels => [
+        for (var i = 0; i < _occurrencePath.length; i++) (_partPath[i], _occurrencePath[i], _labelPath[i]),
+      ];
+
+  /// B3: makes the focus exactly [target]: pops the levels that are not a prefix of it (by occurrence id), then pushes the rest. "Focus
+  /// here" on a row in another branch, a crumb of the strip, and Edit Alone's way back all go through this.
+  void setLevels(List<(String, String, String)> target) {
+    var keep = 0;
+    while (keep < target.length && keep < _occurrencePath.length && _occurrencePath[keep] == target[keep].$2) {
+      keep++;
+    }
+    while (depth > keep) {
+      pop();
+    }
+    for (var i = keep; i < target.length; i++) {
+      push(target[i].$1, target[i].$2, target[i].$3);
+    }
+  }
 
   /// The currently-focused Part id - [rootPartId] until something is pushed.
   String get current => _overrides.current ?? rootPartId;
@@ -72,6 +98,7 @@ class AssemblyFocusStack {
     _overrides.push(partId);
     _occurrencePath = [..._occurrencePath, occurrenceId];
     _labelPath = [..._labelPath, displayName];
+    _partPath = [..._partPath, partId];
   }
 
   /// Un-focuses back to whatever was focused before, or [rootPartId] if this
@@ -83,6 +110,9 @@ class AssemblyFocusStack {
     if (_labelPath.isNotEmpty) {
       _labelPath = _labelPath.sublist(0, _labelPath.length - 1);
     }
+    if (_partPath.isNotEmpty) {
+      _partPath = _partPath.sublist(0, _partPath.length - 1);
+    }
     return _overrides.pop();
   }
 
@@ -92,5 +122,6 @@ class AssemblyFocusStack {
     _overrides.clear();
     _occurrencePath = const [];
     _labelPath = const [];
+    _partPath = const [];
   }
 }

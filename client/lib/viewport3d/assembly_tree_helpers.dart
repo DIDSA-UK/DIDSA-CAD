@@ -375,8 +375,12 @@ AssemblyTreeResponseDto assemblyTreeFromLists({
 
 /// The per-occurrence constraint status of the tree's top level, in the shape `constraint-status` has (what the rest of the screen reads:
 /// the grab notice of a rigid set). Empty without status.
-Map<String, ConstraintStatusDto> topLevelConstraintStatus(AssemblyTreeResponseDto tree) => {
-      for (final n in tree.children)
+Map<String, ConstraintStatusDto> topLevelConstraintStatus(AssemblyTreeResponseDto tree) => constraintStatusOfChildren(tree.children);
+
+/// [topLevelConstraintStatus] for any level (B3: the tree keeps the whole assembly while a level is focused, and the screen's own map is the
+/// focused level's): the status of each of [children] that has one, by occurrence id.
+Map<String, ConstraintStatusDto> constraintStatusOfChildren(Iterable<AssemblyTreeNodeDto> children) => {
+      for (final n in children)
         if (n.constraint != null) n.occurrenceId: ConstraintStatusDto(state: n.constraint!.status, dof: n.constraint!.dof, rigidSet: n.constraint!.rigidSet),
     };
 

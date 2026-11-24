@@ -89,4 +89,38 @@ void main() {
       expect(error.statusCode, 200);
     }
   });
+
+  // B3 (P3's review): a decode failure of any shape kind was only mapped for FormatException and TypeError; a missing object (NoSuchMethodError)
+  // or a missing list entry (RangeError, StateError) escaped the client raw.
+  group('decodeOrUnreadable', () {
+    ApiException? unreadable(Object Function() onSuccess) {
+      try {
+        decodeOrUnreadable<Object>('{}', (_) => onSuccess(), name: 'test', statusCode: 200);
+      } on ApiException catch (e) {
+        return e;
+      }
+      return null;
+    }
+
+    test('NoSuchMethodError, RangeError and StateError while decoding are the unreadable answer with the 2xx status', () {
+      final cases = <String, Object Function()>{
+        'a missing object': () => (null as dynamic).field as Object,
+        'a missing list entry': () => <Object>[][0],
+        'a list that is empty': () => <Object>[].first,
+      };
+      for (final entry in cases.entries) {
+        final error = unreadable(entry.value);
+        expect(error, isNotNull, reason: entry.key);
+        expect(error!.message, ApiException.unreadableAnswerMessage, reason: entry.key);
+        expect(error.statusCode, 200, reason: entry.key);
+      }
+    });
+
+    test("an ApiException from the callback and an error that is not a decode failure go through (they are not the answer's fault)", () {
+      expect(() => decodeOrUnreadable<Object>('{}', (_) => throw ApiException('own', statusCode: 409), name: 't', statusCode: 200),
+          throwsA(isA<ApiException>().having((e) => e.message, 'message', 'own')));
+      expect(() => decodeOrUnreadable<Object>('{}', (_) => throw UnimplementedError('bug'), name: 't', statusCode: 200),
+          throwsA(isA<UnimplementedError>()));
+    });
+  });
 }
