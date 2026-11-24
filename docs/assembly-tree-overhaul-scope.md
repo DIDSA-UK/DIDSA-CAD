@@ -5,7 +5,7 @@ The prompt was that sub-assemblies and parts don't expand: you cannot see the ch
 leading CAD products do, what ours do today, a ranked list of what's missing and how to add it, and how the tree should treat
 the upstream assembly in Make Focus and Edit Alone, on desktop and on a phone.
 
-**Status:** Phase A built and closed 21 Nov (section 9). Phase B briefs in section 10 (approved 21 Nov), with the build tree (P1-P3) folded in.
+**Status:** Phase A built and closed 21 Nov (section 9). Phase B briefs in section 10 (approved 21 Nov), with the build tree (P1-P3) folded in. How every phase is run: section 11.
 
 **Visual concepts** (desktop, Focus, Edit Alone, phone sheet, deep nesting on a phone, VR room tree) are in the published page
 <https://claude.ai/artifact/9bvc9fbpAnC2uhoq5vxpBW> (private to the owner until shared). This file is the text of record.
@@ -141,9 +141,9 @@ Edit Alone; two trees side by side on a phone.
 | Phase | Contents | Notes |
 |---|---|---|
 | A, foundation | #2, #1, #3, #4, #6, the shared spec and vectors (#11) | The headline fix. VR can adopt the endpoint and bubbles at the same time |
-| B, context | #5, #9, #10, #8 | Q2 and Q3 answered (section 8) |
-| C, depth | #7, #13, #12, #14, #15; VR T2 | |
-| D, power | #16, #17, #18; VR T3 | Backend work |
+| B, context | #5, #9, #10, #8; the build tree (P1-P3) | Q2 and Q3 answered (section 8). Briefs: section 10 |
+| C, depth | #7, #13, #12, #14, #15; VR T2 | Run as section 11 says |
+| D, power | #16, #17, #18; VR T3 | Backend work. Run as section 11 says |
 
 **Tests:** pure model tests against the shared vectors in both clients (paths, merge on refresh, bubbles, names, actions per
 row kind); a widget test that a viewport pick under the second placement of a sub-assembly opens the second branch; a scroll
@@ -517,7 +517,7 @@ and skips the `live_part` kinds by name (VR's BUILD tab adopts section 13 in Pha
 
 ### 10.3 Every worker
 
-As 9.3, plus what Phase A taught:
+As 9.3, plus what Phase A taught (and section 11, which applies to every phase):
 
 - **PR title** `Tree B<n>: <summary>`; body as 10.4.
 - **Background answers:** any request whose answer can land after a newer edit, a newer request or a different document
@@ -848,17 +848,78 @@ storing Edit Alone's open rows.
 
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
-| B1 contract additions | merged 21 Nov | #397 | mid-tier | Two send-backs. The `#` occurrence-id guard the manager asked for was removed (it broke Undo for a hand-edited id); spec 8 now says such ids give undefined results. Planes-folder keys always `K#plane:feature:<id>`. 102 cases, the 36 v1 cases unchanged. |
-| B2 Flutter #10 + #8 | in review | #398 | strongest | Send-back 1: remembered rows never stored for a project document; Save As drops restored rows; an empty expand counts as a user change. |
-| P1 live part (model, view) | not started | | | |
-| P2 Part lens on the one tree | not started | | | Owner device check after |
+| B1 contract additions | merged 21 Nov | #397 | mid-tier | Two send-backs. The `#` occurrence-id guard the manager asked for was removed (it broke Undo for a hand-edited id); spec 8 says such ids give undefined results. Planes-folder keys always `K#plane:feature:<id>`. 102 cases, the 36 v1 cases unchanged. |
+| B2 Flutter #10 + #8 | merged 21 Nov | #398 | strongest | Four rounds (the per-document key). Left for B2.1: rows opened before the first answer on a never-stored document are not stored; a rename during the first load can store rows not shown. Owner device check pending. |
+| P1 live part (model, view) | merged 21 Nov | #400 | strongest | Fix round merged before the manager's check; a post-merge review found model issues (auto-open key, restore, stale live selection, folders closed on clear): fixed in P2's round. |
+| P2 Part lens on the one tree | in review | #401 | strongest | Send-back 1 sent (live folders not restored, previous Part's features after Focus, surface picks, Planes ticks, superseded refresh) plus P1's model items. "Roll back to here" left out until the rollback bar (#17, Phase D): owner, 24 Nov. Owner device check after. |
 | P3 sketcher's tree, old panel gone | not started | | | Owner device check after |
 | B3 Flutter #5 | not started | | | |
-| B4 Flutter phone sheet | not started | | | |
+| B4 Flutter phone sheet | not started | | | Also: P2 saw the Part-lens drawer behind the bar on a phone |
 | B5 Flutter phone deep trees | not started | | | |
-| B6 VR row build | in review | VR #99 | mid-tier | Send-back 1: PARTS tab pool reads the Build pane's scroll; folder bubble moved before the label; a press across a rebind acts on another row. Timing: 2,002 rows, Mesa 848+321 ms -> about 70+80 ms. |
-| B7 VR #10 + #8 | not started | | | |
-| B8 VR room context, hints | not started | | | Hint order as proposed (owner, 21 Nov) |
+| B6 VR row build | merged 21 Nov | VR #99 | mid-tier | Two send-backs (PARTS-tab scroll box, folder bubble, press guard). 2,002 rows, Mesa 943+337 ms -> 67+112 ms; PARTS tab scroll ~12 ms/frame slower (Table / Bring rebuilt per bind). Owner headset check pending. |
+| B7 VR #10 + #8 | merged 22 Nov | VR #100 | mid-tier | Fix round merged before the manager's check; post-merge review found five issues: follow-up B7.1. |
+| B7.1 VR follow-up | not started | | mid-tier | Find cleared for the same document and after Save As; size cap can evict the newest entry; "unavailable" hint sticks; reveal vs document switch. Prompt in 10.8. |
+| B8 VR room context, hints | not started | | | After B7.1. Hint order as proposed (owner, 21 Nov). Also B6's leftovers: status.md "main / this branch" wording, tests/README row for assembly_tree_pool_tab, two weak test checks |
+| B2.1 Flutter follow-up | not started | | | B2's two leftovers plus whatever the owner's B2 device check finds |
+
+### 10.8 Manager hand-off (24 Nov)
+
+The first Phase B manager session handed over here to keep cost down. A new manager reads: this section 10 (not 1-9 beyond
+what a brief points to), `docs/assembly-tree/spec.md` only when a check needs it, and nothing else up front.
+
+**In flight:**
+- **P2 (#401):** send-back 1 was given to the worker (items in 10.7). Next: check the fix round (CI, diff scope,
+  `/code-review` on the round's commits only), then merge or a last narrow round. After merge: owner device check (a
+  part opened alone; a part focused in an assembly in the Part lens; lens switching with folders open and a row
+  selected), then P3.
+- **B7.1 (VR):** prompt not yet given to a worker. Its brief is the B7.1 row of 10.7, worded in full in the manager's
+  last message; if lost, rebuild it from that row (one test per item; tests/ci.sh; register tests per CLAUDE.md).
+- **Owner device checks owed:** B2 (phone and desktop: remembered rows, Save As, Expand to selection, filter tokens,
+  phone header), B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back).
+- **Owner decision (24 Nov):** "Roll back to here" stays out of the bar until the rollback bar (#17, Phase D).
+
+**How to run it:** section 11 (applies to every phase from here on).
+
+## 11. Running a phase: cost and process (Phases B, C and D)
+
+Every phase from B on is run by a manager session and worker sessions, as section 9 describes. These rules were added on
+24 Nov 2026, after Phase B's first chunks proved expensive in tokens. Each phase's managers follow them, and each phase's
+briefs refer to them rather than repeating them.
+
+**Manager sessions**
+- **Hand over before the context grows.** When a manager session gets long, it writes a hand-off into its phase's
+  section (what is in flight, what the owner owes, the next step), brings it to `main`, and the owner starts a fresh
+  manager with a short prompt pointing at it. A long context is re-read on every turn; that was most of the cost.
+- **Read little.** A manager reads its phase's section and the repo's `CLAUDE.md` up front, and other files only when a
+  check or a brief needs them.
+- **A mid-tier model is enough for a manager** once the briefs are written; use the strongest model for writing a phase's
+  briefs and for its riskiest chunks.
+
+**Reviews**
+- **Workers review themselves first.** Every worker prompt says: "Run /code-review on your PR and fix what it finds
+  before you reply." The manager's review is then a check, not the first look.
+- **One manager review per round, sized to the round:** `/code-review` at `high` on a chunk's first PR; at `medium` on a
+  fix round, limited to that round's own commits and to important findings. Always name the repo and a worktree path (a
+  run started outside a repo reviewed the wrong one).
+- **The manager's own checks are cheap; keep doing them:** CI, the diff stays in its chunk, generated files regenerate
+  and match across repos, and a spot check of the biggest finding before passing it on.
+
+**Rounds**
+- **Send back only important findings.** Nits go into the next chunk in the same area, or a follow-up chunk
+  (`<chunk>.1`).
+- **Stop a send-back spiral.** When a round's important findings are rarer edge cases than the last round's, merge, and
+  let the owner's device check and a follow-up decide what is left (B2 took four rounds on one document key).
+- **The owner merges only on the manager's "merge", fix rounds included.** Merging an unchecked round cost a follow-up
+  every time it happened (A4, P1, B7).
+
+**Workers**
+- **Mid-tier for narrow chunks**, the strongest only where a chunk is large or risky (most of `part_screen.dart`, a
+  contract).
+- **Every worker prompt carries these lines:** "Start from main"; "Follow section N of
+  docs/assembly-tree-overhaul-scope.md; reply with the report and open the PR"; "You may commit and push to your session's
+  branch and open the PR" (B1's session was blocked without it); "Run /code-review on your PR and fix what it finds
+  before you reply"; "No model identifiers in any file, doc or PR text".
+- **Keep prompts short:** the brief lives in the doc, and the prompt adds only what was learned since.
 
 ## Sources
 
