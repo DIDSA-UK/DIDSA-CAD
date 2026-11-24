@@ -9090,10 +9090,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -9781,10 +9781,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -10405,10 +10405,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -10726,10 +10726,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
+          await _refreshFeatures();
         } else {
-          await _refreshMesh();
+          await _refreshMeshThenFeatures();
         }
-        await _refreshFeatures();
       });
     }
     await _endRollback();
@@ -10980,10 +10980,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -11134,10 +11134,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
+          await _refreshFeatures();
         } else {
-          await _refreshMesh();
+          await _refreshMeshThenFeatures();
         }
-        await _refreshFeatures();
       });
     }
     await _endRollback();
@@ -11288,10 +11288,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
+          await _refreshFeatures();
         } else {
-          await _refreshMesh();
+          await _refreshMeshThenFeatures();
         }
-        await _refreshFeatures();
       });
     }
     await _endRollback();
@@ -11565,10 +11565,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -14176,6 +14176,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
+  /// The [_meshRefreshGeneration] whose full mesh failed: its coarse answer is dropped ([_refreshCoarseOverlay]).
+  int? _meshFailedGeneration;
+
   /// Re-fetches the Part's mesh with [_hiddenFeatureIds]/
   /// [_rollbackExcludedFeatureIds] sent along (as two separate params - see
   /// [_hiddenFeatureIds]'s own doc comment for why they must never be
@@ -14218,9 +14221,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// uncached `compute_part_bodies_coarse` rebuild of every coarse-eligible
   /// Feature in the Part on every trivial edit, almost always thrown away
   /// the moment the real (parallel) fetch below lands and supersedes it.
-  /// The [_meshRefreshGeneration] whose full mesh failed: its coarse answer is dropped ([_refreshCoarseOverlay]).
-  int? _meshFailedGeneration;
-
   Future<void> _refreshMesh({bool isInitialLoad = false}) async {
     final part = _part;
     if (part == null) return;
@@ -17668,10 +17668,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -19278,10 +19278,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -19614,10 +19614,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -19856,10 +19856,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
+          await _refreshFeatures();
         } else {
-          await _refreshMesh();
+          await _refreshMeshThenFeatures();
         }
-        await _refreshFeatures();
       });
     }
     await _endRollback();
@@ -20187,10 +20187,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -20408,10 +20408,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _api.deleteFeature(_focusPartId, previewId);
         if (meshBefore != null) {
           _bodies = meshBefore;
+          await _refreshFeatures();
         } else {
-          await _refreshMesh();
+          await _refreshMeshThenFeatures();
         }
-        await _refreshFeatures();
       });
     }
     await _endRollback();
@@ -21820,10 +21820,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // back to a real [_refreshMesh] keeps this correct either way.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -21998,10 +21998,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -22187,10 +22187,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // was captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -22402,10 +22402,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // was captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -22720,10 +22720,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // was captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -22967,10 +22967,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -23665,10 +23665,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // was captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -23913,10 +23913,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // was captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -24222,10 +24222,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           await _api.deleteFeature(_focusPartId, previewId);
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -25417,10 +25417,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           // snapshot was captured on open.
           if (meshBefore != null) {
             _bodies = meshBefore;
+            await _refreshFeatures();
           } else {
-            await _refreshMesh();
+            await _refreshMeshThenFeatures();
           }
-          await _refreshFeatures();
         });
       }
     }
@@ -26998,7 +26998,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     try {
       await _refreshFeatures();
       await _refreshSketchGeometries();
-    } on ApiException catch (e) {
+    } catch (e) {
       featuresFailed = e;
     }
     if (!mounted || meshPartId != _focusPartIdOrNull) return;
@@ -27006,7 +27006,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (meshFailed != null) _refreshErrorText(meshFailed),
       if (featuresFailed != null) _refreshErrorText(featuresFailed),
     ];
-    if (messages.isNotEmpty) setState(() => _errorMessage = messages.join('\n'));
+    // One cause (the backend unreachable) can fail both with the same text: said once.
+    if (messages.isNotEmpty) setState(() => _errorMessage = messages.toSet().join('\n'));
   }
 
   /// The banner's text for a failed refresh: the backend's message, or what the error says.
@@ -27466,7 +27467,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     var tree = _treeModel.tree;
     var live = _treeModel.livePart;
     if (tree == null || live == null) {
-      // No tree for the document yet, or the focused Part's row is not live in it: the focused Part on its own, as a part opened alone.
+      // No tree for the document yet, or the focused Part's row is not live in it: the focused Part on its own, as a part opened alone. Its
+      // features and bodies only once they are that Part's own (as [_syncTreeLivePart] requires): another Part's are never listed as its.
+      final focus = _focusPartIdOrNull;
+      final ownData = focus != null && _featuresPartId == focus && _bodiesPartId == focus;
       final inputs = _treeLiveInputs;
       final cached = _sketchTreeFallback;
       if (cached != null && identical(cached.$1, inputs)) {
@@ -27479,7 +27483,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           featureCount: _features.length,
           statusIncluded: true,
         );
-        live = _livePartFor('');
+        live = ownData ? _livePartFor('') : null;
         _sketchTreeFallback = (inputs, tree, live);
       }
     }
@@ -27489,6 +27493,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       tree: tree,
       livePart: live,
       openKeys: _treeModel.openKeys,
+      fetchedFrom: _treeModel,
       grouping: _treeModel.grouping,
       sketchFeatureId: sketchFeature.id,
       onClose: onClose,
@@ -27502,7 +27507,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// The sketcher's tree when this screen's own tree has no live part (see [_buildSketchTreePanel]): what it was built from (the live inputs
   /// it was current for), the seed tree and the live part. Kept so the sketcher's tree is not handed new inputs on every rebuild.
-  (List<Object?>?, AssemblyTreeResponseDto, AssemblyLivePart)? _sketchTreeFallback;
+  (List<Object?>?, AssemblyTreeResponseDto, AssemblyLivePart?)? _sketchTreeFallback;
 
   Future<void> _runGuarded(Future<void> Function() body) async {
     setState(() {

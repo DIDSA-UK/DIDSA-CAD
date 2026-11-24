@@ -29,13 +29,16 @@ AssemblyTreeResponseDto _partAlone() => AssemblyTreeResponseDto.fromJson({
       'children': <Map<String, dynamic>>[],
     });
 
-Map<String, dynamic> _node(String id, List<String> path, {String kind = 'part', List<Map<String, dynamic>> children = const []}) => {
+Map<String, dynamic> _node(String id, List<String> path,
+        {String kind = 'part', List<Map<String, dynamic>> children = const [], int featureCount = 0}) =>
+    {
       'occurrence_id': id,
       'path': path,
       'resolved_part_id': 'part-$id',
       'part_name': 'Item $id',
       'kind': kind,
       'hidden': false,
+      'feature_count': featureCount,
       'children': children,
     };
 
@@ -46,13 +49,14 @@ AssemblyTreeResponseDto _assembly() => AssemblyTreeResponseDto.fromJson({
       'kind': 'assembly',
       'feature_count': 0,
       'status_included': true,
+      'mates': {'count': 1},
       'children': [
         _node('a', ['a'], kind: 'assembly', children: [
           _node('b', ['a', 'b'], kind: 'assembly', children: [
             _node('c', ['a', 'b', 'c']),
           ]),
         ]),
-        _node('z', ['z']),
+        _node('z', ['z'], featureCount: 1),
       ],
     });
 
@@ -280,6 +284,50 @@ void main() {
     expect(view.model.selectedKey, 'a/b/c#feature:current');
     // The other parts' rows are not the live part's: no eye.
     expect(find.byKey(const ValueKey('tree-eye:z')), findsNothing);
+  });
+
+  testWidgets("what the Part screen fetched reads the same here: another part's features, the Mates rows, a row hidden for this session",
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final main = AssemblyTreeModel(tree: _assembly())
+      ..setFeatures(const ['z'], const [AssemblyFeature('zf', 'Sketch 9')])
+      ..setFolderItems('#mates', const [AssemblyFolderItem('m1', 'Coincident 1')])
+      ..setSessionHiddenKeys({'z'});
+    await tester.pumpWidget(_host(SketchFeatureTree(
+      tree: _assembly(),
+      livePart: _live(key: 'a/b/c'),
+      openKeys: const ['z', '#mates'],
+      fetchedFrom: main,
+      sketchFeatureId: 'current',
+      onClose: () {},
+    ), desktop: true));
+    await tester.pump();
+    expect(_row('z#feature:zf'), findsOneWidget);
+    expect(_row('#mates#item:m1'), findsOneWidget);
+    final view = tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView));
+    expect(view.model.visibleRows().firstWhere((r) => r.key == 'z').hidden, isTrue);
+  });
+
+  testWidgets('when the Part screen\'s tree changes root (the part alone, then the document), the way to the sketch is opened again',
+      (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    var assembly = false;
+    late StateSetter rebuild;
+    await tester.pumpWidget(_host(StatefulBuilder(builder: (context, setState) {
+      rebuild = setState;
+      return _tree(tree: assembly ? _assembly() : _partAlone(), live: _live(key: assembly ? 'a/b/c' : ''));
+    }), desktop: true));
+    await tester.pump();
+    expect(_row('#feature:current'), findsOneWidget);
+    rebuild(() => assembly = true);
+    await tester.pump();
+    await tester.pump();
+    expect(_row('a/b/c#feature:current'), findsOneWidget, reason: 'a, a/b and a/b/c opened down to the sketch');
+    expect(tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView)).model.selectedKey, 'a/b/c#feature:current');
   });
 
   testWidgets("the sketcher's open rows start as the Part screen's and its changes stay its own", (tester) async {

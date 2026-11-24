@@ -22,6 +22,7 @@ class SketchFeatureTree extends StatefulWidget {
     required this.sketchFeatureId,
     required this.onClose,
     this.openKeys = const [],
+    this.fetchedFrom,
     this.grouping = true,
     this.lockedReason = 'Exit the sketch first',
     this.onToggleVisibility,
@@ -40,6 +41,10 @@ class SketchFeatureTree extends StatefulWidget {
 
   /// The Part screen's open rows when the tree was built; later changes on either side stay on that side.
   final Iterable<String> openKeys;
+
+  /// The Part screen's tree model: what it fetched (other parts' features, the Mates and Patterns rows, rows hidden for this session) is
+  /// copied in, so those rows read as they do there. This tree fetches nothing itself.
+  final AssemblyTreeModel? fetchedFrom;
   final bool grouping;
   final String lockedReason;
 
@@ -74,6 +79,8 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
   AssemblyTreeModel _newModel(Iterable<String> openKeys) {
     final model = AssemblyTreeModel(tree: widget.tree, grouping: widget.grouping);
     model.openAll(openKeys, remember: false);
+    final source = widget.fetchedFrom;
+    if (source != null) model.copyFetchedFrom(source);
     model.setLivePart(widget.livePart);
     model.selectedKey = model.liveFeatureKey(widget.sketchFeatureId);
     _pickerSignature = null;
@@ -91,6 +98,14 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
         _model = _newModel(_model.openKeys);
       }
     }
+    // The sketch's row moved (another root, or the live row is another row of it): open the way to it again, as when the tree opened.
+    if (old.tree.partId != widget.tree.partId || old.livePart?.key != widget.livePart?.key) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _controller.expandToSelection();
+      });
+    }
+    final source = widget.fetchedFrom;
+    if (source != null) _model.copyFetchedFrom(source);
     if (!identical(old.livePart, widget.livePart)) _model.setLivePart(widget.livePart);
     if (old.grouping != widget.grouping) _model.grouping = widget.grouping;
     _model.selectedKey = _model.liveFeatureKey(widget.sketchFeatureId);

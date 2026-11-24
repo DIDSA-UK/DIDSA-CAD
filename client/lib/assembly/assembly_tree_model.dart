@@ -975,6 +975,29 @@ class AssemblyTreeModel {
     _invalidate();
   }
 
+  /// Takes what [other]'s host fetched, for a copy that only reads (P3: the sketcher's tree): the features [setFeatures] gave each row, the
+  /// Mates and Patterns folder items and the rows hidden for this session. The tree, the open keys, the live part, the selection and the
+  /// picker stay this model's own. Nothing changes (and no rows are rebuilt) when [other] holds what was copied last.
+  void copyFetchedFrom(AssemblyTreeModel other) {
+    bool sameLists<T>(Map<String, List<T>> a, Map<String, List<T>> b) =>
+        a.length == b.length && b.entries.every((e) => identical(a[e.key], e.value));
+    final hidden = other._sessionHidden;
+    if (sameLists(_features, other._features) &&
+        sameLists(_folderItems, other._folderItems) &&
+        hidden.length == _sessionHidden.length &&
+        hidden.containsAll(_sessionHidden)) {
+      return;
+    }
+    _features
+      ..clear()
+      ..addAll(other._features);
+    _folderItems
+      ..clear()
+      ..addAll(other._folderItems);
+    _sessionHidden = {...hidden};
+    _invalidate();
+  }
+
   // ----- Lookups -----
 
   AssemblyTreeNodeDto? nodeAtPath(List<String> path) => _byKey[_keyOf(path)]?.dto;
