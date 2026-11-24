@@ -112,7 +112,7 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
             laterSketchIds: convert.later,
             laterReason: convert.laterReason,
             lockedReason: widget.lockedReason,
-            banner: "Tap an earlier sketch to convert its entities",
+            banner: 'Tap an earlier sketch to convert',
           ));
   }
 
