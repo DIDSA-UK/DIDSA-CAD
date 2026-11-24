@@ -98,6 +98,7 @@ import 'delete_body_panel.dart';
 import 'delete_face_panel.dart';
 import 'extrude_panel.dart';
 import 'feature_context_menu.dart';
+import 'latest_call.dart';
 import '../materials/material_picker_sheet.dart';
 import '../materials/part_properties_screen.dart';
 import '../layout/layout_mode.dart';
@@ -2573,13 +2574,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// coarse response can never clobber state a later call already settled.
   int _meshRefreshGeneration = 0;
 
-  /// [_refreshFeatures]' own [_meshRefreshGeneration]: only the latest features answer is applied.
-  int _featuresRefreshGeneration = 0;
+  /// [_refreshFeatures]' overlapping calls: only the latest answer is applied.
+  final LatestCall _featuresCall = LatestCall();
 
   /// The Part [_features] and [_bodies] were last loaded for (P2 review): after Make Focus or Edit Alone they still hold the previous
   /// Part's until the new answers land, and the tree must not make them the new live row's (they could be edited there).
   String? _featuresPartId;
   String? _bodiesPartId;
+
+  /// The focused Part whose last mesh refresh failed: the tree then shows its features without bodies rather than hiding them.
+  String? _meshFailedPartId;
 
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1 ("creating a new
   /// coarse-eligible Feature"): the not-yet-persisted coarse-preview Bodies
@@ -13391,41 +13395,24 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// screen only ever "catch up" on the *next* unrelated `setState` (see
   /// [_refreshMesh]'s own matching fix for the reported symptom this
   /// caused).
-  Future<void> _refreshFeatures() {
-    final call = _refreshFeaturesOnce();
-    _featuresLatest = call;
-    return call;
-  }
-
-  /// The latest [_refreshFeatures] call: a call that a newer one superseded waits for it, so `await _refreshFeatures()` still means the
-  /// features are current when it returns.
-  Future<void>? _featuresLatest;
-
-  Future<void> _refreshFeaturesOnce() async {
+  /// P2 (10.3's stale-answer rule): an answer is applied only while it is the latest request ([LatestCall]: a superseded call waits for the
+  /// latest and passes on its error, so `await _refreshFeatures()` still means current) and the focus is still the Part it was asked for (a
+  /// late answer for the Part focused before would put that Part's features on the live row).
+  Future<void> _refreshFeatures() async {
     final part = _part;
     if (part == null) return;
-    // P2 (10.3's stale-answer rule): an answer is applied only while it is the latest request and the focus is still the Part it was asked
-    // for; a late answer for the Part focused before (it would put that Part's features on the live row) is dropped.
-    final generation = ++_featuresRefreshGeneration;
     final partId = _focusPartId;
-    final features = await _api.listFeatures(partId);
-    if (!mounted) return;
-    if (generation != _featuresRefreshGeneration) {
-      // A newer call is on its way: return when it has landed (its own caller hears of its failure).
-      final latest = _featuresLatest;
-      if (latest != null) {
-        try {
-          await latest;
-        } catch (_) {}
-      }
-      return;
-    }
-    if (partId != _focusPartIdOrNull) return;
-    setState(() {
-      _features = features;
-      _featuresPartId = partId;
-      _recomputeCreatePlaneGeometries();
+    var applied = false;
+    await _featuresCall.run(() => _api.listFeatures(partId), (List<FeatureDto> features) {
+      if (!mounted || partId != _focusPartIdOrNull) return;
+      applied = true;
+      setState(() {
+        _features = features;
+        _featuresPartId = partId;
+        _recomputeCreatePlaneGeometries();
+      });
     });
+    if (!applied) return;
     // Bug fix (bug report: "when orbiting a part, it sometimes orbits about
     // the wrong point"): this is the app's one real "a committed change just
     // landed" choke point (every feature create/update/delete confirm and
@@ -14242,12 +14229,21 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       unawaited(_refreshCoarseOverlay(_focusPartId, generation));
     }
 
-    final response = await _api.getPartMesh(
-      partId,
-      hiddenFeatureIds: _hiddenFeatureIds.toList(),
-      rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
-      meshQuality: _meshQuality,
-    );
+    final List<BodyMeshDto> response;
+    try {
+      response = await _api.getPartMesh(
+        partId,
+        hiddenFeatureIds: _hiddenFeatureIds.toList(),
+        rollbackExcludedFeatureIds: _rollbackExcludedFeatureIds.toList(),
+        meshQuality: _meshQuality,
+      );
+    } catch (_) {
+      // P2: the focused Part's mesh could not be built (a broken feature, say): its features must stay in the tree, where they can be fixed.
+      if (mounted && generation == _meshRefreshGeneration && partId == _focusPartIdOrNull) {
+        setState(() => _meshFailedPartId = partId);
+      }
+      rethrow;
+    }
     // P2: also dropped when the focus moved since (the bodies of the Part focused before), before the new focus's own refresh starts.
     if (!mounted || generation != _meshRefreshGeneration || partId != _focusPartIdOrNull) return;
     final isPlaceholder = response.length == 1 && response.first.source == 'placeholder';
@@ -14256,6 +14252,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     setState(() {
       _bodies = newBodies;
       _bodiesPartId = partId;
+      _meshFailedPartId = null;
       // Full detail has now landed for every Body named here - drop its
       // coarse override too, unless its owning Feature is pinned (in which
       // case the override stays, deliberately, until the user unpins it).
@@ -26965,9 +26962,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     await _refreshAssemblyTree();
     await _refreshAssemblyMesh();
-    await _refreshMesh();
+    // P2: a focused Part whose shape cannot be built (a broken feature) still gets its features, so the tree lists them where they can be
+    // fixed; the failure is reported in the banner instead of stopping here.
+    ApiException? meshFailed;
+    try {
+      await _refreshMesh();
+    } on ApiException catch (e) {
+      meshFailed = e;
+    }
     await _refreshFeatures();
     await _refreshSketchGeometries();
+    if (meshFailed != null && mounted) setState(() => _errorMessage = meshFailed!.message);
   }
 
   /// §6 roadmap Phase 10 (`[5]`): Hide/Show's real persistence call -
@@ -28700,8 +28705,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// drop its open folders or a selected live row: a lens switch keeps the open rows and the selection, and is not the person's change.
   void _syncTreeLivePart() {
     final focus = _focusPartIdOrNull;
-    // Only once the features and the bodies are the focused Part's own (see [_featuresPartId]).
-    final key = focus != null && _featuresPartId == focus && _bodiesPartId == focus ? _liveTreeKey : null;
+    // Only once the features and the bodies are the focused Part's own (see [_featuresPartId]); when its mesh failed to load, on the features
+    // alone, with no bodies (the bodies in hand are another Part's, or none).
+    final bodiesOwn = focus != null && _bodiesPartId == focus;
+    final key = focus != null && _featuresPartId == focus && (bodiesOwn || _meshFailedPartId == focus) ? _liveTreeKey : null;
     final hidden = _hiddenFeatureIds;
     final rolled = _rollbackExcludedFeatureIds;
     final pending = _pendingDetailFeatureIds;
@@ -28709,6 +28716,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final inputs = <Object?>[
       key,
       _features,
+      bodiesOwn,
       _bodies,
       sorted(hidden),
       sorted(rolled),
@@ -28718,7 +28726,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final last = _treeLiveInputs;
     var same = last != null && last.length == inputs.length;
     for (var i = 0; same && i < inputs.length; i++) {
-      same = i == 1 || i == 2 ? identical(last![i], inputs[i]) : last![i] == inputs[i];
+      same = i == 1 || i == 3 ? identical(last![i], inputs[i]) : last![i] == inputs[i];
     }
     if (!same || !identical(_treeLiveModel, _treeModel)) {
       _treeLiveInputs = inputs;
@@ -28733,9 +28741,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         final bodyNames = _bodyNames;
         final surfaceNames = _surfaceNames;
         final curveNames = _curveNames;
-        final bodyIds = _computedBodyIds.toSet();
-        final surfaceIds = _computedSurfaceIds.toSet();
-        final curveIds = _computedCurveIds.toSet();
+        final bodyIds = bodiesOwn ? _computedBodyIds.toSet() : const <String>{};
+        final surfaceIds = bodiesOwn ? _computedSurfaceIds.toSet() : const <String>{};
+        final curveIds = bodiesOwn ? _computedCurveIds.toSet() : const <String>{};
         _treeModel.setLivePart(AssemblyLivePart(
           key,
           features: [

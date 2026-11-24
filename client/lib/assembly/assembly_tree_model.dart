@@ -772,7 +772,8 @@ class AssemblyTreeModel {
   /// from the one before) its key is added to the open keys so it shows open; that is not the person's change: nothing is reported,
   /// [openKeysTouched] stays as it was, and [keysToStore] leaves the key out until the person opens or closes it themselves. Later calls for the
   /// same row refresh the data and leave its open state. A refresh of the same live row drops, like [merge], a selected row and open folders the
-  /// live part no longer has; clearing it, or making another row live, drops nothing (a clear then a set of the same row keeps its folders).
+  /// live part no longer has. Clearing it, or making another row live, drops a selection that no longer names a row; the old row's open folders
+  /// are kept (a clear then a set of the same row brings them back) but not stored while their rows are gone.
   void setLivePart(AssemblyLivePart? live) {
     final before = _live;
     _live = live;
@@ -785,6 +786,11 @@ class AssemblyTreeModel {
       final sel = selectedKey;
       if (sel != null && !_selectionExists(sel)) selectedKey = null;
       _autoOpen.retainAll(_open);
+    } else if (_tree != null && before != null) {
+      // Cleared, or another row made live: a selection that names no row now goes. The old row's open folders stay in the open keys (a clear
+      // then a set of the same row brings them back), but they are not stored while their rows do not exist ([keysToStore]).
+      final sel = selectedKey;
+      if (sel != null && !_selectionExists(sel)) selectedKey = null;
     }
     _openLive();
   }
@@ -1043,8 +1049,12 @@ class AssemblyTreeModel {
   List<String> keysToStore({int limit = kAssemblyTreeMaxStoredKeys}) =>
       _storable().length <= limit ? _storable().toList() : restoreOpenKeys(_storable(), limit: limit);
 
-  /// The open keys without a live row that is open only because it became live.
-  Set<String> _storable() => _autoOpen.isEmpty ? _open : _open.difference(_autoOpen);
+  /// The open keys without a live row that is open only because it became live, and without keys of rows that do not exist now (the folders
+  /// of a row that was live before, kept in the open keys for a return).
+  Set<String> _storable() => {
+        for (final k in _open)
+          if (!_autoOpen.contains(k) && _rowKeyExists(k)) k
+      };
 
   // ----- Filter (spec section 11) -----
 

@@ -622,15 +622,12 @@ void main() {
       model.setLivePart(live(''));
       expect(model.isOpen('#curves'), isFalse);
       expect(model.visibleRows().any((r) => r.key == '#curve:c1'), isFalse);
-      // A kept selection stays; clearing the live part drops nothing (P2 review: a clear then a set of the same row keeps it), and the next
-      // merge, with no live part, drops the live selection.
+      // A kept selection stays; clearing the live part drops a selection that names no row (its folders stay: see the P2 tests).
       model.selectedKey = '#feature:s1';
       model.setLivePart(live(''));
       expect(model.selectedKey, '#feature:s1');
       model.clearLivePart();
-      expect(model.selectedKey, '#feature:s1');
-      model.merge(_tree('single_part'));
-      expect(model.selectedKey, isNull);
+      expect(model.selectedKey, isNull, reason: 'a cleared live part: the selection names no row');
     });
 
     test('a row open only because it became live is not stored until the person opens or closes it', () {
@@ -799,6 +796,21 @@ void main() {
       model.setOpen('mast/arm/head', false);
       model.setOpen('mast/arm/head', true);
       expect(model.keysToStore().toSet(), {'mast/arm', 'mast/arm/head'});
+    });
+
+    test('when the live row moves, the old row\'s selected feature goes and its open folders are not stored', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head')); // A
+      model.setOpen('mast/arm/head#bodies', true);
+      model.selectedKey = 'mast/arm/head#feature:s1';
+      expect(model.keysToStore(), contains('mast/arm/head#bodies'));
+      model.setLivePart(live('mast')); // Make Focus on B
+      expect(model.selectedKey, isNull);
+      expect(model.keysToStore().where((k) => k.startsWith('mast/arm/head')), isEmpty);
+      // Back to A: its folder is open again.
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.isOpen('mast/arm/head#bodies'), isTrue);
+      expect(model.keysToStore(), contains('mast/arm/head#bodies'));
     });
 
     test('merge prunes an auto-opened row that is gone', () {

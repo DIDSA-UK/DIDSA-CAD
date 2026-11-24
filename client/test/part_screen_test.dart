@@ -172,6 +172,11 @@ class _FakeDocumentBackend {
   /// the way the real route does.
   List<Map<String, dynamic>>? meshBodies;
 
+  /// P2: Parts whose `GET .../mesh` (full detail) answers 500, as a Part with a broken feature would; and the features of Parts other than
+  /// `part-1` (empty when not set).
+  final Set<String> failMeshFor = {};
+  final Map<String, List<Map<String, dynamic>>> extraPartFeatures = {};
+
   Map<String, dynamic> _visibilityFields(String partId) => {
         'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
         'hidden_reference_planes': _hiddenPlanes(partId).toList()..sort(),
@@ -593,6 +598,11 @@ class _FakeDocumentBackend {
     // `part-1`-only handlers below, never touching their own logic) -
     // returns a body/feature-id containing the requested Part's own id so a
     // test can tell them apart, and records every such request by Part id.
+    final failMeshMatch = RegExp(r'^/document/parts/([^/]+)/mesh$').firstMatch(path);
+    if (failMeshMatch != null && method == 'GET' && failMeshFor.contains(failMeshMatch.group(1)) &&
+        request.url.queryParameters['tier'] != 'coarse') {
+      return _json({'detail': 'The shape could not be built'}, 500);
+    }
     final extraPartMeshMatch = RegExp(r'^/document/parts/([^/]+)/mesh$').firstMatch(path);
     if (extraPartMeshMatch != null && method == 'GET' && extraPartMeshMatch.group(1) != 'part-1') {
       final requestedId = extraPartMeshMatch.group(1)!;
@@ -606,7 +616,7 @@ class _FakeDocumentBackend {
       featuresGetRequestsByPartId.putIfAbsent(extraPartFeaturesMatch.group(1)!, () => 0);
       featuresGetRequestsByPartId[extraPartFeaturesMatch.group(1)!] =
           featuresGetRequestsByPartId[extraPartFeaturesMatch.group(1)]! + 1;
-      return _json(<Map<String, dynamic>>[], 200);
+      return _json(extraPartFeatures[extraPartFeaturesMatch.group(1)] ?? <Map<String, dynamic>>[], 200);
     }
 
     if (path == '/document/parts/part-1/mesh' && method == 'GET' && meshBodies != null) {
@@ -8409,7 +8419,8 @@ void main() {
       Future<Set<String>> storedKeys() async =>
           (await tester.runAsync(() async => (await SharedPreferences.getInstance()).getKeys().where((k) => k.startsWith('assembly_tree_open:'))))!.toSet();
 
-      _TreeProbe(tester).model.setOpen('first', true);
+      // A real row (P2 review: keys of rows that do not exist are not stored): the part's own Planes folder.
+      _TreeProbe(tester).model.setOpen('#planes', true);
       await tester.pump();
       expect(await storedKeys(), isEmpty, reason: 'no file yet: no key');
 
@@ -8426,10 +8437,11 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('conflict-apply')));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      _TreeProbe(tester).model.setOpen('second', true);
+      Future<String?> text() async => tester.runAsync<String?>(() async => (await SharedPreferences.getInstance()).getString(key));
+      expect(await text(), contains('#planes'));
+      _TreeProbe(tester).model.setOpen('#planes', false);
       await tester.pump();
-      final text = await tester.runAsync(() async => (await SharedPreferences.getInstance()).getString(key));
-      expect(text, contains('second'), reason: 'and a change after Keep mine is stored under it');
+      expect(await text(), '[]', reason: 'and a change after Keep mine is stored under it');
     });
 
     testWidgets('Decide later leaves the clash queued: nothing written, and the chip offers the dialog again', (tester) async {
@@ -12910,6 +12922,23 @@ void main() {
         await settle(tester);
         return backend;
       }
+
+      testWidgets('a focused Part whose mesh fails to load still lists its features as the live row', (tester) async {
+        final backend = await openNestedInPartLens(tester);
+        backend.extraPartFeatures['plate-part'] = [
+          {'type': 'sketch', 'id': 'plate-sketch', 'sketch_id': 'sketch-1', 'locked': false, 'produces': 'sketch'},
+        ];
+        backend.failMeshFor.add('plate-part');
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.liveKey, '', reason: 'the features alone make the live row when the mesh failed');
+        expect(rowKeys(tester), contains('#feature:plate-sketch'));
+        expect(rowKeys(tester).where((k) => k.contains('#body')), isEmpty, reason: 'no bodies: those in hand were the root\'s');
+        expect(find.textContaining('The shape could not be built'), findsOneWidget, reason: 'the failure is in the banner');
+      });
 
       testWidgets('after Make Focus the new live row does not list the previous Part\'s features while its own are on their way', (tester) async {
         Completer<void>? holdPlateFeatures;
