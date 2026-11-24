@@ -1026,6 +1026,7 @@ class AssemblyTreeModel {
   // ----- Focus (B3) -----
 
   List<String> _focus = const [];
+  String _focusKey = '';
 
   /// The focused row's path from the tree's root (`[]`: nothing is focused). The host sets it from the focus stack; the model only reads it
   /// to say which rows are inside, around or outside the focus ([focusRoleOf]). It changes no row.
@@ -1042,13 +1043,14 @@ class AssemblyTreeModel {
       if (same) return;
     }
     _focus = List.unmodifiable(path);
+    _focusKey = path.join('/');
   }
 
   /// Where [row] stands against the focus: the focused row, a row inside it, an ancestor (the root, the rows on the way down, and the group
   /// a row on the way sits in) or outside. Rows of the live part (folders, features) are inside when the live row is the focused one.
   AssemblyFocusRole focusRoleOf(AssemblyTreeRow row) {
     if (_focus.isEmpty) return AssemblyFocusRole.none;
-    final focus = _focus.join('/');
+    final focus = _focusKey;
     final key = row.key;
     if (key == focus) return AssemblyFocusRole.focused;
     if (key.startsWith('$focus/') || key.startsWith('$focus#')) return AssemblyFocusRole.inside;

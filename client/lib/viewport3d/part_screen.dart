@@ -13515,11 +13515,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       occurrences = await _api.listOccurrences(focusPartId);
       mates = await _api.listMates(focusPartId);
       patterns = await _api.listComponentPatterns(focusPartId);
-      if (rootPartId != focusPartId) {
-        rootOccurrences = await _api.listOccurrences(rootPartId);
-        rootMates = await _api.listMates(rootPartId);
-        rootPatterns = await _api.listComponentPatterns(rootPartId);
-      }
     } catch (_) {
       await structure; // never left unawaited
       await storedKeys;
@@ -13527,6 +13522,18 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     final fetched = await structure;
     final stored = await storedKeys; // never throws
+    // The tree root's own lists, only when the focus is deeper: a failure here is not the focus change's (the folders read empty, the
+    // components come from the tree itself).
+    if (rootPartId != focusPartId) {
+      try {
+        rootMates = await _api.listMates(rootPartId);
+        rootPatterns = await _api.listComponentPatterns(rootPartId);
+        if (fetched == null) rootOccurrences = await _api.listOccurrences(rootPartId);
+      } catch (_) {
+        rootMates ??= const <MateDto>[];
+        rootPatterns ??= const <ComponentPatternDto>[];
+      }
+    }
     // P2: also not when the focus (or the tree's root: Edit Alone) moved since, even before the load for the new one has started: the
     // flat lists are the old focused Part's, and the tree may be another root's.
     if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _treeRootPartIdOrNull) return;
@@ -13547,7 +13554,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _rootPatterns = rootPatterns;
       // The rows claim no state until the status call answers; the screen's own map (the rigid-set grab notice) keeps the previous one until then
       // (for the same Part: another Part's status is not this one's).
-      if (_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) _constraintStatusByOccurrenceId = const {};
+      if ((_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) || _statusLevelKey != _focusRelPath.join('/')) {
+        _constraintStatusByOccurrenceId = const {};
+      }
+      _statusLevelKey = _focusRelPath.join('/');
       _treeFromBackend = fetched != null;
       _treeStatusUnavailable = fetched == null;
       // Not for a tree built from the lists (see [_treeFromBackend]), nor when the document is no longer the one the keys were read for.
@@ -13567,6 +13577,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       unawaited(_loadFlatConstraintStatus(focusPartId, token));
     }
   }
+
+  /// The focus level (joined) the screen's constraint map is for: a map of another level is dropped when a load starts to apply.
+  String _statusLevelKey = '';
 
   /// A backend without `assembly-tree` still has `constraint-status`: the grab notice of a rigid set reads it.
   Future<void> _loadFlatConstraintStatus(String partId, int token) async {
@@ -27049,6 +27062,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _clearTransientError();
     setState(() => _focusStack?.pop());
     await _refreshFocusTargetContent();
+    _revealFocusedRow();
   }
 
   /// The pill at the top of the viewport while in Edit Alone: what is being edited, and the way back. Only while no tree is
@@ -29310,7 +29324,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       }
     }
     // B3: which rows are inside, around and outside the focus (dimmed, railed).
-    _treeModel.focusPath = _focusRelPath;
+    // Not while the model still holds another root's tree (Edit Alone just ended): its keys are not this path's.
+    _treeModel.focusPath = _treeModel.tree?.partId == _treeRootPartIdOrNull ? _focusRelPath : const <String>[];
     final live = _treeModel.liveKey != null;
     final build = _buildMultiSelect;
     AssemblyTreeView view(bool docked, double width) => AssemblyTreeView(

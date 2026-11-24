@@ -485,8 +485,6 @@ class AssemblyGraphComposer {
   }
 }
 
-/// The id of the file an Occurrence placed: its `ref_part_id`, else (a file saved before that field existed) the
-/// `resolved_part_id` it was saved with, as the backend seeds it. Null for an older reference with neither.
 /// A native file's bytes as its payload. Not JSON is a [FormatException] (as [jsonDecode] says); JSON that is not an object is one too, with
 /// the same short message as a payload of the wrong shape ([_hasNativeShape]), so every unreadable project file reaches the screen's banner.
 Map<String, dynamic> _decodeNativeFile(List<int> bytes, String relativePath) {
@@ -513,6 +511,8 @@ bool _hasNativeShape(Map<String, dynamic> payload) {
   return true;
 }
 
+/// The id of the file an Occurrence placed: its `ref_part_id`, else (a file saved before that field existed) the
+/// `resolved_part_id` it was saved with, as the backend seeds it. Null for an older reference with neither.
 String? _storedPartId(Map<String, dynamic> occurrence) {
   for (final key in const ['ref_part_id', 'resolved_part_id']) {
     final value = occurrence[key];
