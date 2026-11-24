@@ -12565,10 +12565,13 @@ void main() {
           {List<Map<String, dynamic>>? features,
           String? filePath,
           Future<void> Function(http.Request request)? around,
+          List<Map<String, dynamic>> extraBodies = const [],
+          bool desktop = false,
           bool openTree = true}) async {
         final backend = _FakeDocumentBackend(seedFeatures: [for (final f in features ?? partFeatures) {...f}])
           ..meshBodies = [
             {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+            ...extraBodies,
           ];
         final documentApi = DocumentApiClient(
           httpClient: MockClient((request) async {
@@ -12578,13 +12581,21 @@ void main() {
           }),
         );
         final sketchBackend = _FakeSketchBackend();
-        await tester.pumpWidget(MaterialApp(
-          home: PartScreen(
-            documentApi: documentApi,
-            initialFilePath: filePath,
-            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
-          ),
-        ));
+        Widget screen = PartScreen(
+          documentApi: documentApi,
+          initialFilePath: filePath,
+          sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+        );
+        if (desktop) {
+          tester.view.physicalSize = const Size(1280, 800);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          screen = LayoutModeScope(
+            controller: LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true),
+            child: screen,
+          );
+        }
+        await tester.pumpWidget(MaterialApp(home: screen));
         await _pumpUntil(tester, () => _TreeProbe(tester).model.liveKey != null);
         if (openTree) {
           await tester.tap(find.byTooltip('Feature tree'));
@@ -12732,10 +12743,10 @@ void main() {
         await tester.longPress(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Plane 1')));
         await settle(tester);
         expect(_TreeProbe(tester).view.isMultiSelectMode, isTrue);
-        expect(_TreeProbe(tester).view.selectedKeys, {'#feature:feature-3'});
+        expect(_TreeProbe(tester).view.selectedKeys, {'#feature:feature-3', '#plane:feature:feature-3'}, reason: 'both rows of the plane');
         await tester.tap(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Extrude 1')));
         await settle(tester);
-        expect(_TreeProbe(tester).view.selectedKeys, {'#feature:feature-3', '#feature:feature-2'});
+        expect(_TreeProbe(tester).view.selectedKeys, {'#feature:feature-3', '#plane:feature:feature-3', '#feature:feature-2'});
         await tester.tap(find.descendant(of: find.byType(MultiSelectActionBar), matching: find.text('Delete')));
         await _pumpUntil(tester, () => find.byType(AlertDialog).evaluate().isNotEmpty);
         expect(find.text('Delete 2 features?'), findsOneWidget);
@@ -12793,6 +12804,101 @@ void main() {
         expect(tester.widget<ListView>(list).controller!.offset, offset, reason: 'the same list, scrolled where it was');
         expect(await tester.runAsync(() => AssemblyTreeOpenStore.read('file:/docs/p.didsa')), ['sentinel'], reason: 'nothing was stored');
       });
+
+      // ----- Review round 1 -----
+
+      testWidgets('open live folders come back when the document is opened again, in either lens', (tester) async {
+        SharedPreferences.setMockInitialValues({});
+        await openPart(tester, filePath: '/docs/p.didsa');
+        await _tapTreeRow(tester, 'Bodies');
+        await _tapTreeRow(tester, 'Planes');
+        expect(await tester.runAsync(() => AssemblyTreeOpenStore.read('file:/docs/p.didsa')), ['#bodies', '#planes']);
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump();
+
+        // Again in the Part lens: restored once the stored rows are read back.
+        await openPart(tester, filePath: '/docs/p.didsa', openTree: false);
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.isOpen('#planes'));
+        expect(_TreeProbe(tester).model.openKeys, {'#bodies', '#planes'});
+        expect(_TreeProbe(tester).model.openKeysTouched, isFalse);
+        await tester.pumpWidget(const SizedBox());
+        await tester.pump();
+
+        // Opened straight into the Assembly lens (the restore runs while the live part is hidden), then the Part lens.
+        final backend = _FakeDocumentBackend(seedFeatures: [for (final f in partFeatures) {...f}])
+          ..meshBodies = [
+            {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+          ];
+        final sketchBackend = _FakeSketchBackend();
+        await tester.pumpWidget(MaterialApp(
+          home: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            initialFilePath: '/docs/p.didsa',
+            initialLens: AssemblyLens.assembly,
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ));
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.isOpen('#planes'));
+        expect(_TreeProbe(tester).model.liveKey, isNull, reason: 'the Assembly lens');
+        expect(_TreeProbe(tester).model.openKeys, {'#bodies', '#planes'});
+        await switchLens(tester, 'Part');
+        await settle(tester);
+        expect(rowKeys(tester), containsAll(['#body:feature-2', '#plane:xy']));
+      });
+
+      testWidgets('a plane feature ticks in both places it is listed', (tester) async {
+        await openPart(tester);
+        await _tapTreeRow(tester, 'Planes');
+        await tester.longPress(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Plane 1')).first);
+        await settle(tester);
+        expect(_TreeProbe(tester).view.selectedKeys, {'#feature:feature-3', '#plane:feature:feature-3'});
+      });
+
+      testWidgets('Thicken picks a surface from its row in Surfaces, which stands for the feature that made it', (tester) async {
+        await openPart(tester, openTree: false, desktop: true, features: [
+          ...partFeatures,
+          {'type': 'surface', 'id': 'surf-1', 'sketch_feature_id': 'feature-1', 'locked': false, 'produces': 'surface'},
+        ], extraBodies: [
+          {'body_id': 'surf-1', 'source': 'computed', 'is_surface': true, 'mesh': _FakeDocumentBackend._placeholderMesh},
+        ]);
+        await tester.tap(find.byKey(const ValueKey('ribbon-All features')));
+        await _settleSheet(tester);
+        await tester.ensureVisible(find.text('From Surfaces'));
+        await tester.tap(find.text('From Surfaces'));
+        await _settleSheet(tester);
+        await tester.ensureVisible(find.text('Thicken'));
+        await tester.tap(find.text('Thicken'));
+        await settle(tester);
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.picker, isNotNull);
+        await _tapTreeRow(tester, 'Surfaces');
+        final row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == '#surface:surf-1');
+        expect(row.pick, AssemblyPickState.pickable);
+        // Its feature's build-order row has the same name: the Surfaces folder's row, by its key.
+        await tester.tap(find.byKey(const ValueKey('tree-row:#surface:surf-1')));
+        await settle(tester);
+        expect(find.text('Thicken'), findsWidgets, reason: 'the Thicken panel');
+        // The pick committed (Thicken picks one surface): its panel holds the desktop pane now, and the picker is gone.
+        expect(find.byType(AssemblyTreeView), findsNothing);
+        expect(find.text('Select a surface to thicken'), findsNothing);
+        await tester.pump(const Duration(milliseconds: 600));
+      });
+
+      testWidgets('no Edit for a feature without an edit panel (an import): not in the bar, not on a double-tap', (tester) async {
+        await openPart(tester, features: [
+          {'type': 'import', 'id': 'imp-1', 'locked': false, 'produces': 'body'},
+          ...partFeatures,
+        ]);
+        final label = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == '#feature:imp-1').label;
+        await _tapTreeRow(tester, label);
+        expect(_TreeProbe(tester).model.selectedKey, '#feature:imp-1');
+        expect(find.byKey(const ValueKey('tree-bar-edit')), findsNothing);
+        expect(find.byKey(const ValueKey('tree-bar-hide')), findsOneWidget);
+        // Extrude 1 has one.
+        await _tapTreeRow(tester, 'Extrude 1');
+        expect(find.byKey(const ValueKey('tree-bar-edit')), findsOneWidget);
+      });
     });
 
     group('Build tree (P2) in an assembly', () {
@@ -12804,6 +12910,30 @@ void main() {
         await settle(tester);
         return backend;
       }
+
+      testWidgets('after Make Focus the new live row does not list the previous Part\'s features while its own are on their way', (tester) async {
+        Completer<void>? holdPlateFeatures;
+        await openNested(tester, configure: (b) {
+          b.features.add({'type': 'sketch', 'id': 'root-sketch', 'sketch_id': 'sketch-1', 'locked': false, 'produces': 'sketch'});
+        }, around: (request) async {
+          if (holdPlateFeatures != null && request.url.path == '/document/parts/plate-part/features') await holdPlateFeatures.future;
+        });
+        await switchLens(tester, 'Part');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.liveFeatureKey('root-sketch'), '#feature:root-sketch');
+        final held = holdPlateFeatures = Completer<void>();
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.liveKey, isNull, reason: 'no live row until the focused Part\'s own features and bodies are in');
+        expect(rowKeys(tester).where((k) => k.contains('root-sketch')), isEmpty, reason: 'the root\'s features are not the plate\'s');
+        held.complete();
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.liveKey, '');
+        expect(rowKeys(tester).where((k) => k.contains('root-sketch')), isEmpty);
+      });
 
       testWidgets('the Part lens shows the whole tree with the focused Part live, and the lens switches which row is live', (tester) async {
         await openNestedInPartLens(tester);

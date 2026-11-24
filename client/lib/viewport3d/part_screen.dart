@@ -2576,6 +2576,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [_refreshFeatures]' own [_meshRefreshGeneration]: only the latest features answer is applied.
   int _featuresRefreshGeneration = 0;
 
+  /// The Part [_features] and [_bodies] were last loaded for (P2 review): after Make Focus or Edit Alone they still hold the previous
+  /// Part's until the new answers land, and the tree must not make them the new live row's (they could be edited there).
+  String? _featuresPartId;
+  String? _bodiesPartId;
+
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1 ("creating a new
   /// coarse-eligible Feature"): the not-yet-persisted coarse-preview Bodies
   /// for whichever create flow is currently in flight - passed straight
@@ -13386,7 +13391,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// screen only ever "catch up" on the *next* unrelated `setState` (see
   /// [_refreshMesh]'s own matching fix for the reported symptom this
   /// caused).
-  Future<void> _refreshFeatures() async {
+  Future<void> _refreshFeatures() {
+    final call = _refreshFeaturesOnce();
+    _featuresLatest = call;
+    return call;
+  }
+
+  /// The latest [_refreshFeatures] call: a call that a newer one superseded waits for it, so `await _refreshFeatures()` still means the
+  /// features are current when it returns.
+  Future<void>? _featuresLatest;
+
+  Future<void> _refreshFeaturesOnce() async {
     final part = _part;
     if (part == null) return;
     // P2 (10.3's stale-answer rule): an answer is applied only while it is the latest request and the focus is still the Part it was asked
@@ -13394,9 +13409,21 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final generation = ++_featuresRefreshGeneration;
     final partId = _focusPartId;
     final features = await _api.listFeatures(partId);
-    if (!mounted || generation != _featuresRefreshGeneration || partId != _focusPartIdOrNull) return;
+    if (!mounted) return;
+    if (generation != _featuresRefreshGeneration) {
+      // A newer call is on its way: return when it has landed (its own caller hears of its failure).
+      final latest = _featuresLatest;
+      if (latest != null) {
+        try {
+          await latest;
+        } catch (_) {}
+      }
+      return;
+    }
+    if (partId != _focusPartIdOrNull) return;
     setState(() {
       _features = features;
+      _featuresPartId = partId;
       _recomputeCreatePlaneGeometries();
     });
     // Bug fix (bug report: "when orbiting a part, it sometimes orbits about
@@ -13437,12 +13464,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     unawaited(AssemblyTreeOpenStore.read(documentKey).then((stored) {
       // Not for a later load, another model or another document, nor over rows the person already opened or closed.
       if (!mounted || token != _treeLoadToken || !identical(model, _treeModel) || documentKey != _treeDocumentKey) return;
+      _syncTreeLivePart(); // the live folders are rows to restore only once the live part is set
       final keys = stored == null || stored.isEmpty ? const <String>[] : model.restoreOpenKeys(stored);
       // Stored rows the root alone does not have (components, which a later answer brings) leave the seed provisional: the real answer
       // restores them, and until then nothing is stored over them.
       _treeSeedRestored = stored == null || keys.length == stored.length;
       if (keys.isEmpty || model.openKeysTouched) return;
-      setState(() => model.openAll(keys, remember: false));
+      setState(() => _restoreTreeRows(stored!));
       _treeController.refresh();
     }));
   }
@@ -13573,7 +13601,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _treeModel.merge(tree);
     if (isFirstAnswer && restore != null && tree.partId == _part?.id) {
       if (!_treeModel.openKeysTouched) {
-        _treeModel.openAll(_treeModel.restoreOpenKeys(restore), remember: false);
+        _restoreTreeRows(restore);
       } else {
         // The person's own rows stand; they replace what was stored (their change could not be stored while there was no tree to check it against).
         _rememberTreeOpenKeys(_treeModel);
@@ -14227,6 +14255,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final justGotFirstBody = _bodies.isEmpty && newBodies.isNotEmpty && !_hasAutoHiddenReferencePlanes;
     setState(() {
       _bodies = newBodies;
+      _bodiesPartId = partId;
       // Full detail has now landed for every Body named here - drop its
       // coarse override too, unless its owning Feature is pinned (in which
       // case the override stays, deliberately, until the user unpins it).
@@ -28612,11 +28641,23 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     if (_treeFeaturePickerMode) {
       final single = _treeFeaturePickerSingle;
+      final pickable = _treeFeaturePickerPickableIds;
+      final picked = _treeFeaturePickerSelectedIds;
+      // A surface row picks the feature that made it (Thicken, Offset, Knit, Solid from Surfaces pick surfaces).
+      final surfaces = _computedSurfaceIds;
       return AssemblyPicker(
         banner: _treeFeaturePickerLabel,
         multi: !single,
-        pickable: {for (final id in _treeFeaturePickerPickableIds) TreeMultiSelectKeys.feature(id)},
-        picked: {for (final id in _treeFeaturePickerSelectedIds) TreeMultiSelectKeys.feature(id)},
+        pickable: {
+          for (final id in pickable) TreeMultiSelectKeys.feature(id),
+          for (final s in surfaces)
+            if (pickable.contains(baseFeatureId(s))) TreeMultiSelectKeys.surface(s),
+        },
+        picked: {
+          for (final id in picked) TreeMultiSelectKeys.feature(id),
+          for (final s in surfaces)
+            if (picked.contains(baseFeatureId(s))) TreeMultiSelectKeys.surface(s),
+        },
         otherReason: 'This feature cannot be picked here',
       );
     }
@@ -28658,7 +28699,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The live part is kept in both lenses and only shown in the Part lens ([AssemblyTreeModel.livePartShown]), so the Assembly lens does not
   /// drop its open folders or a selected live row: a lens switch keeps the open rows and the selection, and is not the person's change.
   void _syncTreeLivePart() {
-    final key = _liveTreeKey;
+    final focus = _focusPartIdOrNull;
+    // Only once the features and the bodies are the focused Part's own (see [_featuresPartId]).
+    final key = focus != null && _featuresPartId == focus && _bodiesPartId == focus ? _liveTreeKey : null;
     final hidden = _hiddenFeatureIds;
     final rolled = _rollbackExcludedFeatureIds;
     final pending = _pendingDetailFeatureIds;
@@ -28683,6 +28726,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (key == null) {
         if (_treeModel.livePart != null) _treeModel.clearLivePart();
       } else {
+        final restoreAfter = _treeModel.livePart == null;
         final features = _features;
         AssemblyLiveItem item(String id, Map<String, String> names) =>
             AssemblyLiveItem(id, names[id] ?? id, hidden: _bodies.any((b) => b.bodyId == id && b.hidden));
@@ -28713,6 +28757,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           curves: [for (final id in curveNames.keys.where(curveIds.contains)) item(id, curveNames)],
           hiddenDefaultPlanes: {for (final p in _hiddenReferencePlanes) p.apiValue.toLowerCase()},
         ));
+        // A restore that ran before the live part was there (its folders were not rows yet) opens them now.
+        final waiting = _pendingTreeRestore;
+        if (restoreAfter && waiting != null && identical(waiting.$1, _treeModel)) {
+          _pendingTreeRestore = null;
+          if (!_treeModel.openKeysTouched) _treeModel.openAll(_treeModel.restoreOpenKeys(waiting.$2), remember: false);
+        }
       }
     }
     _treeModel.livePartShown = _treeLiveShown;
@@ -28727,6 +28777,18 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   AssemblyTreeModel? _treeLiveModel;
+
+  /// Stored rows restored into a model before its live part was set: the live folders among them are opened when it is (P2 review).
+  (AssemblyTreeModel, List<String>)? _pendingTreeRestore;
+
+  /// Opens [stored] in the model (a restore: not the person's change), the live part set first so its folders are rows to restore; if the
+  /// live part cannot be set yet (the focused Part's features are on their way), its folders are opened when it is.
+  void _restoreTreeRows(List<String> stored) {
+    _syncTreeLivePart();
+    final model = _treeModel;
+    model.openAll(model.restoreOpenKeys(stored), remember: false);
+    _pendingTreeRestore = model.livePart == null ? (model, stored) : null;
+  }
 
   /// A tap on a live row selected it ([_liveTreeTapKey]) and made this viewport selection: while [_selectedEntities] is still that set the tree
   /// marks the tapped row (a body, a folder, a sketch with nothing to highlight); otherwise the tree follows the viewport (a picked body or
@@ -28916,7 +28978,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// A row the tree's picker takes (a sketch for a pending Extrude, a source for Mirror / Pattern, a surface, a loft section...).
   void _onLiveTreeRowPick(AssemblyTreeRow row) {
-    final f = _featureOfRow(row);
+    // A surface row stands for the feature that made it.
+    final f = row.kind == AssemblyRowKind.surface && row.itemId != null ? _featureById(baseFeatureId(row.itemId!)) : _featureOfRow(row);
     if (f == null) return;
     if (_treeSketchPickerMode) {
       _treeOnSketchPicked(f);
@@ -29022,10 +29085,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       isMultiSelectMode: _assemblyMultiSelect.active || build.active,
       // The build session keeps [TreeMultiSelectKeys] (`feature:<id>`...); the tree ticks row keys (P1's mapping).
       selectedKeys: build.active
-          ? {
-              for (final k in build.selectedIds)
-                if (_treeModel.rowKeyOfMultiSelect(k) != null) _treeModel.rowKeyOfMultiSelect(k)!
-            }
+          ? {for (final k in build.selectedIds) ..._treeModel.rowKeysOfMultiSelect(k)}
           : _assemblyMultiSelect.selectedIds,
       // The Assembly session works on the components directly in the assembly being edited (their key is their id), the build session on the
       // live part's features, bodies, surfaces and curves.
@@ -29103,10 +29163,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           return Align(
             alignment: Alignment.topLeft,
             child: SafeArea(
+              // 12 px wider than the tree, so the handle's right half is inside the Stack and takes pointers (that strip is otherwise empty
+              // and lets them through to the viewport).
               child: Stack(
-                clipBehavior: Clip.none,
                 children: [
-                  view(false, width),
+                  Padding(padding: const EdgeInsets.only(right: 12), child: view(false, width)),
                   if (shown) Positioned(top: 0, bottom: 0, left: width - 12, child: _treeResizeHandle(constraints.maxWidth)),
                 ],
               ),

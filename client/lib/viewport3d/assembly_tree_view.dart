@@ -670,6 +670,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                                 pickMulti: picker?.multi ?? false,
                                 onDoubleTap: widget.onRowEdit != null &&
                                         r.isLiveFeature &&
+                                        featureTypeHasEditPanel(r.type ?? '') &&
                                         picker == null &&
                                         !widget.isMultiSelectMode
                                     ? () => _edit(r)
@@ -964,7 +965,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     switch (row.kind) {
       case AssemblyRowKind.feature:
         return live([
-          _BarButton('tree-bar-edit', Icons.edit_outlined, 'Edit', widget.onEditSelected),
+          // An import or a Fill Surface has no edit panel: no Edit for it.
+          _BarButton('tree-bar-edit', Icons.edit_outlined, 'Edit', featureTypeHasEditPanel(row.type ?? '') ? widget.onEditSelected : null),
           _BarButton('tree-bar-rollback', Icons.history, 'Roll back to here', widget.onRollbackSelected),
           hide,
           more,

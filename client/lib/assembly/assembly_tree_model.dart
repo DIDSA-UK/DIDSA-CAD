@@ -569,7 +569,10 @@ class _Walk {
   final Set<String>? listed;
   final Map<String, _Trace>? trace;
 
-  _Walk({required this.open, required this.grouping, this.openAll = false, this.listed, this.trace});
+  /// List the live part's rows even while it is hidden ([AssemblyTreeModel.livePartShown] false): the restore walk.
+  final bool liveHidden;
+
+  _Walk({required this.open, required this.grouping, this.openAll = false, this.listed, this.trace, this.liveHidden = false});
 
   bool isOpen(String key) => openAll || open.contains(key);
 
@@ -601,9 +604,10 @@ class AssemblyTreeModel {
   /// The live key whose row was last opened because it became live (so closing it again is the person's choice).
   String? _liveOpenedFor;
 
-  /// The live row's key while it is open only because it became live (nobody opened it): kept out of [keysToStore] until the person opens or
-  /// closes it themselves.
-  String? _autoOpenKey;
+  /// Rows open only because they became live (nobody opened them): kept out of [keysToStore] until the person opens or closes them, or a
+  /// restore of stored keys opens them (then they are the person's). A set: when the live row moves, the row it left stays open and still
+  /// is not the person's. Pruned with the open keys.
+  final Set<String> _autoOpen = {};
   AssemblyPicker? _picker;
   Map<String, _LiveRef>? _liveRefs;
   Map<String, String>? _liveMs;
@@ -684,7 +688,7 @@ class AssemblyTreeModel {
   }
 
   void setOpen(String key, bool open) {
-    if (key == _autoOpenKey) _autoOpenKey = null; // the person's own choice from here on
+    _autoOpen.remove(key); // the person's own choice from here on
     _opened(open ? _open.add(key) : _open.remove(key));
   }
 
@@ -692,22 +696,22 @@ class AssemblyTreeModel {
 
   /// Opens [keys]. With `remember: false` this is a restore (or the like), not a change the person made: it is not stored and does not
   /// count as one.
+  ///
+  /// A key that is open only because its row became live stays so when this opens nothing new for it (an expand to selection through it); a
+  /// restore (`remember: false`) of such a key makes it the person's again: it came from their stored rows.
   void openAll(Iterable<String> keys, {bool remember = true}) {
-    if (remember) {
-      for (final k in keys) {
-        if (k == _autoOpenKey) _autoOpenKey = null;
-      }
-    }
     var changed = false;
     for (final k in keys) {
-      changed = _open.add(k) || changed;
+      final added = _open.add(k);
+      if (added || !remember) _autoOpen.remove(k);
+      changed = added || changed;
     }
     _opened(changed, remember: remember);
   }
 
   /// Empties the open keys (the root stays open: it always is).
   void closeAll() {
-    _autoOpenKey = null;
+    _autoOpen.clear();
     final changed = _open.isNotEmpty;
     _open.clear();
     _opened(changed, deliberate: true);
@@ -767,17 +771,20 @@ class AssemblyTreeModel {
   /// Makes [live] the live part: its folders and features replace what [setFeatures] gave that row. When the row becomes live (a different row
   /// from the one before) its key is added to the open keys so it shows open; that is not the person's change: nothing is reported,
   /// [openKeysTouched] stays as it was, and [keysToStore] leaves the key out until the person opens or closes it themselves. Later calls for the
-  /// same row refresh the data and leave its open state. Like [merge], it drops a selected row and open folders the live part no longer has.
+  /// same row refresh the data and leave its open state. A refresh of the same live row drops, like [merge], a selected row and open folders the
+  /// live part no longer has; clearing it, or making another row live, drops nothing (a clear then a set of the same row keeps its folders).
   void setLivePart(AssemblyLivePart? live) {
+    final before = _live;
     _live = live;
     if (live == null) _liveOpenedFor = null;
     _invalidate();
-    // Like merge(): what the live part no longer has goes (a selected row, a folder that emptied and so starts collapsed when it fills again).
-    if (_tree != null) {
+    // Like merge(): what the refreshed live part no longer has goes (a selected row, a folder that emptied and so starts collapsed when it fills
+    // again).
+    if (_tree != null && before != null && live != null && before.key == live.key) {
       _open.removeWhere((k) => !_rowKeyExists(k));
       final sel = selectedKey;
       if (sel != null && !_selectionExists(sel)) selectedKey = null;
-      if (_autoOpenKey != null && !_open.contains(_autoOpenKey)) _autoOpenKey = null;
+      _autoOpen.retainAll(_open);
     }
     _openLive();
   }
@@ -805,7 +812,7 @@ class AssemblyTreeModel {
     _liveOpenedFor = l.key;
     if (l.key.isNotEmpty && !_open.contains(l.key)) {
       openAll([l.key], remember: false);
-      _autoOpenKey = l.key;
+      _autoOpen.add(l.key);
     }
   }
 
@@ -821,6 +828,15 @@ class AssemblyTreeModel {
   /// The row key of the live row a [TreeMultiSelectKeys] key names: the build-order row for a feature, else the body, surface or curve row; null
   /// when the live part has no such row.
   String? rowKeyOfMultiSelect(String key) => _liveValid ? _liveMsMap[key] : null;
+
+  /// Every live row a [TreeMultiSelectKeys] key names: a plane feature has two (its build-order row and its row in the Planes folder), so a
+  /// multi-select ticks both. Empty when the live part has none (or is not shown).
+  List<String> rowKeysOfMultiSelect(String key) => !_liveValid
+      ? const []
+      : [
+          for (final e in _liveRefMap.entries)
+            if (e.value.ms == key) e.key
+        ];
 
   Map<String, _LiveRef> get _liveRefMap => _liveRefs ??= _buildLiveRefs();
   Map<String, String> get _liveMsMap {
@@ -1002,7 +1018,8 @@ class AssemblyTreeModel {
     if (_tree == null) return const [];
     final wanted = stored is Set<String> ? stored : stored.toSet();
     if (wanted.isEmpty) return const [];
-    final rows = _walk(_Walk(open: const {}, grouping: true, openAll: true));
+    // The live part's folders are restorable whether or not it is shown (the Assembly lens hides it; its folders come back with it).
+    final rows = _walk(_Walk(open: const {}, grouping: true, openAll: true, liveHidden: true));
     const kinds = {
       AssemblyRowKind.assembly,
       AssemblyRowKind.part,
@@ -1027,7 +1044,7 @@ class AssemblyTreeModel {
       _storable().length <= limit ? _storable().toList() : restoreOpenKeys(_storable(), limit: limit);
 
   /// The open keys without a live row that is open only because it became live.
-  Set<String> _storable() => _autoOpenKey == null ? _open : (_open.toSet()..remove(_autoOpenKey));
+  Set<String> _storable() => _autoOpen.isEmpty ? _open : _open.difference(_autoOpen);
 
   // ----- Filter (spec section 11) -----
 
@@ -1107,6 +1124,7 @@ class AssemblyTreeModel {
   void merge(AssemblyTreeResponseDto newTree) {
     _load(newTree);
     _open.removeWhere((k) => !_rowKeyExists(k));
+    _autoOpen.retainAll(_open);
     _features.removeWhere((k, _) => !_ownerExists(k));
     final sel = selectedKey;
     if (sel != null && !_selectionExists(sel)) selectedKey = null;
@@ -1154,6 +1172,8 @@ class AssemblyTreeModel {
     final i = key.indexOf('#feature:');
     if (i < 0) return false;
     final owner = key.substring(0, i);
+    // The live row's features are the live part's (checked above): what [setFeatures] once gave that row does not keep a deleted one selected.
+    if (_liveDataValid && owner == _live!.key) return false;
     final id = key.substring(i + '#feature:'.length);
     final fs = _features[owner];
     return fs != null && _ownerExists(owner) && fs.any((f) => f.id == id);
@@ -1407,7 +1427,7 @@ class AssemblyTreeModel {
 
   void _emitNode(_N n, int depth, String parentKey, _Walk w) {
     final d = n.dto;
-    final expandable = _canOpen(n) || (_liveValid && _live!.key == n.key);
+    final expandable = _canOpen(n) || (_liveIn(w) && _live!.key == n.key);
     final open = expandable && w.isOpen(n.key);
     AssemblyBubble? bubble;
     if (expandable) {
@@ -1519,8 +1539,11 @@ class AssemblyTreeModel {
   }
 
   /// What follows a row's occurrences: the live row's folders and features (spec section 13), else the features fetched for it.
+  /// Whether [w] lists the live part: shown, or the restore walk over a hidden one.
+  bool _liveIn(_Walk w) => w.liveHidden ? _liveDataValid : _liveValid;
+
   void _emitTail(String ownerKey, int depth, _Walk w) {
-    if (_liveValid && _live!.key == ownerKey) {
+    if (_liveIn(w) && _live!.key == ownerKey) {
       _emitLive(ownerKey, depth, w);
     } else {
       _emitFeatures(ownerKey, depth, w);
