@@ -310,6 +310,49 @@ void main() {
     expect(view.model.visibleRows().firstWhere((r) => r.key == 'z').hidden, isTrue);
   });
 
+  testWidgets("a seed rooted at the focused Part takes nothing from the Part screen's tree when that tree has another root", (tester) async {
+    // The Part screen's tree is the document's (root 'root'): its root row has features, a session-hidden row and open rows.
+    final main = AssemblyTreeModel(tree: _assembly())
+      ..setFeatures(const [], const [AssemblyFeature('root-f', 'Root Sketch')])
+      ..setSessionHiddenKeys({''})
+      ..openAll(const ['z']);
+    final seed = AssemblyTreeResponseDto.fromJson({
+      'part_id': 'plate-part',
+      'part_name': 'Plate',
+      'kind': 'part',
+      'feature_count': 1,
+      'status_included': true,
+      'children': <Map<String, dynamic>>[],
+    });
+    await tester.pumpWidget(_host(SketchFeatureTree(
+      tree: seed,
+      livePart: null, // the plate's own features are on their way
+      openKeys: main.openKeys,
+      fetchedFrom: main,
+      sketchFeatureId: 'current',
+      onClose: () {},
+    )));
+    await tester.pump();
+    final model = tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView)).model;
+    expect(find.text('Root Sketch'), findsNothing, reason: "the document root's features are not the plate's");
+    expect(model.visibleRows().any((r) => r.key.contains('root-f')), isFalse);
+    expect(model.visibleRows().firstWhere((r) => r.key == '').hidden, isFalse, reason: "the root's session-hidden mark is not the plate's");
+    expect(model.openKeys, isEmpty, reason: "the document tree's open rows are not the seed's");
+
+    // The same model rooted where the seed is: copied as before.
+    final plateMain = AssemblyTreeModel(tree: seed)..setFeatures(const [], const [AssemblyFeature('pf', 'Plate Sketch')]);
+    await tester.pumpWidget(_host(SketchFeatureTree(
+      key: const ValueKey('again'),
+      tree: seed,
+      livePart: null,
+      fetchedFrom: plateMain,
+      sketchFeatureId: 'current',
+      onClose: () {},
+    )));
+    await tester.pump();
+    expect(find.text('Plate Sketch'), findsOneWidget);
+  });
+
   testWidgets('when the Part screen\'s tree changes root (the part alone, then the document), the way to the sketch is opened again',
       (tester) async {
     tester.view.physicalSize = const Size(800, 1600);

@@ -12919,6 +12919,18 @@ void main() {
         expect(find.textContaining('The shape could not be built'), findsOneWidget);
       });
 
+      testWidgets('manager review: a mesh answer that is not JSON at load ends in the banner as a short message, not an uncaught error',
+          (tester) async {
+        await openPart(tester, configure: (b) => b.badMeshFor.add('part-1'));
+        await settle(tester);
+        expect(tester.takeException(), isNull);
+        expect(_TreeProbe(tester).model.liveKey, '');
+        expect(rowKeys(tester), contains('#feature:feature-2'), reason: 'the features still came');
+        expect(find.textContaining("Could not read the server's answer"), findsOneWidget);
+        expect(find.textContaining('proxy error'), findsNothing, reason: 'not the raw response body');
+        expect(find.textContaining('FormatException'), findsNothing);
+      });
+
       for (final coarseLate in [false, true]) {
         testWidgets('P2 review: a failed mesh leaves no coarse stand-in or pending detail (the coarse answer ${coarseLate ? 'after' : 'before'} it)',
             (tester) async {
@@ -13016,7 +13028,9 @@ void main() {
         await settle(tester);
         expect(tester.takeException(), isNull, reason: 'neither error escapes the focus change');
         expect(find.textContaining('The features could not be read'), findsOneWidget);
-        expect(find.textContaining('FormatException'), findsOneWidget, reason: "the mesh's error is shown too, though it is not an ApiException");
+        expect(find.textContaining("Could not read the server's answer"), findsOneWidget,
+            reason: "the mesh's error is shown too, though it is not an ApiException: a short message");
+        expect(find.textContaining('proxy error'), findsNothing, reason: 'not the raw response body');
       });
 
       testWidgets('a focused Part whose mesh fails to load still lists its features as the live row', (tester) async {

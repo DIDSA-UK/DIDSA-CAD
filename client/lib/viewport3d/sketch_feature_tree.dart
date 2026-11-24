@@ -39,11 +39,14 @@ class SketchFeatureTree extends StatefulWidget {
   final String sketchFeatureId;
   final VoidCallback onClose;
 
-  /// The Part screen's open rows when the tree was built; later changes on either side stay on that side.
+  /// The Part screen's open rows when the tree was built; later changes on either side stay on that side. With [fetchedFrom] they are that
+  /// model's keys, and are used only while its tree has [tree]'s root.
   final Iterable<String> openKeys;
 
   /// The Part screen's tree model: what it fetched (other parts' features, the Mates and Patterns rows, rows hidden for this session) is
-  /// copied in, so those rows read as they do there. This tree fetches nothing itself.
+  /// copied in, so those rows read as they do there. This tree fetches nothing itself. Only while that model's tree has [tree]'s root: its
+  /// keys name rows from its own root, so on a seed rooted at another Part (the focused Part on its own while the Part screen's tree has no
+  /// live row for it) they would put that root's features, hidden rows and open rows on the wrong Part. Then nothing is copied.
   final AssemblyTreeModel? fetchedFrom;
   final bool grouping;
   final String lockedReason;
@@ -69,17 +72,26 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
   @override
   void initState() {
     super.initState();
-    _model = _newModel(widget.openKeys);
+    _model = _newModel(_startKeys());
     // The sketch being edited may sit under closed rows (a part deep in an assembly): open the way to it.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _controller.expandToSelection();
     });
   }
 
+  /// [SketchFeatureTree.fetchedFrom] while its tree has this tree's root, else null.
+  AssemblyTreeModel? get _source {
+    final source = widget.fetchedFrom;
+    return source != null && source.tree?.partId == widget.tree.partId ? source : null;
+  }
+
+  /// The open rows a new model starts with: [SketchFeatureTree.openKeys], unless they are the keys of a tree with another root.
+  Iterable<String> _startKeys() => widget.fetchedFrom == null || _source != null ? widget.openKeys : const <String>[];
+
   AssemblyTreeModel _newModel(Iterable<String> openKeys) {
     final model = AssemblyTreeModel(tree: widget.tree, grouping: widget.grouping);
     model.openAll(openKeys, remember: false);
-    final source = widget.fetchedFrom;
+    final source = _source;
     if (source != null) model.copyFetchedFrom(source);
     model.setLivePart(widget.livePart);
     model.selectedKey = model.liveFeatureKey(widget.sketchFeatureId);
@@ -94,8 +106,9 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
       if (old.tree.partId == widget.tree.partId) {
         _model.merge(widget.tree);
       } else {
-        // Another root (the Part screen's tree arrived for the document, where a seed for the part was): start again, keeping the open rows.
-        _model = _newModel(_model.openKeys);
+        // Another root (the Part screen's tree arrived for the document, where a seed for the part was): start again from that tree's open
+        // rows (the seed's keys name rows of another root).
+        _model = _newModel(_startKeys());
       }
     }
     // The sketch's row moved (another root, or the live row is another row of it): open the way to it again, as when the tree opened.
@@ -104,7 +117,7 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
         if (mounted) _controller.expandToSelection();
       });
     }
-    final source = widget.fetchedFrom;
+    final source = _source;
     if (source != null) _model.copyFetchedFrom(source);
     if (!identical(old.livePart, widget.livePart)) _model.setLivePart(widget.livePart);
     if (old.grouping != widget.grouping) _model.grouping = widget.grouping;

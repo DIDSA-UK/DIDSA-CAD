@@ -13321,15 +13321,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // running server-side) are handled by the exact same check.
       unawaited(_checkForPendingJob());
       debugPrint('[PartScreen] getPartMesh...');
-      // A mesh that fails (a broken feature) does not stop the load: the features, the sketches and the tree still come, and the mesh's error
-      // is thrown at the end (P2 review).
+      // A mesh that fails (a broken feature, an answer that is not JSON) does not stop the load: the features, the sketches and the tree still
+      // come, and the mesh's error is thrown at the end, for the banner (P2 review).
       Object? meshFailed;
-      StackTrace? meshStack;
       try {
         await _refreshMesh(isInitialLoad: true);
-      } catch (e, st) {
+      } catch (e) {
         meshFailed = e;
-        meshStack = st;
       }
       debugPrint('[PartScreen] getPartMesh done: ${_bodies.length} body/bodies');
       await _refreshFeatures();
@@ -13384,7 +13382,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           _markPartDirty(part.id);
         }
       });
-      if (meshFailed != null) Error.throwWithStackTrace(meshFailed, meshStack!);
+      // Any error, as the banner's short message ([_runGuarded] shows only an [ApiException]).
+      if (meshFailed != null) throw _asBannerError(meshFailed);
     });
   }
 
@@ -27010,22 +27009,37 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (messages.isNotEmpty) setState(() => _errorMessage = messages.toSet().join('\n'));
   }
 
-  /// The banner's text for a failed refresh: the backend's message, or what the error says.
-  static String _refreshErrorText(Object error) => error is ApiException ? error.message : '$error';
+  /// The banner's text for a failed refresh: the backend's message, or a short one for any other error (an answer that is not JSON, say);
+  /// the raw error (which can carry the response body) goes to the log only.
+  static String _refreshErrorText(Object error) {
+    if (error is ApiException) return error.message;
+    debugPrint('[PartScreen] refresh failed: $error');
+    return 'Could not read the server\'s answer';
+  }
 
-  /// The mesh, then the features: a mesh that fails does not skip the features (a broken feature's Part still lists them, P2 review), and
-  /// its error is thrown after them unless they failed too (then theirs is).
+  /// [error] as what [_runGuarded] shows in the banner: an [ApiException] as it is, any other error as one with [_refreshErrorText]'s short
+  /// message (so it is not an uncaught error with no banner).
+  static ApiException _asBannerError(Object error) => error is ApiException ? error : ApiException(_refreshErrorText(error));
+
+  /// The mesh, then the features: a mesh that fails does not skip the features (a broken feature's Part still lists them, P2 review). Any
+  /// error of either is thrown after both as an [ApiException] ([_asBannerError]; both messages, once each, when both failed), so the
+  /// caller's [_runGuarded] puts it in the banner.
   Future<void> _refreshMeshThenFeatures() async {
     Object? meshFailed;
-    StackTrace? meshStack;
     try {
       await _refreshMesh();
-    } catch (e, st) {
+    } catch (e) {
       meshFailed = e;
-      meshStack = st;
     }
-    await _refreshFeatures();
-    if (meshFailed != null) Error.throwWithStackTrace(meshFailed, meshStack!);
+    Object? featuresFailed;
+    try {
+      await _refreshFeatures();
+    } catch (e) {
+      featuresFailed = e;
+    }
+    if (meshFailed == null && featuresFailed == null) return;
+    if (meshFailed == null || featuresFailed == null) throw _asBannerError((meshFailed ?? featuresFailed)!);
+    throw ApiException({_refreshErrorText(meshFailed), _refreshErrorText(featuresFailed)}.join('\n'));
   }
 
   /// §6 roadmap Phase 10 (`[5]`): Hide/Show's real persistence call -
@@ -27492,6 +27506,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       key: ValueKey('sketch-tree:${sketchFeature.id}'),
       tree: tree,
       livePart: live,
+      // Both are this screen's tree's: [SketchFeatureTree] uses them only while that tree has the same root as [tree] (not on a seed for the
+      // focused Part alone, whose root is another Part).
       openKeys: _treeModel.openKeys,
       fetchedFrom: _treeModel,
       grouping: _treeModel.grouping,
