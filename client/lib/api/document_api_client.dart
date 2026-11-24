@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:developer' as developer;
 import 'dart:typed_data';
 
 import 'package:http/http.dart' as http;
@@ -7,7 +6,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../config.dart';
 import 'import_assembly_dto.dart';
-import 'sketch_api_client.dart' show ApiException;
+import 'sketch_api_client.dart' show ApiException, decodeOrUnreadable;
 
 export 'import_assembly_dto.dart';
 
@@ -3845,23 +3844,11 @@ class DocumentApiClient {
       throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}',
           statusCode: response.statusCode);
     }
-    // An answer that cannot be read (not JSON, a proxy's HTML page, or JSON of the wrong shape for its DTO) is the server's failure, said
-    // like any other: an [ApiException] with a short message, so a caller's banner shows it. The raw error (it can carry the response body)
-    // goes to the log only.
-    try {
-      final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
-      return onSuccess(decoded);
-    } on FormatException catch (e, st) {
-      developer.log('unreadable answer', name: 'DocumentApiClient', error: e, stackTrace: st);
-      throw ApiException(unreadableAnswerMessage, statusCode: response.statusCode);
-    } on TypeError catch (e, st) {
-      developer.log('unreadable answer', name: 'DocumentApiClient', error: e, stackTrace: st);
-      throw ApiException(unreadableAnswerMessage, statusCode: response.statusCode);
-    }
+    return decodeOrUnreadable(response.body, onSuccess, name: 'DocumentApiClient');
   }
 
   /// What a caller is told when the server's answer cannot be read ([_send]).
-  static const String unreadableAnswerMessage = "Could not read the server's answer";
+  static const String unreadableAnswerMessage = ApiException.unreadableAnswerMessage;
 
   /// Same request/error handling as [_send], but for an endpoint whose
   /// success body is raw binary (STEP/STL/glb) rather than JSON -

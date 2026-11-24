@@ -13039,6 +13039,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         setState(() => _errorMessage = e.message);
       } on AssemblyGraphCycleException catch (e) {
         setState(() => _errorMessage = e.toString());
+      } on FormatException catch (e) {
+        // A project file that is not a valid save (as [_composeProjectFile] says): its own message, not the server's.
+        setState(() => _errorMessage = e.message);
+      } on TypeError {
+        setState(() => _errorMessage = 'Not a valid native project file: $relativePath');
       }
     });
     final result = opened;
@@ -27007,9 +27012,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } catch (e, st) {
       failures.add((e, st));
     }
-    // Nothing for a refresh the focus has moved on from (its result is dropped). A failure that is not the server's (a bug here) cannot be
-    // rethrown from this unguarded path without losing the other: it is reported with its stack, and the banner says what the server's are.
-    if (!mounted || meshPartId != _focusPartIdOrNull) return;
+    // A failure that is not the server's (a bug here) cannot be rethrown from this unguarded path without losing the other: it is reported
+    // with its stack, whether or not the focus has moved on since. The banner says what the server's are, only while the focus is still here.
     final messages = <String>{};
     for (final (e, st) in failures) {
       final text = _bannerTextOf(e);
@@ -27019,6 +27023,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _reportRefreshBug(e, st, 'refreshing the focused Part');
       }
     }
+    if (!mounted || meshPartId != _focusPartIdOrNull) return;
     // One cause (the backend unreachable) can fail both with the same text: said once (a set).
     if (messages.isNotEmpty) setState(() => _errorMessage = messages.join('\n'));
   }

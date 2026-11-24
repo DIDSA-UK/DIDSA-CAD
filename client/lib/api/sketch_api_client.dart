@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:http/http.dart' as http;
 
@@ -16,11 +17,30 @@ import 'dimension_label_placement.dart';
 /// [SketchController]'s split-then-fall-back-to-endpoint-trim logic reading
 /// a 422 as "not applicable here, try the other endpoint" rather than a
 /// real error) can check it directly instead of string-matching [message].
+/// Decodes a 2xx answer's [body] and hands it to [onSuccess]. An answer that cannot be read (not JSON, a proxy's HTML page, or JSON of the
+/// wrong shape for its DTO: whatever decoding throws) is the server's failure, said like any other: an [ApiException] with a short message
+/// and no status code (like a transport failure, so a caller that retries one retries this too), and a caller's banner shows it. The raw
+/// error, which can carry the response body, goes to the log only. An [ApiException] thrown by [onSuccess] itself goes through as it is.
+T decodeOrUnreadable<T>(String body, T Function(dynamic decodedBody) onSuccess, {required String name}) {
+  try {
+    final decoded = body.isEmpty ? null : jsonDecode(body);
+    return onSuccess(decoded);
+  } on ApiException {
+    rethrow;
+  } catch (e, st) {
+    developer.log('unreadable answer', name: name, error: e, stackTrace: st);
+    throw ApiException(ApiException.unreadableAnswerMessage);
+  }
+}
+
 class ApiException implements Exception {
   final String message;
   final int? statusCode;
 
   ApiException(this.message, {this.statusCode});
+
+  /// The message of an answer that cannot be read ([decodeOrUnreadable]).
+  static const String unreadableAnswerMessage = "Could not read the server's answer";
 
   @override
   String toString() => message;
@@ -2140,9 +2160,10 @@ class SketchApiClient {
         statusCode: response.statusCode,
       );
     }
-    final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
-    _noteNames(decoded);
-    return onSuccess(decoded);
+    return decodeOrUnreadable(response.body, (decoded) {
+      _noteNames(decoded);
+      return onSuccess(decoded);
+    }, name: 'SketchApiClient');
   }
 
   /// Parity follow-ups F4 / A1: the backend numbers every point, entity, constraint and reference dimension of a sketch (`Line 3`, `Point 12`, `D4`,

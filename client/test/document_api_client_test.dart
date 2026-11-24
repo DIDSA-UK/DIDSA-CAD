@@ -3475,7 +3475,7 @@ void main() {
       expect(error, isA<ApiException>());
       expect((error as ApiException).message, DocumentApiClient.unreadableAnswerMessage);
       expect(error.message, isNot(contains('proxy')));
-      expect(error.statusCode, 200);
+      expect(error.statusCode, isNull, reason: 'like a transport failure: a caller that retries one retries this');
     });
 
     test('JSON of the wrong shape (an empty body for a list) is the same ApiException', () async {

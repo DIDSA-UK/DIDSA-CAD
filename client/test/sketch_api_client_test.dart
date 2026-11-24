@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/sketch_api_client.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 void main() {
   group('ProfileDetectionDto.fromJson', () {
@@ -76,5 +78,15 @@ void main() {
       expect(dto.isExtrudable, isFalse);
       expect(dto.fillableLoops, isEmpty);
     });
+  });
+
+  test('P3 review: an answer that cannot be read is an ApiException with the short message and no status code', () async {
+    for (final body in ['<html>proxy error</html>', '[1, 2, 3]']) {
+      final client = SketchApiClient(httpClient: MockClient((request) async => http.Response(body, 200)));
+      final error = await client.getSketch('s1').then<Object?>((_) => null, onError: (Object e) => e);
+      expect(error, isA<ApiException>(), reason: body);
+      expect((error as ApiException).message, ApiException.unreadableAnswerMessage);
+      expect(error.statusCode, isNull);
+    }
   });
 }
