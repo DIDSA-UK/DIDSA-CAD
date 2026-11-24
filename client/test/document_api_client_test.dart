@@ -3465,4 +3465,28 @@ void main() {
       );
     });
   });
+
+  group('an answer that cannot be read (P3 review)', () {
+    DocumentApiClient client(String body) =>
+        DocumentApiClient(httpClient: MockClient((request) async => http.Response(body, 200)));
+
+    test('a 200 that is not JSON (a proxy page) is an ApiException with a short message, not the page', () async {
+      final error = await client('<html>proxy error</html>').getPartMesh('part-1').then<Object?>((_) => null, onError: (Object e) => e);
+      expect(error, isA<ApiException>());
+      expect((error as ApiException).message, DocumentApiClient.unreadableAnswerMessage);
+      expect(error.message, isNot(contains('proxy')));
+      expect(error.statusCode, 200);
+    });
+
+    test('JSON of the wrong shape (an empty body for a list) is the same ApiException', () async {
+      await expectLater(
+        client('').listFeatures('part-1'),
+        throwsA(isA<ApiException>().having((e) => e.message, 'message', DocumentApiClient.unreadableAnswerMessage)),
+      );
+      await expectLater(
+        client('{"not": "a list"}').getPartMesh('part-1'),
+        throwsA(isA<ApiException>().having((e) => e.message, 'message', DocumentApiClient.unreadableAnswerMessage)),
+      );
+    });
+  });
 }

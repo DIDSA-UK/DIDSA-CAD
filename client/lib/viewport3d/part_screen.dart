@@ -12366,6 +12366,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       }
       final targetPath = path;
       var failure = false;
+      // Set only once the file is written: a guarded failure before that (the export answer, say) shows its banner and no "Saved".
+      var saved = false;
       await _runGuarded(() async {
         final originalBytes = await _buildNativeExportBytes();
         var bytes = originalBytes;
@@ -12385,8 +12387,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _lastSavedFileName = targetPath;
         setState(() => _isDirty = false);
         reopenFileName = targetPath;
+        saved = true;
       });
-      if (failure) return;
+      if (failure || !saved) return;
       final toReopen = reminted;
       if (toReopen != null && mounted) {
         await _openBundlePayload(toReopen, fileName: reopenFileName, filePath: null);
@@ -27004,46 +27007,49 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } catch (e, st) {
       failures.add((e, st));
     }
-    // A failure that is not the server's (a bug here) cannot be rethrown from this unguarded path without losing the other: it is reported
-    // with its stack, and the banner says only what the server's are.
+    // Nothing for a refresh the focus has moved on from (its result is dropped). A failure that is not the server's (a bug here) cannot be
+    // rethrown from this unguarded path without losing the other: it is reported with its stack, and the banner says what the server's are.
+    if (!mounted || meshPartId != _focusPartIdOrNull) return;
     final messages = <String>{};
     for (final (e, st) in failures) {
       final text = _bannerTextOf(e);
       if (text != null) {
         messages.add(text);
       } else {
-        FlutterError.reportError(FlutterErrorDetails(exception: e, stack: st, library: 'part screen', context: ErrorDescription('refreshing the focused Part')));
+        _reportRefreshBug(e, st, 'refreshing the focused Part');
       }
     }
-    if (!mounted || meshPartId != _focusPartIdOrNull) return;
     // One cause (the backend unreachable) can fail both with the same text: said once (a set).
     if (messages.isNotEmpty) setState(() => _errorMessage = messages.join('\n'));
   }
 
-  /// What the banner says when the server's answer is not JSON (a proxy's HTML page, say).
-  static const String _unreadableAnswerText = "Could not read the server's answer";
 
-  /// The banner's text for a failed refresh: the backend's message, or a short one for an answer that is not JSON (a [FormatException]; the
-  /// raw error, which can carry the response body, goes to the log only). Null for anything else: that is a bug here, not the server, and
-  /// keeps its own stack.
-  static String? _bannerTextOf(Object error) {
-    if (error is ApiException) return error.message;
-    if (error is FormatException) {
-      debugPrint('[PartScreen] the server\'s answer could not be read: $error');
-      return _unreadableAnswerText;
-    }
-    return null;
-  }
+  /// The banner's text for a failed refresh: the server's message (an [ApiException]; the API client also gives one, with a short message, for
+  /// an answer it cannot read). Null for anything else: that is a bug here, not the server, and keeps its own stack.
+  static String? _bannerTextOf(Object error) => error is ApiException ? error.message : null;
 
-  /// Throws what refreshes that ran one after the other left ([failures], in order), for the caller's [_runGuarded]: a failure that is not the
-  /// server's ([_bannerTextOf] null) as itself with its stack; one [ApiException] as it is (its status code kept); else an [ApiException]
-  /// with each banner text once.
+  /// Reports an error that is not the server's (a bug here) with its stack, where it cannot be rethrown without losing another failure.
+  static void _reportRefreshBug(Object error, StackTrace stack, String context) => FlutterError.reportError(
+      FlutterErrorDetails(exception: error, stack: stack, library: 'part screen', context: ErrorDescription(context)));
+
+  /// Throws what refreshes that ran one after the other left ([failures], in order), for the caller's [_runGuarded]. The server's failures go
+  /// to the banner: one [ApiException] as it is (its status code kept), several as one with each message once; a failure that is not the
+  /// server's is then reported with its stack ([_reportRefreshBug]). With no server failure, the first other one is rethrown with its stack
+  /// (the rest reported).
   static Never _throwRefreshFailures(List<(Object, StackTrace)> failures) {
-    for (final (e, st) in failures) {
-      if (_bannerTextOf(e) == null) Error.throwWithStackTrace(e, st);
+    final server = [for (final f in failures) if (f.$1 is ApiException) f];
+    final bugs = [for (final f in failures) if (f.$1 is! ApiException) f];
+    if (server.isEmpty) {
+      for (final (e, st) in bugs.skip(1)) {
+        _reportRefreshBug(e, st, 'refreshing the Part');
+      }
+      Error.throwWithStackTrace(bugs.first.$1, bugs.first.$2);
     }
-    if (failures.length == 1 && failures.single.$1 is ApiException) Error.throwWithStackTrace(failures.single.$1, failures.single.$2);
-    throw ApiException({for (final (e, _) in failures) _bannerTextOf(e)!}.join('\n'));
+    for (final (e, st) in bugs) {
+      _reportRefreshBug(e, st, 'refreshing the Part');
+    }
+    if (server.length == 1) Error.throwWithStackTrace(server.single.$1, server.single.$2);
+    throw ApiException({for (final (e, _) in server) (e as ApiException).message}.join('\n'));
   }
 
   /// The mesh, then the features: a mesh that fails does not skip the features (a broken feature's Part still lists them, P2 review). The
@@ -27563,11 +27569,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       await body();
     } on ApiException catch (e) {
       _errorMessage = e.message;
-    } on FormatException catch (e, st) {
-      // A server answer that is not JSON (a proxy's HTML page, say), from any refresh in [body]: the banner's short message, not an uncaught
-      // error with no banner. The raw error (it can carry the response body) goes to the log only.
-      debugPrint('[PartScreen] the server\'s answer could not be read: $e\n$st');
-      _errorMessage = _unreadableAnswerText;
     } finally {
       _busyOverlayTimer?.cancel();
       if (mounted) {
