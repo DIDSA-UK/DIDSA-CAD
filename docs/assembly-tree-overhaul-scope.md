@@ -852,58 +852,59 @@ storing Edit Alone's open rows.
 | B2 Flutter #10 + #8 | merged 21 Nov | #398 | strongest | Four rounds (the per-document key). Left for B2.1: rows opened before the first answer on a never-stored document are not stored; a rename during the first load can store rows not shown. Owner device check pending. |
 | P1 live part (model, view) | merged 21 Nov | #400 | strongest | Fix round merged before the manager's check; a post-merge review found model issues (auto-open key, restore, stale live selection, folders closed on clear): fixed in P2's round. |
 | P2 Part lens on the one tree | merged 24 Nov | #401 | strongest | Three rounds. Round 1 fixed the send-back (live folders, previous Part's features, surface picks, ticks, superseded refresh, P1's model items) but brought in three regressions (a failed mesh hid the features, a moved live row kept its selection, a superseded call swallowed the newer error); round 2 fixed them. Round 2's review found only rarer cases: carried into P3 (10.8). "Roll back to here" left out until the rollback bar (#17, Phase D): owner, 24 Nov. |
-| P3 sketcher's tree, old panel gone | started 24 Nov | | strongest | Carries seven items from P2's review (10.8). |
+| P3 sketcher's tree, old panel gone | merged 24 Nov | #404 | strongest | Two rounds (squash-merged). Manager send-back: the sketcher's fallback tree took another root's features; a mesh error that was not an `ApiException` escaped the banner. The fix brought one unreadable-answer rule to both API clients (`decodeOrUnreadable`). Owner, 24 Nov: a mate-drag commit whose 200 answer cannot be read is not retried (option A). Leftovers carried into B3 (10.8). |
 | B3 Flutter #5 | not started | | | |
 | B4 Flutter phone sheet | not started | | | Also: P2 saw the Part-lens drawer behind the bar on a phone |
 | B5 Flutter phone deep trees | not started | | | |
 | B6 VR row build | merged 21 Nov | VR #99 | mid-tier | Two send-backs (PARTS-tab scroll box, folder bubble, press guard). 2,002 rows, Mesa 943+337 ms -> 67+112 ms; PARTS tab scroll ~12 ms/frame slower (Table / Bring rebuilt per bind). Owner headset check pending. |
 | B7 VR #10 + #8 | merged 22 Nov | VR #100 | mid-tier | Fix round merged before the manager's check; post-merge review found five issues: follow-up B7.1. |
 | B7.1 VR follow-up | merged 24 Nov | VR #101 | mid-tier | Three rounds (squash-merged: two commit trailers named a model). Round 2's review found rarer orders of the same status-hint race and an older observer bug: carried into B8 (10.8). |
-| B8 VR room context, hints | started 24 Nov | | mid-tier | Hint order as proposed (owner, 21 Nov). Carries B6's leftovers and five items from B7.1's review (10.8). |
+| B8 VR room context, hints | merged 24 Nov | VR #102 | mid-tier | Two rounds (squash-merged). Manager send-back: a level read in flight across a same-document re-read landed on the rebuilt row; a failed placement count read as 0 ("Not placed"). The count is now -1 when unknown, kept per row and re-read only after a change. Leftovers carried into the next VR chunk (10.8). |
 | B2.1 Flutter follow-up | not started | | | B2's two leftovers plus whatever the owner's B2 device check finds |
 
-### 10.8 Manager hand-off (24 Nov, second)
+### 10.8 Manager hand-off (24 Nov, third)
 
-The second Phase B manager handed over here. A new manager reads this section 10 and DIDSA-VR's `CLAUDE.md`, and
-other files only when a check needs them. The owner starts it once P3 and B8 have each run their own first review and fix.
+A new manager reads this section 10 and DIDSA-VR's `CLAUDE.md`, and other files only when a check needs them.
 
-**In flight:**
-- **P3 (DIDSA-CAD), strongest model.** Its brief is 10.6, plus these from P2's review, one test each:
-  1. `_loadPart` and the post-edit `await _refreshMesh(); await _refreshFeatures();` paths: a mesh failure must not
-     skip the features (P2 fixed only the focus path).
-  2. `_refreshFocusTargetContent`: catch any mesh error, not only `ApiException`; show the mesh banner only if focus
-     is still on that Part, and even if the features call then fails.
-  3. `LatestCall`: a superseded call that fails while the newer one succeeds returns quietly; `await _refreshFeatures()`
-     callers outside `_runGuarded` handle the error the newer call passes on.
-  4. Mesh failure: clear the coarse overlay and pending body ids; stop a coarse fetch for that generation.
-  5. Model: while the live part is cleared, keep the last live row's folder keys storable; in the clear branch, drop a
-     selected feature of the old live row even if older `setFeatures` data has that id.
-  6. Part opened alone: a stored list of only live folders still queues the restore (part_screen ~13472).
-  7. Surface rows pickable only in the surface pickers (not Mirror, Pattern or Loft).
-- **B8 (DIDSA-VR), mid-tier.** Its brief is 10.6 (hint order as proposed), plus, one test each:
-  1. Status hint: in `_load_endpoint`'s structure-failure branch, if `_resp` has no `status_included`, set
-     `_status_unavailable` and `Model.clear_pending(_resp)`, then rebuild (a dropped status answer followed by a failed
-     refresh, whatever the old flag was; a floated row stuck on "updating").
-  2. `session_observer._refetch_all`: after the await, drop the bytes if `not active` or `_model_differs(source)`.
-  3. `app_settings.load_tree_open` skips an entry whose name alone is over the cap; a name whose first key cannot fit
-     is not stored.
-  4. `_reveal`: a same-document Refresh does not end it (compare a document key, not `_refresh_token`); a failed level
-     fetch leaves `children` null and is not counted as a change.
-  5. docs/status.md: the garbled B7.1 sentence (~line 209). And B6's leftovers in its 10.7 row.
-- **Next manager step:** check each PR (CI, diff scope, `/code-review` at `high` on the whole PR since it is the
-  manager's first look, then `medium` on each fix round), merge or send back per section 11. Then B3 (after P3), and
-  B2.1 if the owner's checks give it anything.
-- **Commit trailers:** workers must use `Co-Authored-By: Claude <noreply@anthropic.com>`; a model name there breaks the
-  no-identifiers rule (B7.1 needed a squash-merge to drop it).
-- **VR CI:** on 24 Nov the VR runs stopped getting a runner (`runner_id 0`, no log) while DIDSA-CAD's ran; the owner
-  was asked to check the Actions minutes. Never say merge on a run that did not start.
+**In flight:** nothing. P3 (#404) and B8 (VR #102) merged 24 Nov.
 
-**Owner device checks:** the owner does them all once Phase B is complete (24 Nov), not after each chunk. Owed so far:
+**Next manager step:** brief B3 (10.6, Flutter `client/`; it is unblocked by P3) and carry these from P3's review into it,
+one test each where it is a bug:
+  1. The sketcher's tree passes no `onFeaturesRequested`: a component row never opened in the Part screen opens empty
+     with no hint. Forward the request, or mark the row as not loaded.
+  2. `copyFetchedFrom` does not copy the unsaved markers (`_unsaved`), so the two trees disagree about unsaved Parts.
+  3. `_buildSketchTreePanel` changes the Part screen's tree model (`_syncTreeLivePart`) from inside the sketcher's build;
+     keep the build free of side effects.
+  4. Same as on `main`: a project sub-file that is valid JSON of the wrong shape fails with no banner; other decode
+     errors (`NoSuchMethodError` and the like) escape the API clients raw; a garbled 2xx is logged as `http_200` in the
+     drag counters.
+
+**Next VR chunk** (a B8.1, or whichever VR chunk comes next) carries these from B8's review:
+  1. `room_keys` lights a group only when a direct member is the room's Part: an ancestor or a group further up shows no
+     way to the room.
+  2. The per-level fallback (`_add_rows`, no `/assembly-tree` route) shows no room context.
+  3. The room rail keeps the old accent after a theme change (set `rail.color` in `_bind_line`).
+  4. `_spec_open_set`'s local `set` shadows `Object.set()` (a parse warning).
+  5. `load_tree_open` skips an unfit entry but keeps an earlier entry for the same document; storing removes it.
+  6. An unreadable placement count is read again on every bar rebuild while the backend fails (kept on purpose; decide).
+  7. Older bugs: `session_observer._refetch_parts` has no model-change / session-end check after `_fetch_glb`; `_drain`
+     raises `loaded_rev` with a dropped refetch's revision, so the next model's events can be ignored.
+
+Then B4, B5 and B2.1 as 10.1 orders them, and B2.1 only if the owner's checks give it anything.
+
+**Commit trailers:** workers must use `Co-Authored-By: Claude <noreply@anthropic.com>`; a model name there breaks the
+no-identifiers rule. Squash-merge a PR whose trailers name a model.
+
+**VR CI:** runs were getting runners again on 24 Nov (VR #102). Never say merge on a run that did not start.
+
+**Owner device checks:** the owner does them all once Phase B is complete, not after each chunk. Owed so far:
 B2 (phone and desktop: remembered rows, Save As, Expand to selection, filter tokens, phone header); P2 (a part opened
-alone; a part focused in an assembly in the Part lens; lens switching with folders open and a row selected); B6
-(headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1 (headset: Find kept after
-adding a component and after Save As, To selection, Collapse, remembered rows after reopening, the "unavailable" hint).
-Add each chunk's check from 10.1 here as it merges.
+alone; a part focused in an assembly in the Part lens; lens switching with folders open and a row selected); P3 (desktop
+and phone: the sketcher's tree beside a sketch, a convert pick from it, locked rows, the banner when the server's answer
+cannot be read); B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1
+(headset: Find kept after adding a component and after Save As, To selection, Collapse, remembered rows after reopening,
+the "unavailable" hint); B8 (headset: rows outside an open room dimmed and the rail on the inside rows, the bar's "Placed
+N times" against a real backend, the hint order on the row width). Add each chunk's check from 10.1 here as it merges.
 
 **How to run it:** section 11.
 
