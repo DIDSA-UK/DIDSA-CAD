@@ -182,6 +182,9 @@ class _FakeDocumentBackend {
   final Set<String> badMeshFor = {};
   final Set<String> failFeaturesFor = {};
 
+  /// Parts whose `GET .../features` answers 200 with a body that is not JSON.
+  final Set<String> badFeaturesFor = {};
+
   Map<String, dynamic> _visibilityFields(String partId) => {
         'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
         'hidden_reference_planes': _hiddenPlanes(partId).toList()..sort(),
@@ -613,6 +616,9 @@ class _FakeDocumentBackend {
       return http.Response('<html>proxy error</html>', 200);
     }
     final failFeaturesMatch = RegExp(r'^/document/parts/([^/]+)/features$').firstMatch(path);
+    if (failFeaturesMatch != null && method == 'GET' && badFeaturesFor.contains(failFeaturesMatch.group(1))) {
+      return http.Response('<html>proxy error</html>', 200);
+    }
     if (failFeaturesMatch != null && method == 'GET' && failFeaturesFor.contains(failFeaturesMatch.group(1))) {
       return _json({'detail': 'The features could not be read'}, 500);
     }
@@ -12929,6 +12935,32 @@ void main() {
         expect(find.textContaining("Could not read the server's answer"), findsOneWidget);
         expect(find.textContaining('proxy error'), findsNothing, reason: 'not the raw response body');
         expect(find.textContaining('FormatException'), findsNothing);
+      });
+
+      testWidgets('manager review: mesh and features answers that are not JSON at load: the short message once, nothing uncaught', (tester) async {
+        final backend = _FakeDocumentBackend(seedFeatures: [for (final f in partFeatures) {...f}])
+          ..badMeshFor.add('part-1')
+          ..badFeaturesFor.add('part-1');
+        await tester.pumpWidget(MaterialApp(
+          home: PartScreen(documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request)))),
+        ));
+        await _pumpUntil(tester, () => find.textContaining("Could not read the server's answer").evaluate().isNotEmpty);
+        await settle(tester);
+        expect(tester.takeException(), isNull);
+        expect(find.textContaining("Could not read the server's answer"), findsOneWidget);
+        expect(find.textContaining('proxy error'), findsNothing);
+      });
+
+      testWidgets('manager review: a guarded action whose mesh answer is not JSON shows the short message (Hide from the bar)', (tester) async {
+        final backend = await openPart(tester);
+        backend.badMeshFor.add('part-1');
+        await _tapTreeRow(tester, 'Sketch 1');
+        await tester.tap(find.byKey(const ValueKey('tree-bar-hide')));
+        await settle(tester);
+        await settle(tester);
+        expect(tester.takeException(), isNull);
+        expect(find.textContaining("Could not read the server's answer"), findsOneWidget);
+        expect(find.textContaining('proxy error'), findsNothing);
       });
 
       for (final coarseLate in [false, true]) {
