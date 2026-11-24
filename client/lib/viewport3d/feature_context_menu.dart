@@ -65,7 +65,7 @@ enum FeatureContextMenuAction {
 /// long-press on its row in the tree. A bottom sheet - rather than wiring
 /// long-press directly to a single action - is what lets later stages add
 /// more entries alongside Delete without restructuring this call site or
-/// [FeatureTreePanel].
+/// the old build tree panel.
 ///
 /// [isHidden] selects the Hide/Show label and icon for the toggle-visibility
 /// entry, reflecting that Feature's current state in [PartScreen].
@@ -264,7 +264,7 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
 /// directly (that's done via the Feature that produced it) - but this stays
 /// an enum + bottom sheet, matching [FeatureContextMenuAction]/
 /// [showFeatureContextMenu]'s own shape, so a later stage can add more
-/// entries here without restructuring this call site or [FeatureTreePanel].
+/// entries here without restructuring this call site or the old build tree panel.
 enum BodyContextMenuAction { toggleVisibility, assignMaterial }
 
 /// On-device feedback: a Body row's long-press used to toggle Hide/Show

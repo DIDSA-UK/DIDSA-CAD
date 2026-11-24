@@ -61,7 +61,7 @@ import 'view_preferences.dart';
 /// fires for a tap that lands on a rendered plane rectangle, [onBackgroundTap]
 /// for one that doesn't. [selectedPlane] only affects which plane (if any) is
 /// drawn brighter - [PartScreen] owns the actual selection state, the same
-/// controlled-widget pattern [FeatureTreePanel] already uses for
+/// controlled-widget pattern the old build tree panel already uses for
 /// [selectedFeatureId].
 class PartViewport extends StatefulWidget {
   /// Prompt A3: one entry per independently-tessellated Body (Prompt A1's

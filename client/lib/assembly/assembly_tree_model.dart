@@ -1,5 +1,5 @@
 import '../api/document_api_client.dart';
-import '../viewport3d/feature_tree_panel.dart' show featureDisplayName;
+import '../viewport3d/feature_tree_helpers.dart' show featureDisplayName;
 import '../viewport3d/tree_multi_select_controller.dart' show TreeMultiSelectKeys;
 
 /// The assembly tree's logic: no widgets, no network. It turns an [AssemblyTreeResponseDto]
@@ -778,6 +778,13 @@ class AssemblyTreeModel {
     final before = _live;
     _live = live;
     if (live == null) _liveOpenedFor = null;
+    // While cleared, the folders of the row that was live stay storable ([_storable]): a short clear while its data reloads, during which the
+    // person opens or closes another row, does not drop them from the store.
+    if (live == null) {
+      _clearedLiveKey = before?.key ?? _clearedLiveKey;
+    } else {
+      _clearedLiveKey = null;
+    }
     _invalidate();
     // Like merge(): what the refreshed live part no longer has goes (a selected row, a folder that emptied and so starts collapsed when it fills
     // again).
@@ -790,8 +797,10 @@ class AssemblyTreeModel {
       // Cleared, or another row made live: a selection that names no row now goes. The old row's open folders stay in the open keys (a clear
       // then a set of the same row brings them back), but they are not stored while their rows do not exist ([keysToStore]). A selection a
       // clear dropped comes back if the same row is made live again (a short clear while its data reloads).
+      // A row of the old live part (a feature, a body, a folder) goes even if [setFeatures] once gave that row a feature of the same id: the
+      // live part's rows are its own, and that older list does not keep them.
       final sel = selectedKey;
-      if (sel != null && !_selectionExists(sel)) {
+      if (sel != null && (!_selectionExists(sel) || _isLiveRowKeyOf(before.key, sel))) {
         selectedKey = null;
         _heldSelection = live == null ? (before.key, sel) : null;
       } else {
@@ -812,6 +821,21 @@ class AssemblyTreeModel {
 
   /// A live row's selection that a clear of the live part dropped, and the live key it was under: restored if that row is made live again.
   (String, String)? _heldSelection;
+
+  /// The key of the row that was live when the live part was last cleared (null while one is set): its folder keys stay storable.
+  String? _clearedLiveKey;
+
+  static const _liveFolderSuffixes = {'bodies', 'planes', 'surfaces', 'curves'};
+
+  /// Whether [key] names a row of the live part under the live row [liveKey] (spec section 13's keys): a folder, a feature, a body, surface or
+  /// curve, a plane.
+  static bool _isLiveRowKeyOf(String liveKey, String key) {
+    final prefix = '$liveKey#';
+    if (!key.startsWith(prefix)) return false;
+    final rest = key.substring(prefix.length);
+    return _liveFolderSuffixes.contains(rest) ||
+        const ['feature:', 'body:', 'surface:', 'curve:', 'plane:'].any(rest.startsWith);
+  }
 
   bool _liveShown = true;
 
@@ -1066,11 +1090,20 @@ class AssemblyTreeModel {
       _storable().length <= limit ? _storable().toList() : restoreOpenKeys(_storable(), limit: limit);
 
   /// The open keys without a live row that is open only because it became live, and without keys of rows that do not exist now (the folders
-  /// of a row that was live before, kept in the open keys for a return).
+  /// of a row that was live before another row was made live, kept in the open keys for a return). While the live part is cleared, the folders
+  /// of the row it was are kept: they come back when it is set again.
   Set<String> _storable() => {
         for (final k in _open)
-          if (!_autoOpen.contains(k) && _rowKeyExists(k)) k
+          if (!_autoOpen.contains(k) && (_rowKeyExists(k) || _clearedLiveFolder(k))) k
       };
+
+  /// A folder key of the row that was live when the live part was cleared, while it is cleared and that row still exists (see
+  /// [_clearedLiveKey]).
+  bool _clearedLiveFolder(String key) {
+    final last = _clearedLiveKey;
+    if (_live != null || last == null || !_ownerExists(last) || !key.startsWith('$last#')) return false;
+    return _liveFolderSuffixes.contains(key.substring(last.length + 1));
+  }
 
   // ----- Filter (spec section 11) -----
 
@@ -1149,7 +1182,7 @@ class AssemblyTreeModel {
   /// exist (spec section 8). A group key changes when its first member is deleted, so that group starts collapsed.
   void merge(AssemblyTreeResponseDto newTree) {
     _load(newTree);
-    _open.removeWhere((k) => !_rowKeyExists(k));
+    _open.removeWhere((k) => !_rowKeyExists(k) && !_clearedLiveFolder(k)); // a cleared live row's folders wait for it
     _autoOpen.retainAll(_open);
     _features.removeWhere((k, _) => !_ownerExists(k));
     final sel = selectedKey;

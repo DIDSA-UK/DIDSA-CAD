@@ -82,7 +82,6 @@ import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
 import 'assembly_tree_helpers.dart';
 import 'assembly_tree_open_store.dart';
-import 'assembly_tree_feature_icon.dart' show kCoarseEligibleFeatureTypes, featureTypeHasEditPanel;
 import 'assembly_tree_view.dart';
 import 'edit_alone_row.dart';
 import 'body_naming.dart';
@@ -107,7 +106,8 @@ import 'feature_picker_sheet.dart';
 import 'start_button.dart';
 import 'visibility_panel.dart';
 import 'start_menu_sheet.dart';
-import 'feature_tree_panel.dart';
+import 'feature_tree_helpers.dart';
+import 'sketch_feature_tree.dart';
 import 'export_format_dialog.dart';
 import 'fill_surface_panel.dart';
 import 'fillet_panel.dart';
@@ -371,7 +371,7 @@ enum _PatternStep { configuring }
 
 /// Pattern/Mirror scoping's Phase 6 (`docs/pattern-mirror-scope.md`
 /// §2.8/§4): which panel's `source_feature_ids` a live
-/// [FeatureTreePanel.isFeaturePickerMode] session is being edited for - see
+/// the old tree panel's `isFeaturePickerMode` session is being edited for - see
 /// `_PartScreenState._sourceFeaturePickerTarget`.
 enum _SourceFeaturePickerTarget { mirror, pattern }
 
@@ -1450,7 +1450,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The reference plane currently tap-selected in the 3D viewport, if any -
   /// drives both [PartViewport]'s brighter highlight and [PartToolbar]'s
   /// "New Sketch on..." entry. Controlled-widget state, same pattern as
-  /// [_selectedFeatureId]/[FeatureTreePanel].
+  /// [_selectedFeatureId]/the build tree.
   ReferencePlaneKind? _selectedPlane;
 
   /// C3: the created Plane (by Feature id) currently tap-selected in the 3D
@@ -2614,7 +2614,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [_ensureLoftFeatureExists]'s own `createLoftFeature` call.
   Future<FeatureDto>? _loftFeatureCreateInFlight;
 
-  /// [FeatureTreePanel.pendingDetailFeatureIds] - maps [_pendingCoarseBodyIds]
+  /// the old tree panel's `pendingDetailFeatureIds` - maps [_pendingCoarseBodyIds]
   /// back to the Feature id that produced each Body ([baseFeatureId],
   /// `body_naming.dart`'s existing, correct Body-to-Feature helper - handles
   /// the multi-solid `#N` split case, so a multi-Body coarse Feature (e.g.
@@ -2622,7 +2622,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// a mismatch).
   Set<String> get _pendingDetailFeatureIds => _pendingCoarseBodyIds.map(baseFeatureId).toSet();
 
-  /// [FeatureTreePanel.onToggleCoarsePin] - pinning fetches a coarse mesh
+  /// the old tree panel's `onToggleCoarsePin` - pinning fetches a coarse mesh
   /// for [feature]'s own already-loaded Bodies right away (a genuinely
   /// pending Body already has one on the way via [_refreshMesh]'s own
   /// background fetch); unpinning drops the override for any Body that
@@ -2951,10 +2951,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// touch, a click toggles as it always has (a tool collects its picks).
   SelectClick _selectClick = SelectClick.touch;
 
-  /// Whether [FeatureTreePanel] is actually on screen right now - true
+  /// Whether the build tree is actually on screen right now - true
   /// [_featureTreeVisible] alone is not enough, since that flag stays
   /// true even while a tool session forces the panel itself hidden (see
-  /// [FeatureTreePanel.visible]'s own call site, which uses this exact
+  /// the old tree panel's `visible`'s own call site, which uses this exact
   /// condition) - a stale true left over from opening the tree *before*
   /// starting a tool must not itself hide anything.
   bool get _featureTreePanelVisible =>
@@ -4206,13 +4206,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// a pending Extrude - entered by [_extrudeSelectedFeature] when no
   /// eligible Sketch is already selected, exited by [_onSketchPicked] (a
   /// valid pick) or [_cancelSketchPicker] (dismissal). Threaded into
-  /// [FeatureTreePanel] as a plain bool rather than mirrored in its own
+  /// the build tree as a plain bool rather than mirrored in its own
   /// state, per the project convention of keeping that widget reusable/dumb.
   bool _sketchPickerActive = false;
 
   /// While [_sketchPickerActive], the Sketch Feature ids [_refreshPickableSketchIds]
   /// most recently found to have a closed profile - drives which rows
-  /// [FeatureTreePanel] dims. Purely a visual aid; [_onSketchPicked]
+  /// the build tree dims. Purely a visual aid; [_onSketchPicked]
   /// re-checks the tapped Sketch itself.
   Set<String> _pickableSketchIds = {};
 
@@ -4222,7 +4222,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// feature_ids` - entered via [_startSourceFeaturePicker] (a button
   /// inside either panel, not the guided "Add" FAB), which says which
   /// panel's own field this session is editing. Threaded into
-  /// [FeatureTreePanel.isFeaturePickerMode] as a plain bool (`!= null`),
+  /// the old tree panel's `isFeaturePickerMode` as a plain bool (`!= null`),
   /// same "keep the panel itself reusable/dumb" convention
   /// [_sketchPickerActive] already follows.
   _SourceFeaturePickerTarget? _sourceFeaturePickerTarget;
@@ -4331,7 +4331,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// True while [ExtrudePanel] is open (i.e. [_extrudeSketchFeature] is
   /// non-null) - the Feature tree auto-hides (slides left, via
-  /// [FeatureTreePanel]'s own [AnimatedSlide]) while this is true, per Stage
+  /// the build tree's own [AnimatedSlide]) while this is true, per Stage
   /// 16 item 8, so the bottom-sheet-style panel never has the tree sitting
   /// on top of it; restores on Confirm/Cancel since those null out
   /// [_extrudeSketchFeature] without otherwise touching [_featureTreeVisible].
@@ -9184,17 +9184,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   // do, and (unlike every one of those) can take 2 *or more* ordered
   // sections - the backend's own `LoftFeature.sections` has always accepted
   // 2+ (`_validate_loft_sections`'s only rule is "at least 2"), so this
-  // reuses [FeatureTreePanel]'s existing multi-select "Feature picker" mode
+  // reuses the build tree's existing multi-select "Feature picker" mode
   // (`isFeaturePickerMode`/`selectedFeaturePickerIds`/`onFeaturePickerToggle`
   // - otherwise only ever used by the Mirror/Pattern source-feature picker)
   // rather than [_ProfilePickerTarget]'s own "pick exactly one Sketch, then
   // straight to the target panel" shape - that shape has no way to
   // accumulate an open-ended, user-confirmed count the way this needs.
   // Order matters here (it's the loft's own section traversal order), which
-  // [FeatureTreePanel]'s own `selectedFeaturePickerIds` (a bare `Set`,
+  // the build tree's own `selectedFeaturePickerIds` (a bare `Set`,
   // fine for Mirror/Pattern's unordered sources) can't preserve on its own -
   // [_loftPendingSections] keeps its own ordered `List` instead, and a
-  // `Set` view of it is all [FeatureTreePanel] ever needs for its own
+  // `Set` view of it is all the build tree ever needs for its own
   // pickable/selected-highlight rendering.
   //
   // Unlike every other Boss/Cut Feature here, a Loft accepts either all-
@@ -9208,14 +9208,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// True while the Feature tree is acting as a multi-select Sketch picker
   /// for a pending Loft's sections - mirrors [_sweepSketchPickerActive],
-  /// except this drives [FeatureTreePanel]'s `isFeaturePickerMode` (multi-
+  /// except this drives the build tree's `isFeaturePickerMode` (multi-
   /// select-with-confirm) rather than its `isSketchPickerMode` (single-tap-
   /// finalizes), per this block's own top comment.
   bool _loftSketchPickerActive = false;
 
   /// Every Sketch Feature id, unfiltered (see this block's own top
   /// comment for why) - mirrors [_pickableSweepSketchIds]'s shape, not its
-  /// eligibility filtering. Doubles as [FeatureTreePanel.pickableFeaturePickerIds]
+  /// eligibility filtering. Doubles as the old tree panel's `pickableFeaturePickerIds`
   /// while [_loftSketchPickerActive].
   Set<String> _pickableLoftSketchIds = {};
 
@@ -9225,7 +9225,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// [_thickenSourcePickerActive]/[_knitSurfacePickerActive]/
   /// [_solidFromSurfacesPickerActive]/[_offsetSurfaceSourcePickerActive]) -
   /// mirrors [_pickableLoftSketchIds]'s shape. Doubles as
-  /// [FeatureTreePanel.pickableFeaturePickerIds] while any of those is
+  /// the old tree panel's `pickableFeaturePickerIds` while any of those is
   /// active - unlike [_pickableLoftSketchIds], one shared getter rather than
   /// four duplicated fields, since (unlike Loft's own eligibility-untested
   /// Sketch set) this predicate is identical for every one of these four
@@ -9236,7 +9236,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The sections picked so far this picker session, in tap order - empty
   /// before the first pick, and again once [_confirmLoftSectionPicker] has
   /// handed them off to [_openLoftPanel]. Tapping an already-picked Sketch
-  /// again removes it (mirrors [FeatureTreePanel]'s own toggle semantics for
+  /// again removes it (mirrors the build tree's own toggle semantics for
   /// [_toggleSourceFeaturePick]) rather than reordering it - this session's
   /// v1 scope has no drag-reorder UI, so a removed-then-re-added section
   /// simply moves to the end.
@@ -10034,7 +10034,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  /// [FeatureTreePanel.onFeaturePickerToggle] while [_loftSketchPickerActive]
+  /// the old tree panel's `onFeaturePickerToggle` while [_loftSketchPickerActive]
   /// - toggles [feature]'s membership in the ordered [_loftPendingSections]
   /// (append if new, remove if already picked - see that field's own doc
   /// comment for why a re-pick moves to the end rather than restoring its
@@ -10053,7 +10053,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The Loft section picker's own "confirm" FAB (mirrors the Pattern/
   /// Mirror source-feature picker's identical FAB - this session likewise
   /// has no bottom ribbon of its own, its banner living inside
-  /// [FeatureTreePanel] itself) - closes the picker and opens [LoftPanel]
+  /// the build tree itself) - closes the picker and opens [LoftPanel]
   /// with [_loftPendingSections]. Only reachable once 2+ are picked (see
   /// this FAB's own `onPressed` gating at its call site).
   void _confirmLoftSectionPicker() {
@@ -10589,7 +10589,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  /// [FeatureTreePanel.onFeaturePickerToggle] while
+  /// the old tree panel's `onFeaturePickerToggle` while
   /// [_ruledSurfaceSketchPickerActive] - mirrors [_toggleLoftSurfaceSectionPick],
   /// capped at 2 (a third tap on a not-yet-picked Sketch is ignored, mirroring
   /// this app's established "picker at capacity" convention) and auto-opening
@@ -10737,7 +10737,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Shared by every Phase 2 surfacing tool's own read-only source summary
   /// (Thicken's [ThickenPanel.sourceSummary], Offset Surface's "From
-  /// Surface" summary) - the same display name [FeatureTreePanel]'s own
+  /// Surface" summary) - the same display name the build tree's own
   /// row shows for [feature], computed the same way [featureDisplayName]
   /// always is (position among same-type Features up to and including its
   /// own index in [_features]).
@@ -10843,7 +10843,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  /// [FeatureTreePanel.onFeaturePickerToggle] while [_thickenSourcePickerActive]
+  /// the old tree panel's `onFeaturePickerToggle` while [_thickenSourcePickerActive]
   /// - commits immediately (no accumulation), mirrors [_onPlanarSurfaceSketchPicked]'s
   /// own single-pick-then-open-panel shape. Also reached directly from
   /// [_toggleSelectedEntity]'s own viewport/Surfaces-list branch.
@@ -10973,8 +10973,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _runGuarded(() async {
           await _api.updateThickenFeature(_focusPartId, previewId,
               surfaceFeatureId: editSnapshot.surfaceFeatureId, thickness: editSnapshot.thickness);
-          await _refreshMesh();
-          await _refreshFeatures();
+          await _refreshMeshThenFeatures();
         });
       } else if (!wasEditing) {
         await _runGuarded(() async {
@@ -11183,7 +11182,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   /// Also reached directly from [_toggleSelectedEntity]'s own viewport/
-  /// Surfaces-list branch, in addition to [FeatureTreePanel.onFeaturePickerToggle].
+  /// Surfaces-list branch, in addition to the old tree panel's `onFeaturePickerToggle`.
   void _toggleSolidFromSurfacesPick(FeatureDto feature) {
     setState(() {
       final index = _solidFromSurfacesPendingSurfaces.indexWhere((f) => f.id == feature.id);
@@ -11559,8 +11558,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         await _runGuarded(() async {
           await _api.updateOffsetSurfaceFeature(_focusPartId, previewId,
               source: editSnapshot.source, distance: editSnapshot.distance);
-          await _refreshMesh();
-          await _refreshFeatures();
+          await _refreshMeshThenFeatures();
         });
       } else if (!wasEditing) {
         await _runGuarded(() async {
@@ -13323,7 +13321,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // running server-side) are handled by the exact same check.
       unawaited(_checkForPendingJob());
       debugPrint('[PartScreen] getPartMesh...');
-      await _refreshMesh(isInitialLoad: true);
+      // A mesh that fails (a broken feature) does not stop the load: the features, the sketches and the tree still come, and the mesh's error
+      // is thrown at the end (P2 review).
+      Object? meshFailed;
+      StackTrace? meshStack;
+      try {
+        await _refreshMesh(isInitialLoad: true);
+      } catch (e, st) {
+        meshFailed = e;
+        meshStack = st;
+      }
       debugPrint('[PartScreen] getPartMesh done: ${_bodies.length} body/bodies');
       await _refreshFeatures();
       await _refreshSketchGeometries();
@@ -13377,6 +13384,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           _markPartDirty(part.id);
         }
       });
+      if (meshFailed != null) Error.throwWithStackTrace(meshFailed, meshStack!);
     });
   }
 
@@ -13449,11 +13457,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // Not for a later load, another model or another document, nor over rows the person already opened or closed.
       if (!mounted || token != _treeLoadToken || !identical(model, _treeModel) || documentKey != _treeDocumentKey) return;
       _syncTreeLivePart(); // the live folders are rows to restore only once the live part is set
-      final keys = stored == null || stored.isEmpty ? const <String>[] : model.restoreOpenKeys(stored);
+      final plan = seededTreeRestore(model, stored);
       // Stored rows the root alone does not have (components, which a later answer brings) leave the seed provisional: the real answer
       // restores them, and until then nothing is stored over them.
-      _treeSeedRestored = stored == null || keys.length == stored.length;
-      if (keys.isEmpty || model.openKeysTouched) return;
+      _treeSeedRestored = plan.complete;
+      if (!plan.restore || model.openKeysTouched) return;
       setState(() => _restoreTreeRows(stored!));
       _treeController.refresh();
     }));
@@ -14210,6 +14218,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// uncached `compute_part_bodies_coarse` rebuild of every coarse-eligible
   /// Feature in the Part on every trivial edit, almost always thrown away
   /// the moment the real (parallel) fetch below lands and supersedes it.
+  /// The [_meshRefreshGeneration] whose full mesh failed: its coarse answer is dropped ([_refreshCoarseOverlay]).
+  int? _meshFailedGeneration;
+
   Future<void> _refreshMesh({bool isInitialLoad = false}) async {
     final part = _part;
     if (part == null) return;
@@ -14240,12 +14251,20 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // P2: the focused Part's mesh could not be built (a broken feature, say). Its features must stay in the tree, where they can be fixed;
       // the bodies in hand are another Part's after a focus change, so they go (the viewport and the pickers must not offer them for this
       // Part), and what is in hand is this Part's: no bodies.
-      if (_bodiesPartId != partId) {
-        setState(() {
+      // The coarse stand-ins of this refresh have no full detail coming to replace them: they go (a pinned one stays over a body still in
+      // hand), and a coarse answer of this refresh that lands later is dropped ([_meshFailedGeneration]).
+      _meshFailedGeneration = generation;
+      setState(() {
+        if (_bodiesPartId != partId) {
           _bodies = const [];
           _bodiesPartId = partId;
-        });
-      }
+        }
+        final inHand = {for (final b in _bodies) b.bodyId};
+        _pendingCoarseBodyIds.clear();
+        _coarseOverlayMeshes.removeWhere(
+          (bodyId, _) => !inHand.contains(bodyId) || !_pinnedCoarseFeatureIds.contains(baseFeatureId(bodyId)),
+        );
+      });
       rethrow;
     }
     // P2: also dropped when the focus moved since (the bodies of the Part focused before), before the new focus's own refresh starts.
@@ -14297,7 +14316,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } catch (_) {
       return;
     }
-    if (!mounted || generation != _meshRefreshGeneration) return;
+    // Not for a newer refresh, a refresh whose full mesh failed (nothing would ever replace the stand-ins), or another Part's focus.
+    if (!mounted || generation != _meshRefreshGeneration || generation == _meshFailedGeneration || partId != _focusPartIdOrNull) return;
     // Guards the reverse race (this resolving *after* the same-generation
     // real fetch already landed and cleared pending state) - a Body already
     // present in [_bodies] already has its own full detail current, so
@@ -17357,7 +17377,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   /// Checks every Sketch Feature's closed-profile eligibility (in parallel)
-  /// and stores the eligible ids for [FeatureTreePanel]'s dimming - purely a
+  /// and stores the eligible ids for the build tree's dimming - purely a
   /// visual aid, since [_onSketchPicked] re-checks the tapped Sketch itself
   /// rather than trusting this set, so a stale or still-in-flight result
   /// here can never let an ineligible Sketch through.
@@ -17373,7 +17393,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  /// [FeatureTreePanel.onSketchPicked] - Prompt D's picker-mode tap handler.
+  /// the old tree panel's `onSketchPicked` - Prompt D's picker-mode tap handler.
   /// Re-validates the tapped Sketch's profile itself (rather than trusting
   /// [_pickableSketchIds], which is only a best-effort visual aid) before
   /// proceeding; an ineligible Sketch stays in picker mode with an
@@ -17443,7 +17463,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  /// [FeatureTreePanel.onSketchPicked] while [_surfaceSketchPickerActive] -
+  /// the old tree panel's `onSketchPicked` while [_surfaceSketchPickerActive] -
   /// mirrors [_onSketchPicked], minus the re-validate-on-pick step (nothing
   /// to validate - every Sketch Feature is eligible).
   void _onSurfaceSketchPicked(FeatureDto feature) {
@@ -18194,9 +18214,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// [_onSurfaceLongPress]'s Curves-section counterpart, reached the same
   /// way (via [_multiSelectMore]'s "More" button with exactly one Curve row
-  /// selected - long-press itself now enters multi-select, see
-  /// `feature_tree_panel.dart`'s own "no longer the tree row's long-press
-  /// handler itself" doc comment). Unlike [_onSurfaceLongPress]/
+  /// selected - long-press itself enters multi-select). Unlike [_onSurfaceLongPress]/
   /// [_onBodyLongPress], this skips [showBodyContextMenu] entirely and
   /// toggles Hide/Show directly - "Assign Material" has no meaning for a
   /// Curve feature (it has no solid geometry to apply one to), so offering
@@ -21162,7 +21180,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// mesh, and is a no-op entirely unless a B4 edit session engaged
   /// rollback - never true for a brand-new Fillet created via the guided
   /// flow. Without an explicit [_refreshFeatures] call, [_features] (what
-  /// [FeatureTreePanel] actually renders) never picks up the Feature this
+  /// the build tree actually renders) never picks up the Feature this
   /// whole session just created/edited until some unrelated later action
   /// happens to refresh it - mirrors [_confirmSweep]'s own explicit
   /// refresh-before-teardown shape.
@@ -21272,7 +21290,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     };
   }
 
-  /// [FeatureTreePanel.onFeaturePickerToggle] - toggles [feature]'s
+  /// the old tree panel's `onFeaturePickerToggle` - toggles [feature]'s
   /// membership in [_selectedSourceFeatureIds].
   void _toggleSourceFeaturePick(FeatureDto feature) {
     setState(() {
@@ -21725,7 +21743,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// mesh, and is a no-op entirely unless a B4 edit session engaged
   /// rollback - never true for a brand-new Mirror created via the guided
   /// flow. Without an explicit [_refreshFeatures] call, [_features] (what
-  /// [FeatureTreePanel] actually renders) never picks up the Feature this
+  /// the build tree actually renders) never picks up the Feature this
   /// whole session just created/edited until some unrelated later action
   /// happens to refresh it - mirrors [_confirmSweep]'s own explicit
   /// refresh-before-teardown shape.
@@ -25268,7 +25286,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// refreshes the mesh, and is a no-op entirely unless a B4 edit session
   /// engaged rollback - never true for a brand-new Pattern created via the
   /// guided flow. Without an explicit [_refreshFeatures] call, [_features]
-  /// (what [FeatureTreePanel] actually renders) never picks up the Feature
+  /// (what the build tree actually renders) never picks up the Feature
   /// this whole session just created/edited until some unrelated later
   /// action happens to refresh it - mirrors [_confirmSweep]'s own explicit
   /// refresh-before-teardown shape.
@@ -25778,7 +25796,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Stage 19b Item 1's dedicated FAB - toggles the Feature tree panel
   /// open/closed (the FAB itself is hidden while it's open, same as the
-  /// hamburger toggle below, since [FeatureTreePanel] has its own close
+  /// hamburger toggle below, since the build tree has its own close
   /// button once open).
   void _toggleFeatureTree() {
     setState(() {
@@ -25788,7 +25806,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   /// Assembly support Phase 3: [_lens]'s own toggle - flips between Part
-  /// mode (existing [FeatureTreePanel]/feature toolset, unchanged) and
+  /// mode (existing the build tree/feature toolset, unchanged) and
   /// Assembly mode ([AssemblyTreePanel], reading [_occurrences]/[_mates]).
   /// Purely a UI-state flip, per `docs/assembly-scope.md`'s "lens toggle"
   /// decision - never navigates, never touches the viewport/camera, never
@@ -26966,16 +26984,47 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     await _refreshAssemblyTree();
     await _refreshAssemblyMesh();
     // P2: a focused Part whose shape cannot be built (a broken feature) still gets its features, so the tree lists them where they can be
-    // fixed; the failure is reported in the banner instead of stopping here.
-    ApiException? meshFailed;
+    // fixed; the failure is reported in the banner instead of stopping here. Any error of the mesh (not only the backend's), and the banner
+    // only while the focus is still on that Part (a later focus has its own content). This runs outside [_runGuarded]: a features failure (its
+    // own, or the newer call's that [LatestCall] passes on) goes to the banner too, after the mesh's.
+    final meshPartId = _focusPartIdOrNull;
+    Object? meshFailed;
     try {
       await _refreshMesh();
-    } on ApiException catch (e) {
+    } catch (e) {
       meshFailed = e;
     }
+    Object? featuresFailed;
+    try {
+      await _refreshFeatures();
+      await _refreshSketchGeometries();
+    } on ApiException catch (e) {
+      featuresFailed = e;
+    }
+    if (!mounted || meshPartId != _focusPartIdOrNull) return;
+    final messages = [
+      if (meshFailed != null) _refreshErrorText(meshFailed),
+      if (featuresFailed != null) _refreshErrorText(featuresFailed),
+    ];
+    if (messages.isNotEmpty) setState(() => _errorMessage = messages.join('\n'));
+  }
+
+  /// The banner's text for a failed refresh: the backend's message, or what the error says.
+  static String _refreshErrorText(Object error) => error is ApiException ? error.message : '$error';
+
+  /// The mesh, then the features: a mesh that fails does not skip the features (a broken feature's Part still lists them, P2 review), and
+  /// its error is thrown after them unless they failed too (then theirs is).
+  Future<void> _refreshMeshThenFeatures() async {
+    Object? meshFailed;
+    StackTrace? meshStack;
+    try {
+      await _refreshMesh();
+    } catch (e, st) {
+      meshFailed = e;
+      meshStack = st;
+    }
     await _refreshFeatures();
-    await _refreshSketchGeometries();
-    if (meshFailed != null && mounted) setState(() => _errorMessage = meshFailed!.message);
+    if (meshFailed != null) Error.throwWithStackTrace(meshFailed, meshStack!);
   }
 
   /// §6 roadmap Phase 10 (`[5]`): Hide/Show's real persistence call -
@@ -27408,47 +27457,52 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     });
   }
 
-  /// The feature tree as the sketcher shows it (read-mostly, see [FeatureTreePanel.lockedReason]): the sketch being edited is
-  /// highlighted, rows that would change the feature list say "Exit the sketch first", and the Hide / Show eyes work.
+  /// The feature tree as the sketcher shows it (P3): the one tree, read-mostly ([SketchFeatureTree]). It is this screen's tree and live part,
+  /// copied into the sketcher's own model: the sketch being edited is selected, every row says "Exit the sketch first", the Hide / Show eyes
+  /// work, and in Convert Entities the earlier sketches can be picked. Rebuilt whenever this screen rebuilds while the sketch is open (see
+  /// [_pingSketchSource]), so a Hide / Show shows at once.
   Widget _buildSketchTreePanel(FeatureDto sketchFeature, VoidCallback onClose, {required bool docked}) {
-    return FeatureTreePanel(
-      visible: true,
-      docked: docked,
-      features: _features,
-      selectedFeatureId: sketchFeature.id,
-      hiddenFeatureIds: {..._hiddenFeatureIds, ..._rollbackExcludedFeatureIds},
-      hiddenReferencePlanes: _hiddenReferencePlanes,
-      onReferencePlaneVisibility: _setReferencePlaneHidden,
-      onFeatureTap: (_) {},
-      onFeatureLongPress: (_) {},
+    _syncTreeLivePart(); // the live part is current even while this screen's own tree is not on screen
+    var tree = _treeModel.tree;
+    var live = _treeModel.livePart;
+    if (tree == null || live == null) {
+      // No tree for the document yet, or the focused Part's row is not live in it: the focused Part on its own, as a part opened alone.
+      final inputs = _treeLiveInputs;
+      final cached = _sketchTreeFallback;
+      if (cached != null && identical(cached.$1, inputs)) {
+        (_, tree, live) = cached;
+      } else {
+        final partId = _focusPartIdOrNull ?? _part?.id ?? '';
+        tree = AssemblyTreeResponseDto(
+          partId: partId,
+          partName: _focusStack?.currentLabel ?? _part?.name ?? 'Part',
+          featureCount: _features.length,
+          statusIncluded: true,
+        );
+        live = _livePartFor('');
+        _sketchTreeFallback = (inputs, tree, live);
+      }
+    }
+    return SketchFeatureTree(
+      // A new sketch is a new tree (its own open rows and selection).
+      key: ValueKey('sketch-tree:${sketchFeature.id}'),
+      tree: tree,
+      livePart: live,
+      openKeys: _treeModel.openKeys,
+      grouping: _treeModel.grouping,
+      sketchFeatureId: sketchFeature.id,
       onClose: onClose,
-      onBodyTap: (_) {},
-      lockedReason: 'Exit the sketch first',
-      onToggleVisibility: (id) {
-        final feature = _featureById(baseFeatureId(id));
-        if (feature == null || _busy) return;
-        unawaited(_toggleFeatureVisibility(feature));
-      },
-      bodyIds: _computedBodyIds,
-      bodyNames: _bodyNames,
-      hiddenBodyIds: {
-        for (final body in _bodies)
-          if (body.hidden && !body.isSurface && !body.isCurve) body.bodyId,
-      },
-      surfaceIds: _computedSurfaceIds,
-      surfaceNames: _surfaceNames,
-      hiddenSurfaceIds: {
-        for (final body in _bodies)
-          if (body.hidden && body.isSurface) body.bodyId,
-      },
-      curveIds: _computedCurveIds,
-      curveNames: _curveNames,
-      hiddenCurveIds: {
-        for (final body in _bodies)
-          if (body.hidden && body.isCurve) body.bodyId,
+      docked: docked,
+      onToggleVisibility: (row) {
+        if (_busy) return;
+        unawaited(_toggleLiveRowVisibility(row));
       },
     );
   }
+
+  /// The sketcher's tree when this screen's own tree has no live part (see [_buildSketchTreePanel]): what it was built from (the live inputs
+  /// it was current for), the seed tree and the live part. Kept so the sketcher's tree is not handed new inputs on every rebuild.
+  (List<Object?>?, AssemblyTreeResponseDto, AssemblyLivePart)? _sketchTreeFallback;
 
   Future<void> _runGuarded(Future<void> Function() body) async {
     setState(() {
@@ -28624,6 +28678,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                               ? _toggleRuledSurfaceSectionPick
                               : _toggleSourceFeaturePick;
 
+  /// The tree's feature picker picks surfaces (a surface row stands for the feature that made it).
+  bool get _treeSurfacePickerActive =>
+      _thickenSourcePickerActive || _offsetSurfaceSourcePickerActive || _knitSurfacePickerActive || _solidFromSurfacesPickerActive;
+
   String get _treeFeaturePickerLabel => _thickenSourcePickerActive
       ? 'Select a surface to thicken'
       : _offsetSurfaceSourcePickerActive
@@ -28651,8 +28709,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       final single = _treeFeaturePickerSingle;
       final pickable = _treeFeaturePickerPickableIds;
       final picked = _treeFeaturePickerSelectedIds;
-      // A surface row picks the feature that made it (Thicken, Offset, Knit, Solid from Surfaces pick surfaces).
-      final surfaces = _computedSurfaceIds;
+      // A surface row picks the feature that made it, in the pickers that pick surfaces (Thicken, Offset, Knit, Solid from Surfaces) and only
+      // there: Mirror, Pattern and Loft pick features, and their surface rows stay locked.
+      final surfaces = _treeSurfacePickerActive ? _computedSurfaceIds : const <String>[];
       return AssemblyPicker(
         banner: _treeFeaturePickerLabel,
         multi: !single,
@@ -28693,15 +28752,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// one of these changed.
   List<Object?>? _treeLiveInputs;
 
-  /// What a lost reference says on the row (its tooltip and the bar), from the old panel's subtitle.
-  static String _lostReferenceReason(FeatureDto f) {
-    if (f.type == 'sketch') {
-      final n = f.lostReferencePointIds.length;
-      return n > 1 ? '$n lost - open to re-attach' : 'open to re-attach';
-    }
-    final n = f.lostReferences.length;
-    return n > 1 ? '$n lost - open to re-select' : 'open to re-select';
-  }
 
   /// Hands the model the live part (the focused Part's features, folders and states) and the picker, when they changed. Called from the build.
   /// The live part is kept in both lenses and only shown in the Part lens ([AssemblyTreeModel.livePartShown]), so the Assembly lens does not
@@ -28736,36 +28786,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         if (_treeModel.livePart != null) _treeModel.clearLivePart();
       } else {
         final restoreAfter = _treeModel.livePart == null;
-        final features = _features;
-        AssemblyLiveItem item(String id, Map<String, String> names) =>
-            AssemblyLiveItem(id, names[id] ?? id, hidden: _bodies.any((b) => b.bodyId == id && b.hidden));
-        final bodyNames = _bodyNames;
-        final surfaceNames = _surfaceNames;
-        final curveNames = _curveNames;
-        final bodyIds = _computedBodyIds.toSet();
-        final surfaceIds = _computedSurfaceIds.toSet();
-        final curveIds = _computedCurveIds.toSet();
-        _treeModel.setLivePart(AssemblyLivePart(
-          key,
-          features: [
-            for (var i = 0; i < features.length; i++)
-              AssemblyLiveFeature(
-                id: features[i].id,
-                label: featureDisplayName(features, i),
-                type: features[i].type,
-                lostReference: features[i].hasLostReference ? _lostReferenceReason(features[i]) : null,
-                movedReference: features[i].hasMovedReference,
-                pendingDetail: pending.contains(features[i].id),
-                rolledBack: rolled.contains(features[i].id),
-                hidden: hidden.contains(features[i].id),
-              ),
-          ],
-          // In the order of the display names (a LinkedHashMap: "Body 2" before "Body 10").
-          bodies: [for (final id in bodyNames.keys.where(bodyIds.contains)) item(id, bodyNames)],
-          surfaces: [for (final id in surfaceNames.keys.where(surfaceIds.contains)) item(id, surfaceNames)],
-          curves: [for (final id in curveNames.keys.where(curveIds.contains)) item(id, curveNames)],
-          hiddenDefaultPlanes: {for (final p in _hiddenReferencePlanes) p.apiValue.toLowerCase()},
-        ));
+        _treeModel.setLivePart(_livePartFor(key));
         // A restore that ran before the live part was there (its folders were not rows yet) opens them now.
         final waiting = _pendingTreeRestore;
         if (restoreAfter && waiting != null && identical(waiting.$1, _treeModel)) {
@@ -28783,6 +28804,44 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treePickerSignature = signature;
       _treeModel.setPicker(picker);
     }
+  }
+
+
+  /// The live part's inputs (spec section 13) for the row [key], from this screen's features, bodies and hidden, rolled-back and pending sets.
+  AssemblyLivePart _livePartFor(String key) {
+    final hidden = _hiddenFeatureIds;
+    final rolled = _rollbackExcludedFeatureIds;
+    final pending = _pendingDetailFeatureIds;
+    final features = _features;
+    AssemblyLiveItem item(String id, Map<String, String> names) =>
+        AssemblyLiveItem(id, names[id] ?? id, hidden: _bodies.any((b) => b.bodyId == id && b.hidden));
+    final bodyNames = _bodyNames;
+    final surfaceNames = _surfaceNames;
+    final curveNames = _curveNames;
+    final bodyIds = _computedBodyIds.toSet();
+    final surfaceIds = _computedSurfaceIds.toSet();
+    final curveIds = _computedCurveIds.toSet();
+    return AssemblyLivePart(
+      key,
+      features: [
+        for (var i = 0; i < features.length; i++)
+          AssemblyLiveFeature(
+            id: features[i].id,
+            label: featureDisplayName(features, i),
+            type: features[i].type,
+            lostReference: features[i].hasLostReference ? lostReferenceReason(features[i]) : null,
+            movedReference: features[i].hasMovedReference,
+            pendingDetail: pending.contains(features[i].id),
+            rolledBack: rolled.contains(features[i].id),
+            hidden: hidden.contains(features[i].id),
+          ),
+      ],
+      // In the order of the display names (a LinkedHashMap: "Body 2" before "Body 10").
+      bodies: [for (final id in bodyNames.keys.where(bodyIds.contains)) item(id, bodyNames)],
+      surfaces: [for (final id in surfaceNames.keys.where(surfaceIds.contains)) item(id, surfaceNames)],
+      curves: [for (final id in curveNames.keys.where(curveIds.contains)) item(id, curveNames)],
+      hiddenDefaultPlanes: {for (final p in _hiddenReferencePlanes) p.apiValue.toLowerCase()},
+    );
   }
 
   AssemblyTreeModel? _treeLiveModel;
@@ -29638,7 +29697,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                 // `selection_actions.dart`'s `contextActionsFor`) is a
                 // Part-editing Feature, none of them meaningful against an
                 // Assembly's own Occurrences - so this whole drawer is
-                // Part-lens only now, mirroring how [FeatureTreePanel]
+                // Part-lens only now, mirroring how the build tree
                 // itself is already gated to `_lens == AssemblyLens.part`
                 // just below. Assembly lens has its own dedicated pickers
                 // for the entity selections it does support (Mate's 2-ref
@@ -30734,7 +30793,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                               // button to those that change colour" - this
                               // FAB opens [AssemblyTreePanel] in Assembly
                               // lens (same [_featureTreeVisible] flag,
-                              // [FeatureTreePanel] in Part lens), but never
+                              // the build tree in Part lens), but never
                               // picked up the lens tint the toggle FAB right
                               // below it already has. Same pair/gating as
                               // that FAB now.
@@ -31243,7 +31302,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                   // Pattern/Mirror scoping's Phase 6 Build-Tree Feature
                   // picker's own "confirm" FAB - unlike the pickers above,
                   // this session has no bottom ribbon of its own (its own
-                  // banner lives inside [FeatureTreePanel] itself, which
+                  // banner lives inside the build tree itself, which
                   // already occupies the screen), so it keeps a plain FAB.
                   // Always enabled - an empty selection is a legitimate
                   // "clear every Feature-tree source" choice, unlike a body

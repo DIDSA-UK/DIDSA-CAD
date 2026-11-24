@@ -2,7 +2,7 @@ import 'package:material_ui/material_ui.dart';
 
 /// The "Editing <label>  [Done]" row of Edit Alone (`docs/assembly-perf-mates-and-ui-plan.md`, C1).
 ///
-/// With a tree open it is the first row under the tree's header ([AssemblyTreePanel], [FeatureTreePanel]), so it never covers
+/// With a tree open it is the first row under the tree's header ([AssemblyTreeView]), so it never covers
 /// the tree; with no tree open `PartScreen` shows it as a pill at the top of the viewport instead ([pill]). Both carry the
 /// keys `edit-alone-pill` and `edit-alone-done`.
 class EditAloneRow extends StatelessWidget {

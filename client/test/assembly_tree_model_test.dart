@@ -837,6 +837,47 @@ void main() {
       expect(model.keysToStore(), ['mast/arm/head'], reason: 'no stale auto-open mark kept it out');
     });
   });
+
+  group('P3 (from the P2 review)', () {
+    AssemblyLivePart live(String key) => AssemblyLivePart(
+          key,
+          features: const [
+            AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch'),
+            AssemblyLiveFeature(id: 'e1', label: 'Extrude 1', type: 'extrude'),
+          ],
+          bodies: const [AssemblyLiveItem('e1', 'Body 1')],
+        );
+
+    test('while the live part is cleared its folders stay storable: a change to another row does not drop them from the store', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head'));
+      model.setOpen('mast/arm/head#bodies', true);
+      model.setOpen('mast/arm/head#planes', true);
+      model.clearLivePart(); // its features reload
+      model.setOpen('mast', true); // the person opens something meanwhile: the store is written
+      expect(model.keysToStore(), containsAll(['mast', 'mast/arm/head#bodies', 'mast/arm/head#planes']));
+      model.merge(_tree('rover')); // a tree refresh meanwhile keeps them too
+      expect(model.keysToStore(), containsAll(['mast/arm/head#bodies', 'mast/arm/head#planes']));
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.isOpen('mast/arm/head#bodies'), isTrue);
+      // Another row made live: the old row's folders are not stored any more.
+      model.setLivePart(live('mast'));
+      expect(model.keysToStore(), isNot(contains('mast/arm/head#bodies')));
+    });
+
+    test("clearing the live part drops a selected feature of the old live row, even when older setFeatures data has that id", () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      // The Assembly lens once fetched the head's features (Phase A rows), the same ids as the live part's.
+      model.setFeatures(const ['mast', 'arm', 'head'], const [AssemblyFeature('s1', 'Sketch 1')]);
+      model.setLivePart(live('mast/arm/head'));
+      model.selectedKey = 'mast/arm/head#feature:s1';
+      model.clearLivePart();
+      expect(model.selectedKey, isNull);
+      // A short clear still gives it back.
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.selectedKey, 'mast/arm/head#feature:s1');
+    });
+  });
 }
 
 bool _anyFeatureCount(List<AssemblyTreeNodeDto> nodes) => nodes.any((n) => (n.featureCount ?? 0) > 0 || _anyFeatureCount(n.children));

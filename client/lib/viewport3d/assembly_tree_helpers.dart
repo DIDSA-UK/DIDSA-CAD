@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../api/document_api_client.dart';
-import '../assembly/assembly_tree_model.dart' show AssemblyFolderItem, AssemblyItemTone, AssemblyTreeNaming;
+import '../assembly/assembly_tree_model.dart' show AssemblyFolderItem, AssemblyItemTone, AssemblyTreeModel, AssemblyTreeNaming;
 import '../assembly/occurrence_visibility.dart' show topLevelOccurrenceId;
 import 'mate_panel.dart' show mateValueSummary;
 import 'mate_reference_state.dart';
@@ -428,3 +428,15 @@ List<AssemblyFolderItem> patternFolderItems(List<ComponentPatternDto> patterns) 
         AssemblyFolderItem(patterns[i].id, componentPatternDisplayName(patterns, i),
             note: componentPatternSummary(patterns[i]), suppressed: patterns[i].suppressed),
     ];
+
+/// What the seeded tree of a part opened alone (its root only, P2) does with the rows [stored] for its document: whether there is anything to
+/// restore, and whether that is all of [stored] (otherwise the seed is provisional until a real tree answer). The root's folders are not rows
+/// until the model's live part is set (the part's features or mesh still on their way): while it is not, they count as restorable, since the
+/// host opens them when it is set (P2 review: a stored list of only those must still be restored).
+({bool restore, bool complete}) seededTreeRestore(AssemblyTreeModel model, List<String>? stored) {
+  if (stored == null || stored.isEmpty) return (restore: false, complete: true);
+  final keys = model.restoreOpenKeys(stored);
+  final waitingFolders =
+      model.livePart == null ? stored.where(const {'#bodies', '#planes', '#surfaces', '#curves'}.contains).length : 0;
+  return (restore: keys.isNotEmpty || waitingFolders > 0, complete: keys.length + waitingFolders == stored.length);
+}

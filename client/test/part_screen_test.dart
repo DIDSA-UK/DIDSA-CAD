@@ -38,7 +38,7 @@ import 'package:didsa_cad_client/viewport3d/selection_list_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
-import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
+import 'package:didsa_cad_client/viewport3d/sketch_feature_tree.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
 import 'package:didsa_cad_client/viewport3d/controls_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/mate_panel.dart';
@@ -176,6 +176,11 @@ class _FakeDocumentBackend {
   /// `part-1` (empty when not set).
   final Set<String> failMeshFor = {};
   final Map<String, List<Map<String, dynamic>>> extraPartFeatures = {};
+
+  /// P3 (P2 review items): Parts whose full mesh answers 200 with a body that is not JSON (an error that is not the backend's), and Parts
+  /// whose `GET .../features` answers 500.
+  final Set<String> badMeshFor = {};
+  final Set<String> failFeaturesFor = {};
 
   Map<String, dynamic> _visibilityFields(String partId) => {
         'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
@@ -602,6 +607,14 @@ class _FakeDocumentBackend {
     if (failMeshMatch != null && method == 'GET' && failMeshFor.contains(failMeshMatch.group(1)) &&
         request.url.queryParameters['tier'] != 'coarse') {
       return _json({'detail': 'The shape could not be built'}, 500);
+    }
+    if (failMeshMatch != null && method == 'GET' && badMeshFor.contains(failMeshMatch.group(1)) &&
+        request.url.queryParameters['tier'] != 'coarse') {
+      return http.Response('<html>proxy error</html>', 200);
+    }
+    final failFeaturesMatch = RegExp(r'^/document/parts/([^/]+)/features$').firstMatch(path);
+    if (failFeaturesMatch != null && method == 'GET' && failFeaturesFor.contains(failFeaturesMatch.group(1))) {
+      return _json({'detail': 'The features could not be read'}, 500);
     }
     final extraPartMeshMatch = RegExp(r'^/document/parts/([^/]+)/mesh$').firstMatch(path);
     if (extraPartMeshMatch != null && method == 'GET' && extraPartMeshMatch.group(1) != 'part-1') {
@@ -3246,25 +3259,23 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('sketch-tree-fab')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    final tree = find.descendant(of: find.byType(SketchScreen), matching: find.byType(FeatureTreePanel));
+    final tree = find.descendant(of: find.byType(SketchScreen), matching: find.byType(SketchFeatureTree));
     expect(tree, findsOneWidget);
-
-    // The sketch being edited is highlighted; another feature does not open (still one SketchScreen, same sketch).
-    final selected = tester
-        .widgetList<ListTile>(find.descendant(of: tree, matching: find.byType(ListTile)))
-        .where((t) => t.selected)
-        .map((t) => (t.title as Text).data)
-        .toList();
-    expect(selected, ['Sketch 2']);
+    // P3: the one tree, read-mostly. The sketch being edited is selected; another feature does not open (still one SketchScreen, same sketch),
+    // and says why.
+    final view = tester.widget<AssemblyTreeView>(find.descendant(of: tree, matching: find.byType(AssemblyTreeView)));
+    expect(view.model.selectedKey, '#feature:feature-2');
     await tester.tap(find.descendant(of: tree, matching: find.text('Sketch 1')));
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byType(SketchScreen), findsOneWidget);
-    expect(find.descendant(of: tree, matching: find.byIcon(Icons.visibility)), findsOneWidget, reason: "Sketch 1's eye only");
+    expect(find.descendant(of: tree, matching: find.text('Exit the sketch first')), findsOneWidget);
+    expect(find.byKey(const ValueKey('tree-eye:#feature:feature-2')), findsNothing, reason: 'the sketch being edited has no eye');
 
-    // The eye works: the row goes dim (hidden) and offers Show.
-    await tester.tap(find.byKey(const ValueKey('tree-visibility-feature-1')));
+    // The eye works (the Part screen hides the feature and the sketcher's tree follows): the row offers Show.
+    await tester.tap(find.byKey(const ValueKey('tree-eye:#feature:feature-1')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsOneWidget);
     expect(find.descendant(of: tree, matching: find.byTooltip('Show')), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
@@ -12579,12 +12590,14 @@ void main() {
           Future<void> Function(http.Request request)? around,
           List<Map<String, dynamic>> extraBodies = const [],
           bool desktop = false,
-          bool openTree = true}) async {
+          bool openTree = true,
+          void Function(_FakeDocumentBackend backend)? configure}) async {
         final backend = _FakeDocumentBackend(seedFeatures: [for (final f in features ?? partFeatures) {...f}])
           ..meshBodies = [
             {'body_id': 'feature-2', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
             ...extraBodies,
           ];
+        configure?.call(backend);
         final documentApi = DocumentApiClient(
           httpClient: MockClient((request) async {
             final response = backend.handle(request);
@@ -12897,6 +12910,74 @@ void main() {
         await tester.pump(const Duration(milliseconds: 600));
       });
 
+      testWidgets('P2 review: a part whose mesh fails at load still lists its features, and the failure is in the banner', (tester) async {
+        await openPart(tester, configure: (b) => b.failMeshFor.add('part-1'));
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.liveKey, '', reason: 'the load carried on past the mesh: the features came and the tree was seeded');
+        expect(rowKeys(tester), containsAll(['#feature:feature-1', '#feature:feature-2', '#feature:feature-3']));
+        expect(find.textContaining('The shape could not be built'), findsOneWidget);
+      });
+
+      for (final coarseLate in [false, true]) {
+        testWidgets('P2 review: a failed mesh leaves no coarse stand-in or pending detail (the coarse answer ${coarseLate ? 'after' : 'before'} it)',
+            (tester) async {
+          Completer<void>? holdCoarse = coarseLate ? Completer<void>() : null;
+          Completer<void>? holdFull = coarseLate ? null : Completer<void>();
+          final coarseDone = Completer<void>();
+          await openPart(
+            tester,
+            features: [
+              ...partFeatures,
+              {'type': 'loft', 'id': 'loft-1', 'locked': false, 'produces': 'body'},
+            ],
+            extraBodies: [
+              {'body_id': 'loft-1', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+            ],
+            configure: (b) => b.failMeshFor.add('part-1'),
+            around: (request) async {
+              if (!request.url.path.endsWith('/mesh')) return;
+              if (request.url.queryParameters['tier'] == 'coarse') {
+                if (holdCoarse != null) await holdCoarse.future;
+                if (!coarseDone.isCompleted) coarseDone.complete();
+              } else if (holdFull != null) {
+                // The full mesh fails only once the coarse answer is in.
+                await coarseDone.future;
+                await Future<void>.delayed(Duration.zero);
+              }
+            },
+          );
+          holdFull = null;
+          holdCoarse?.complete();
+          holdCoarse = null;
+          await settle(tester);
+          await settle(tester);
+          expect(viewport(tester).coarseOverlayMeshes, isEmpty, reason: 'no full detail is coming to replace a stand-in');
+          final rows = {for (final r in _TreeProbe(tester).model.visibleRows()) r.key: r};
+          expect(rows['#feature:loft-1']!.state, isNot(AssemblyRowState.pendingDetail));
+        });
+      }
+
+      testWidgets('P2 review: Pattern\'s source picker leaves surface rows locked (only the surface pickers take them)', (tester) async {
+        await openPart(tester, openTree: false, desktop: true, features: [
+          ...partFeatures,
+          {'type': 'surface', 'id': 'surf-1', 'sketch_feature_id': 'feature-1', 'locked': false, 'produces': 'surface'},
+        ], extraBodies: [
+          {'body_id': 'surf-1', 'source': 'computed', 'is_surface': true, 'mesh': _FakeDocumentBackend._placeholderMesh},
+        ]);
+        await tester.tap(find.byKey(const ValueKey('ribbon-Pattern')));
+        await settle(tester);
+        await tester.ensureVisible(find.text('Add from Tree'));
+        await tester.tap(find.text('Add from Tree'));
+        await settle(tester);
+        expect(find.text('Select source Features'), findsOneWidget);
+        await _tapTreeRow(tester, 'Surfaces');
+        final rows = {for (final r in _TreeProbe(tester).model.visibleRows()) r.key: r};
+        expect(rows['#feature:surf-1']!.pick, AssemblyPickState.pickable, reason: 'the surface feature is a source');
+        expect(rows['#surface:surf-1']!.pick, AssemblyPickState.locked, reason: 'its surface row is not (Pattern picks features)');
+        await tester.pump(const Duration(milliseconds: 600));
+      });
+
       testWidgets('no Edit for a feature without an edit panel (an import): not in the bar, not on a double-tap', (tester) async {
         await openPart(tester, features: [
           {'type': 'import', 'id': 'imp-1', 'locked': false, 'produces': 'body'},
@@ -12923,6 +13004,20 @@ void main() {
         await settle(tester);
         return backend;
       }
+
+      testWidgets('P2 review: Make Focus on a Part whose mesh fails with a non-backend error and whose features fail: both in the banner',
+          (tester) async {
+        final backend = await openNestedInPartLens(tester);
+        backend.badMeshFor.add('plate-part');
+        backend.failFeaturesFor.add('plate-part');
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await settle(tester);
+        await settle(tester);
+        expect(tester.takeException(), isNull, reason: 'neither error escapes the focus change');
+        expect(find.textContaining('The features could not be read'), findsOneWidget);
+        expect(find.textContaining('FormatException'), findsOneWidget, reason: "the mesh's error is shown too, though it is not an ApiException");
+      });
 
       testWidgets('a focused Part whose mesh fails to load still lists its features as the live row', (tester) async {
         final backend = await openNestedInPartLens(tester, configure: (b) {

@@ -9,7 +9,7 @@ import '../api/document_api_client.dart';
 import '../assembly/assembly_tree_model.dart';
 import '../layout/layout_mode.dart';
 import 'action_sheet.dart' show MouseContextMenuRegion;
-import 'assembly_tree_feature_icon.dart';
+import 'feature_tree_helpers.dart';
 import 'edit_alone_row.dart';
 import 'svg_icon.dart';
 import 'view_preferences.dart';
@@ -93,6 +93,7 @@ class AssemblyTreeView extends StatefulWidget {
     this.onRowPick,
     this.onRowContextMenu,
     this.onVisibilityToggle,
+    this.lockedEyes = false,
     this.onFeaturesRequested,
     this.onGroupingChanged,
     this.isMultiSelectMode = false,
@@ -156,6 +157,11 @@ class AssemblyTreeView extends StatefulWidget {
 
   /// The desktop hover eye, and a tap on the eye-off icon of a hidden row. Null leaves the eye out.
   final void Function(AssemblyTreeRow row)? onVisibilityToggle;
+
+  /// The sketcher's locked tree (P3): it has no selection bar, so every live feature, body, surface, curve and default-plane row shows its
+  /// Hide / Show eye as a button, on a phone too; the selected row (the sketch being edited) and every other row have none. Needs
+  /// [onVisibilityToggle].
+  final bool lockedEyes;
 
   /// A part row was opened and its features are not in the model yet: fetch them and call `model.setFeatures` (then
   /// [AssemblyTreeController.refresh]). Also asked for the root, once, when it has features.
@@ -678,6 +684,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                                 bracket: _bracketFor(r, colours),
                                 canToggle: _canToggle(r),
                                 showEye: widget.onVisibilityToggle != null,
+                                lockedEye: widget.lockedEyes && widget.onVisibilityToggle != null
+                                    ? r.live && !r.kind.isLiveFolder && r.key != model.selectedKey
+                                    : null,
                                 onToggle: () => _toggle(r),
                                 onTap: () => _tap(r),
                                 onLongPress: () => _longPress(r),
@@ -1095,6 +1104,7 @@ class _TreeRow extends StatefulWidget {
     required this.bracket,
     required this.canToggle,
     required this.showEye,
+    this.lockedEye,
     required this.onToggle,
     required this.onTap,
     required this.onLongPress,
@@ -1126,6 +1136,10 @@ class _TreeRow extends StatefulWidget {
   final Color? bracket;
   final bool canToggle;
   final bool showEye;
+
+  /// [AssemblyTreeView.lockedEyes]: true draws the eye as a button whatever the hover or the platform, false never offers one; null follows
+  /// [showEye].
+  final bool? lockedEye;
   final VoidCallback onToggle;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
@@ -1189,9 +1203,16 @@ class _TreeRowState extends State<_TreeRow> {
     final desktop = widget.desktop;
     final iconSize = desktop ? 16.0 : 22.0;
     final isOccurrence = r.path != null && r.path!.isNotEmpty;
-    final canEye = widget.showEye && (isOccurrence || (r.live && !r.kind.isLiveFolder));
+    final lockedEye = widget.lockedEye;
+    final canEye = lockedEye ?? (widget.showEye && (isOccurrence || (r.live && !r.kind.isLiveFolder)));
     // A group row never shows one: it has nothing to toggle (its members show their own).
-    final eyeSlot = r.hidden && r.kind != AssemblyRowKind.group && !r.kind.isLiveFolder
+    final eyeSlot = lockedEye == true
+        ? Tooltip(
+            message: r.hidden ? 'Show' : 'Hide',
+            child: Icon(r.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+                key: ValueKey(r.hidden ? 'tree-eye-off:${r.key}' : 'tree-eye:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant),
+          )
+        : r.hidden && r.kind != AssemblyRowKind.group && !r.kind.isLiveFolder
         ? Icon(Icons.visibility_off_outlined, key: ValueKey('tree-eye-off:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
         : (desktop && _hover && canEye && !widget.multiSelect)
             ? Icon(Icons.visibility_outlined, key: ValueKey('tree-eye:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
@@ -1303,7 +1324,7 @@ class _TreeRowState extends State<_TreeRow> {
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             // Desktop: the hover eye and the eye-off toggle. Phone: only the eye-off of a hidden row (it is state, not a button). Never in multi-select.
-            onTap: canEye && !widget.multiSelect && (desktop || r.hidden) ? widget.onEye : null,
+            onTap: canEye && !widget.multiSelect && (desktop || r.hidden || lockedEye == true) ? widget.onEye : null,
             child: SizedBox(width: desktop ? 26 : 40, height: widget.height, child: Center(child: eyeSlot)),
           ),
         if (widget.pinState != null)

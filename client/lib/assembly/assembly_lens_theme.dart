@@ -32,7 +32,7 @@ Color assemblyLensAccentColor(ColorScheme colorScheme, AssemblyLens lens) {
 /// [ColorScheme.tertiaryContainer]/[ColorScheme.onTertiaryContainer];
 /// [AssemblyLens.part] resolves to [ColorScheme.surface]/
 /// [ColorScheme.onSurface] - a neutral background, not tinted at all,
-/// matching how `FeatureTreePanel`'s own header looks today.
+/// matching how the build tree's own header looks today.
 (Color background, Color onBackground) assemblyLensContainerColors(
   ColorScheme colorScheme,
   AssemblyLens lens,

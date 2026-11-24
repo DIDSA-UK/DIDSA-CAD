@@ -28,7 +28,7 @@ import '../layout/adaptive_sheet.dart';
 import '../storage/picked_file.dart' show savedFileNameFromUri;
 import '../layout/layout_mode.dart';
 import '../viewport3d/desktop_chrome.dart';
-import '../viewport3d/feature_tree_panel.dart' show TreeConvertPick, TreeConvertPickScope;
+import '../viewport3d/feature_tree_helpers.dart' show TreeConvertPick, TreeConvertPickScope;
 import '../viewport3d/part_viewport.dart';
 import '../viewport3d/keyboard_shortcuts.dart';
 import '../viewport3d/controls_preferences.dart';
@@ -532,7 +532,7 @@ class _SketchScreenState extends State<SketchScreen> {
                 picked: _controller.pendingConvertSketches.toSet(),
                 later: source.laterSketchFeatureIds,
                 laterReason: SketchController.convertSourceAfterSketchMessage,
-                onPick: (feature) => _controller.stageConvertSketch(feature.id),
+                onPick: _controller.stageConvertSketch,
               )
             : null,
         child: tree,
