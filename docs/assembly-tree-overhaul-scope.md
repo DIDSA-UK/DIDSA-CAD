@@ -851,34 +851,61 @@ storing Edit Alone's open rows.
 | B1 contract additions | merged 21 Nov | #397 | mid-tier | Two send-backs. The `#` occurrence-id guard the manager asked for was removed (it broke Undo for a hand-edited id); spec 8 says such ids give undefined results. Planes-folder keys always `K#plane:feature:<id>`. 102 cases, the 36 v1 cases unchanged. |
 | B2 Flutter #10 + #8 | merged 21 Nov | #398 | strongest | Four rounds (the per-document key). Left for B2.1: rows opened before the first answer on a never-stored document are not stored; a rename during the first load can store rows not shown. Owner device check pending. |
 | P1 live part (model, view) | merged 21 Nov | #400 | strongest | Fix round merged before the manager's check; a post-merge review found model issues (auto-open key, restore, stale live selection, folders closed on clear): fixed in P2's round. |
-| P2 Part lens on the one tree | in review | #401 | strongest | Send-back 1 sent (live folders not restored, previous Part's features after Focus, surface picks, Planes ticks, superseded refresh) plus P1's model items. "Roll back to here" left out until the rollback bar (#17, Phase D): owner, 24 Nov. Owner device check after. |
-| P3 sketcher's tree, old panel gone | not started | | | Owner device check after |
+| P2 Part lens on the one tree | merged 24 Nov | #401 | strongest | Three rounds. Round 1 fixed the send-back (live folders, previous Part's features, surface picks, ticks, superseded refresh, P1's model items) but brought in three regressions (a failed mesh hid the features, a moved live row kept its selection, a superseded call swallowed the newer error); round 2 fixed them. Round 2's review found only rarer cases: carried into P3 (10.8). "Roll back to here" left out until the rollback bar (#17, Phase D): owner, 24 Nov. |
+| P3 sketcher's tree, old panel gone | started 24 Nov | | strongest | Carries seven items from P2's review (10.8). |
 | B3 Flutter #5 | not started | | | |
 | B4 Flutter phone sheet | not started | | | Also: P2 saw the Part-lens drawer behind the bar on a phone |
 | B5 Flutter phone deep trees | not started | | | |
 | B6 VR row build | merged 21 Nov | VR #99 | mid-tier | Two send-backs (PARTS-tab scroll box, folder bubble, press guard). 2,002 rows, Mesa 943+337 ms -> 67+112 ms; PARTS tab scroll ~12 ms/frame slower (Table / Bring rebuilt per bind). Owner headset check pending. |
 | B7 VR #10 + #8 | merged 22 Nov | VR #100 | mid-tier | Fix round merged before the manager's check; post-merge review found five issues: follow-up B7.1. |
-| B7.1 VR follow-up | not started | | mid-tier | Find cleared for the same document and after Save As; size cap can evict the newest entry; "unavailable" hint sticks; reveal vs document switch. Prompt in 10.8. |
-| B8 VR room context, hints | not started | | | After B7.1. Hint order as proposed (owner, 21 Nov). Also B6's leftovers: status.md "main / this branch" wording, tests/README row for assembly_tree_pool_tab, two weak test checks |
+| B7.1 VR follow-up | merged 24 Nov | VR #101 | mid-tier | Three rounds (squash-merged: two commit trailers named a model). Round 2's review found rarer orders of the same status-hint race and an older observer bug: carried into B8 (10.8). |
+| B8 VR room context, hints | started 24 Nov | | mid-tier | Hint order as proposed (owner, 21 Nov). Carries B6's leftovers and five items from B7.1's review (10.8). |
 | B2.1 Flutter follow-up | not started | | | B2's two leftovers plus whatever the owner's B2 device check finds |
 
-### 10.8 Manager hand-off (24 Nov)
+### 10.8 Manager hand-off (24 Nov, second)
 
-The first Phase B manager session handed over here to keep cost down. A new manager reads: this section 10 (not 1-9 beyond
-what a brief points to), `docs/assembly-tree/spec.md` only when a check needs it, and nothing else up front.
+The second Phase B manager handed over here. A new manager reads this section 10 and DIDSA-VR's `CLAUDE.md`, and
+other files only when a check needs them. The owner starts it once P3 and B8 have each run their own first review and fix.
 
 **In flight:**
-- **P2 (#401):** send-back 1 was given to the worker (items in 10.7). Next: check the fix round (CI, diff scope,
-  `/code-review` on the round's commits only), then merge or a last narrow round. After merge: owner device check (a
-  part opened alone; a part focused in an assembly in the Part lens; lens switching with folders open and a row
-  selected), then P3.
-- **B7.1 (VR):** prompt not yet given to a worker. Its brief is the B7.1 row of 10.7, worded in full in the manager's
-  last message; if lost, rebuild it from that row (one test per item; tests/ci.sh; register tests per CLAUDE.md).
-- **Owner device checks owed:** B2 (phone and desktop: remembered rows, Save As, Expand to selection, filter tokens,
-  phone header), B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back).
-- **Owner decision (24 Nov):** "Roll back to here" stays out of the bar until the rollback bar (#17, Phase D).
+- **P3 (DIDSA-CAD), strongest model.** Its brief is 10.6, plus these from P2's review, one test each:
+  1. `_loadPart` and the post-edit `await _refreshMesh(); await _refreshFeatures();` paths: a mesh failure must not
+     skip the features (P2 fixed only the focus path).
+  2. `_refreshFocusTargetContent`: catch any mesh error, not only `ApiException`; show the mesh banner only if focus
+     is still on that Part, and even if the features call then fails.
+  3. `LatestCall`: a superseded call that fails while the newer one succeeds returns quietly; `await _refreshFeatures()`
+     callers outside `_runGuarded` handle the error the newer call passes on.
+  4. Mesh failure: clear the coarse overlay and pending body ids; stop a coarse fetch for that generation.
+  5. Model: while the live part is cleared, keep the last live row's folder keys storable; in the clear branch, drop a
+     selected feature of the old live row even if older `setFeatures` data has that id.
+  6. Part opened alone: a stored list of only live folders still queues the restore (part_screen ~13472).
+  7. Surface rows pickable only in the surface pickers (not Mirror, Pattern or Loft).
+- **B8 (DIDSA-VR), mid-tier.** Its brief is 10.6 (hint order as proposed), plus, one test each:
+  1. Status hint: in `_load_endpoint`'s structure-failure branch, if `_resp` has no `status_included`, set
+     `_status_unavailable` and `Model.clear_pending(_resp)`, then rebuild (a dropped status answer followed by a failed
+     refresh, whatever the old flag was; a floated row stuck on "updating").
+  2. `session_observer._refetch_all`: after the await, drop the bytes if `not active` or `_model_differs(source)`.
+  3. `app_settings.load_tree_open` skips an entry whose name alone is over the cap; a name whose first key cannot fit
+     is not stored.
+  4. `_reveal`: a same-document Refresh does not end it (compare a document key, not `_refresh_token`); a failed level
+     fetch leaves `children` null and is not counted as a change.
+  5. docs/status.md: the garbled B7.1 sentence (~line 209). And B6's leftovers in its 10.7 row.
+- **Next manager step:** check each PR (CI, diff scope, `/code-review` at `high` on the whole PR since it is the
+  manager's first look, then `medium` on each fix round), merge or send back per section 11. Then B3 (after P3), and
+  B2.1 if the owner's checks give it anything.
+- **Commit trailers:** workers must use `Co-Authored-By: Claude <noreply@anthropic.com>`; a model name there breaks the
+  no-identifiers rule (B7.1 needed a squash-merge to drop it).
+- **VR CI:** on 24 Nov the VR runs stopped getting a runner (`runner_id 0`, no log) while DIDSA-CAD's ran; the owner
+  was asked to check the Actions minutes. Never say merge on a run that did not start.
 
-**How to run it:** section 11 (applies to every phase from here on).
+**Owner device checks:** the owner does them all once Phase B is complete (24 Nov), not after each chunk. Owed so far:
+B2 (phone and desktop: remembered rows, Save As, Expand to selection, filter tokens, phone header); P2 (a part opened
+alone; a part focused in an assembly in the Part lens; lens switching with folders open and a row selected); B6
+(headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1 (headset: Find kept after
+adding a component and after Save As, To selection, Collapse, remembered rows after reopening, the "unavailable" hint).
+Add each chunk's check from 10.1 here as it merges.
+
+**How to run it:** section 11.
 
 ## 11. Running a phase: cost and process (Phases B, C and D)
 
