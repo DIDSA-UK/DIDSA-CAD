@@ -80,13 +80,13 @@ void main() {
     });
   });
 
-  test('P3 review: an answer that cannot be read is an ApiException with the short message and no status code', () async {
+  test('P3 review: an answer that cannot be read is an ApiException with the short message and its 2xx status code', () async {
     for (final body in ['<html>proxy error</html>', '[1, 2, 3]']) {
       final client = SketchApiClient(httpClient: MockClient((request) async => http.Response(body, 200)));
       final error = await client.getSketch('s1').then<Object?>((_) => null, onError: (Object e) => e);
       expect(error, isA<ApiException>(), reason: body);
       expect((error as ApiException).message, ApiException.unreadableAnswerMessage);
-      expect(error.statusCode, isNull);
+      expect(error.statusCode, 200);
     }
   });
 }

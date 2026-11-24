@@ -13042,8 +13042,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       } on FormatException catch (e) {
         // A project file that is not a valid save (as [_composeProjectFile] says): its own message, not the server's.
         setState(() => _errorMessage = e.message);
-      } on TypeError {
-        setState(() => _errorMessage = 'Not a valid native project file: $relativePath');
       }
     });
     final result = opened;

@@ -3844,7 +3844,7 @@ class DocumentApiClient {
       throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}',
           statusCode: response.statusCode);
     }
-    return decodeOrUnreadable(response.body, onSuccess, name: 'DocumentApiClient');
+    return decodeOrUnreadable(response.body, onSuccess, name: 'DocumentApiClient', statusCode: response.statusCode);
   }
 
   /// What a caller is told when the server's answer cannot be read ([_send]).
