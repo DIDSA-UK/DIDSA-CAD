@@ -40,6 +40,9 @@ import 'svg_icon.dart';
 /// create one was Add > Feature > Surfacing, with no shortcut from the tree
 /// itself (see [showSurface]'s own doc comment).
 enum FeatureContextMenuAction {
+  /// Tree P2: opens the feature's edit panel (rolled back to it). The tree's tap now selects; Edit is here, in the selection bar and on a
+  /// double-tap / double-click.
+  edit,
   extrude,
   revolve,
   sweep,
@@ -52,6 +55,9 @@ enum FeatureContextMenuAction {
   common,
   split,
   toggleVisibility,
+
+  /// Tree P2: level-of-detail "pin to coarse" (the old row's pin control). Offered only for a coarse-eligible feature ([coarsePinned] non-null).
+  toggleCoarsePin,
   delete,
 }
 
@@ -123,7 +129,8 @@ enum FeatureContextMenuAction {
 /// when-shown shape. Boolean family, fourth/last entry: [showSplit] mirrors
 /// [showMerge]/[showSubtract]/[showCommon]'s own gate exactly too.
 /// Desktop input D4: [at] (a mouse right click) shows it as a popup there
-/// instead of the bottom sheet.
+/// instead of the bottom sheet. Tree P2: [showEdit] puts Edit first (a feature with an edit panel); [coarsePinned] (null: not
+/// coarse-eligible) adds the level-of-detail pin.
 Future<FeatureContextMenuAction?> showFeatureContextMenu(
   BuildContext context, {
   required bool isHidden,
@@ -144,6 +151,8 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   bool showSubtract = false,
   bool showCommon = false,
   bool showSplit = false,
+  bool showEdit = false,
+  bool? coarsePinned,
   Offset? at,
 }) {
   // Desktop input D4: one entry list for both presentations - the bottom
@@ -152,6 +161,12 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
   // wrapping subtitle) can appear at once; the sheet scrolls rather than
   // clipping on a short screen.
   return showContextMenu<FeatureContextMenuAction>(context, at: at, [
+    if (showEdit)
+      const ActionSheetEntry(
+        action: FeatureContextMenuAction.edit,
+        label: 'Edit',
+        icon: Icons.edit_outlined,
+      ),
     if (showExtrude)
       ActionSheetEntry(
         action: FeatureContextMenuAction.extrude,
@@ -229,6 +244,12 @@ Future<FeatureContextMenuAction?> showFeatureContextMenu(
       label: isHidden ? 'Show' : 'Hide',
       icon: isHidden ? Icons.visibility : Icons.visibility_off,
     ),
+    if (coarsePinned != null)
+      ActionSheetEntry(
+        action: FeatureContextMenuAction.toggleCoarsePin,
+        label: coarsePinned ? 'Show full detail' : 'Always show simplified geometry',
+        icon: coarsePinned ? Icons.blur_on : Icons.blur_off,
+      ),
     const ActionSheetEntry(
       action: FeatureContextMenuAction.delete,
       label: 'Delete',

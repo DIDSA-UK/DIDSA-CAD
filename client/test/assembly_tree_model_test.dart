@@ -14,10 +14,10 @@ AssemblyTreeResponseDto _tree(String name) =>
 
 Map<String, dynamic> _rowJson(AssemblyTreeRow r, {bool live = false}) => {
       'key': r.key,
-      'kind': r.kindWire,
+      'kind': r.kind.wire,
       'depth': r.depth,
       'label': r.label,
-      'state': r.stateWire,
+      'state': r.state.wire,
       'bubble': r.bubble == null ? null : {'level': r.bubble!.level.name, 'count': r.bubble!.count},
       'expandable': r.expandable,
       'open': r.open,
@@ -55,7 +55,7 @@ void main() {
 
   test('the vectors file is the version this model knows', () {
     expect(_vectors['version'], 2);
-    expect([for (final s in AssemblyRowState.values) s.wire], _vectors['states']);
+    expect([for (final s in AssemblyRowState.occurrenceStates) s.wire], _vectors['states']);
   });
 
   group('vectors', () {
@@ -527,12 +527,13 @@ void main() {
       model.setLivePart(live(''));
       final rows = {for (final r in model.visibleRows()) r.key: r};
       expect(rows.containsKey('#feature:old'), isFalse);
-      expect(rows['#feature:e1']!.stateWire, 'lost_reference');
+      expect(rows['#feature:e1']!.state.wire, 'lost_reference');
       expect(rows['#feature:e1']!.lostReason, 'The sketch was deleted');
-      expect(rows['#feature:s2']!.stateWire, 'hidden');
+      expect(rows['#feature:s2']!.state.wire, 'hidden');
       expect(rows['#feature:s2']!.type, 'sketch');
-      expect(rows['#bodies']!.kindWire, 'bodies_folder');
-      expect(rows['#bodies']!.kind, AssemblyRowKind.group);
+      expect(rows['#bodies']!.kind.wire, 'bodies_folder');
+      expect(rows['#bodies']!.kind, AssemblyRowKind.bodiesFolder);
+      expect(rows['#bodies']!.live, isTrue);
       expect(rows['#planes']!.count, 4);
     });
 
@@ -621,12 +622,12 @@ void main() {
       model.setLivePart(live(''));
       expect(model.isOpen('#curves'), isFalse);
       expect(model.visibleRows().any((r) => r.key == '#curve:c1'), isFalse);
-      // A kept selection stays; clearing the live part drops a live selection.
+      // A kept selection stays; clearing the live part drops a selection that names no row (its folders stay: see the P2 tests).
       model.selectedKey = '#feature:s1';
       model.setLivePart(live(''));
       expect(model.selectedKey, '#feature:s1');
       model.clearLivePart();
-      expect(model.selectedKey, isNull);
+      expect(model.selectedKey, isNull, reason: 'a cleared live part: the selection names no row');
     });
 
     test('a row open only because it became live is not stored until the person opens or closes it', () {
@@ -657,6 +658,183 @@ void main() {
       expect(keys, containsAll(['#plane:xy', '#plane:feature:xy', '#feature:xy', '#body:f#1']));
       expect(keys.toSet().length, keys.length);
       expect(model.rowKeyOfMultiSelect('body:f#1'), '#body:f#1');
+    });
+  });
+
+  group('P2 additions', () {
+    AssemblyLivePart live(String key) => AssemblyLivePart(
+          key,
+          features: const [
+            AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch'),
+            AssemblyLiveFeature(id: 'e1', label: 'Extrude 1', type: 'extrude', lostReference: 'open to re-select'),
+            AssemblyLiveFeature(id: 'e2', label: 'Extrude 2', type: 'extrude', rolledBack: true, hidden: true),
+          ],
+          bodies: const [AssemblyLiveItem('e1', 'Body 1', hidden: true)],
+          surfaces: const [AssemblyLiveItem('f1', 'Surface 1')],
+          curves: const [AssemblyLiveItem('c1', 'Curve 1')],
+        );
+
+    test('the live kinds are AssemblyRowKind values and the feature states AssemblyRowState values', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.openAll(['#bodies', '#planes', '#surfaces', '#curves']);
+      final rows = {for (final r in model.visibleRows()) r.key: r};
+      expect(rows['#bodies']!.kind, AssemblyRowKind.bodiesFolder);
+      expect(rows['#planes']!.kind, AssemblyRowKind.planesFolder);
+      expect(rows['#surfaces']!.kind, AssemblyRowKind.surfacesFolder);
+      expect(rows['#curves']!.kind, AssemblyRowKind.curvesFolder);
+      expect(rows['#body:e1']!.kind, AssemblyRowKind.body);
+      expect(rows['#surface:f1']!.kind, AssemblyRowKind.surface);
+      expect(rows['#curve:c1']!.kind, AssemblyRowKind.curve);
+      expect(rows['#plane:xy']!.kind, AssemblyRowKind.defaultPlane);
+      // Nothing of the live part reads as a group, and only its features as features.
+      for (final r in rows.values.where((r) => r.live)) {
+        expect(r.kind, isNot(AssemblyRowKind.group), reason: r.key);
+        if (r.kind == AssemblyRowKind.feature) expect(r.featureId, isNotNull, reason: r.key);
+      }
+      expect(rows['#feature:e1']!.state, AssemblyRowState.lostReference);
+      // Two states on one feature: the more severe wins.
+      expect(rows['#feature:e2']!.state, AssemblyRowState.rolledBack);
+      expect(rows['#body:e1']!.state, AssemblyRowState.hidden);
+      expect(rows['#bodies']!.state, AssemblyRowState.none);
+      expect(rows['#feature:e1']!.state.isLiveState, isTrue);
+      expect(AssemblyRowState.fixed.isLiveState, isFalse);
+      expect(AssemblyRowState.none.isLiveState, isFalse);
+      // Folders open like a group, never match a filter, and are kept by restore.
+      expect(model.filteredRows('bodies').rows.where((r) => r.match), isEmpty);
+      expect(model.restoreOpenKeys(['#bodies', '#body:e1', '#feature:s1']), ['#bodies']);
+    });
+
+    test('hiding the live part (the Assembly lens) keeps its open folders and a selected live row through merge, unreported', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      var reported = 0;
+      model.onOpenKeysChanged = () => reported++;
+      model.setLivePart(live(''));
+      model.setOpen('#bodies', true);
+      model.selectedKey = '#body:e1';
+      reported = 0;
+      final touched = model.openKeysTouched;
+
+      model.livePartShown = false;
+      expect(model.visibleRows().any((r) => r.live), isFalse);
+      expect(model.liveKey, isNull);
+      expect(model.multiSelectKeyOfRow('#feature:s1'), isNull);
+      expect(model.liveFeatureKey('s1'), isNull);
+      // A refresh while hidden (entering the Assembly lens reloads the tree) and a data refresh of the live part keep them.
+      model.merge(_tree('single_part'));
+      model.setLivePart(live(''));
+      expect(model.openKeys, {'#bodies'});
+      expect(model.selectedKey, '#body:e1');
+
+      model.livePartShown = true;
+      expect(model.indexOf('#body:e1'), greaterThan(0));
+      expect(model.selectedKey, '#body:e1');
+      expect(reported, 0);
+      expect(model.openKeysTouched, touched);
+      expect(model.keysToStore(), ['#bodies']);
+    });
+
+    test('hidden, the live row lists what setFeatures gave it, as any part row', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setFeatures(const [], const [AssemblyFeature('s1', 'Sketch 1')]);
+      model.setLivePart(live(''));
+      expect(model.visibleRows().where((r) => r.kind == AssemblyRowKind.feature && r.live), hasLength(3));
+      model.livePartShown = false;
+      final features = [for (final r in model.visibleRows()) if (r.kind == AssemblyRowKind.feature) r];
+      expect([for (final r in features) r.key], ['#feature:s1']);
+      expect(features.single.live, isFalse);
+    });
+
+    test('clearing the live part, then setting the same row again, keeps its open folders (only a refresh of the same row prunes)', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.setOpen('#bodies', true);
+      model.setOpen('#curves', true);
+      model.clearLivePart();
+      model.setLivePart(live(''));
+      expect(model.openKeys, {'#bodies', '#curves'});
+      // A refresh of the same row whose curves are gone drops that folder.
+      model.setLivePart(AssemblyLivePart('', features: live('').features, bodies: live('').bodies));
+      expect(model.openKeys, {'#bodies'});
+    });
+
+    test('restore keeps the live folders while the live part is hidden (the Assembly lens), and not without a live part', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setLivePart(live(''));
+      model.livePartShown = false;
+      expect(model.restoreOpenKeys(['#bodies', '#planes']), ['#bodies', '#planes']);
+      expect(model.visibleRows().any((r) => r.live), isFalse, reason: 'restore lists them, the rows do not');
+      expect(AssemblyTreeModel(tree: _tree('single_part')).restoreOpenKeys(['#bodies', '#planes']), isEmpty);
+    });
+
+    test('a deleted live feature is not kept selected by what setFeatures once gave that row', () {
+      final model = AssemblyTreeModel(tree: _tree('single_part'));
+      model.setFeatures(const [], const [AssemblyFeature('s1', 'Sketch 1'), AssemblyFeature('gone', 'Gone')]);
+      model.setLivePart(live(''));
+      model.selectedKey = '#feature:gone';
+      model.merge(_tree('single_part'));
+      expect(model.selectedKey, isNull);
+      // The live part's own features stay selectable.
+      model.selectedKey = '#feature:s1';
+      model.merge(_tree('single_part'));
+      expect(model.selectedKey, '#feature:s1');
+    });
+
+    test('rows opened because they became live stay out of what is stored, also after the live row moves', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head'));
+      model.setLivePart(live('mast/arm')); // another row becomes live: the first stays open, still not the person's
+      expect(model.openKeys, containsAll(['mast/arm/head', 'mast/arm']));
+      expect(model.keysToStore(), isEmpty);
+      // An open that changes nothing (expand to selection through it) leaves them auto-opened.
+      model.openAll(const ['mast/arm/head']);
+      expect(model.keysToStore(), isEmpty);
+      // A restore of one of them makes it the person's.
+      model.openAll(const ['mast/arm'], remember: false);
+      expect(model.keysToStore(), ['mast/arm']);
+      // The person closing and reopening the other makes it theirs too.
+      model.setOpen('mast/arm/head', false);
+      model.setOpen('mast/arm/head', true);
+      expect(model.keysToStore().toSet(), {'mast/arm', 'mast/arm/head'});
+    });
+
+    test('when the live row moves, the old row\'s selected feature goes and its open folders are not stored', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head')); // A
+      model.setOpen('mast/arm/head#bodies', true);
+      model.selectedKey = 'mast/arm/head#feature:s1';
+      expect(model.keysToStore(), contains('mast/arm/head#bodies'));
+      model.setLivePart(live('mast')); // Make Focus on B
+      expect(model.selectedKey, isNull);
+      expect(model.keysToStore().where((k) => k.startsWith('mast/arm/head')), isEmpty);
+      // Back to A: its folder is open again.
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.isOpen('mast/arm/head#bodies'), isTrue);
+      expect(model.keysToStore(), contains('mast/arm/head#bodies'));
+    });
+
+    test('a selection a short clear of the live part dropped comes back when the same row is live again, not for another row', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head'));
+      model.selectedKey = 'mast/arm/head#feature:s1';
+      model.clearLivePart();
+      expect(model.selectedKey, isNull);
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.selectedKey, 'mast/arm/head#feature:s1');
+      model.clearLivePart();
+      model.setLivePart(live('mast'));
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.selectedKey, isNull, reason: 'another row was live in between');
+    });
+
+    test('merge prunes an auto-opened row that is gone', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head'));
+      model.merge(_tree('single_part'));
+      expect(model.openKeys, isEmpty);
+      model.merge(_tree('rover'));
+      model.openAll(const ['mast/arm/head'], remember: false);
+      expect(model.keysToStore(), ['mast/arm/head'], reason: 'no stale auto-open mark kept it out');
     });
   });
 }

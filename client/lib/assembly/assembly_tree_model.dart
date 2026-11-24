@@ -11,7 +11,11 @@ import '../viewport3d/tree_multi_select_controller.dart' show TreeMultiSelectKey
 /// Two ids are involved: a row *key* (spec section 8) names a row and survives a refresh; `resolvedPartId` is session-local and
 /// never part of a key.
 
-/// The state slot of a row (spec section 5), most severe first. [wire] is the spelling in the spec and the vectors.
+/// The one state slot of a row, most severe first within each of its two scales. [wire] is the spelling in the spec and the vectors.
+///
+/// An occurrence or group row (spec section 5) shows one of `missing` ... `fullyConstrained`. A row of the live part (spec section 13) shows one
+/// of `lostReference` ... `hidden`: a feature the first that applies, a body, surface, curve or default plane [hidden] or nothing; a folder never
+/// has one. Both scales end in [none]. [isLiveState] tells them apart; [occurrenceStates] is section 5's list in its order.
 enum AssemblyRowState {
   missing('missing'),
   cycle('cycle'),
@@ -22,59 +26,8 @@ enum AssemblyRowState {
   underConstrained('under_constrained'),
   fixed('fixed'),
   fullyConstrained('fully_constrained'),
-  none('none');
 
-  final String wire;
-  const AssemblyRowState(this.wire);
-}
-
-/// What a row is (spec section 7).
-enum AssemblyRowKind {
-  root('root'),
-  assembly('assembly'),
-  part('part'),
-  missing('missing'),
-  group('group'),
-  feature('feature'),
-  matesFolder('mates_folder'),
-  patternsFolder('patterns_folder'),
-
-  /// A mate or a pattern listed under its root folder (A4: supplied by the host with [AssemblyTreeModel.setFolderItems]; the spec's
-  /// rows, vectors and keys do not include them).
-  mate('mate'),
-  pattern('pattern');
-
-  final String wire;
-  const AssemblyRowKind(this.wire);
-}
-
-/// What a row of the live part (the build tree, spec section 13) is, where [AssemblyRowKind] has no value for it. Kept apart from
-/// [AssemblyRowKind] so the screens that switch over every [AssemblyRowKind] value keep compiling as they are: a live folder row has the kind
-/// [AssemblyRowKind.group] (it opens like a group and never matches a filter) and a body, surface, curve or default plane row has the kind
-/// [AssemblyRowKind.feature], and [AssemblyTreeRow.liveKind] says which it really is. [AssemblyTreeRow.kindWire] is the spec's spelling.
-/// The Part lens (P2) can fold these into [AssemblyRowKind] when it reworks those switches.
-enum AssemblyLiveKind {
-  bodiesFolder('bodies_folder'),
-  planesFolder('planes_folder'),
-  surfacesFolder('surfaces_folder'),
-  curvesFolder('curves_folder'),
-  body('body'),
-  surface('surface'),
-  curve('curve'),
-  defaultPlane('default_plane'),
-
-  /// A feature row of the live part (the `type` of the row is the feature's).
-  feature('feature');
-
-  final String wire;
-  const AssemblyLiveKind(this.wire);
-
-  bool get isFolder => index <= curvesFolder.index;
-}
-
-/// The state slot of a row of the live part (spec section 13), most severe first. A feature row shows the first that applies; a body, surface,
-/// curve or default plane row shows [hidden] or [none]. Rows outside the live part are [none] (their slot is [AssemblyRowState]).
-enum AssemblyFeatureState {
+  /// The live part's scale (spec section 13), most severe first.
   lostReference('lost_reference'),
   movedReference('moved_reference'),
   pendingDetail('pending_detail'),
@@ -83,7 +36,57 @@ enum AssemblyFeatureState {
   none('none');
 
   final String wire;
-  const AssemblyFeatureState(this.wire);
+  const AssemblyRowState(this.wire);
+
+  /// One of the live part's states (spec section 13), not section 5's.
+  bool get isLiveState => index >= lostReference.index && this != none;
+
+  /// Spec section 5's states, in its order (what the vectors' `states` list).
+  static List<AssemblyRowState> get occurrenceStates => [
+        for (final s in values)
+          if (!s.isLiveState) s
+      ];
+}
+
+/// What a row is (spec sections 7 and 13). [wire] is the spelling in the spec and the vectors.
+enum AssemblyRowKind {
+  root('root'),
+  assembly('assembly'),
+  part('part'),
+  missing('missing'),
+  group('group'),
+
+  /// A feature: a fetched feature under a part row (read-only, spec section 7), or a feature of the live part ([AssemblyTreeRow.live]: its
+  /// `type`, state slot and actions; spec section 13).
+  feature('feature'),
+  matesFolder('mates_folder'),
+  patternsFolder('patterns_folder'),
+
+  /// A mate or a pattern listed under its root folder (A4: supplied by the host with [AssemblyTreeModel.setFolderItems]; the spec's
+  /// rows, vectors and keys do not include them).
+  mate('mate'),
+  pattern('pattern'),
+
+  /// The live part's folders (spec section 13): they open like a group and never match a filter.
+  bodiesFolder('bodies_folder'),
+  planesFolder('planes_folder'),
+  surfacesFolder('surfaces_folder'),
+  curvesFolder('curves_folder'),
+
+  /// What the live part's folders hold: its bodies, surfaces and curves (from `GET /mesh`), and the three default planes.
+  body('body'),
+  surface('surface'),
+  curve('curve'),
+  defaultPlane('default_plane');
+
+  final String wire;
+  const AssemblyRowKind(this.wire);
+
+  /// One of the live part's four folders.
+  bool get isLiveFolder => this == bodiesFolder || this == planesFolder || this == surfacesFolder || this == curvesFolder;
+
+  /// A body, surface or curve row (the bar: Hide / Show, Zoom, More).
+  bool get isLiveItem => this == body || this == surface || this == curve;
 }
 
 /// What a picker says about a row ([AssemblyPicker]).
@@ -165,13 +168,13 @@ class AssemblyLiveFeature {
       );
 
   /// The one state the row shows: the most severe that applies (spec section 13).
-  AssemblyFeatureState get state {
-    if (lostReference != null) return AssemblyFeatureState.lostReference;
-    if (movedReference) return AssemblyFeatureState.movedReference;
-    if (pendingDetail) return AssemblyFeatureState.pendingDetail;
-    if (rolledBack) return AssemblyFeatureState.rolledBack;
-    if (hidden) return AssemblyFeatureState.hidden;
-    return AssemblyFeatureState.none;
+  AssemblyRowState get state {
+    if (lostReference != null) return AssemblyRowState.lostReference;
+    if (movedReference) return AssemblyRowState.movedReference;
+    if (pendingDetail) return AssemblyRowState.pendingDetail;
+    if (rolledBack) return AssemblyRowState.rolledBack;
+    if (hidden) return AssemblyRowState.hidden;
+    return AssemblyRowState.none;
   }
 }
 
@@ -351,14 +354,12 @@ class AssemblyTreeRow {
   /// without a filter, and for the root.
   final bool match;
 
-  /// Rows of the live part (spec section 13): which kind of row this really is (see [AssemblyLiveKind]); null for every other row.
-  final AssemblyLiveKind? liveKind;
+  /// A row of the live part (spec section 13): its folders, features, bodies, surfaces, curves and default planes. Only these are editable and
+  /// pickable; a feature row under another part has the same [kind] and is read-only.
+  final bool live;
 
   /// The feature's `type` on a live feature row; null otherwise.
   final String? type;
-
-  /// The live part's state slot (spec section 13); [AssemblyFeatureState.none] outside it. [state] stays [AssemblyRowState.none] on those rows.
-  final AssemblyFeatureState featureState;
 
   /// The reason a live feature's reference is lost (its tooltip and the bar's text); null otherwise.
   final String? lostReason;
@@ -386,28 +387,15 @@ class AssemblyTreeRow {
     this.note,
     this.tone,
     this.match = false,
-    this.liveKind,
+    this.live = false,
     this.type,
-    this.featureState = AssemblyFeatureState.none,
     this.lostReason,
     this.pick = AssemblyPickState.none,
     this.pickReason,
   });
 
-  /// The spelling of the row's kind in the spec and the vectors (`bodies_folder`, `body`, `default_plane`... for the live part's rows).
-  String get kindWire => liveKind?.wire ?? kind.wire;
-
-  /// The spelling of the row's state: the live part's slot where it has one, else section 5's.
-  String get stateWire => liveKind != null ? featureState.wire : state.wire;
-
-  /// A row of the live part (a folder, feature, body, surface, curve or default plane under the live row).
-  bool get isLive => liveKind != null;
-
-  /// A feature row: a live feature, or a fetched feature under another part.
-  bool get isFeatureRow => kind == AssemblyRowKind.feature && (liveKind == null || liveKind == AssemblyLiveKind.feature);
-
-  /// A folder of the live part.
-  bool get isLiveFolder => liveKind?.isFolder ?? false;
+  /// A feature row of the live part (the build-order row or a plane feature in the Planes folder).
+  bool get isLiveFeature => live && kind == AssemblyRowKind.feature;
 
   /// This row with [match] set (the filter's output; rows are immutable).
   AssemblyTreeRow withMatch(bool value) => _copy(match: value);
@@ -434,9 +422,8 @@ class AssemblyTreeRow {
         note: note,
         tone: tone,
         match: match,
-        liveKind: liveKind,
+        live: live,
         type: type,
-        featureState: featureState,
         lostReason: lostReason,
         pick: pick ?? this.pick,
         pickReason: pick == null ? this.pickReason : pickReason,
@@ -529,15 +516,15 @@ const _errorStates = {AssemblyRowState.missing, AssemblyRowState.cycle, Assembly
 // only with the live part (spec section 13).
 final Map<String, _TokenTest> _filterTokens = {
   ':missing': (r, f) => r.state == AssemblyRowState.missing,
-  ':errors': (r, f) => _errorStates.contains(r.state) || r.featureState == AssemblyFeatureState.lostReference,
-  ':warnings': (r, f) => r.state == AssemblyRowState.near || r.featureState == AssemblyFeatureState.movedReference,
+  ':errors': (r, f) => _errorStates.contains(r.state) || r.state == AssemblyRowState.lostReference,
+  ':warnings': (r, f) => r.state == AssemblyRowState.near || r.state == AssemblyRowState.movedReference,
   ':unsaved': (r, f) => r.state == AssemblyRowState.unsaved,
   ':fixed': (r, f) => f,
   ':hidden': (r, f) => r.hidden,
   ':suppressed': (r, f) => r.suppressed,
   ':parts': (r, f) => r.kind == AssemblyRowKind.part,
   ':assemblies': (r, f) => r.kind == AssemblyRowKind.assembly,
-  ':features': (r, f) => r.isFeatureRow,
+  ':features': (r, f) => r.kind == AssemblyRowKind.feature,
   ':sketches': (r, f) => r.type == 'sketch',
 };
 
@@ -550,6 +537,10 @@ const _nonMatchingKinds = {
   AssemblyRowKind.patternsFolder,
   AssemblyRowKind.mate,
   AssemblyRowKind.pattern,
+  AssemblyRowKind.bodiesFolder,
+  AssemblyRowKind.planesFolder,
+  AssemblyRowKind.surfacesFolder,
+  AssemblyRowKind.curvesFolder,
 };
 
 /// What a row walk records about each row it emits: its parent's key (null for the root) and its occurrence's `fixed` flag.
@@ -578,7 +569,10 @@ class _Walk {
   final Set<String>? listed;
   final Map<String, _Trace>? trace;
 
-  _Walk({required this.open, required this.grouping, this.openAll = false, this.listed, this.trace});
+  /// List the live part's rows even while it is hidden ([AssemblyTreeModel.livePartShown] false): the restore walk.
+  final bool liveHidden;
+
+  _Walk({required this.open, required this.grouping, this.openAll = false, this.listed, this.trace, this.liveHidden = false});
 
   bool isOpen(String key) => openAll || open.contains(key);
 
@@ -610,9 +604,10 @@ class AssemblyTreeModel {
   /// The live key whose row was last opened because it became live (so closing it again is the person's choice).
   String? _liveOpenedFor;
 
-  /// The live row's key while it is open only because it became live (nobody opened it): kept out of [keysToStore] until the person opens or
-  /// closes it themselves.
-  String? _autoOpenKey;
+  /// Rows open only because they became live (nobody opened them): kept out of [keysToStore] until the person opens or closes them, or a
+  /// restore of stored keys opens them (then they are the person's). A set: when the live row moves, the row it left stays open and still
+  /// is not the person's. Pruned with the open keys.
+  final Set<String> _autoOpen = {};
   AssemblyPicker? _picker;
   Map<String, _LiveRef>? _liveRefs;
   Map<String, String>? _liveMs;
@@ -693,7 +688,7 @@ class AssemblyTreeModel {
   }
 
   void setOpen(String key, bool open) {
-    if (key == _autoOpenKey) _autoOpenKey = null; // the person's own choice from here on
+    _autoOpen.remove(key); // the person's own choice from here on
     _opened(open ? _open.add(key) : _open.remove(key));
   }
 
@@ -701,22 +696,22 @@ class AssemblyTreeModel {
 
   /// Opens [keys]. With `remember: false` this is a restore (or the like), not a change the person made: it is not stored and does not
   /// count as one.
+  ///
+  /// A key that is open only because its row became live stays so when this opens nothing new for it (an expand to selection through it); a
+  /// restore (`remember: false`) of such a key makes it the person's again: it came from their stored rows.
   void openAll(Iterable<String> keys, {bool remember = true}) {
-    if (remember) {
-      for (final k in keys) {
-        if (k == _autoOpenKey) _autoOpenKey = null;
-      }
-    }
     var changed = false;
     for (final k in keys) {
-      changed = _open.add(k) || changed;
+      final added = _open.add(k);
+      if (added || !remember) _autoOpen.remove(k);
+      changed = added || changed;
     }
     _opened(changed, remember: remember);
   }
 
   /// Empties the open keys (the root stays open: it always is).
   void closeAll() {
-    _autoOpenKey = null;
+    _autoOpen.clear();
     final changed = _open.isNotEmpty;
     _open.clear();
     _opened(changed, deliberate: true);
@@ -758,7 +753,11 @@ class AssemblyTreeModel {
 
   /// The live part's inputs, or null. A live row whose key names no row of the tree, or a missing row, is ignored (nothing is added).
   AssemblyLivePart? get livePart => _live;
-  bool get _liveValid {
+  /// The live part is set, its row exists, and it is shown ([livePartShown]): its rows are listed.
+  bool get _liveValid => _liveShown && _liveDataValid;
+
+  /// The live part is set and its row exists, shown or not: its keys name rows that exist (they are kept by [merge] and [setLivePart]).
+  bool get _liveDataValid {
     final l = _live;
     if (l == null || _tree == null) return false;
     if (l.key.isEmpty) return true;
@@ -772,22 +771,61 @@ class AssemblyTreeModel {
   /// Makes [live] the live part: its folders and features replace what [setFeatures] gave that row. When the row becomes live (a different row
   /// from the one before) its key is added to the open keys so it shows open; that is not the person's change: nothing is reported,
   /// [openKeysTouched] stays as it was, and [keysToStore] leaves the key out until the person opens or closes it themselves. Later calls for the
-  /// same row refresh the data and leave its open state. Like [merge], it drops a selected row and open folders the live part no longer has.
+  /// same row refresh the data and leave its open state. A refresh of the same live row drops, like [merge], a selected row and open folders the
+  /// live part no longer has. Clearing it, or making another row live, drops a selection that no longer names a row; the old row's open folders
+  /// are kept (a clear then a set of the same row brings them back) but not stored while their rows are gone.
   void setLivePart(AssemblyLivePart? live) {
+    final before = _live;
     _live = live;
     if (live == null) _liveOpenedFor = null;
     _invalidate();
-    // Like merge(): what the live part no longer has goes (a selected row, a folder that emptied and so starts collapsed when it fills again).
-    if (_tree != null) {
+    // Like merge(): what the refreshed live part no longer has goes (a selected row, a folder that emptied and so starts collapsed when it fills
+    // again).
+    if (_tree != null && before != null && live != null && before.key == live.key) {
       _open.removeWhere((k) => !_rowKeyExists(k));
       final sel = selectedKey;
       if (sel != null && !_selectionExists(sel)) selectedKey = null;
-      if (_autoOpenKey != null && !_open.contains(_autoOpenKey)) _autoOpenKey = null;
+      _autoOpen.retainAll(_open);
+    } else if (_tree != null && before != null) {
+      // Cleared, or another row made live: a selection that names no row now goes. The old row's open folders stay in the open keys (a clear
+      // then a set of the same row brings them back), but they are not stored while their rows do not exist ([keysToStore]). A selection a
+      // clear dropped comes back if the same row is made live again (a short clear while its data reloads).
+      final sel = selectedKey;
+      if (sel != null && !_selectionExists(sel)) {
+        selectedKey = null;
+        _heldSelection = live == null ? (before.key, sel) : null;
+      } else {
+        _heldSelection = null;
+      }
+    }
+    final held = _heldSelection;
+    if (live != null && held != null && held.$1 == live.key) {
+      _heldSelection = null;
+      if (selectedKey == null && _selectionExists(held.$2)) selectedKey = held.$2;
+    } else if (live != null) {
+      _heldSelection = null;
     }
     _openLive();
   }
 
   void clearLivePart() => setLivePart(null);
+
+  /// A live row's selection that a clear of the live part dropped, and the live key it was under: restored if that row is made live again.
+  (String, String)? _heldSelection;
+
+  bool _liveShown = true;
+
+  /// Whether the live part's rows are listed (P2: the Part lens shows them, the Assembly lens does not). Hidden, the live part keeps its inputs
+  /// and nothing of it is listed (its row lists what [setFeatures] gave it, as any other part row), but its open folders and a selected live row
+  /// are not dropped by [merge] or [setLivePart]: they name rows that come back when it is shown again. Switching it is not the person's change:
+  /// nothing is reported or stored and [openKeysTouched] is unchanged. On by default.
+  bool get livePartShown => _liveShown;
+  set livePartShown(bool value) {
+    if (value == _liveShown) return;
+    _liveShown = value;
+    _invalidate();
+    if (value) _openLive();
+  }
 
   void _openLive() {
     final l = _live;
@@ -796,22 +834,31 @@ class AssemblyTreeModel {
     _liveOpenedFor = l.key;
     if (l.key.isNotEmpty && !_open.contains(l.key)) {
       openAll([l.key], remember: false);
-      _autoOpenKey = l.key;
+      _autoOpen.add(l.key);
     }
   }
 
   /// A feature row's key in the live part, for the id [featureId] (the build-order row); null when it is not a live feature.
-  String? liveFeatureKey(String featureId) => _liveMsMap[TreeMultiSelectKeys.feature(featureId)];
+  String? liveFeatureKey(String featureId) => _liveValid ? _liveMsMap[TreeMultiSelectKeys.feature(featureId)] : null;
 
   // ----- Multi-select keys (P1) -----
 
   /// The [TreeMultiSelectKeys] key (`feature:<id>`, `body:<id>`, `surface:<id>`, `curve:<id>`) of a live row, or null for any other row (an
   /// occurrence, a folder, a default plane). A plane feature listed in the Planes folder gives its feature's key, the same as its build-order row.
-  String? multiSelectKeyOfRow(String rowKey) => _liveRefMap[rowKey]?.ms;
+  String? multiSelectKeyOfRow(String rowKey) => _liveValid ? _liveRefMap[rowKey]?.ms : null;
 
   /// The row key of the live row a [TreeMultiSelectKeys] key names: the build-order row for a feature, else the body, surface or curve row; null
   /// when the live part has no such row.
-  String? rowKeyOfMultiSelect(String key) => _liveMsMap[key];
+  String? rowKeyOfMultiSelect(String key) => _liveValid ? _liveMsMap[key] : null;
+
+  /// Every live row a [TreeMultiSelectKeys] key names: a plane feature has two (its build-order row and its row in the Planes folder), so a
+  /// multi-select ticks both. Empty when the live part has none (or is not shown).
+  List<String> rowKeysOfMultiSelect(String key) => !_liveValid
+      ? const []
+      : [
+          for (final e in _liveRefMap.entries)
+            if (e.value.ms == key) e.key
+        ];
 
   Map<String, _LiveRef> get _liveRefMap => _liveRefs ??= _buildLiveRefs();
   Map<String, String> get _liveMsMap {
@@ -825,7 +872,7 @@ class AssemblyTreeModel {
     final ms = <String, String>{};
     _liveMs = ms;
     final l = _live;
-    if (l == null || !_liveValid) return refs;
+    if (l == null || !_liveDataValid) return refs;
     final k = l.key;
     for (final f in l.features) {
       final key = '$k#feature:${f.id}';
@@ -870,8 +917,8 @@ class AssemblyTreeModel {
   AssemblyTreeRow _withPick(AssemblyTreeRow r) {
     final p = _picker;
     if (p == null) return r;
-    if (!(r.isFeatureRow || (r.isLive && !r.isLiveFolder))) return r;
-    final m = r.isLive ? _liveRefMap[r.key]?.ms : null;
+    if (!(r.kind == AssemblyRowKind.feature || (r.live && !r.kind.isLiveFolder))) return r;
+    final m = r.live ? _liveRefMap[r.key]?.ms : null;
     if (m != null) {
       if (p.picked.contains(m)) return r.withPick(AssemblyPickState.picked, null);
       if (p.pickable.contains(m)) return r.withPick(AssemblyPickState.pickable, null);
@@ -961,7 +1008,7 @@ class AssemblyTreeModel {
       return ownerPath == null ? const [] : [...reveal(ownerPath), owner];
     }
 
-    final ref = _liveRefMap[key];
+    final ref = _liveValid ? _liveRefMap[key] : null;
     if (ref != null) {
       final owner = _live!.key;
       return [...ownerKeys(owner), if (ref.parent != owner) ref.parent];
@@ -993,13 +1040,18 @@ class AssemblyTreeModel {
     if (_tree == null) return const [];
     final wanted = stored is Set<String> ? stored : stored.toSet();
     if (wanted.isEmpty) return const [];
-    final rows = _walk(_Walk(open: const {}, grouping: true, openAll: true));
+    // The live part's folders are restorable whether or not it is shown (the Assembly lens hides it; its folders come back with it).
+    final rows = _walk(_Walk(open: const {}, grouping: true, openAll: true, liveHidden: true));
     const kinds = {
       AssemblyRowKind.assembly,
       AssemblyRowKind.part,
       AssemblyRowKind.group,
       AssemblyRowKind.matesFolder,
       AssemblyRowKind.patternsFolder,
+      AssemblyRowKind.bodiesFolder,
+      AssemblyRowKind.planesFolder,
+      AssemblyRowKind.surfacesFolder,
+      AssemblyRowKind.curvesFolder,
     };
     final kept = <String>[];
     for (final r in rows) {
@@ -1013,8 +1065,12 @@ class AssemblyTreeModel {
   List<String> keysToStore({int limit = kAssemblyTreeMaxStoredKeys}) =>
       _storable().length <= limit ? _storable().toList() : restoreOpenKeys(_storable(), limit: limit);
 
-  /// The open keys without a live row that is open only because it became live.
-  Set<String> _storable() => _autoOpenKey == null ? _open : (_open.toSet()..remove(_autoOpenKey));
+  /// The open keys without a live row that is open only because it became live, and without keys of rows that do not exist now (the folders
+  /// of a row that was live before, kept in the open keys for a return).
+  Set<String> _storable() => {
+        for (final k in _open)
+          if (!_autoOpen.contains(k) && _rowKeyExists(k)) k
+      };
 
   // ----- Filter (spec section 11) -----
 
@@ -1094,6 +1150,7 @@ class AssemblyTreeModel {
   void merge(AssemblyTreeResponseDto newTree) {
     _load(newTree);
     _open.removeWhere((k) => !_rowKeyExists(k));
+    _autoOpen.retainAll(_open);
     _features.removeWhere((k, _) => !_ownerExists(k));
     final sel = selectedKey;
     if (sel != null && !_selectionExists(sel)) selectedKey = null;
@@ -1141,6 +1198,8 @@ class AssemblyTreeModel {
     final i = key.indexOf('#feature:');
     if (i < 0) return false;
     final owner = key.substring(0, i);
+    // The live row's features are the live part's (checked above): what [setFeatures] once gave that row does not keep a deleted one selected.
+    if (_liveDataValid && owner == _live!.key) return false;
     final id = key.substring(i + '#feature:'.length);
     final fs = _features[owner];
     return fs != null && _ownerExists(owner) && fs.any((f) => f.id == id);
@@ -1394,7 +1453,7 @@ class AssemblyTreeModel {
 
   void _emitNode(_N n, int depth, String parentKey, _Walk w) {
     final d = n.dto;
-    final expandable = _canOpen(n) || (_liveValid && _live!.key == n.key);
+    final expandable = _canOpen(n) || (_liveIn(w) && _live!.key == n.key);
     final open = expandable && w.isOpen(n.key);
     AssemblyBubble? bubble;
     if (expandable) {
@@ -1506,8 +1565,11 @@ class AssemblyTreeModel {
   }
 
   /// What follows a row's occurrences: the live row's folders and features (spec section 13), else the features fetched for it.
+  /// Whether [w] lists the live part: shown, or the restore walk over a hidden one.
+  bool _liveIn(_Walk w) => w.liveHidden ? _liveDataValid : _liveValid;
+
   void _emitTail(String ownerKey, int depth, _Walk w) {
-    if (_liveValid && _live!.key == ownerKey) {
+    if (_liveIn(w) && _live!.key == ownerKey) {
       _emitLive(ownerKey, depth, w);
     } else {
       _emitFeatures(ownerKey, depth, w);
@@ -1516,25 +1578,23 @@ class AssemblyTreeModel {
 
   void _emitLive(String k, int depth, _Walk w) {
     final l = _live!;
-    AssemblyTreeRow item(String key, AssemblyLiveKind kind, int d, AssemblyLiveItem it) => AssemblyTreeRow(
+    AssemblyTreeRow item(String key, AssemblyRowKind kind, int d, AssemblyLiveItem it) => AssemblyTreeRow(
           key: key,
-          kind: AssemblyRowKind.feature,
-          liveKind: kind,
+          kind: kind,
+          live: true,
           depth: d,
           label: it.label,
-          state: AssemblyRowState.none,
-          featureState: it.hidden ? AssemblyFeatureState.hidden : AssemblyFeatureState.none,
+          state: it.hidden ? AssemblyRowState.hidden : AssemblyRowState.none,
           hidden: it.hidden,
           itemId: it.id,
         );
     AssemblyTreeRow feature(String key, int d, AssemblyLiveFeature f) => AssemblyTreeRow(
           key: key,
           kind: AssemblyRowKind.feature,
-          liveKind: AssemblyLiveKind.feature,
+          live: true,
           depth: d,
           label: f.label,
-          state: AssemblyRowState.none,
-          featureState: f.state,
+          state: f.state,
           lostReason: f.lostReference,
           hidden: f.hidden,
           featureId: f.id,
@@ -1542,10 +1602,10 @@ class AssemblyTreeModel {
         );
     // The folders in order; Planes always, the others only with something in them.
     final folders = [
-      ('bodies', 'Bodies', AssemblyLiveKind.bodiesFolder, l.bodies.length),
-      ('planes', 'Planes', AssemblyLiveKind.planesFolder, 3 + l.planeFeatures.length),
-      ('surfaces', 'Surfaces', AssemblyLiveKind.surfacesFolder, l.surfaces.length),
-      ('curves', 'Curves', AssemblyLiveKind.curvesFolder, l.curves.length),
+      ('bodies', 'Bodies', AssemblyRowKind.bodiesFolder, l.bodies.length),
+      ('planes', 'Planes', AssemblyRowKind.planesFolder, 3 + l.planeFeatures.length),
+      ('surfaces', 'Surfaces', AssemblyRowKind.surfacesFolder, l.surfaces.length),
+      ('curves', 'Curves', AssemblyRowKind.curvesFolder, l.curves.length),
     ];
     for (final (name, label, kind, count) in folders) {
       if (count == 0) continue;
@@ -1554,8 +1614,8 @@ class AssemblyTreeModel {
       final shown = w.add(
         AssemblyTreeRow(
           key: fkey,
-          kind: AssemblyRowKind.group,
-          liveKind: kind,
+          kind: kind,
+          live: true,
           depth: depth,
           label: label,
           state: AssemblyRowState.none,
@@ -1570,22 +1630,22 @@ class AssemblyTreeModel {
         case 'planes':
           const planes = [('xy', 'XY plane'), ('xz', 'XZ plane'), ('yz', 'YZ plane')];
           for (final (id, plabel) in planes) {
-            w.add(item('$k#plane:$id', AssemblyLiveKind.defaultPlane, depth + 1, AssemblyLiveItem(id, plabel, hidden: l.hiddenDefaultPlanes.contains(id))), fkey);
+            w.add(item('$k#plane:$id', AssemblyRowKind.defaultPlane, depth + 1, AssemblyLiveItem(id, plabel, hidden: l.hiddenDefaultPlanes.contains(id))), fkey);
           }
           for (final f in l.planeFeatures) {
             w.add(feature('$k#plane:feature:${f.id}', depth + 1, f), fkey);
           }
         case 'bodies':
           for (final it in l.bodies) {
-            w.add(item('$k#body:${it.id}', AssemblyLiveKind.body, depth + 1, it), fkey);
+            w.add(item('$k#body:${it.id}', AssemblyRowKind.body, depth + 1, it), fkey);
           }
         case 'surfaces':
           for (final it in l.surfaces) {
-            w.add(item('$k#surface:${it.id}', AssemblyLiveKind.surface, depth + 1, it), fkey);
+            w.add(item('$k#surface:${it.id}', AssemblyRowKind.surface, depth + 1, it), fkey);
           }
         default:
           for (final it in l.curves) {
-            w.add(item('$k#curve:${it.id}', AssemblyLiveKind.curve, depth + 1, it), fkey);
+            w.add(item('$k#curve:${it.id}', AssemblyRowKind.curve, depth + 1, it), fkey);
           }
       }
     }

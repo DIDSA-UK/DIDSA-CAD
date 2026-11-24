@@ -243,6 +243,11 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   /// The desktop pin column (P1): saved in `ViewPreferences`, off by default.
   late bool _pinColumn = ViewPreferences.assemblyTreePinColumn;
 
+  /// P2: the scroll offset of each lens (whether the model shows its live part): a lens switch lists other rows (the Assembly lens has no
+  /// live rows, so its list can be much shorter and clamps the offset), and switching back puts the list where it was in that lens.
+  bool? _seenLiveShown;
+  final Map<bool, double> _offsetByLiveShown = {};
+
   /// The picker the last build saw, and the reason of the locked row last tapped under it (shown in the banner until the picker changes).
   AssemblyPicker? _seenPicker;
   String? _pickNote;
@@ -385,7 +390,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final picking = widget.model.picker != null;
     if (!picking) widget.model.selectedKey = row.key;
     final groupLike =
-        row.kind == AssemblyRowKind.group || row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder;
+        row.kind == AssemblyRowKind.group ||
+            row.kind == AssemblyRowKind.matesFolder ||
+            row.kind == AssemblyRowKind.patternsFolder ||
+            row.kind.isLiveFolder;
     if (groupLike && !_filtering) {
       widget.model.toggle(row.key);
       if (!row.open) _askForFeatures(row.path);
@@ -568,6 +576,22 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final scheme = Theme.of(context).colorScheme;
     if (_pendingScrollKey != null) WidgetsBinding.instance.addPostFrameCallback((_) => _flushScroll());
 
+    final liveShown = model.livePartShown;
+    final seenLiveShown = _seenLiveShown;
+    if (seenLiveShown != null && liveShown != seenLiveShown) {
+      // Before this build's layout, so the offset is the old lens's, not one the new rows clamped.
+      if (_scroll.hasClients) _offsetByLiveShown[seenLiveShown] = _scroll.offset;
+      final back = _offsetByLiveShown[liveShown];
+      if (back != null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted || !_scroll.hasClients || model.livePartShown != liveShown) return;
+          final p = _scroll.position;
+          _scroll.jumpTo(back.clamp(p.minScrollExtent, p.maxScrollExtent));
+        });
+      }
+    }
+    _seenLiveShown = liveShown;
+
     final selectedIndex = model.selectedKey == null ? -1 : _indexOfRow(model.selectedKey!);
     final selectedRow = selectedIndex < 0 ? null : rows[selectedIndex];
     final picker = model.picker;
@@ -645,7 +669,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                                 onPin: () => widget.onToggleCoarsePin?.call(r),
                                 pickMulti: picker?.multi ?? false,
                                 onDoubleTap: widget.onRowEdit != null &&
-                                        r.liveKind == AssemblyLiveKind.feature &&
+                                        r.isLiveFeature &&
+                                        featureTypeHasEditPanel(r.type ?? '') &&
                                         picker == null &&
                                         !widget.isMultiSelectMode
                                     ? () => _edit(r)
@@ -936,19 +961,21 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         more,
       ]);
     }
-    switch (row.liveKind) {
-      case AssemblyLiveKind.feature:
+    if (!row.live) return null;
+    switch (row.kind) {
+      case AssemblyRowKind.feature:
         return live([
-          _BarButton('tree-bar-edit', Icons.edit_outlined, 'Edit', widget.onEditSelected),
+          // An import or a Fill Surface has no edit panel: no Edit for it.
+          _BarButton('tree-bar-edit', Icons.edit_outlined, 'Edit', featureTypeHasEditPanel(row.type ?? '') ? widget.onEditSelected : null),
           _BarButton('tree-bar-rollback', Icons.history, 'Roll back to here', widget.onRollbackSelected),
           hide,
           more,
         ]);
-      case AssemblyLiveKind.body:
-      case AssemblyLiveKind.surface:
-      case AssemblyLiveKind.curve:
+      case AssemblyRowKind.body:
+      case AssemblyRowKind.surface:
+      case AssemblyRowKind.curve:
         return live([hide, zoom, more]);
-      case AssemblyLiveKind.defaultPlane:
+      case AssemblyRowKind.defaultPlane:
         return live([hide]);
       default:
         return null;
@@ -956,21 +983,23 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   }
 
   /// What a live feature's state says, for the bar and the row's tooltip; null when it has nothing to say.
-  static String? _stateText(AssemblyTreeRow row) => switch (row.featureState) {
-        AssemblyFeatureState.lostReference => row.lostReason == null || row.lostReason!.isEmpty ? 'Lost reference' : 'Lost reference: ${row.lostReason}',
-        AssemblyFeatureState.movedReference => 'Reference may have moved - open to check',
-        AssemblyFeatureState.pendingDetail => 'Loading full detail...',
-        AssemblyFeatureState.rolledBack => 'After the rollback point',
+  static String? _stateText(AssemblyTreeRow row) => !row.live
+      ? null
+      : switch (row.state) {
+        AssemblyRowState.lostReference => row.lostReason == null || row.lostReason!.isEmpty ? 'Lost reference' : 'Lost reference: ${row.lostReason}',
+        AssemblyRowState.movedReference => 'Reference may have moved - open to check',
+        AssemblyRowState.pendingDetail => 'Loading full detail...',
+        AssemblyRowState.rolledBack => 'After the rollback point',
         _ => null,
       };
 
   Widget _selectionBar(BuildContext context, AssemblyTreeRow row, List<_BarButton> buttons) {
     final scheme = Theme.of(context).colorScheme;
     final palette = AiPalette.of(context);
-    final text = row.isLive ? _stateText(row) : null;
-    final Color textColour = switch (row.featureState) {
-      AssemblyFeatureState.lostReference => palette.danger,
-      AssemblyFeatureState.movedReference => palette.warning,
+    final text = _stateText(row);
+    final Color textColour = switch (row.state) {
+      AssemblyRowState.lostReference => palette.danger,
+      AssemblyRowState.movedReference => palette.warning,
       _ => scheme.onSurfaceVariant,
     };
     Widget button(_BarButton b) => Expanded(
@@ -1116,6 +1145,13 @@ class _TreeRowState extends State<_TreeRow> {
         AssemblyRowKind.part => Icons.view_in_ar_outlined,
         AssemblyRowKind.missing => Icons.insert_drive_file_outlined,
         AssemblyRowKind.group => Icons.layers_outlined,
+        AssemblyRowKind.bodiesFolder ||
+        AssemblyRowKind.planesFolder ||
+        AssemblyRowKind.surfacesFolder ||
+        AssemblyRowKind.curvesFolder =>
+          Icons.folder_outlined,
+        // Drawn with the feature SVGs ([_liveIcon]); these are never used.
+        AssemblyRowKind.body || AssemblyRowKind.surface || AssemblyRowKind.curve || AssemblyRowKind.defaultPlane => Icons.tune,
         AssemblyRowKind.feature => Icons.tune,
         AssemblyRowKind.matesFolder => Icons.link,
         AssemblyRowKind.patternsFolder => Icons.grid_view,
@@ -1125,22 +1161,24 @@ class _TreeRowState extends State<_TreeRow> {
 
   /// The icon of a row of the live part: the existing feature glyphs, a folder, a body, a plane.
   Widget _liveIcon(AssemblyTreeRow r, double size, Color colour) {
-    switch (r.liveKind!) {
-      case AssemblyLiveKind.bodiesFolder:
-      case AssemblyLiveKind.planesFolder:
-      case AssemblyLiveKind.surfacesFolder:
-      case AssemblyLiveKind.curvesFolder:
+    switch (r.kind) {
+      case AssemblyRowKind.bodiesFolder:
+      case AssemblyRowKind.planesFolder:
+      case AssemblyRowKind.surfacesFolder:
+      case AssemblyRowKind.curvesFolder:
         return Icon(Icons.folder_outlined, size: size, color: colour);
-      case AssemblyLiveKind.body:
+      case AssemblyRowKind.body:
         return SvgIcon('assets/icons/viewport/selection_body.svg', size: size, color: colour);
-      case AssemblyLiveKind.surface:
+      case AssemblyRowKind.surface:
         return SvgIcon(assemblyTreeFeatureAsset('surface'), size: size, color: colour);
-      case AssemblyLiveKind.curve:
+      case AssemblyRowKind.curve:
         return SvgIcon(assemblyTreeFeatureAsset('curve'), size: size, color: colour);
-      case AssemblyLiveKind.defaultPlane:
+      case AssemblyRowKind.defaultPlane:
         return SvgIcon(assemblyTreeFeatureAsset('create_plane'), size: size, color: colour);
-      case AssemblyLiveKind.feature:
+      case AssemblyRowKind.feature:
         return SvgIcon(assemblyTreeFeatureAsset(r.type ?? ''), size: size, color: colour);
+      default:
+        return Icon(_kindIcon(r.kind), size: size, color: colour);
     }
   }
 
@@ -1151,9 +1189,9 @@ class _TreeRowState extends State<_TreeRow> {
     final desktop = widget.desktop;
     final iconSize = desktop ? 16.0 : 22.0;
     final isOccurrence = r.path != null && r.path!.isNotEmpty;
-    final canEye = widget.showEye && (isOccurrence || (r.isLive && !r.isLiveFolder));
+    final canEye = widget.showEye && (isOccurrence || (r.live && !r.kind.isLiveFolder));
     // A group row never shows one: it has nothing to toggle (its members show their own).
-    final eyeSlot = r.hidden && r.kind != AssemblyRowKind.group
+    final eyeSlot = r.hidden && r.kind != AssemblyRowKind.group && !r.kind.isLiveFolder
         ? Icon(Icons.visibility_off_outlined, key: ValueKey('tree-eye-off:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
         : (desktop && _hover && canEye && !widget.multiSelect)
             ? Icon(Icons.visibility_outlined, key: ValueKey('tree-eye:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
@@ -1176,7 +1214,7 @@ class _TreeRowState extends State<_TreeRow> {
       chevron = SizedBox(width: chevronWidth);
     }
 
-    final dim = r.suppressed || r.featureState == AssemblyFeatureState.rolledBack || r.pick == AssemblyPickState.locked
+    final dim = r.suppressed || r.state == AssemblyRowState.rolledBack || r.pick == AssemblyPickState.locked
         ? 0.45
         : (r.hidden ? 0.65 : 1.0);
     final isItem = r.itemId != null && (r.kind == AssemblyRowKind.mate || r.kind == AssemblyRowKind.pattern);
@@ -1214,9 +1252,9 @@ class _TreeRowState extends State<_TreeRow> {
               ? Icon(widget.selected ? Icons.check_circle : Icons.circle_outlined, size: iconSize, color: scheme.primary)
               : r.pick == AssemblyPickState.picked
                   ? Icon(Icons.check_circle, key: ValueKey('tree-picked:${r.key}'), size: iconSize, color: scheme.primary)
-                  : r.pick == AssemblyPickState.pickable && r.liveKind != null && widget.pickMulti
+                  : r.pick == AssemblyPickState.pickable && r.live && widget.pickMulti
                       ? Icon(Icons.circle_outlined, size: iconSize, color: scheme.primary)
-                      : r.liveKind != null
+                      : r.live
                           ? _liveIcon(r, iconSize, scheme.primary)
                           : Icon(kindIcon, size: iconSize, color: toneColour ?? scheme.onSurfaceVariant),
         ),
@@ -1255,7 +1293,7 @@ class _TreeRowState extends State<_TreeRow> {
                   ),
           ),
         ),
-        if (r.count != null && (r.kind == AssemblyRowKind.matesFolder || r.kind == AssemblyRowKind.patternsFolder || r.isLiveFolder))
+        if (r.count != null && (r.kind == AssemblyRowKind.matesFolder || r.kind == AssemblyRowKind.patternsFolder || r.kind.isLiveFolder))
           Padding(
             padding: const EdgeInsets.only(left: 4),
             child: Text('${r.count}', style: TextStyle(fontSize: desktop ? 12 : 13, color: scheme.onSurfaceVariant)),
@@ -1318,7 +1356,7 @@ class _TreeRowState extends State<_TreeRow> {
         child: SizedBox(height: widget.height, child: content),
       ),
     );
-    final tip = r.pick == AssemblyPickState.locked ? r.pickReason : (r.isLive ? _AssemblyTreeViewState._stateText(r) : null);
+    final tip = r.pick == AssemblyPickState.locked ? r.pickReason : _AssemblyTreeViewState._stateText(r);
     if (tip != null) tile = Tooltip(message: tip, triggerMode: TooltipTriggerMode.manual, child: tile);
     tile = MouseContextMenuRegion(onOpen: widget.onContextMenu, child: tile);
     if (desktop) {
@@ -1355,9 +1393,9 @@ class _TreeRowState extends State<_TreeRow> {
   Widget _stateSlot(BuildContext context, AssemblyTreeRow r, double size) {
     final scheme = Theme.of(context).colorScheme;
     final palette = AiPalette.of(context);
-    final slotKey = ValueKey('tree-state:${r.key}:${r.stateWire}');
+    final slotKey = ValueKey('tree-state:${r.key}:${r.state.wire}');
     final state = r.state;
-    if (r.isLive) return _liveStateSlot(context, r, size);
+    if (r.live) return _liveStateSlot(context, r, size);
     const constraintStates = {
       AssemblyRowState.broken,
       AssemblyRowState.overConstrained,
@@ -1387,9 +1425,16 @@ class _TreeRowState extends State<_TreeRow> {
         ),
       AssemblyRowState.fixed => (Icons.push_pin, scheme.onSurfaceVariant, 'Fixed'),
       AssemblyRowState.fullyConstrained => (Icons.lock_outline, scheme.primary, 'Fully constrained'),
-      AssemblyRowState.none => (null, null, null),
+      // The live part's states are drawn by [_liveStateSlot]; an occurrence row never has one.
+      AssemblyRowState.lostReference ||
+      AssemblyRowState.movedReference ||
+      AssemblyRowState.pendingDetail ||
+      AssemblyRowState.rolledBack ||
+      AssemblyRowState.hidden ||
+      AssemblyRowState.none =>
+        (null, null, null),
     };
-    if (state == AssemblyRowState.none) return const SizedBox.shrink();
+    if (look.$3 == null) return const SizedBox.shrink();
     if (state == AssemblyRowState.unsaved) {
       return Tooltip(
         message: look.$3!,
@@ -1409,13 +1454,13 @@ class _TreeRowState extends State<_TreeRow> {
   Widget _liveStateSlot(BuildContext context, AssemblyTreeRow r, double size) {
     final palette = AiPalette.of(context);
     final scheme = Theme.of(context).colorScheme;
-    final key = ValueKey('tree-state:${r.key}:${r.stateWire}');
+    final key = ValueKey('tree-state:${r.key}:${r.state.wire}');
     final text = _AssemblyTreeViewState._stateText(r);
-    final (IconData?, Color?) look = switch (r.featureState) {
-      AssemblyFeatureState.lostReference => (Icons.warning_rounded, palette.danger),
-      AssemblyFeatureState.movedReference => (Icons.help_rounded, palette.warning),
-      AssemblyFeatureState.pendingDetail => (Icons.hourglass_bottom, scheme.primary),
-      AssemblyFeatureState.rolledBack => (Icons.history, scheme.onSurfaceVariant),
+    final (IconData?, Color?) look = switch (r.state) {
+      AssemblyRowState.lostReference => (Icons.warning_rounded, palette.danger),
+      AssemblyRowState.movedReference => (Icons.help_rounded, palette.warning),
+      AssemblyRowState.pendingDetail => (Icons.hourglass_bottom, scheme.primary),
+      AssemblyRowState.rolledBack => (Icons.history, scheme.onSurfaceVariant),
       _ => (null, null),
     };
     if (look.$1 == null) return const SizedBox.shrink();
