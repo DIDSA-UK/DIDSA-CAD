@@ -12915,8 +12915,9 @@ void main() {
 
     group('Build tree (P2) in an assembly', () {
       /// [openNested] without the switch to the Assembly lens: the Part lens, the tree open.
-      Future<_FakeDocumentBackend> openNestedInPartLens(WidgetTester tester, {Future<void> Function(http.Request request)? around}) async {
-        final backend = await openNested(tester, around: around);
+      Future<_FakeDocumentBackend> openNestedInPartLens(WidgetTester tester,
+          {Future<void> Function(http.Request request)? around, void Function(_FakeDocumentBackend backend)? configure}) async {
+        final backend = await openNested(tester, around: around, configure: configure);
         await switchLens(tester, 'Part');
         await tester.tap(find.byTooltip('Feature tree'));
         await settle(tester);
@@ -12924,7 +12925,12 @@ void main() {
       }
 
       testWidgets('a focused Part whose mesh fails to load still lists its features as the live row', (tester) async {
-        final backend = await openNestedInPartLens(tester);
+        final backend = await openNestedInPartLens(tester, configure: (b) {
+          b.meshBodies = [
+            {'body_id': 'root-body', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
+          ];
+        });
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies.map((b) => b.bodyId), ['root-body']);
         backend.extraPartFeatures['plate-part'] = [
           {'type': 'sketch', 'id': 'plate-sketch', 'sketch_id': 'sketch-1', 'locked': false, 'produces': 'sketch'},
         ];
@@ -12937,6 +12943,8 @@ void main() {
         expect(model.liveKey, '', reason: 'the features alone make the live row when the mesh failed');
         expect(rowKeys(tester), contains('#feature:plate-sketch'));
         expect(rowKeys(tester).where((k) => k.contains('#body')), isEmpty, reason: 'no bodies: those in hand were the root\'s');
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies, isEmpty,
+            reason: 'the root\'s bodies are not offered as the plate\'s (to pick, to edit)');
         expect(find.textContaining('The shape could not be built'), findsOneWidget, reason: 'the failure is in the banner');
       });
 

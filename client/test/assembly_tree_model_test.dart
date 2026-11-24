@@ -813,6 +813,20 @@ void main() {
       expect(model.keysToStore(), contains('mast/arm/head#bodies'));
     });
 
+    test('a selection a short clear of the live part dropped comes back when the same row is live again, not for another row', () {
+      final model = AssemblyTreeModel(tree: _tree('rover'));
+      model.setLivePart(live('mast/arm/head'));
+      model.selectedKey = 'mast/arm/head#feature:s1';
+      model.clearLivePart();
+      expect(model.selectedKey, isNull);
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.selectedKey, 'mast/arm/head#feature:s1');
+      model.clearLivePart();
+      model.setLivePart(live('mast'));
+      model.setLivePart(live('mast/arm/head'));
+      expect(model.selectedKey, isNull, reason: 'another row was live in between');
+    });
+
     test('merge prunes an auto-opened row that is gone', () {
       final model = AssemblyTreeModel(tree: _tree('rover'));
       model.setLivePart(live('mast/arm/head'));

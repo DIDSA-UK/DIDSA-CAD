@@ -2582,9 +2582,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   String? _featuresPartId;
   String? _bodiesPartId;
 
-  /// The focused Part whose last mesh refresh failed: the tree then shows its features without bodies rather than hiding them.
-  String? _meshFailedPartId;
-
   /// `docs/lod-strategy/01-design.md` SS5 chunk 5, flow 1 ("creating a new
   /// coarse-eligible Feature"): the not-yet-persisted coarse-preview Bodies
   /// for whichever create flow is currently in flight - passed straight
@@ -14238,9 +14235,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         meshQuality: _meshQuality,
       );
     } catch (_) {
-      // P2: the focused Part's mesh could not be built (a broken feature, say): its features must stay in the tree, where they can be fixed.
-      if (mounted && generation == _meshRefreshGeneration && partId == _focusPartIdOrNull) {
-        setState(() => _meshFailedPartId = partId);
+      // A superseded request's failure is a stale answer like any other: dropped (the newer request reports its own).
+      if (!mounted || generation != _meshRefreshGeneration || partId != _focusPartIdOrNull) return;
+      // P2: the focused Part's mesh could not be built (a broken feature, say). Its features must stay in the tree, where they can be fixed;
+      // the bodies in hand are another Part's after a focus change, so they go (the viewport and the pickers must not offer them for this
+      // Part), and what is in hand is this Part's: no bodies.
+      if (_bodiesPartId != partId) {
+        setState(() {
+          _bodies = const [];
+          _bodiesPartId = partId;
+        });
       }
       rethrow;
     }
@@ -14252,7 +14256,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     setState(() {
       _bodies = newBodies;
       _bodiesPartId = partId;
-      _meshFailedPartId = null;
       // Full detail has now landed for every Body named here - drop its
       // coarse override too, unless its owning Feature is pinned (in which
       // case the override stays, deliberately, until the user unpins it).
@@ -28705,10 +28708,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// drop its open folders or a selected live row: a lens switch keeps the open rows and the selection, and is not the person's change.
   void _syncTreeLivePart() {
     final focus = _focusPartIdOrNull;
-    // Only once the features and the bodies are the focused Part's own (see [_featuresPartId]); when its mesh failed to load, on the features
-    // alone, with no bodies (the bodies in hand are another Part's, or none).
-    final bodiesOwn = focus != null && _bodiesPartId == focus;
-    final key = focus != null && _featuresPartId == focus && (bodiesOwn || _meshFailedPartId == focus) ? _liveTreeKey : null;
+    // Only once the features and the bodies are the focused Part's own (see [_featuresPartId]; a failed mesh leaves it no bodies, see
+    // [_refreshMesh]).
+    final key = focus != null && _featuresPartId == focus && _bodiesPartId == focus ? _liveTreeKey : null;
     final hidden = _hiddenFeatureIds;
     final rolled = _rollbackExcludedFeatureIds;
     final pending = _pendingDetailFeatureIds;
@@ -28716,7 +28718,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final inputs = <Object?>[
       key,
       _features,
-      bodiesOwn,
       _bodies,
       sorted(hidden),
       sorted(rolled),
@@ -28726,7 +28727,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final last = _treeLiveInputs;
     var same = last != null && last.length == inputs.length;
     for (var i = 0; same && i < inputs.length; i++) {
-      same = i == 1 || i == 3 ? identical(last![i], inputs[i]) : last![i] == inputs[i];
+      same = i == 1 || i == 2 ? identical(last![i], inputs[i]) : last![i] == inputs[i];
     }
     if (!same || !identical(_treeLiveModel, _treeModel)) {
       _treeLiveInputs = inputs;
@@ -28741,9 +28742,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         final bodyNames = _bodyNames;
         final surfaceNames = _surfaceNames;
         final curveNames = _curveNames;
-        final bodyIds = bodiesOwn ? _computedBodyIds.toSet() : const <String>{};
-        final surfaceIds = bodiesOwn ? _computedSurfaceIds.toSet() : const <String>{};
-        final curveIds = bodiesOwn ? _computedCurveIds.toSet() : const <String>{};
+        final bodyIds = _computedBodyIds.toSet();
+        final surfaceIds = _computedSurfaceIds.toSet();
+        final curveIds = _computedCurveIds.toSet();
         _treeModel.setLivePart(AssemblyLivePart(
           key,
           features: [

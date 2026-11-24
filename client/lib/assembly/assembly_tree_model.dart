@@ -788,14 +788,30 @@ class AssemblyTreeModel {
       _autoOpen.retainAll(_open);
     } else if (_tree != null && before != null) {
       // Cleared, or another row made live: a selection that names no row now goes. The old row's open folders stay in the open keys (a clear
-      // then a set of the same row brings them back), but they are not stored while their rows do not exist ([keysToStore]).
+      // then a set of the same row brings them back), but they are not stored while their rows do not exist ([keysToStore]). A selection a
+      // clear dropped comes back if the same row is made live again (a short clear while its data reloads).
       final sel = selectedKey;
-      if (sel != null && !_selectionExists(sel)) selectedKey = null;
+      if (sel != null && !_selectionExists(sel)) {
+        selectedKey = null;
+        _heldSelection = live == null ? (before.key, sel) : null;
+      } else {
+        _heldSelection = null;
+      }
+    }
+    final held = _heldSelection;
+    if (live != null && held != null && held.$1 == live.key) {
+      _heldSelection = null;
+      if (selectedKey == null && _selectionExists(held.$2)) selectedKey = held.$2;
+    } else if (live != null) {
+      _heldSelection = null;
     }
     _openLive();
   }
 
   void clearLivePart() => setLivePart(null);
+
+  /// A live row's selection that a clear of the live part dropped, and the live key it was under: restored if that row is made live again.
+  (String, String)? _heldSelection;
 
   bool _liveShown = true;
 
