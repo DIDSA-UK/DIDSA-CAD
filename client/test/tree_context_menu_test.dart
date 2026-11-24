@@ -6,8 +6,6 @@ import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_helpers.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
-import 'package:didsa_cad_client/viewport3d/body_naming.dart';
-import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
 
 /// Desktop input D4 (`docs/desktop-input-scope.md` section 4): a mouse right
 /// click on a tree row asks for that row's menu at the cursor; a touch
@@ -21,72 +19,71 @@ Future<void> _rightClick(WidgetTester tester, Finder target) async {
   await tester.pump();
 }
 
-FeatureDto _sketch(String id) => FeatureDto(type: 'sketch', id: id, locked: true, produces: 'sketch');
-FeatureDto _extrude(String id) => FeatureDto(type: 'extrude', id: id, locked: false, produces: 'body');
-
 RigidTransformDto _identity() =>
     RigidTransformDto(translation: const [0, 0, 0], rotationAxis: const [0, 0, 1], rotationAngleDegrees: 0);
 
 void main() {
   group('Build Tree', () {
+    // The live part's rows in the one tree (P3: the old build tree panel is gone).
     Widget panel({
-      List<(String, Offset)>? features,
-      List<(String, Offset)>? bodies,
+      List<(String, Offset)>? opened,
       List<String>? longPresses,
       bool multiSelect = false,
     }) {
-      final all = [_sketch('s1'), _extrude('e1')];
+      final model = AssemblyTreeModel(
+        tree: AssemblyTreeResponseDto(partId: 'root', partName: 'Bracket', featureCount: 2, statusIncluded: true),
+      )
+        ..setLivePart(AssemblyLivePart(
+          '',
+          features: const [
+            AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch'),
+            AssemblyLiveFeature(id: 'e1', label: 'Extrude 1', type: 'extrude'),
+          ],
+          bodies: const [AssemblyLiveItem('e1', 'Body 1')],
+        ))
+        ..openAll(['#bodies']);
       return MaterialApp(
         home: Scaffold(
-          body: FeatureTreePanel(
-            visible: true,
-            features: all,
-            selectedFeatureId: null,
-            onFeatureTap: (_) {},
-            onFeatureLongPress: (feature) => longPresses?.add(feature.id),
-            onClose: () {},
-            onBodyTap: (_) {},
-            bodyIds: const ['e1'],
-            bodyNames: bodyDisplayNames(all, ['e1']),
+          body: AssemblyTreeView(
+            model: model,
+            docked: true,
             isMultiSelectMode: multiSelect,
-            onFeatureContextMenu: (feature, at) => features?.add((feature.id, at)),
-            onBodyContextMenu: (bodyId, at) => bodies?.add((bodyId, at)),
+            onRowLongPress: (r) => longPresses?.add(r.key),
+            onRowContextMenu: (r, at) => opened?.add((r.key, at)),
           ),
         ),
       );
     }
 
-    testWidgets('a right click on a Feature row reports it and the cursor position', (tester) async {
-      final features = <(String, Offset)>[];
-      await tester.pumpWidget(panel(features: features));
+    testWidgets('a right click on a feature row reports it and the cursor position', (tester) async {
+      final opened = <(String, Offset)>[];
+      await tester.pumpWidget(panel(opened: opened));
       await _rightClick(tester, find.text('Sketch 1'));
-      expect(features, [('s1', tester.getCenter(find.text('Sketch 1')))]);
+      expect(opened, [('#feature:s1', tester.getCenter(find.text('Sketch 1')))]);
     });
 
-    testWidgets('a right click on a Body row reports the body', (tester) async {
-      final bodies = <(String, Offset)>[];
-      await tester.pumpWidget(panel(bodies: bodies));
-      await tester.tap(find.text('Bodies'));
-      await tester.pumpAndSettle();
+    testWidgets('a right click on a body row reports the body', (tester) async {
+      final opened = <(String, Offset)>[];
+      await tester.pumpWidget(panel(opened: opened));
       await _rightClick(tester, find.text('Body 1'));
-      expect(bodies.map((b) => b.$1), ['e1']);
+      expect(opened.map((o) => o.$1), ['#body:e1']);
     });
 
-    testWidgets('a touch long-press still calls onFeatureLongPress and opens no context menu', (tester) async {
-      final features = <(String, Offset)>[];
+    testWidgets('a touch long-press still calls its own callback and opens no context menu', (tester) async {
+      final opened = <(String, Offset)>[];
       final longPresses = <String>[];
-      await tester.pumpWidget(panel(features: features, longPresses: longPresses));
+      await tester.pumpWidget(panel(opened: opened, longPresses: longPresses));
       await tester.longPress(find.text('Sketch 1'));
       await tester.pump();
-      expect(longPresses, ['s1']);
-      expect(features, isEmpty);
+      expect(longPresses, ['#feature:s1']);
+      expect(opened, isEmpty);
     });
 
     testWidgets('nothing is offered while a multi-select is open', (tester) async {
-      final features = <(String, Offset)>[];
-      await tester.pumpWidget(panel(features: features, multiSelect: true));
+      final opened = <(String, Offset)>[];
+      await tester.pumpWidget(panel(opened: opened, multiSelect: true));
       await _rightClick(tester, find.text('Sketch 1'));
-      expect(features, isEmpty);
+      expect(opened, isEmpty);
     });
   });
 

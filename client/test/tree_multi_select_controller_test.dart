@@ -2,7 +2,8 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
-import 'package:didsa_cad_client/viewport3d/feature_tree_panel.dart';
+import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
 import 'package:didsa_cad_client/viewport3d/tree_multi_select_controller.dart';
 
 void main() {
@@ -48,32 +49,33 @@ void main() {
     });
   });
 
-  testWidgets('FeatureTreePanel multi-select mode: row taps toggle instead of opening the Feature', (tester) async {
+  testWidgets('build tree multi-select mode: row taps toggle instead of selecting, ticked by the key mapping', (tester) async {
+    // P3: the one tree draws the build tree; the Part screen's multi-select keeps [TreeMultiSelectKeys] and maps them to row keys.
+    final model = AssemblyTreeModel(
+      tree: AssemblyTreeResponseDto(partId: 'root', partName: 'Bracket', featureCount: 2, statusIncluded: true),
+    )..setLivePart(AssemblyLivePart(
+        '',
+        features: const [
+          AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch'),
+          AssemblyLiveFeature(id: 'e1', label: 'Extrude 1', type: 'extrude'),
+        ],
+      ));
     final toggled = <String>[];
     final tapped = <String>[];
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
-          body: FeatureTreePanel(
-            visible: true,
-            features: [
-              FeatureDto(type: 'sketch', id: 's1', locked: true, produces: 'sketch'),
-              FeatureDto(type: 'extrude', id: 'e1', locked: false, produces: 'body'),
-            ],
-            selectedFeatureId: null,
-            onFeatureTap: (f) => tapped.add(f.id),
-            onFeatureLongPress: (_) {},
-            onClose: () {},
-            onBodyTap: (_) {},
+          body: AssemblyTreeView(
+            model: model,
             isMultiSelectMode: true,
-            selectedMultiSelectIds: {TreeMultiSelectKeys.feature('s1')},
-            onMultiSelectToggle: toggled.add,
+            selectedKeys: {...model.rowKeysOfMultiSelect(TreeMultiSelectKeys.feature('s1'))},
+            onRowTap: (r) => tapped.add(r.key),
+            onMultiSelectToggle: (r) => toggled.add(model.multiSelectKeyOfRow(r.key)!),
           ),
         ),
       ),
     );
 
-    expect(find.text('Tap rows to select - 1 selected'), findsOneWidget);
     expect(find.byIcon(Icons.check_circle), findsOneWidget);
 
     await tester.tap(find.text('Extrude 1'));

@@ -6,7 +6,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import '../config.dart';
 import 'import_assembly_dto.dart';
-import 'sketch_api_client.dart' show ApiException;
+import 'sketch_api_client.dart' show ApiException, decodeOrUnreadable;
 
 export 'import_assembly_dto.dart';
 
@@ -3844,9 +3844,11 @@ class DocumentApiClient {
       throw ApiException('Server returned ${response.statusCode}: ${_detailOf(response)}',
           statusCode: response.statusCode);
     }
-    final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
-    return onSuccess(decoded);
+    return decodeOrUnreadable(response.body, onSuccess, name: 'DocumentApiClient', statusCode: response.statusCode);
   }
+
+  /// What a caller is told when the server's answer cannot be read ([_send]).
+  static const String unreadableAnswerMessage = ApiException.unreadableAnswerMessage;
 
   /// Same request/error handling as [_send], but for an endpoint whose
   /// success body is raw binary (STEP/STL/glb) rather than JSON -

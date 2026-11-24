@@ -411,4 +411,25 @@ void main() {
       expect(topLevelConstraintStatus(AssemblyTreeResponseDto(partId: 'r', partName: 'R', children: [node('a')])), isEmpty);
     });
   });
+
+  group('seededTreeRestore (a part opened alone, P2 review)', () {
+    AssemblyTreeModel seeded() => AssemblyTreeModel(
+          tree: const AssemblyTreeResponseDto(partId: 'root', partName: 'Bracket', featureCount: 2, statusIncluded: true),
+        );
+
+    test('a stored list of only the root\'s folders is restored while the live part is not set yet, and nothing is left provisional', () {
+      final plan = seededTreeRestore(seeded(), const ['#bodies', '#planes']);
+      expect(plan.restore, isTrue);
+      expect(plan.complete, isTrue);
+    });
+
+    test('with the live part set, a folder it does not have is dropped; a component the root alone lacks leaves it provisional', () {
+      final model = seeded()..setLivePart(AssemblyLivePart('', features: const [AssemblyLiveFeature(id: 's1', label: 'Sketch 1', type: 'sketch')]));
+      expect(seededTreeRestore(model, const ['#bodies']), (restore: false, complete: false), reason: 'no bodies: no Bodies folder');
+      expect(seededTreeRestore(model, const ['#planes']), (restore: true, complete: true));
+      expect(seededTreeRestore(model, const ['#planes', 'asm-1']), (restore: true, complete: false));
+      expect(seededTreeRestore(model, null), (restore: false, complete: true));
+      expect(seededTreeRestore(model, const []), (restore: false, complete: true));
+    });
+  });
 }

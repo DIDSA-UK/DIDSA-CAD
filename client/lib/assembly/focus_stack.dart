@@ -2,7 +2,7 @@ import '../viewport3d/override_stack.dart';
 
 /// Which Part is currently primary within a composed assembly - the
 /// primary Part is what [AssemblyLens.part] edits, what
-/// `AssemblyTreePanel`/`FeatureTreePanel` both target, and (Phase 4) the one
+/// `AssemblyTreePanel`/the build tree both target, and (Phase 4) the one
 /// whose own instance renders fully opaque while its peers/parents go
 /// translucent. "Make Focus" (Phase 4) pushes; "Exit Focus" pops.
 ///

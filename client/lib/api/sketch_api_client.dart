@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 
 import 'package:http/http.dart' as http;
 
@@ -10,7 +11,8 @@ import 'dimension_label_placement.dart';
 /// rather than handling each failure mode separately.
 ///
 /// [statusCode] is the HTTP status when the server actually responded (null
-/// for a network-level failure - unreachable host, timeout) - most callers
+/// for a network-level failure - unreachable host, timeout; a 2xx for an
+/// answer that could not be read, see [decodeOrUnreadable]) - most callers
 /// only need [message], but a caller that must distinguish a specific,
 /// expected non-2xx outcome from a genuine failure (e.g.
 /// [SketchController]'s split-then-fall-back-to-endpoint-trim logic reading
@@ -22,8 +24,29 @@ class ApiException implements Exception {
 
   ApiException(this.message, {this.statusCode});
 
+  /// The message of an answer that cannot be read ([decodeOrUnreadable]).
+  static const String unreadableAnswerMessage = "Could not read the server's answer";
+
   @override
   String toString() => message;
+}
+
+/// Decodes a 2xx answer's [body] and hands it to [onSuccess]. An answer that cannot be read (not JSON, a proxy's HTML page, or JSON of the
+/// wrong shape for its DTO: a [FormatException] or a [TypeError] while decoding) is the server's failure, said like any other: an
+/// [ApiException] with a short message and the answer's [statusCode] (a 2xx: the server took the request, so it is not retried as a
+/// transport failure would be), and a caller's banner shows it. The raw error, which can carry the response body, goes to the log only. Any
+/// other error is a bug here and goes through with its stack.
+T decodeOrUnreadable<T>(String body, T Function(dynamic decodedBody) onSuccess, {required String name, required int statusCode}) {
+  try {
+    final decoded = body.isEmpty ? null : jsonDecode(body);
+    return onSuccess(decoded);
+  } on FormatException catch (e, st) {
+    developer.log('unreadable answer', name: name, error: e, stackTrace: st);
+    throw ApiException(ApiException.unreadableAnswerMessage, statusCode: statusCode);
+  } on TypeError catch (e, st) {
+    developer.log('unreadable answer', name: name, error: e, stackTrace: st);
+    throw ApiException(ApiException.unreadableAnswerMessage, statusCode: statusCode);
+  }
 }
 
 class SketchDto {
@@ -2140,9 +2163,10 @@ class SketchApiClient {
         statusCode: response.statusCode,
       );
     }
-    final decoded = response.body.isEmpty ? null : jsonDecode(response.body);
-    _noteNames(decoded);
-    return onSuccess(decoded);
+    return decodeOrUnreadable(response.body, (decoded) {
+      _noteNames(decoded);
+      return onSuccess(decoded);
+    }, name: 'SketchApiClient', statusCode: response.statusCode);
   }
 
   /// Parity follow-ups F4 / A1: the backend numbers every point, entity, constraint and reference dimension of a sketch (`Line 3`, `Point 12`, `D4`,

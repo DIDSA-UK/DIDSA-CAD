@@ -6,7 +6,7 @@
 /// rendered geometry, and never re-fetches anything - only the side panel
 /// and toolbar swap).
 ///
-/// [part] shows `FeatureTreePanel` and the existing feature toolbar (today's
+/// [part] shows the build tree and the existing feature toolbar (today's
 /// unchanged single-part experience). [assembly] shows `AssemblyTreePanel`
 /// and an Assembly-mode toolbar (insert/create component, mate, pattern -
 /// Phases 3-7). A Part with no occurrences/mates at all can still be viewed

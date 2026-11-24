@@ -77,7 +77,7 @@ enum FeaturePickerAction {
 /// Feature entry offers - same drag-handle/rounded-top-corner shape as
 /// [showPlaneContextSheet], so both Stage 19b fly-ups feel consistent.
 ///
-/// Grouped into collapsible sections (mirrors [FeatureTreePanel]'s own
+/// Grouped into collapsible sections (mirrors the old build tree panel's own
 /// Bodies/Planes `ExpansionTile` grouping - `_buildGroupedTree` - rather
 /// than a flat list, now that this sheet has grown past a handful of rows):
 /// Sketch-based (Extrude/Revolve/Sweep/Loft), Reference (Plane), Surfacing
@@ -238,7 +238,7 @@ const List<FeatureGroupSpec> kFeatureGroups = [
   ]),
 ];
 
-/// One collapsible group of Feature entries - mirrors [FeatureTreePanel]'s
+/// One collapsible group of Feature entries - mirrors the old build tree panel's
 /// own Bodies/Planes `ExpansionTile` convention (dense, compact visual
 /// density, a section-weight title) rather than inventing a new grouping
 /// widget. Every section starts collapsed: opened fully expanded, the

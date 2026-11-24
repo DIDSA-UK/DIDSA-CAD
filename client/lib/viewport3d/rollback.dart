@@ -4,7 +4,7 @@ import '../api/document_api_client.dart';
 /// - what true-rollback editing suppresses from the viewport (via
 /// `PartScreen._beginRollback`, which merges this into `hidden_feature_ids`)
 /// while the named Feature (or an earlier one) is being edited. Pulled out
-/// as a pure, zero-Flutter-dependency function - like `feature_tree_panel
+/// as a pure, zero-Flutter-dependency function - like `feature_tree_helpers
 /// .dart`'s `featureDisplayName` - so this prompt's actual scope-selection
 /// logic is genuinely unit-testable in isolation from `PartScreen` itself,
 /// which can't be widget-tested in this sandbox (`flutter_scene`).

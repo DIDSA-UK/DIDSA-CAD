@@ -23,7 +23,7 @@ enum ExtrudeType {
 
 /// The bottom-sheet-style panel [PartScreen] opens via the long-press
 /// "Extrude" context-menu action. Slides up from the bottom (same
-/// [AnimatedSlide] pattern [FeatureTreePanel]/[PartToolbar] use for their own
+/// [AnimatedSlide] pattern the build tree/[PartToolbar] use for their own
 /// slide-in, just along the opposite axis) rather than using
 /// `showModalBottomSheet`, since a modal route would have to be popped and
 /// re-pushed on every keystroke to keep the live mesh preview underneath it
