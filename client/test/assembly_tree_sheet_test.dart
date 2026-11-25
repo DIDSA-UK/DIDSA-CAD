@@ -202,4 +202,48 @@ void main() {
     await tester.pumpAndSettle();
     expect(_sheetHeight(tester), before);
   });
+
+  // Review of B4's fix round: the drag read the frame's height with the inset in it, so the sheet jumped up by the inset as a drag began.
+  testWidgets('with a bottom inset a drag that comes back to where it began leaves the sheet where it was', (tester) async {
+    tester.view.padding = const FakeViewPadding(bottom: 34);
+    addTearDown(tester.view.resetPadding);
+    await _pump(tester, _SheetHost(model: _model()));
+    final before = _sheetHeight(tester);
+    final gesture = await tester.startGesture(tester.getCenter(find.byKey(const ValueKey('tree-sheet-handle'))));
+    await gesture.moveBy(const Offset(0, -60));
+    await tester.pump();
+    await gesture.moveBy(const Offset(0, 60));
+    await tester.pump();
+    expect(_sheetHeight(tester), closeTo(before, 1));
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(_host(tester).height, AssemblyTreeSheetHeight.half);
+  });
+
+  // Review of B4's fix round: a filter open when the host began holding the sheet at peek stayed open with no list and no way to close it.
+  testWidgets('a filter open when the host starts holding the sheet is closed', (tester) async {
+    var locked = false;
+    late StateSetter rebuild;
+    final model = _model();
+    await _pump(
+        tester,
+        StatefulBuilder(builder: (context, setState) {
+          rebuild = setState;
+          return AssemblyTreeView(
+            model: model,
+            sheetHeight: locked ? AssemblyTreeSheetHeight.peek : AssemblyTreeSheetHeight.full,
+            onSheetHeightChanged: locked ? null : (_) {},
+          );
+        }));
+    await tester.tap(find.byKey(const ValueKey('tree-filter-toggle')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'Item b');
+    await tester.pumpAndSettle();
+    rebuild(() => locked = true);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('tree-filter-field')), findsNothing);
+    rebuild(() => locked = false);
+    await tester.pumpAndSettle();
+    expect(_row('p3'), findsOneWidget, reason: 'the filter is off: every row again');
+  });
 }

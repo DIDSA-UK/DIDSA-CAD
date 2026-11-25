@@ -796,7 +796,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The selected component's id when it is a direct child of the focused Part (what the gizmo, the component drawer, Pattern and the
   /// rest of this screen work with), else null: any other selection (the focused row itself, a row below the focus's children, or one
   /// outside the focus) has no id of its own at this level, see [_selectedTreePath].
-  String? get _selectedOccurrenceId => _selectedTreePath != null && _isFocusChild(_selectedTreePath!) ? _selectedTreePath!.last : null;
+  /// B4 (review): none while the tree's root is changing ([_treeRootPending]): the selection is a path in the tree still in the model, and
+  /// the focus is measured from the next root, so a component at one level would read as another level's.
+  String? get _selectedOccurrenceId =>
+      _selectedTreePath != null && !_treeRootPending && _isFocusChild(_selectedTreePath!) ? _selectedTreePath!.last : null;
   set _selectedOccurrenceId(String? id) => _selectedTreePath = id == null ? null : _focusChildPath(id);
 
   /// Test report item 5: [AssemblyTreePanel.selectedMateId]'s own backing
@@ -25996,6 +25999,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// The root path ([_treeRootPath]) the tree in [_treeModel] was applied at, and so the root [_selectedTreePath] was last remapped from.
   List<String> _appliedTreeRootPath = const <String>[];
+
+  /// The tree's root moved (a focus change out of a focus-rooted tree, Edit Alone) and the load that follows has not landed yet.
+  bool get _treeRootPending => !listEquals(_appliedTreeRootPath, _treeRootPath);
   List<String>? get _focusRootedPath {
     final for_ = _focusRootedFor;
     return for_ != null && listEquals(for_, _focusStack?.currentOccurrencePath) ? for_ : null;
@@ -29199,13 +29205,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
-  /// The live part's row this screen's selection stands for, or null (then the tree's selection is the component or mate one). A live row the
-  /// person tapped stays the selection in the Assembly lens too (it is not listed there), so it is still selected when the Part lens is back.
   /// The selection is a live row tapped in the tree (not a viewport pick).
   bool get _liveTreeTapSelection => _liveTreeTapKey != null && identical(_selectedEntities, _liveTreeTapEntities);
 
+  /// The live part's row this screen's selection stands for, or null (then the tree's selection is the component or mate one). A live row the
+  /// person tapped stays the selection in the Assembly lens too (it is not listed there), so it is still selected when the Part lens is back.
   String? get _liveSelectionHostKey {
-    if (_liveTreeTapKey != null && identical(_selectedEntities, _liveTreeTapEntities)) return _liveTreeTapKey;
+    if (_liveTreeTapSelection) return _liveTreeTapKey;
     if (!_treeLiveShown || _treeModel.liveKey == null) return null;
     for (final e in _selectedEntities.toList().reversed) {
       final k = _liveRowKeyOfEntity(e);
@@ -29412,6 +29418,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// the toolbars and which row is live (the Part lens makes the focused Part live: its folders and features, editable and pickable); the tree,
   /// its open rows, its scroll and its selection stay. [docked] puts it in the desktop layout's left pane; otherwise it floats over the viewport.
   Widget _buildTreePanel({required bool docked}) {
+    // B4: a pick's peek belongs to the sheet; turning the phone (or the desktop layout) ends it.
+    if (!_treeSheetMode) _treeSheetPickPeek = false;
     // The model keeps this screen's selection and unsaved Parts (cheap: nothing changes when they have not).
     _treeModel.setUnsavedPartIds(_unsavedPartIds);
     // The mate and pattern rows follow the lists when something other than a load changed them (a "Got it" on a mate).
@@ -29542,9 +29550,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
               if (f != null) unawaited(_toggleCoarsePin(f));
             }
           : null,
-      // B4: phone landscape keeps the side panel, and the component drawer is the selection surface for what it shows (a component directly
-      // in the focused Part): no bar then. Every other row (nested components, the live part's features, bodies and planes) keeps its bar.
-      selectionBar: _desktopLayout || _treeSheetMode || !_componentDrawerShown,
+      // B4: phone landscape keeps the side panel, and a drawer is the selection surface for what it shows: the component drawer for a component
+      // directly in the focused Part, the Part lens's selection drawer for a viewport pick. No bar then. Every other row (nested components,
+      // a live row tapped in the tree) keeps its bar.
+      selectionBar: _desktopLayout || _treeSheetMode || (!_componentDrawerShown && !(_selectionDrawerShown && _selectedEntities.isNotEmpty)),
     );
     // A GlobalKey keeps the view's state (its scroll position, its flash) where it is when other overlays of the screen's Stack come and go
     // and shift its place among the children, and across a lens switch (both lenses draw this same tree).
@@ -29656,18 +29665,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Notes a tool panel opening or closing (from the build: the tools open and close in many places, each hiding the tree its own way).
   void _noteTreeSheetToolState() {
-    if (_treeSheetPickPeek) {
-      if (!_featureTreeVisible) {
-        _treeSheetPickPeek = false;
-      } else if (_treeSelectionHostKey == null && !_treeSheetToolOpen && _activeMultiSelect == null) {
-        // The pick that opened the sheet is gone (a tap on empty space): it closes, and the Start button and the corner buttons come back.
-        _treeSheetPickPeek = false;
-        _featureTreeVisible = false;
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() {});
-        });
-      }
-    }
     final toolOpen = _treeSheetToolOpen;
     if (toolOpen && !_treeSheetToolSeen) {
       _treeSheetToolSeen = true;
@@ -29682,6 +29679,19 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         });
       }
       _treeSheetResume = false;
+    }
+    if (_treeSheetPickPeek && !toolOpen) {
+      if (!_featureTreeVisible) {
+        // Closed (a tool panel that hid it and brought it back keeps the flag: it came back at peek).
+        _treeSheetPickPeek = false;
+      } else if (_treeSelectionHostKey == null && _activeMultiSelect == null) {
+        // The pick that opened the sheet is gone (a tap on empty space): it closes, and the Start button and the corner buttons come back.
+        _treeSheetPickPeek = false;
+        _featureTreeVisible = false;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+      }
     }
     _treeSheetWasShown = _treeSheetShown;
   }

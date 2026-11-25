@@ -1,6 +1,7 @@
 import 'dart:async' show unawaited;
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 
@@ -325,8 +326,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
     // Multi-select replaces the header (and with it the filter field): a filter that kept narrowing the rows with nothing to show it would
     // be a trap, so it ends there.
-    // It ends on the condition that hides the field: the header being replaced (not only the mode flag).
-    if (old.multiSelectHeader == null && widget.multiSelectHeader != null && (_filtering || _filterOpen)) {
+    // It ends on the condition that hides the field: the header being replaced (not only the mode flag). B4 (review): the same when the host
+    // starts holding the sheet (a tool panel keeps it at peek, with no list under the field and no toggle to close it).
+    final becameLocked = old.sheetHeight != null && old.onSheetHeightChanged != null && widget.sheetHeight != null && widget.onSheetHeightChanged == null;
+    if (((old.multiSelectHeader == null && widget.multiSelectHeader != null) || becameLocked) && (_filtering || _filterOpen)) {
       final wasFiltering = _filtering;
       _filterText.clear();
       _filterOpen = false;
@@ -617,7 +620,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
 
   void _sheetDragStart(DragStartDetails _) {
     final box = _sheetKey.currentContext?.findRenderObject() as RenderBox?;
-    setState(() => _dragHeight = box?.size.height ?? _halfPixels);
+    // The frame's height includes the bottom inset (its SafeArea); the drag and the snap heights are the content's.
+    final inset = MediaQuery.paddingOf(context).bottom;
+    setState(() => _dragHeight = box == null ? _halfPixels : math.max(0.0, box.size.height - inset));
   }
 
   void _sheetDragUpdate(DragUpdateDetails details) {
@@ -665,6 +670,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     return GestureDetector(
       key: const ValueKey('tree-sheet-drag'),
       behavior: HitTestBehavior.translucent,
+      // The sheet follows the finger from where it went down (the slop is not lost).
+      dragStartBehavior: DragStartBehavior.down,
       onVerticalDragStart: locked ? null : _sheetDragStart,
       onVerticalDragUpdate: locked ? null : _sheetDragUpdate,
       onVerticalDragEnd: locked ? null : _sheetDragEnd,
