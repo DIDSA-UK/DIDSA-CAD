@@ -899,15 +899,21 @@ void main() {
     const top = 'tower/mid/top';
     const topMates = '$top#mates';
 
-    test('the host form of an item (note / tone) still lists, with a state from its suppressed flag only', () {
+    test('the host form of an item (note / tone) still lists, its state read from its tone and suppressed flag', () {
       final model = levels()..openAll(['#mates'], remember: false);
       model.setFolderItems('#mates', const [
         AssemblyFolderItem('m1', 'Coincident 1', note: "Broken - can't be satisfied", tone: AssemblyItemTone.error),
         AssemblyFolderItem('m2', 'Distance 1', suppressed: true),
+        AssemblyFolderItem('m3', 'Parallel 1', note: 'Within tolerance', tone: AssemblyItemTone.warning),
+        AssemblyFolderItem('m4', 'Angle 1', note: 'Followed', tone: AssemblyItemTone.info),
       ]);
       final rows = model.visibleRows().where((r) => r.kind == AssemblyRowKind.mate).toList();
-      expect([for (final r in rows) r.key], ['#mates#item:m1', '#mates#item:m2']);
-      expect([for (final r in rows) r.itemState], [AssemblyItemState.none, AssemblyItemState.suppressed]);
+      expect([for (final r in rows) r.key], ['#mates#item:m1', '#mates#item:m2', '#mates#item:m3', '#mates#item:m4']);
+      expect([for (final r in rows) r.itemState],
+          [AssemblyItemState.broken, AssemblyItemState.suppressed, AssemblyItemState.near, AssemblyItemState.none]);
+      // Review (C1, high): the root's items, still built by part_screen with note / tone, must be found by :errors and :warnings.
+      expect([for (final r in model.filteredRows(':errors').rows) if (r.match && r.kind == AssemblyRowKind.mate) r.key], ['#mates#item:m1']);
+      expect([for (final r in model.filteredRows(':warnings').rows) if (r.match && r.kind == AssemblyRowKind.mate) r.key], ['#mates#item:m3']);
       expect(rows.first.tone, AssemblyItemTone.error);
       expect(rows.first.state, AssemblyRowState.none, reason: 'item rows keep the row state none; their state is itemState');
       expect(model.visibleRows().firstWhere((r) => r.key == 'base').itemState, isNull);

@@ -164,8 +164,9 @@ enum AssemblyItemState {
 /// Two forms, one class. The spec's input ([AssemblyFolderItem.spec], [AssemblyFolderItem.fromJson]): the label and the `/mates` listing's
 /// `status`, `held`, `lost` and `suppressed` (a pattern: `suppressed`), from which [state] follows. The host-named form (A4, `note` / `tone`,
 /// what `part_screen.dart` and `assembly_tree_helpers.dart` still pass for the root's folders): [note] is the second line (a phone row) or the
-/// dimmed text after the label (a desktop row), [tone] colours the row, [suppressed] draws it dimmed; its [state] is [AssemblyItemState.suppressed]
-/// or [AssemblyItemState.none], since it carries no status. (C2 moves the callers to the spec's form and drops the other.)
+/// dimmed text after the label (a desktop row), [tone] colours the row, [suppressed] draws it dimmed. It carries no status, so its [state] is
+/// read from [tone] (red: [AssemblyItemState.broken], amber: [AssemblyItemState.near]), which keeps `:errors` and `:warnings` finding what the
+/// row shows red or amber. (C2 moves the callers to the spec's form and drops the other.)
 class AssemblyFolderItem {
   final String id;
   final String label;
@@ -208,11 +209,12 @@ class AssemblyFolderItem {
         lost: j['lost'] == true,
       );
 
-  /// The one state the item row shows, most severe first (spec section 14): lost > broken > near > held > suppressed > none.
+  /// The one state the item row shows, most severe first (spec section 14): lost > broken > near > held > suppressed > none. The host form
+  /// (no status; [tone] set) reads red as broken and amber as near.
   AssemblyItemState get state {
     if (lost) return AssemblyItemState.lost;
-    if (status == 'broken') return AssemblyItemState.broken;
-    if (status == 'near') return AssemblyItemState.near;
+    if (status == 'broken' || tone == AssemblyItemTone.error) return AssemblyItemState.broken;
+    if (status == 'near' || tone == AssemblyItemTone.warning) return AssemblyItemState.near;
     if (held) return AssemblyItemState.held;
     if (suppressed) return AssemblyItemState.suppressed;
     return AssemblyItemState.none;
@@ -1283,7 +1285,8 @@ class AssemblyTreeModel {
 
   /// The rows for [query]: the root, every row that matches, and every ancestor of a match (with grouping on, the group a match sits in),
   /// each with `match` set; an empty query is no filter (the ordinary rows). Words starting with `:` are tokens (`:errors`...); an unknown
-  /// one is listed in `unknown`. The open keys are not changed and the Mates and Patterns folders are not listed. Cached until something changes.
+  /// one is listed in `unknown`. The open keys are not changed. A Mates or Patterns folder is listed exactly when an item in it matches (spec
+  /// section 14); see [AssemblyFilterResult.itemsNotRead]. Cached until something changes.
   AssemblyFilterResult filteredRows(String query) {
     final cached = _filtered[query];
     if (cached != null) return cached;

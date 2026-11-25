@@ -1384,7 +1384,16 @@ VR item 4 (the root as the way to a room): kept, answer 10 below.
 10. *Headset, from 10.8.* B8.1's root drawn as the way to a room (not dimmed) stays; longer-term testing on the headset may
     settle a preference, so it stays on the device-check list.
 
-**Nits carried:** none yet (each chunk adds its own here, with the chunk it is for).
+**Carried from C1's review (for C2; C1 may not touch the view):** C1-1, **important**: `:mates` is now a known token, so the app no
+longer says "unknown filter :mates", but only folders whose items were set are searched (in the app, only the root's until C2 fetches
+the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_tree_view.dart`'s `_filterNotes` must show it, e.g.
+"Mates and patterns are searched only in folders you have opened" (spec section 11's hint). C2 adds it with a test.
+
+**Nits carried:** (each chunk adds its own here, with the chunk it is for)
+- C1-2 (for C2): `merge` drops the features of rows that are gone but keeps `setFolderItems` lists of folders that are gone; when a level
+  gets mates again, its folder lists the old items until the host reads it again. C2's "once per Part per tree answer" fetch should
+  reset them; or prune them in `merge` as features are.
+- C1-3 (for C2): `generate.py --changed` with no file after it ends in an `IndexError`, not a usage line.
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
