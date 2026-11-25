@@ -13321,6 +13321,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treeSeeded = false;
       _treeHostSelection = null;
       _treeFeaturePaths.clear();
+      _treeFeatureTypes.clear();
       _sessionHiddenPaths = const {};
       _isolateSnapshot = null;
       _selectedTreePath = null;
@@ -13680,6 +13681,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treeModel = _newTreeModel(grouping: _treeModel.grouping);
       _treeHostSelection = null;
       _treeFeaturePaths.clear();
+      _treeFeatureTypes.clear();
     }
     // The tree [_seedPartOnlyTree] made is not the backend's first answer: the first real one still restores, unless the seed's own restore
     // already ran over the same rows (a root with nothing under it: then the real answer is a refresh like any other, and nothing is
@@ -13716,6 +13718,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Paths (joined) whose features the tree has asked for: they are read again with every load, so they do not go stale after an edit.
   final Set<String> _treeFeaturePaths = {};
 
+  /// C3: the type of each read-only feature the tree lists, by its owner row's key (a path joined) and the feature id: Edit in context is
+  /// offered only on a feature that has an edit panel. Set with the features ([_loadTreeFeatures]).
+  final Map<String, Map<String, String>> _treeFeatureTypes = {};
+
   void _refreshTreeFeatures() {
     for (final key in _treeFeaturePaths.toList()) {
       final path = key.isEmpty ? const <String>[] : key.split('/');
@@ -13745,7 +13751,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // Not for a model that has been replaced since, nor for a row that is gone.
       if (!mounted || !identical(model, _treeModel)) return false;
       if (path.isNotEmpty && model.nodeAtPath(path)?.resolvedPartId != partId) return false;
-      setState(() => model.setFeatureDtos(path, features));
+      setState(() {
+        model.setFeatureDtos(path, features);
+        _treeFeatureTypes[path.join('/')] = {for (final f in features) f.id: f.type};
+      });
       _treeController.refresh();
       return true;
     } on ApiException {
@@ -25916,6 +25925,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// this isn't instead kept always-fresh in the background).
   void _toggleAssemblyLens() => _setLens(_lens == AssemblyLens.part ? AssemblyLens.assembly : AssemblyLens.part);
 
+  /// Counts [_setLens] calls (C3: Edit in context is cancelled by a lens switch while it waits, even one that came back).
+  int _lensChanges = 0;
+
   /// Sets the lens (what [_toggleAssemblyLens] does, without the flip), for Edit Alone's enter and leave.
   void _setLens(AssemblyLens lens) {
     _clearTransientError();
@@ -25926,6 +25938,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _selectOtherCandidates = null;
       _selectOtherHighlight = null;
       _lens = lens;
+      _lensChanges++;
     });
     if (_lens == AssemblyLens.assembly) {
       // Bug fix (found auditing [_focusOccurrenceColorHex]'s own new test):
@@ -26263,9 +26276,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case AssemblyRowKind.pattern:
         final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
         if (pattern != null && _focusIsTreeRoot) unawaited(_onPatternContextMenu(pattern, null));
+      case AssemblyRowKind.feature:
+        // C3: a feature of a part that is not live: its menu offers Edit in context.
+        unawaited(_readOnlyFeatureMenu(row));
       case AssemblyRowKind.root:
       case AssemblyRowKind.group:
-      case AssemblyRowKind.feature:
       case AssemblyRowKind.matesFolder:
       case AssemblyRowKind.patternsFolder:
       // The live part's rows have their own handlers (P2).
@@ -26294,9 +26309,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case AssemblyRowKind.pattern:
         final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
         if (pattern != null && _focusIsTreeRoot) unawaited(_onPatternContextMenu(pattern, at));
+      case AssemblyRowKind.feature:
+        unawaited(_readOnlyFeatureMenu(row, at: at));
       case AssemblyRowKind.root:
       case AssemblyRowKind.group:
-      case AssemblyRowKind.feature:
       case AssemblyRowKind.matesFolder:
       case AssemblyRowKind.patternsFolder:
       // The live part's rows have their own handlers (P2).
@@ -29258,18 +29274,21 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     };
   }
 
-  void _selectLiveRow(AssemblyTreeRow row, Set<SelectionEntityRef> entities, {String? featureId}) {
+  void _selectLiveRow(AssemblyTreeRow row, Set<SelectionEntityRef> entities, {String? featureId}) =>
+      _selectLiveKey(row.key, entities, featureId: featureId);
+
+  void _selectLiveKey(String key, Set<SelectionEntityRef> entities, {String? featureId}) {
     setState(() {
       // The old tap set this too: the Add menu's Extrude / Revolve / Sweep use a selected eligible sketch without opening the picker.
       if (featureId != null) _selectedFeatureId = featureId;
-      _liveTreeTapKey = row.key;
+      _liveTreeTapKey = key;
       _liveTreeTapEntities = entities;
       _selectedEntities = entities;
       _selectedTreePath = null;
       _selectedMateId = null;
       _selectOtherCandidates = null;
       _selectOtherHighlight = null;
-      _treeHostSelection = row.key;
+      _treeHostSelection = key;
     });
   }
 
@@ -29378,6 +29397,116 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _editLiveRow(AssemblyTreeRow row) {
     final f = _featureOfRow(row);
     if (f != null) unawaited(_onFeatureTap(f));
+  }
+
+  // --- C3 (#13): Edit in context from a read-only feature row ----------------------------------------------------------------------------
+
+  /// The latest Edit in context: an older one still waiting for its part's features opens nothing.
+  int _editInContextToken = 0;
+
+  /// The owner row's path of a read-only feature row (`[]` for the tree's root), or null for any other row.
+  static List<String>? _featureRowOwnerPath(AssemblyTreeRow row) {
+    if (row.live || row.kind != AssemblyRowKind.feature || row.featureId == null) return null;
+    final i = row.key.indexOf('#feature:');
+    if (i < 0) return null;
+    final owner = row.key.substring(0, i);
+    return owner.isEmpty ? const <String>[] : owner.split('/');
+  }
+
+  /// The type of a read-only feature row's feature, when it is known: from the list the tree fetched for its part, or, for the focused Part's
+  /// own row (read-only while the Assembly lens is on), from [_features].
+  String? _readOnlyFeatureType(AssemblyTreeRow row) {
+    final path = _featureRowOwnerPath(row);
+    final id = row.featureId;
+    if (path == null || id == null) return null;
+    final known = _treeFeatureTypes[path.join('/')]?[id];
+    if (known != null) return known;
+    final focus = _focusPartIdOrNull;
+    if (focus != null && _featuresPartId == focus && pathEquals(path, _focusRelPath)) return _featureById(id)?.type;
+    return null;
+  }
+
+  /// Whether a read-only feature row offers Edit in context: its feature has an edit panel (an import or a Fill Surface has none), and no tool
+  /// or other session holds the screen (moving the focus would take its target away).
+  bool _canEditFeatureInContext(AssemblyTreeRow row) {
+    final type = _readOnlyFeatureType(row);
+    return type != null &&
+        featureTypeHasEditPanel(type) &&
+        _focusStack != null &&
+        !_anyToolSessionActive &&
+        !_assemblyMultiSelect.active &&
+        !_buildMultiSelect.active;
+  }
+
+  /// Edit in context (C3, `docs/assembly-tree-overhaul-scope.md` 12.6): focuses the feature's part (every level down to it, as Make Focus from
+  /// a nested row does; inside Edit Alone, within it), switches to the Part lens so that part is live, and once its own features have landed
+  /// opens the feature's panel at its rollback point, as Edit on a live row does. A focus change, a lens switch, a document change or a newer
+  /// Edit in context before the features land cancels it (the stale-answer rule). The focus and the lens stay where they are after the panel
+  /// closes (answer 5).
+  Future<void> _editFeatureInContext(AssemblyTreeRow row) async {
+    final path = _featureRowOwnerPath(row);
+    final featureId = row.featureId;
+    final stack = _focusStack;
+    if (path == null || featureId == null || stack == null || !_canEditFeatureInContext(row)) return;
+    final token = ++_editInContextToken;
+    _clearTransientError();
+    final moved = !pathEquals(path, _focusRelPath);
+    if (moved) {
+      // As a crumb or a lens switch: a multi-select belongs to the level being left.
+      _exitMultiSelect();
+      if (!_focusToTreePath(path)) return;
+    }
+    if (_lens != AssemblyLens.part) _setLens(AssemblyLens.part);
+    final revision = stack.revision;
+    final lensChanges = _lensChanges;
+    final documentKey = _treeDocumentKey;
+    final partId = _focusPartIdOrNull;
+    bool stale() =>
+        !mounted ||
+        token != _editInContextToken ||
+        !identical(stack, _focusStack) ||
+        stack.revision != revision ||
+        lensChanges != _lensChanges ||
+        documentKey != _treeDocumentKey ||
+        partId != _focusPartIdOrNull;
+    if (moved) {
+      await _refreshFocusTargetContent();
+      if (stale()) return;
+      _revealFocusedRow();
+    } else if (_featuresPartId != partId) {
+      try {
+        await _refreshFeatures();
+      } on ApiException catch (e) {
+        if (!stale()) setState(() => _errorMessage = e.message);
+        return;
+      }
+    }
+    if (stale() || _featuresPartId != partId) return;
+    final feature = _featureById(featureId);
+    if (feature == null) {
+      // Deleted meanwhile (by another client, or the list the row came from was older).
+      setState(() => _errorMessage = 'That feature is no longer in ${_focusStack?.currentLabel ?? _treeRootDisplayName}');
+      return;
+    }
+    // The live part's row for the feature is the selection (the tree opens down to it), then the panel opens on it.
+    final liveKey = _liveTreeKey;
+    if (liveKey != null) {
+      final key = '$liveKey#feature:$featureId';
+      _selectLiveKey(key, _entitiesMadeBy(feature), featureId: featureId);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _treeModel.selectedKey == key) _treeController.expandToSelection();
+      });
+    }
+    await _onFeatureTap(feature);
+  }
+
+  /// A read-only feature row's menu (its long-press and right click): Edit in context, its one action.
+  Future<void> _readOnlyFeatureMenu(AssemblyTreeRow row, {Offset? at}) async {
+    if (!_canEditFeatureInContext(row)) return;
+    final action = await showContextMenu<bool>(context, at: at, [
+      const ActionSheetEntry<bool>(action: true, label: 'Edit in context', icon: Icons.edit_outlined),
+    ]);
+    if (action == true && mounted) await _editFeatureInContext(row);
   }
 
   /// A row the tree's picker takes (a sketch for a pending Extrude, a source for Mirror / Pattern, a surface, a loft section...).
@@ -29525,6 +29654,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _onTreeRowLongPress(row);
       },
       onRowEdit: live ? _editLiveRow : null,
+      onRowEditInContext: (row) => unawaited(_editFeatureInContext(row)),
+      canEditInContext: _canEditFeatureInContext,
       onRowPick: _onLiveTreeRowPick,
       onRowContextMenu: (row, at) => row.live ? _onLiveTreeRowContextMenu(row, at) : _onTreeRowContextMenu(row, at),
       onVisibilityToggle: (row) => unawaited(row.live ? _toggleLiveRowVisibility(row) : _onTreeRowVisibilityToggle(row)),

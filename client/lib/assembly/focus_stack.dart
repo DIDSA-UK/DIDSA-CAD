@@ -47,6 +47,11 @@ class AssemblyFocusStack {
 
   AssemblyFocusStack(this.rootPartId);
 
+  /// Counts every change of the focus ([push], [pop], [clear]; [setLevels] through them). C3: an action that waits for the focused Part's
+  /// content compares it, so a focus that moved away and back meanwhile still counts as a change.
+  int get revision => _revision;
+  int _revision = 0;
+
   /// B3: the display name of every focused level, the outermost first (the breadcrumb strip's crumbs after the root's).
   List<String> get labelPath => _labelPath;
 
@@ -95,6 +100,7 @@ class AssemblyFocusStack {
   /// `occurrenceDisplayName`'s own result) - purely for [currentLabel]'s own
   /// breadcrumb display, never resolved again after this call.
   void push(String partId, String occurrenceId, String displayName) {
+    _revision++;
     _overrides.push(partId);
     _occurrencePath = [..._occurrencePath, occurrenceId];
     _labelPath = [..._labelPath, displayName];
@@ -104,6 +110,7 @@ class AssemblyFocusStack {
   /// Un-focuses back to whatever was focused before, or [rootPartId] if this
   /// was the last focus pushed. A no-op (returns null) if already at root.
   String? pop() {
+    _revision++;
     if (_occurrencePath.isNotEmpty) {
       _occurrencePath = _occurrencePath.sublist(0, _occurrencePath.length - 1);
     }
@@ -119,6 +126,7 @@ class AssemblyFocusStack {
   /// Un-focuses all the way back to [rootPartId] in one step - e.g. closing
   /// the assembly file or opening a different one.
   void clear() {
+    _revision++;
     _overrides.clear();
     _occurrencePath = const [];
     _labelPath = const [];

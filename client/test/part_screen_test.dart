@@ -1644,6 +1644,15 @@ class _TreeProbe {
 
   AssemblyTreeRow _row(String key) => model.visibleRows().firstWhere((r) => r.key == key);
 
+  /// C3: a read-only feature row's menu, as a right click opens it, and its Edit in context.
+  Future<void> menuFeature(WidgetTester tester, String key) async {
+    view.onRowContextMenu!(_row(key), const Offset(300, 200));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.text('Edit in context'));
+    await tester.pump();
+  }
+
   AssemblyTreeRow _itemRow(AssemblyRowKind kind, AssemblyFolderItem item) => AssemblyTreeRow(
         key: '${kind == AssemblyRowKind.mate ? '#mates' : '#patterns'}#item:${item.id}',
         kind: kind,
@@ -13997,6 +14006,213 @@ void main() {
         expect(model.nodeAtPath(['plate'])?.constraint?.status, ConstraintState.fullyConstrained,
             reason: "the older load's answer (under-constrained) did not replace the newer one's");
         expect(model.focusPath, ['plate']);
+      });
+
+      // C3 (#13, `docs/assembly-tree-overhaul-scope.md` 12.6): a read-only feature row under a part that is not live offers Edit in context.
+      group('Edit in context (C3)', () {
+        final deepFeatures = <Map<String, dynamic>>[
+          {'type': 'sketch', 'id': 'd1-sketch', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+          // No edit panel: offers no Edit in context.
+          {'type': 'import', 'id': 'd1-import', 'locked': true, 'produces': 'body'},
+          {
+            'type': 'extrude', 'id': 'd1-extrude', 'sketch_feature_id': 'd1-sketch', 'extrude_type': 'boss', 'start_distance': 0.0,
+            'end_distance': 10.0, 'locked': true, 'produces': 'body',
+          },
+          {
+            'type': 'create_plane', 'id': 'd1-plane', 'locked': false, 'produces': 'plane', 'origin': [0.0, 0.0, 5.0],
+            'normal': [0.0, 0.0, 1.0], 'x_axis': [1.0, 0.0, 0.0], 'y_axis': [0.0, 1.0, 0.0],
+          },
+        ];
+
+        /// The nested document with one level more: `sub` (placed twice, asm-1 and asm-2) holds c1, itself the assembly `deep` holding the
+        /// part d1. d1 is three levels down; its features are [deepFeatures].
+        Future<_FakeDocumentBackend> openDeep(WidgetTester tester,
+            {LayoutModeController? layout, Future<void> Function(http.Request request)? around}) {
+          return openNested(tester, layout: layout, around: around, configure: (b) {
+            b.subOccurrences = {
+              'sub': [occ('c1', part: 'deep', ref: 'parts/deep.didsa'), occ('c2')],
+              'deep': [occ('d1')],
+            };
+            b.extraAssemblyInstances = [
+              for (final a in ['asm-1', 'asm-2']) ...[instance([a, 'c1', 'd1']), instance([a, 'c2'])],
+            ];
+            b.extraPartFeatures['d1-part'] = [for (final f in deepFeatures) {...f}];
+            b.treeFeatureCounts['d1-part'] = deepFeatures.length;
+          });
+        }
+
+        /// Opens the rows down to [path]'s part and its features.
+        Future<void> openDownTo(WidgetTester tester, List<String> path) async {
+          final view = _TreeProbe(tester).view;
+          for (var i = 1; i <= path.length; i++) {
+            view.model.setOpen(path.sublist(0, i).join('/'), true);
+          }
+          view.onFeaturesRequested!(path);
+          view.controller!.refresh();
+          await settle(tester);
+          await settle(tester);
+          view.controller!.reveal(path);
+          await settle(tester);
+        }
+
+        Finder featureRow(String key) => find.byKey(ValueKey('tree-row:$key'));
+        List<String> focused(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath;
+
+        /// A double-click as a mouse makes it (two presses of their own, spaced as a person's are; see the D5 test).
+        Future<void> doubleClick(WidgetTester tester, Finder row) async {
+          final at = tester.getCenter(row);
+          for (var i = 0; i < 2; i++) {
+            await tester.tapAt(at, kind: PointerDeviceKind.mouse);
+            if (i == 0) await tester.pump(const Duration(milliseconds: 60));
+          }
+        }
+
+        LayoutModeController desktop() =>
+            LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+
+        testWidgets('a double-click on a feature three levels down focuses its part, Part lens, its panel open on that feature', (tester) async {
+          final backend = await openDeep(tester, layout: desktop());
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          const key = 'asm-1/c1/d1#feature:d1-extrude';
+          expect(featureRow(key), findsOneWidget, reason: 'the part row lists its features, read-only');
+          expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == key).live, isFalse);
+          expect(focused(tester), isEmpty);
+
+          await doubleClick(tester, featureRow(key));
+          await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+          expect(focused(tester), ['asm-1', 'c1', 'd1'], reason: 'every level down to the part is pushed');
+          expect(find.byType(ExtrudePanel), findsOneWidget);
+          expect(backend.meshRequestsByPartId['d1-part']!.map((r) => r['rollback_excluded_feature_ids']), contains('d1-plane'),
+              reason: "rolled back to the extrude, in the focused part's own mesh");
+          // The desktop pane gives way to the tool panel. Closing it: the focus and the Part lens stay (answer 5), the part is the live row
+          // and the feature's own live row is the selection.
+          await tester.tap(find.descendant(of: find.byType(ExtrudePanel), matching: find.text('Cancel')));
+          await settle(tester);
+          await settle(tester);
+          expect(find.byType(ExtrudePanel), findsNothing);
+          expect(focused(tester), ['asm-1', 'c1', 'd1']);
+          expect(_TreeProbe(tester).view.title, 'Build Tree');
+          expect(_TreeProbe(tester).model.liveKey, 'asm-1/c1/d1', reason: 'the part is the live row');
+          expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude');
+          expect(tester.takeException(), isNull);
+        });
+
+        testWidgets('on a phone: the bar of a selected read-only feature row has Edit in context, and it does the same', (tester) async {
+          tester.view.physicalSize = const Size(390, 844);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          final backend = await openDeep(tester);
+          // The sheet starts closed; a pick of the part brings it up (at peek, with the selected row and its bar).
+          tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+                const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c1/d1'),
+              );
+          await settle(tester);
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          const key = 'asm-1/c1/d1#feature:d1-extrude';
+          // Selected as a tap selects (the view marks the row; the host's tap does nothing else for a read-only row).
+          final probe = _TreeProbe(tester);
+          probe.model.selectedKey = key;
+          await probe.tapRow(key);
+          probe.view.controller!.refresh();
+          await settle(tester);
+          expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+          expect(find.byKey(const ValueKey('tree-bar-edit-in-context')), findsOneWidget);
+          expect(find.byKey(const ValueKey('tree-bar-edit')), findsNothing, reason: 'a read-only row has no live Edit');
+          expect(focused(tester), isEmpty, reason: 'a tap only selects');
+          await tester.tap(find.byKey(const ValueKey('tree-bar-edit-in-context')));
+          await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+          expect(focused(tester), ['asm-1', 'c1', 'd1']);
+          expect(backend.meshRequestsByPartId['d1-part']!.map((r) => r['rollback_excluded_feature_ids']), contains('d1-plane'));
+        });
+
+        testWidgets('a feature with no edit panel (an import) offers no Edit in context', (tester) async {
+          await openDeep(tester);
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          final view = _TreeProbe(tester).view;
+          final rows = _TreeProbe(tester).model.visibleRows();
+          AssemblyTreeRow row(String id) => rows.firstWhere((r) => r.key == 'asm-1/c1/d1#feature:$id');
+          expect(view.canEditInContext!(row('d1-import')), isFalse);
+          expect(view.canEditInContext!(row('d1-extrude')), isTrue);
+          expect(view.canEditInContext!(row('d1-sketch')), isTrue);
+        });
+
+        testWidgets('the row menu (right click) offers Edit in context', (tester) async {
+          await openDeep(tester);
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          final view = _TreeProbe(tester).view;
+          view.onRowContextMenu!(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1/d1#feature:d1-extrude'),
+              const Offset(300, 200));
+          await settle(tester);
+          await settle(tester);
+          await tester.tap(find.text('Edit in context'));
+          await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+          expect(focused(tester), ['asm-1', 'c1', 'd1']);
+        });
+
+        testWidgets('a focus change before the features land opens nothing', (tester) async {
+          Completer<void>? hold;
+          await openDeep(tester, layout: desktop(), around: (request) async {
+            if (hold != null && request.url.path == '/document/parts/d1-part/features' && request.method == 'GET') await hold.future;
+          });
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          final held = hold = Completer<void>();
+          await doubleClick(tester, featureRow('asm-1/c1/d1#feature:d1-extrude'));
+          await _pumpUntil(tester, () => focused(tester).join('/') == 'asm-1/c1/d1');
+          await settle(tester);
+          // The person moves the focus (a crumb of the strip) while the part's features are on their way.
+          await _TreeProbe(tester).exitFocus();
+          await settle(tester);
+          hold = null;
+          held.complete();
+          for (var i = 0; i < 6; i++) {
+            await settle(tester);
+          }
+          expect(find.byType(ExtrudePanel), findsNothing, reason: 'the focus changed while it waited: stale, dropped');
+          expect(focused(tester), ['asm-1', 'c1'], reason: "the person's focus stays");
+          expect(tester.takeException(), isNull);
+        });
+
+        testWidgets('a lens switch before the features land opens nothing', (tester) async {
+          Completer<void>? hold;
+          await openDeep(tester, around: (request) async {
+            if (hold != null && request.url.path == '/document/parts/d1-part/features' && request.method == 'GET') await hold.future;
+          });
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          final held = hold = Completer<void>();
+          await _TreeProbe(tester).menuFeature(tester, 'asm-1/c1/d1#feature:d1-extrude');
+          await _pumpUntil(tester, () => focused(tester).join('/') == 'asm-1/c1/d1');
+          await switchLens(tester, 'Assembly');
+          hold = null;
+          held.complete();
+          for (var i = 0; i < 6; i++) {
+            await settle(tester);
+          }
+          expect(find.byType(ExtrudePanel), findsNothing);
+          expect(_TreeProbe(tester).view.title, 'Assembly Tree');
+        });
+
+        testWidgets('the second placement of a sub-assembly focuses the second path', (tester) async {
+          await openDeep(tester, layout: desktop());
+          await openDownTo(tester, ['asm-2', 'c1', 'd1']);
+          await doubleClick(tester, featureRow('asm-2/c1/d1#feature:d1-extrude'));
+          await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+          expect(focused(tester), ['asm-2', 'c1', 'd1']);
+        });
+
+        testWidgets('inside Edit Alone: a feature row of the re-rooted tree is edited within Edit Alone', (tester) async {
+          final backend = await openDeep(tester, layout: desktop());
+          await _TreeProbe(tester).menuAction('asm-1', 'Edit Alone');
+          await settle(tester);
+          await settle(tester);
+          expect(find.byKey(const ValueKey('edit-alone-pill')), findsOneWidget);
+          expect(_TreeProbe(tester).model.tree?.partId, 'sub', reason: 'the tree is rooted at the sub-assembly');
+          await openDownTo(tester, ['c1', 'd1']);
+          await doubleClick(tester, featureRow('c1/d1#feature:d1-extrude'));
+          await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+          expect(focused(tester), ['asm-1', 'c1', 'd1'], reason: "Edit Alone's own level, then the levels down to the part");
+          expect(find.byKey(const ValueKey('edit-alone-pill')), findsOneWidget, reason: 'still in Edit Alone');
+          expect(backend.meshRequestsByPartId['d1-part']!.map((r) => r['rollback_excluded_feature_ids']), contains('d1-plane'));
+        });
       });
     });
   });

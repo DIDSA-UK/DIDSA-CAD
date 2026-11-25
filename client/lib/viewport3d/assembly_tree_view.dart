@@ -111,6 +111,8 @@ class AssemblyTreeView extends StatefulWidget {
     this.onRowTap,
     this.onRowLongPress,
     this.onRowEdit,
+    this.onRowEditInContext,
+    this.canEditInContext,
     this.onRowPick,
     this.onRowContextMenu,
     this.onVisibilityToggle,
@@ -188,6 +190,12 @@ class AssemblyTreeView extends StatefulWidget {
   /// Edit the row: a double-tap (touch) or a double-click (desktop) on a feature row of the live part, and only there (a tap stays select-only).
   /// Null leaves the gesture out, and with it the delay a single tap would otherwise wait for a second one.
   final void Function(AssemblyTreeRow row)? onRowEdit;
+
+  /// C3 (#13): Edit in context on a read-only feature row (a feature of a part that is not live, spec section 7): a double-tap (touch), a
+  /// double-click (desktop) and the phone bar's "Edit in context". The host focuses that part, makes it live and opens the feature. Offered only
+  /// on the rows [canEditInContext] accepts (the host knows the feature's type; a row without an edit panel has none). Null leaves it out.
+  final void Function(AssemblyTreeRow row)? onRowEditInContext;
+  final bool Function(AssemblyTreeRow row)? canEditInContext;
 
   /// A row that the model's picker says is pickable (or picked, to take it back) was tapped (spec section 13's picker modes; see
   /// [AssemblyTreeModel.setPicker]). A locked row shows its reason in the banner and does not call this.
@@ -484,13 +492,24 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     widget.onRowLongPress?.call(row);
   }
 
-  /// A double-tap / double-click: Edit, on a live feature row.
+  /// A double-tap / double-click: Edit, on a live feature row; Edit in context on a read-only one (C3).
   void _edit(AssemblyTreeRow row) {
     if (widget.isMultiSelectMode || widget.model.picker != null) return;
     // The double-tap wins the gesture, so the single tap never ran: select through the host first (the viewport highlight follows).
     _tap(row);
-    widget.onRowEdit?.call(row);
+    if (row.live) {
+      widget.onRowEdit?.call(row);
+    } else {
+      widget.onRowEditInContext?.call(row);
+    }
   }
+
+  /// C3: whether [row] is a read-only feature row that offers Edit in context.
+  bool _editsInContext(AssemblyTreeRow row) =>
+      !row.live &&
+      row.kind == AssemblyRowKind.feature &&
+      widget.onRowEditInContext != null &&
+      (widget.canEditInContext?.call(row) ?? false);
 
   void _reveal(List<String> path, {required bool select}) {
     _doReveal(path, select: select);
@@ -928,11 +947,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                 : null,
             onPin: () => widget.onToggleCoarsePin?.call(r),
             pickMulti: picker?.multi ?? false,
-            onDoubleTap: widget.onRowEdit != null &&
-                    r.isLiveFeature &&
-                    featureTypeHasEditPanel(r.type ?? '') &&
-                    picker == null &&
-                    !widget.isMultiSelectMode
+            onDoubleTap: picker == null &&
+                    !widget.isMultiSelectMode &&
+                    ((widget.onRowEdit != null && r.isLiveFeature && featureTypeHasEditPanel(r.type ?? '')) || _editsInContext(r))
                 ? () => _edit(r)
                 : null,
             bracket: _bracketFor(r, colours),
@@ -1369,6 +1386,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         _BarButton('tree-bar-alone', Icons.edit_outlined, 'Alone', widget.onAloneSelected),
         more,
       ]);
+    }
+    // C3: a read-only feature row (a part that is not live) has one action, Edit in context.
+    if (_editsInContext(row)) {
+      return [_BarButton('tree-bar-edit-in-context', Icons.edit_outlined, 'Edit in context', widget.onRowEditInContext)];
     }
     if (!row.live) return null;
     switch (row.kind) {
