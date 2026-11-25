@@ -453,6 +453,53 @@ void main() {
       expect(asked, ['a', 'a']);
     });
 
+    // C3 (#13): a read-only feature row (a part that is not live) offers Edit in context where the host allows it.
+    testWidgets('a read-only feature row: the bar has Edit in context, only where the host allows it', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([_node('a', ['a'], featureCount: 2)]));
+      model.setOpen('a', true);
+      model.setFeatures(['a'], const [AssemblyFeature('f1', 'Extrude 1'), AssemblyFeature('f2', 'Import 1')]);
+      model.selectedKey = 'a#feature:f1';
+      final edited = <String>[];
+      Widget view() => _host(AssemblyTreeView(
+            model: model,
+            onHideSelected: (_) {},
+            onRowEditInContext: (row) => edited.add(row.key),
+            canEditInContext: (row) => row.featureId == 'f1',
+          ));
+      await tester.pumpWidget(view());
+      expect(find.byKey(const ValueKey('tree-bar-edit-in-context')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tree-bar-edit')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('tree-bar-edit-in-context')));
+      await tester.pump();
+      expect(edited, ['a#feature:f1']);
+
+      // A feature the host refuses (no edit panel): no bar.
+      model.selectedKey = 'a#feature:f2';
+      await tester.pumpWidget(view());
+      await tester.pump();
+      expect(find.byKey(const ValueKey('tree-bar-edit-in-context')), findsNothing);
+    });
+
+    testWidgets('a double-tap on a read-only feature row is Edit in context; none without the callback', (tester) async {
+      final model = AssemblyTreeModel(tree: _tree([_node('a', ['a'], featureCount: 2)]));
+      model.setOpen('a', true);
+      model.setFeatures(['a'], const [AssemblyFeature('f1', 'Extrude 1'), AssemblyFeature('f2', 'Import 1')]);
+      final edited = <String>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(
+        model: model,
+        onRowEditInContext: (row) => edited.add(row.key),
+        canEditInContext: (row) => row.featureId == 'f1',
+      )));
+      for (final label in ['Extrude 1', 'Import 1']) {
+        await tester.tap(find.text(label));
+        await tester.pump(const Duration(milliseconds: 60));
+        await tester.tap(find.text(label));
+        await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 20));
+      }
+      expect(edited, ['a#feature:f1'], reason: 'the import has no edit panel: its double-tap does nothing');
+      expect(model.selectedKey, 'a#feature:f2', reason: 'a tap still selects');
+    });
+
     testWidgets('collapse all keeps the selected row listed, so the phone bar stays', (tester) async {
       final model = AssemblyTreeModel(tree: _tree([
         _node('a', ['a'], kind: 'assembly', children: [_node('b', ['a', 'b'])]),
