@@ -984,13 +984,13 @@ in VR T3 (Phase D) (owner, 25 Nov: 12.8, answer 8).
 ```
 C1 contract + Flutter model (spec 14, vectors v3; no part_screen.dart) ──────────────┐
 C0 Flutter Phase B follow-up ─┐                                                      v
-C3 Flutter #13 ───────────────┴─ (one after the other, either first) ──> C2 Flutter #7 ──> C4 Flutter #12 + #15 ──> C5 Flutter #14
+C3 Flutter #13 ───────────────┴─ (one after the other, either first) ──> C2 Flutter #7 ──> C4 Flutter #12 + #15 ──> C5 Flutter #14 ──> C10
 C6 VR one tree component, PARTS tab ──> C7 VR room tree ──> C8 VR BUILD tab on spec 13 ──> C9 VR parts open to features
 ```
 
 - A chunk starts only after the chunks it depends on are **merged to `main`**, and starts from `main`.
 - **Flutter chunks that touch `part_screen.dart` run one at a time:** C0 and C3 in either order (whichever can start), then
-  C2, C4, C5. C1 touches only the contract, the reference, `assembly_tree_model.dart` and its test (it keeps the model's
+  C2, C4, C5, C10. C1 touches only the contract, the reference, `assembly_tree_model.dart` and its test (it keeps the model's
   existing API, see its brief), so it runs alongside C0 or C3. The VR chain runs alongside all of
   them, one VR chunk at a time (they all touch `assembly_tree_window.gd` or what C6 splits it into).
 - **C0 waits for the owner's Phase B device checks** (10.8), since it takes what they find. If they are not done when Phase C
@@ -1349,6 +1349,27 @@ registered.
 **Left for later (Phase D, VR T3):** the Mates and Patterns folders in VR (with vectors v3), laser hover, the leader line and
 Frame (answer 8).
 
+#### C10. Flutter: end-of-Phase-C follow-up (DIDSA-CAD `client/`)
+
+**Suggested model:** mid-tier. **Size:** S. **Depends on:** C5 (the last Flutter chunk; one at a time).
+
+**Build:**
+- **C3-1** (12.8; owner, 25 Nov: answer 11): the edited feature's row stays selected after its edit panel closes, confirmed or
+  cancelled, for both ways in (Edit in context and Edit on a live row), on desktop and on the phone overlay (where the
+  panel's own selection change clears it today).
+- **C3-2** (12.8; owner, 25 Nov: answer 12): a Cancel, or a Confirm that leaves the feature as it was, does not mark the part
+  or its ancestors unsaved (today Cancel restores the feature with a PATCH, which does). A real edit still marks them.
+- Every 12.8 nit a later chunk (C2, C4, C5) addresses to C10, by number.
+
+**Done when:** `part_screen_test` adds: after Edit in context and Cancel the feature's live row is still selected (desktop and
+390 x 844); the same after Confirm and after Edit on a live row; Cancel leaves no unsaved mark on the part or the assembly;
+a Confirm with nothing changed leaves none; a real edit still marks it; a test for each nit taken. `flutter analyze` clean,
+whole `flutter test` passes.
+
+**Don't touch:** the contract, the model, VR.
+
+**Left for later:** what the owner's Phase C device checks find (a follow-up after them, as C0 was for Phase B).
+
 ### 12.7 Progress
 
 | Chunk | Status | PR | Model used | Notes |
@@ -1363,6 +1384,7 @@ Frame (answer 8).
 | C7 VR room tree | not started | | | |
 | C8 VR BUILD tab on spec 13 | not started | | | |
 | C9 VR parts to features | not started | | | |
+| C10 Flutter end-of-phase follow-up | not started | | | C3-1, C3-2 (answers 11, 12) and nits addressed to C10 |
 
 ### 12.8 Hand-off
 
@@ -1429,7 +1451,9 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
-Focus here to edit, the drawer's mates); C3 (desktop and phone: edit a feature three levels down from the tree); C4 (desktop:
+Focus here to edit, the drawer's mates); C3 (desktop and phone: edit a feature three levels down from the tree by a double-click, the bar and the menu; the second
+placement of a sub-assembly; from inside Edit Alone; how long the wait feels while a large part loads); C10 (after Edit and
+Cancel, the feature still selected and no unsaved mark); C4 (desktop:
 hover both ways on a large assembly, each column); C5 (desktop: the flyout with Extrude, Mirror and a mate tool open); C6
 (headset: the World tree as before; on the PARTS tab, the bar for a part and for a sub-assembly (its greyed reason), Table from the
 bar on a nested part, Room and Delete, Find, and whether the list beside the two-line bar is tall enough (Mesa: 242 px with a part selected, 213 px with a
