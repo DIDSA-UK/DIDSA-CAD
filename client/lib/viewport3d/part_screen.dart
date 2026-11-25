@@ -1434,7 +1434,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   Map<String, String> get _treeNamesByFullPath {
     final tree = _treeModel.tree;
     if (tree == null) return const {};
-    final prefix = _treeRootPath;
+    // The root the tree in the model was applied at: full paths of its rows (B5, B4's review, item 4: not the next root's while one is pending).
+    final prefix = _appliedTreeRootPath;
     // Walked once per loaded tree and focus (the getter is read in build).
     final cacheKey = '${prefix.join('/')}|${_focusRelPath.join('/')}';
     if (identical(tree, _namesTree) && cacheKey == _namesPrefix) return _namesCache;
@@ -13324,6 +13325,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _isolateSnapshot = null;
       _selectedTreePath = null;
       _appliedTreeRootPath = const <String>[];
+      _appliedFocusPath = const <String>[];
       // Assembly support Phase 20: seed the root Part's own per-Part state
       // now that its real id is finally known - [_focusPartId] reads as
       // `part.id` at this exact point (nothing has been focused yet), so
@@ -13588,6 +13590,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       final oldSelected = _selectedTreePath;
       _focusRootedFor = needsFocusRoot ? focusFull : null;
       _appliedTreeRootPath = _treeRootPath;
+      _appliedFocusPath = List<String>.of(_focusStack?.currentOccurrencePath ?? const <String>[]);
       if (oldSelected != null && oldSelected.isNotEmpty) _selectedTreePath = _relativeTreePath([...oldRoot, ...oldSelected]);
       _occurrences = occurrences;
       _mates = _mateFollowedNotes.merge(mates);
@@ -26000,6 +26003,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The root path ([_treeRootPath]) the tree in [_treeModel] was applied at, and so the root [_selectedTreePath] was last remapped from.
   List<String> _appliedTreeRootPath = const <String>[];
 
+  /// The focus path ([AssemblyFocusStack.currentOccurrencePath]) the tree in [_treeModel] was applied at: what [_focusRelPath] measures while the
+  /// tree's root is pending, so the focus and the rows it is measured against are the same tree's.
+  List<String> _appliedFocusPath = const <String>[];
+
   /// The tree's root moved (a focus change out of a focus-rooted tree, Edit Alone) and the load that follows has not landed yet.
   bool get _treeRootPending => !listEquals(_appliedTreeRootPath, _treeRootPath);
   List<String>? get _focusRootedPath {
@@ -26029,9 +26036,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// The focused row's path from the tree's root (`[]` when the root itself is the working level). Inside Edit Alone the focus starts at the
   /// target, so it is the levels pushed since.
+  ///
+  /// B5 (B4's review, item 4): while the tree's root is changing ([_treeRootPending]: a focus change out of a focus-rooted tree, until the load
+  /// lands) this is the focus and root the tree in the model was applied at, because selections, row paths and the flat lists are that tree's;
+  /// measured from the next root, a row of the old tree read as another level's.
   List<String> get _focusRelPath {
-    final focus = _focusStack?.currentOccurrencePath ?? const <String>[];
-    final root = _treeRootPath;
+    final focus = _treeRootPending ? _appliedFocusPath : (_focusStack?.currentOccurrencePath ?? const <String>[]);
+    final root = _appliedTreeRootPath;
     return focus.length > root.length ? focus.sublist(root.length) : const <String>[];
   }
 
@@ -26068,7 +26079,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The Part that owns the occurrence at [path]: the focused Part for a row directly in it, else the Part the parent row places.
   String? _ownerPartIdOf(List<String> path) {
     if (path.isEmpty) return null;
-    if (path.length == 1) return _treeRootPartIdOrNull;
+    // B5 (B4's review, item 4): the root of the tree in the model, which the path names rows of (the next root's while a load is pending).
+    if (path.length == 1) return _treeModel.tree?.partId ?? _treeRootPartIdOrNull;
     return _treeModel.nodeAtPath(path.sublist(0, path.length - 1))?.resolvedPartId;
   }
 
@@ -27289,7 +27301,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// would hide it under the other placement too.
   Future<void> _setOccurrenceHidden(OccurrenceDto occurrence, bool hidden, {List<String>? path}) async {
     final rowPath = path ?? _focusChildPath(occurrence.id);
-    final focusPartId = _focusStack?.current ?? _part?.id;
+    // B5 (B4's review, item 4): the Part the row is a component of in the tree in the model; the focused Part is the same one except while the
+    // tree's root is changing, when the row is the old tree's and the focus is already the next one's.
+    final focusPartId = _ownerPartIdOf(rowPath) ?? _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
     if (_sceneMode) {
       // Scenes (S3): Hide / Show while a scene shows is the scene's.

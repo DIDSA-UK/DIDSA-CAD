@@ -429,6 +429,32 @@ void main() {
     expect(_row('#body:ext'), findsOneWidget);
   });
 
+  // B5 (B4's review, item 3): the same, when the tree object changed with the root's arrival (a new tree of the same root: the merge branch).
+  testWidgets("the Part screen's open rows apply once its tree gets the seed's root, also when the seed's tree was replaced with it", (tester) async {
+    var seed = _seed('plate-part');
+    var main = AssemblyTreeModel(tree: _assembly())..openAll(const ['z']);
+    late StateSetter rebuild;
+    await tester.pumpWidget(_host(StatefulBuilder(builder: (context, setState) {
+      rebuild = setState;
+      return SketchFeatureTree(
+        tree: seed,
+        livePart: _live(),
+        openKeys: main.openKeys,
+        fetchedFrom: main,
+        sketchFeatureId: 'current',
+        onClose: () {},
+      );
+    })));
+    await tester.pump();
+    expect(_row('#body:ext'), findsNothing);
+    rebuild(() {
+      seed = _seed('plate-part'); // a new object, the same root
+      main = AssemblyTreeModel(tree: seed)..openAll(const ['#bodies']);
+    });
+    await tester.pump();
+    expect(_row('#body:ext'), findsOneWidget);
+  });
+
   testWidgets("the sketcher's open rows start as the Part screen's and its changes stay its own", (tester) async {
     final openKeys = <String>['#bodies'];
     await tester.pumpWidget(_host(_tree(openKeys: openKeys)));
