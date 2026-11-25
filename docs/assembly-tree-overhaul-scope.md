@@ -529,8 +529,7 @@ As 9.3, plus what Phase A taught (and section 11, which applies to every phase):
   README), VR through `tools/assembly_tree_render_check/` (Xvfb + Mesa against a live backend). Put them in the PR. A Mesa or
   Xvfb render is not a phone or the headset; say which you have.
 - **Repo rules that tripped Phase A:** DIDSA-VR test registration (`tests/run_all.sh`, a row in `tests/README.md`,
-  `tests/e2e_ci_list.txt` for live-backend tests); generated vectors are never edited by hand; no model identifiers in
-  anything pushed.
+  `tests/e2e_ci_list.txt` for live-backend tests); generated vectors are never edited by hand.
 
 ### 10.4 Report format
 
@@ -865,7 +864,7 @@ storing Edit Alone's open rows.
 ### 10.8 Hand-off (25 Nov): owner-run from here
 
 From B4 on there is no standing manager session (section 11, "Owner-run chunks"). Each worker reviews its own PR, updates
-its 10.7 row and this section's lists in its PR, and the owner checks CI and trailers and merges.
+its 10.7 row and this section's lists in its PR, and the owner checks CI and merges.
 
 **In flight:** nothing. B3 (#406) merged 25 Nov.
 
@@ -943,7 +942,8 @@ briefs refer to them rather than repeating them.
 - **Every worker prompt carries these lines:** "Start from main"; "Follow section N of
   docs/assembly-tree-overhaul-scope.md; reply with the report and open the PR"; "You may commit and push to your session's
   branch and open the PR" (B1's session was blocked without it); "Run /code-review on your PR and fix what it finds
-  before you reply"; "No model identifiers in any file, doc or PR text".
+  before you reply". (A rule against model names in commits and docs was dropped on 25 Nov: the owner does not mind
+  them. The cloud sessions' own instructions may still keep them out; neither a prompt line nor a check is needed.)
 - **Keep prompts short:** the brief lives in the doc, and the prompt adds only what was learned since.
 
 **Owner-run chunks** (from 25 Nov, B4 on). The manager's reviews kept finding important bugs the workers' own reviews
@@ -952,8 +952,8 @@ not the review, so the review moves to the worker and the manager goes:
 1. The worker writes the chunk, then runs `/code-review high` on the whole PR (`origin/main...HEAD`), fixes the important
    findings, runs `/code-review medium` on its fix commits, fixes those, and updates its 10.7 row and the 10.8 lists
    (leftover nits, the device check) in the same PR. Nits go to 10.8, not another round.
-2. The owner checks that CI ran and passed on the PR's head commit (a run that never started is not green) and that no
-   commit trailer names a model, then merges (squash-merge if a trailer names one).
+2. The owner checks that CI ran and passed on the PR's head commit (a run that never started is not green), then
+   merges.
 3. A manager session is opened only to write a phase's briefs, for a contract or other risky chunk, or when a chunk's
    rounds stop converging; it hands off and closes.
 
