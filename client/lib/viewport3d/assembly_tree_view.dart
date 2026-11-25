@@ -307,6 +307,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   final GlobalKey _sheetKey = GlobalKey(debugLabel: 'assembly-tree-sheet');
 
   /// B5: the pin arithmetic for the rows the last build listed (see [AssemblyTreePinIndex]); null outside the sheet.
+  final ValueNotifier<int> _pinTick = ValueNotifier<int>(0);
+  bool _pinCheckPending = false;
   List<AssemblyTreeRow>? _pinRows;
   AssemblyTreePinIndex? _pinIndex;
 
@@ -378,6 +380,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     widget.controller?._detach(this);
     _flash.dispose();
     _scroll.dispose();
+    _pinTick.dispose();
     _filterText.dispose();
     _filterFocus.dispose();
     super.dispose();
@@ -689,26 +692,29 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     return LayoutBuilder(builder: (context, constraints) {
       final maxPinned = _maxPinned(constraints.maxHeight);
       return ListenableBuilder(
-        listenable: _scroll,
+        listenable: Listenable.merge([_scroll, _pinTick]),
         builder: (context, _) {
           final offset = _scroll.hasClients ? _scroll.offset : 0.0;
           // A layout that clamps the offset (a branch closed above) does not notify: look again after the frame.
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (mounted && _scroll.hasClients && _scroll.offset != offset) setState(() {});
-          });
+          if (!_pinCheckPending) {
+            _pinCheckPending = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              _pinCheckPending = false;
+              if (mounted && _scroll.hasClients && _scroll.offset != offset) _pinTick.value++;
+            });
+          }
           final chain = pin.pinnedAt(offset, h, maxPinned: maxPinned);
           if (chain.isEmpty) return const SizedBox.shrink();
           final scheme = Theme.of(context).colorScheme;
           // A finger on the chain scrolls the list under it (the chain is above the list, so the list would never see it).
-          return GestureDetector(
-            behavior: HitTestBehavior.translucent,
+          return Align(
+            alignment: Alignment.topCenter,
+            child: GestureDetector(
             onVerticalDragUpdate: (d) {
               if (!_scroll.hasClients) return;
               final p = _scroll.position;
               _scroll.jumpTo((p.pixels - d.delta.dy).clamp(p.minScrollExtent, p.maxScrollExtent));
             },
-            child: Align(
-            alignment: Alignment.topCenter,
             child: Material(
             key: const ValueKey('tree-pinned-chain'),
             color: scheme.surface,
@@ -725,7 +731,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
               ],
             ),
             ),
-          ));
+            ),
+          );
         },
       );
     });

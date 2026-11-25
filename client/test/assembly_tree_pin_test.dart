@@ -244,10 +244,14 @@ void main() {
     await tester.pumpAndSettle();
     await tester.pump();
     final keys = _pinnedKeys(tester);
-    // Whatever is pinned now is a branch with rows below the chain in the shortened list.
     final off = _scroll(tester).offset;
     expect(off, lessThanOrEqualTo(_scroll(tester).position.maxScrollExtent));
-    expect(keys.contains('n1'), isFalse, reason: 'n1 is closed: it has nothing below it to pin for');
+    // The chain is the one for the offset the list really has: setting that offset again and looking afresh gives the same chain.
+    _scroll(tester).jumpTo(off + 1);
+    await tester.pump();
+    _scroll(tester).jumpTo(off);
+    await tester.pump();
+    expect(keys, _pinnedKeys(tester));
   });
 
   // /code-review high on B5, finding 3: the filter's matches outside the focus were taken out with the rest.

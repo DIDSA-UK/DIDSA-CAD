@@ -853,8 +853,8 @@ storing Edit Alone's open rows.
 | P2 Part lens on the one tree | merged 24 Nov | #401 | strongest | Three rounds. Round 1 fixed the send-back (live folders, previous Part's features, surface picks, ticks, superseded refresh, P1's model items) but brought in three regressions (a failed mesh hid the features, a moved live row kept its selection, a superseded call swallowed the newer error); round 2 fixed them. Round 2's review found only rarer cases: carried into P3 (10.8). "Roll back to here" left out until the rollback bar (#17, Phase D): owner, 24 Nov. |
 | P3 sketcher's tree, old panel gone | merged 24 Nov | #404 | strongest | Two rounds (squash-merged). Manager send-back: the sketcher's fallback tree took another root's features; a mesh error that was not an `ApiException` escaped the banner. The fix brought one unreadable-answer rule to both API clients (`decodeOrUnreadable`). Owner, 24 Nov: a mate-drag commit whose 200 answer cannot be read is not retried (option A). Leftovers carried into B3 (10.8). |
 | B3 Flutter #5 | merged 25 Nov | #406 | mid-tier (brief said strongest) | Two rounds. Manager send-back: with a deeper focus, a tree built from the lists (or truncated, or without the focus node) lost the focused level and its selection; the focused Part's list under the root; "used N ×" counted from a one-level tree; `<n>` lost while focused; Show outside the focus did nothing. A fallback tree rooted at the focused Part (as before B3) covers those cases. P3's four carried items done. Nits carried into B4 (10.8). |
-| B4 Flutter phone sheet | PR open 25 Nov | #408 | strongest | Owner-run (section 11). Self-review: `/code-review high` on the PR (7 important: a pick's peek overwrote the person's height and left an empty sheet; landscape lost the bar for nested and live rows; Pattern's source pick at peek; the filter under a held sheet; picks during a reload; the bottom inset), then `medium` on the fix commit (6 important: an open filter under a held sheet, the drag with an inset, the pick's peek across a tool and a turn, two surfaces for a Part-lens pick in landscape, a focus-level id during a reload). All fixed with a test each. P2's drawer behind the bar: fixed. B3's and P3's carried items done. Nits carried into B5 (10.8). |
-| B5 Flutter phone deep trees | not started | | | |
+| B4 Flutter phone sheet | merged 25 Nov | #408 | strongest | Owner-run (section 11). Self-review: `/code-review high` on the PR (7 important: a pick's peek overwrote the person's height and left an empty sheet; landscape lost the bar for nested and live rows; Pattern's source pick at peek; the filter under a held sheet; picks during a reload; the bottom inset), then `medium` on the fix commit (6 important: an open filter under a held sheet, the drag with an inset, the pick's peek across a tool and a turn, two surfaces for a Part-lens pick in landscape, a focus-level id during a reload). All fixed with a test each. P2's drawer behind the bar: fixed. B3's and P3's carried items done. Nits carried into B5 (10.8). |
+| B5 Flutter phone deep trees | PR open 25 Nov | see the PR | mid-tier | Owner-run (section 11). Self-review: `/code-review high` on the PR (3 important: a drag on the pinned chain did not scroll the list; the chain kept a stale offset after a layout clamped it; under Focus a filter's matches outside it were dropped), then `medium` on the fix commit (2 important: the drag handler covered the whole list, a post-frame `setState` on every scroll). All fixed with a test each. B4's items 1-4 done (item 4 in part: see 10.8). Nits carried (10.8). |
 | B6 VR row build | merged 21 Nov | VR #99 | mid-tier | Two send-backs (PARTS-tab scroll box, folder bubble, press guard). 2,002 rows, Mesa 943+337 ms -> 67+112 ms; PARTS tab scroll ~12 ms/frame slower (Table / Bring rebuilt per bind). Owner headset check pending. |
 | B7 VR #10 + #8 | merged 22 Nov | VR #100 | mid-tier | Fix round merged before the manager's check; post-merge review found five issues: follow-up B7.1. |
 | B7.1 VR follow-up | merged 24 Nov | VR #101 | mid-tier | Three rounds (squash-merged: two commit trailers named a model). Round 2's review found rarer orders of the same status-hint race and an older observer bug: carried into B8 (10.8). |
@@ -866,23 +866,18 @@ storing Edit Alone's open rows.
 From B4 on there is no standing manager session (section 11, "Owner-run chunks"). Each worker reviews its own PR, updates
 its 10.7 row and this section's lists in its PR, and the owner checks CI and merges.
 
-**In flight:** B4 (phone portrait sheet), #408 open 25 Nov; it did B3's and P3's carried items (all five, a test each).
+**In flight:** B5 (phone deep trees, Focus in portrait), PR open 25 Nov; it did B4's nits 1-4 (a test each, item 4 in part).
 
-**Next:** B5 (10.6, after B4 merges; mid-tier). It carries these nits from B4's reviews:
-  1. A drag that starts at peek with the Edit Alone or focus strip on can overflow the sheet's column until the finger has
-     moved far enough (`_peekPixels` counts only the handle, the header, a row and the bar).
-  2. In the sheet the title is the root's label, and the Edit Alone or focus strip under it names the root again (rule 5);
-     keep `title` while a strip is on, or drop the strip's first crumb.
-  3. The sketcher's tree applies the Part screen's open rows (the late-root catch-up) only when its tree object is
-     unchanged; when the root arrives with a new same-root tree (the `merge` branch) they wait for a later rebuild.
-  4. While the tree's root is changing (a focus change out of a focus-rooted tree, until the load lands) the focus helpers
-     (`_focusRelPath`, `_isFocusChild`, the hidden-row memo keys) measure from the next root while selections are paths
-     in the tree in the model. B4 gave picks the model's root and withholds the focus-level id in that window; the rest
-     is B3's design and still mixed.
-  5. Open questions for the owner's device check rather than bugs: the Start button is hidden while the sheet is up; the
-     sheet's close at peek keeps the selection (the drawer's X cleared it; an empty-space tap still does); the peek
-     under a tool panel sits behind the panel; the sketcher's own tree still floats as a side panel in portrait.
-Then B2.1 only if the owner's checks give it anything.
+**Next:** B2.1 only if the owner's checks give it anything (10.7). Nits carried from B5's reviews, for whichever chunk next touches the sheet:
+  1. The sheet's strips and banners get what is left after a hard-coded 48 dp header and 100 dp for the bar (`_sheetFrame` / body); the phone filter header or the multi-select header can differ, and an overfull set of strips is clipped (Done, Focus here can be cut off at half on a small phone). Measure instead.
+  2. `_peekPixels` does not count the Focus here bar that peek now shows for a selected row outside the focus: the drag's peek snap is one row short then.
+  3. With more ancestors than `maxPinned` the deepest are kept and drawn at shallower slots than they were tested for, so a kept ancestor's own row can show twice (and `_flushScroll` assumes slot `min(level, maxPinned)`).
+  4. `_appliedFocusPath` is read when the load lands, not captured before the awaits; two placements of one Part focused in turn during a load can pair a tree with the other's path.
+  5. A pinned row has the same inner keys (`tree-chevron:`, ...) and semantics as the list row it repeats: two rows announced.
+  6. `_dropOutside` is off while filtering; clearing the filter drops them again without resetting the cached pin index (it is keyed on list identity only), and a selected match outside the focus then relies on the `selectedRow` fallback.
+  7. B4 item 4 is done for the helpers (`_focusRelPath`, `_treeNamesByFullPath`, `_ownerPartIdOf`, Hide's owner); Fix, Rename, Delete and Isolate still read `_focusStack.current` as the owner and `_TreeTarget`'s fallback does too, in the window while a root change is loading.
+  8. The pinned chain has no push-out animation (a row leaves when its branch has nothing left under the chain) and a flick from the chain does not fling.
+  9. For the owner's device check (not bugs): a tap on a pinned ancestor on the way to the focus only selects it (closing it would hide the focus); the chain takes at most half the list; B4's open questions of the Start button, the close at peek, the peek under a tool panel and the sketcher's floating tree stay open.
 
 **Next VR chunk** (a B8.1, or whichever VR chunk comes next) carries these from B8's review:
   1. `room_keys` lights a group only when a direct member is the room's Part: an ancestor or a group further up shows no
@@ -904,7 +899,7 @@ alone; a part focused in an assembly in the Part lens; lens switching with folde
 and phone: the sketcher's tree beside a sketch, a convert pick from it, locked rows, the banner when the server's answer
 cannot be read); B3 (desktop, and a tablet or a phone in landscape: Make Focus on a nested part with dim, rail, crumbs and
 Focus here on a dimmed row; Edit Alone on a twice-placed sub-assembly and on a nested part with "in ...", "used 2 ×",
-crumbs and Done); B4 (phone portrait: the sheet's peek, half and full and the drag and fling between them; a 3D pick
+crumbs and Done); B5 (phone portrait: a tree 6 or more levels deep opened to its bottom, scrolling a long branch with the chain pinned above it, a tap on a pinned ancestor, a drag that starts on the chain, Tree > Expand to selection and a 3D pick of a deep part with the chain in the way, Make Focus on a nested part and then the rows outside it gone, the focused branch and the chain to it; indent stopping at the fifth level); B4 (phone portrait: the sheet's peek, half and full and the drag and fling between them; a 3D pick
 opening a closed sheet at peek and closing it again when the selection is cleared; the bar and More for a component and
 for a feature, body and plane in the Part lens; a tool panel dropping the sheet to peek and its return; the filter opening
 it to full; Edit Alone's pill at peek; the bar above the home indicator; and in landscape the drawer with Zoom, the bar
