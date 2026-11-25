@@ -853,7 +853,7 @@ storing Edit Alone's open rows.
 | P2 Part lens on the one tree | merged 24 Nov | #401 | strongest | Three rounds. Round 1 fixed the send-back (live folders, previous Part's features, surface picks, ticks, superseded refresh, P1's model items) but brought in three regressions (a failed mesh hid the features, a moved live row kept its selection, a superseded call swallowed the newer error); round 2 fixed them. Round 2's review found only rarer cases: carried into P3 (10.8). "Roll back to here" left out until the rollback bar (#17, Phase D): owner, 24 Nov. |
 | P3 sketcher's tree, old panel gone | merged 24 Nov | #404 | strongest | Two rounds (squash-merged). Manager send-back: the sketcher's fallback tree took another root's features; a mesh error that was not an `ApiException` escaped the banner. The fix brought one unreadable-answer rule to both API clients (`decodeOrUnreadable`). Owner, 24 Nov: a mate-drag commit whose 200 answer cannot be read is not retried (option A). Leftovers carried into B3 (10.8). |
 | B3 Flutter #5 | merged 25 Nov | #406 | mid-tier (brief said strongest) | Two rounds. Manager send-back: with a deeper focus, a tree built from the lists (or truncated, or without the focus node) lost the focused level and its selection; the focused Part's list under the root; "used N ×" counted from a one-level tree; `<n>` lost while focused; Show outside the focus did nothing. A fallback tree rooted at the focused Part (as before B3) covers those cases. P3's four carried items done. Nits carried into B4 (10.8). |
-| B4 Flutter phone sheet | not started | | | Also: P2 saw the Part-lens drawer behind the bar on a phone |
+| B4 Flutter phone sheet | PR open 25 Nov | (see PR) | strongest | Owner-run (section 11). Self-review: `/code-review high` on the PR (7 important: a pick's peek overwrote the person's height and left an empty sheet; landscape lost the bar for nested and live rows; Pattern's source pick at peek; the filter under a held sheet; picks during a reload; the bottom inset), then `medium` on the fix commit (6 important: an open filter under a held sheet, the drag with an inset, the pick's peek across a tool and a turn, two surfaces for a Part-lens pick in landscape, a focus-level id during a reload). All fixed with a test each. P2's drawer behind the bar: fixed. B3's and P3's carried items done. Nits carried into B5 (10.8). |
 | B5 Flutter phone deep trees | not started | | | |
 | B6 VR row build | merged 21 Nov | VR #99 | mid-tier | Two send-backs (PARTS-tab scroll box, folder bubble, press guard). 2,002 rows, Mesa 943+337 ms -> 67+112 ms; PARTS tab scroll ~12 ms/frame slower (Table / Bring rebuilt per bind). Owner headset check pending. |
 | B7 VR #10 + #8 | merged 22 Nov | VR #100 | mid-tier | Fix round merged before the manager's check; post-merge review found five issues: follow-up B7.1. |
@@ -866,18 +866,23 @@ storing Edit Alone's open rows.
 From B4 on there is no standing manager session (section 11, "Owner-run chunks"). Each worker reviews its own PR, updates
 its 10.7 row and this section's lists in its PR, and the owner checks CI and merges.
 
-**In flight:** nothing. B3 (#406) merged 25 Nov.
+**In flight:** B4 (phone portrait sheet), PR open 25 Nov; it did B3's and P3's carried items (all five, a test each).
 
-**Next:** B4 (10.6, phone portrait sheet; strongest model). It carries these from B3's review, one test each where it is a bug:
-  1. The selection remap after a focus change uses the wrong root.
-  2. Crumbs during a multi-select.
-  3. `_hasNativeShape` does not check that each sketch's and part's `id` is a String (a later `as String` throws a
-     `TypeError`, not the "not a valid .didsa save" banner).
-  4. `decodeOrUnreadable` maps `NoSuchMethodError` / `RangeError` / `StateError` to "unreadable answer", which can hide a
-     client bug; narrow it or report the stack too.
-  5. From P3: the sketcher's own open rows are not carried across a change of root; open rows are not applied when the
-     Part screen's tree only later gets the seed's root; a joined `ApiException` has no status code.
-Then B5 (after B4), and B2.1 only if the owner's checks give it anything.
+**Next:** B5 (10.6, after B4 merges; mid-tier). It carries these nits from B4's reviews:
+  1. A drag that starts at peek with the Edit Alone or focus strip on can overflow the sheet's column until the finger has
+     moved far enough (`_peekPixels` counts only the handle, the header, a row and the bar).
+  2. In the sheet the title is the root's label, and the Edit Alone or focus strip under it names the root again (rule 5);
+     keep `title` while a strip is on, or drop the strip's first crumb.
+  3. The sketcher's tree applies the Part screen's open rows (the late-root catch-up) only when its tree object is
+     unchanged; when the root arrives with a new same-root tree (the `merge` branch) they wait for a later rebuild.
+  4. While the tree's root is changing (a focus change out of a focus-rooted tree, until the load lands) the focus helpers
+     (`_focusRelPath`, `_isFocusChild`, the hidden-row memo keys) measure from the next root while selections are paths
+     in the tree in the model. B4 gave picks the model's root and withholds the focus-level id in that window; the rest
+     is B3's design and still mixed.
+  5. Open questions for the owner's device check rather than bugs: the Start button is hidden while the sheet is up; the
+     sheet's close at peek keeps the selection (the drawer's X cleared it; an empty-space tap still does); the peek
+     under a tool panel sits behind the panel; the sketcher's own tree still floats as a side panel in portrait.
+Then B2.1 only if the owner's checks give it anything.
 
 **Next VR chunk** (a B8.1, or whichever VR chunk comes next) carries these from B8's review:
   1. `room_keys` lights a group only when a direct member is the room's Part: an ancestor or a group further up shows no
@@ -899,7 +904,11 @@ alone; a part focused in an assembly in the Part lens; lens switching with folde
 and phone: the sketcher's tree beside a sketch, a convert pick from it, locked rows, the banner when the server's answer
 cannot be read); B3 (desktop, and a tablet or a phone in landscape: Make Focus on a nested part with dim, rail, crumbs and
 Focus here on a dimmed row; Edit Alone on a twice-placed sub-assembly and on a nested part with "in ...", "used 2 ×",
-crumbs and Done); B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1
+crumbs and Done); B4 (phone portrait: the sheet's peek, half and full and the drag and fling between them; a 3D pick
+opening a closed sheet at peek and closing it again when the selection is cleared; the bar and More for a component and
+for a feature, body and plane in the Part lens; a tool panel dropping the sheet to peek and its return; the filter opening
+it to full; Edit Alone's pill at peek; the bar above the home indicator; and in landscape the drawer with Zoom, the bar
+only for nested components and rows tapped in the tree); B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1
 (headset: Find kept after adding a component and after Save As, To selection, Collapse, remembered rows after reopening,
 the "unavailable" hint); B8 (headset: rows outside an open room dimmed and the rail on the inside rows, the bar's "Placed
 N times" against a real backend, the hint order on the row width). Each worker adds its chunk's check from 10.1 here.

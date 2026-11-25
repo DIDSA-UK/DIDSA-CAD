@@ -95,6 +95,20 @@ void main() {
     expect(tester.widget<Text>(find.byKey(const ValueKey('tree-title'))).data, 'Rover');
     expect(_row(''), findsNothing, reason: 'the root row is the title');
     expect(tester.getSize(_row('a')).height, kAssemblyTreeRowHeightPhone);
+    // The root is the title, so its children start where the root row would have (section 5: one level of indent saved), and a child of
+    // theirs one level in.
+    final chevronA = tester.getTopLeft(find.byKey(const ValueKey('tree-chevron:a'))).dx;
+    final side = AssemblyTreeView(model: _model(), onClose: () {});
+    await tester.pumpWidget(MaterialApp(
+      home: LayoutModeScope(
+        controller: LayoutModeController(preference: LayoutPreference.phone, windowSize: const Size(390, 844), mouseActive: false),
+        child: Scaffold(body: side),
+      ),
+    ));
+    await tester.pumpAndSettle();
+    final sideChevronA = tester.getTopLeft(find.byKey(const ValueKey('tree-chevron:a'))).dx;
+    expect(chevronA, sideChevronA - 16, reason: 'one 16 dp level less than the side panel');
+    await _pump(tester, _SheetHost(model: _model()));
     // Rows carry no buttons (rule 3): nothing in a healthy row is an IconButton.
     expect(find.descendant(of: _row('a'), matching: find.byType(IconButton)), findsNothing);
   });

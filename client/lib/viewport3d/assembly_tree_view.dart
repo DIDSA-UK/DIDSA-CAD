@@ -780,6 +780,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       Widget rowWidget(double pulse) => _TreeRow(
             key: ValueKey('tree-row:${r.key}'),
             pulse: pulse,
+            indentShift: _sheet ? 1 : 0,
             row: r,
             height: h,
             desktop: desktop,
@@ -1352,7 +1353,11 @@ class _TreeRow extends StatefulWidget {
     required this.onContextMenu,
     required this.onEye,
     this.pulse = 0,
+    this.indentShift = 0,
   });
+
+  /// Levels of indent taken off every row: 1 in the phone sheet, whose title is the root row (B4, section 5: one level saved).
+  final int indentShift;
 
   /// 0..1, the flash of a mate row (see [AssemblyTreeView.flashItemIds]).
   final double pulse;
@@ -1509,7 +1514,7 @@ class _TreeRowState extends State<_TreeRow> {
 
     Widget content = Row(
       children: [
-        SizedBox(width: 6 + r.depth * (desktop ? 14.0 : 16.0)),
+        SizedBox(width: 6 + math.max(0, r.depth - widget.indentShift) * (desktop ? 14.0 : 16.0)),
         chevron,
         Opacity(
           opacity: dim,
