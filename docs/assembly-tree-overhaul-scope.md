@@ -1378,7 +1378,7 @@ whole `flutter test` passes.
 | C1 contract + Flutter model | merged 25 Nov | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
 | C2 Flutter #7 | merged | #416 | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
 | C3 Flutter #13 | merged | #414 | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
-| C4 Flutter #12 + #15 | PR open: the owner checks CI, then merges | #PR | Sonnet 5.5 | Hover both ways (desktop): a row lights its part through a separate light-only input (`ViewportTreeHover`: a placement by full path, a group its members, a mate its components, a live feature what it made), the part under the pointer marks its row or the nearest listed ancestor, 60 ms throttle; a Columns menu (Eye, Colour, DOF, and P1's pin moved in; every column off by default, saved); grouping keeps its header icon |
+| C4 Flutter #12 + #15 | PR open: the owner checks CI, then merges | #417 | Sonnet 5.5 | Hover both ways (desktop): a row lights its part through a separate light-only input (`ViewportTreeHover`: a placement by full path, a group its members, a mate its components, a live feature what it made), the part under the pointer marks its row or the nearest listed ancestor, 60 ms throttle; a Columns menu (Eye, Colour, DOF, and P1's pin moved in; every column off by default, saved); grouping keeps its header icon |
 | C5 Flutter #14 | not started | | | |
 | C6 VR one tree component | PR open: the owner checks CI, then merges | DIDSA-VR #105 | Opus 5.5 | occurrence_tree_view.gd + occurrence_tree_scope.gd (World, Table PARTS); PARTS bar Table / Bring / Fix / Hide / Isolate / Rename / Room / Delete; 10.8 VR leftovers 1-3 done (tests/tree_c6.gd) |
 | C7 VR room tree | not started | | | |
@@ -1388,7 +1388,7 @@ whole `flutter test` passes.
 
 ### 12.8 Hand-off
 
-**In flight:** C4 (#PR, PR open), C6 (VR #105, PR open). C1 merged (#412), C2 merged (#416), C3 merged (#414).
+**In flight:** C4 (#417, PR open), C6 (VR #105, PR open). C1 merged (#412), C2 merged (#416), C3 merged (#414).
 
 **For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
 with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
