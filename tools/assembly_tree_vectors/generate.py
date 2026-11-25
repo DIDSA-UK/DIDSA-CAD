@@ -279,7 +279,8 @@ THREE_BOLTS = {"parts": {"wheel": part("Wheel", [occ("b1", "bolt", constraint=FU
 # ---- version 3: a folder per assembly level (spec section 14) --------------------------------------------------------------
 # crane places a base, one Boom sub-assembly twice (mates, no patterns), and a tower (patterns, no mates) that places mid, which
 # places top: three levels down, top has mates in every state (two broken, one of them lost; one held; one suppressed) and two
-# patterns (one suppressed). The root has mates (a Width, a Symmetric, a held one) and a pattern.
+# patterns (one suppressed). The root has mates (a Width, a Symmetric, a held one) and a pattern. Top's held mate is also broken in its
+# listing: it counts in the folder's `broken` but reads amber (held) as an item.
 LEVELS_PARTS = {
     "crane": part(
         "Crane",
@@ -300,7 +301,7 @@ LEVELS_PARTS = {
         "Top",
         [occ("hook", "hook", constraint={"status": "under_constrained", "dof": 1, "broken_mates": 1}), occ("pulley", "pulley", constraint={"status": "fully_constrained", "dof": 0, "broken_mates": 1})],
         feature_count=2,
-        mates={"count": 5, "suppressed": 1, "broken": 2, "near": 0, "held": 1, "lost": 1},
+        mates={"count": 5, "suppressed": 1, "broken": 3, "near": 0, "held": 1, "lost": 1},
         patterns={"count": 2, "suppressed": 1},
     ),
     **{pid: part(name) for pid, name in (("base_p", "Base"), ("boom_arm", "Boom arm"), ("pin", "Pin"), ("ladder", "Ladder"), ("hook", "Hook"), ("pulley", "Pulley"))},
@@ -356,7 +357,7 @@ BOOM_MATES = [mate("b1", "parallel", status="near"), mate("b2", "coincident", st
 TOP_MATES = [
     mate("m1", "coincident"),
     mate("m2", "coincident", status="broken", lost=True),
-    mate("m3", "distance", held=True),
+    mate("m3", "distance", status="broken", held=True),
     mate("m4", "concentric", suppressed=True),
     mate("m5", "angle", status="broken"),
 ]
@@ -709,12 +710,12 @@ CASES += [
         "levels",
         ["boom_l", "boom_r"],
     ),
-    level_case("levels_folder_open_with_items", "An open level folder lists its fetched items at depth + 1, keyed <folder>#item:<id>; items carry no bubble and cannot open; near beats held on one item.", "levels", ["boom_l", "boom_l#mates"], ITEMS_ALL),
+    level_case("levels_folder_open_with_items", "An open level folder lists its fetched items at depth + 1, keyed <folder>#item:<id>; items carry no bubble and cannot open; held beats near on one item.", "levels", ["boom_l", "boom_l#mates"], ITEMS_ALL),
     level_case("levels_unfetched_open_folder", "An open folder whose items are not fetched lists nothing under it (a client may show progress).", "levels", ["boom_l", "boom_l#mates"]),
     level_case(
         "levels_three_down_every_item_state",
         "Three levels down: top's children, then its Mates and Patterns folders, then its fetched features. Every item state: lost (also broken), "
-        "broken, held, suppressed, none; a suppressed pattern. A level with patterns and no mates (tower) has only Patterns; open and unfetched, it lists nothing.",
+        "held (also broken: amber, though the folder's broken count includes it), broken, suppressed, none; a suppressed pattern. A level with patterns and no mates (tower) has only Patterns; open and unfetched, it lists nothing.",
         "levels",
         TOP_OPEN + ["tower#patterns", "tower/mid/top#mates", "tower/mid/top#patterns"],
         ITEMS_ALL,
@@ -742,7 +743,7 @@ CASES += [
     level_case("levels_filter_mates_unfetched", "`:mates` with nothing fetched: only fetched items can match, so the root alone.", "levels", query=":mates"),
     level_case(
         "levels_filter_errors_three_down",
-        "`:errors` inside a collapsed branch: the broken hook and pulley, and the lost and broken mates three levels down (the folder and every ancestor listed, open).",
+        "`:errors` inside a collapsed branch: the broken hook and pulley, and the lost and broken mates three levels down (the folder and every ancestor listed, open); the held mate that is also broken is amber, not listed.",
         "levels",
         items=ITEMS_TOP,
         query=":errors",
@@ -754,7 +755,14 @@ CASES += [
         items=ITEMS_TOP,
         query="hook",
     ),
-    level_case("levels_filter_warnings", "`:warnings`: near and held items (and the near pin rows).", "levels", items=ITEMS_ALL, query=":warnings"),
+    level_case("levels_filter_warnings", "`:warnings`: near and held items (and the near pin rows); a held mate whose listing says broken is amber.", "levels", items=ITEMS_ALL, query=":warnings"),
+    level_case(
+        "levels_filter_held_and_broken",
+        "One item both held and broken (top's Distance 1): its state is held, so `:warnings distance` finds it and `:errors` (levels_filter_errors_three_down) does not.",
+        "levels",
+        items=ITEMS_TOP,
+        query=":warnings distance",
+    ),
     level_case("levels_filter_suppressed", "`:suppressed`: a suppressed mate and a suppressed pattern.", "levels", items=ITEMS_ALL, query=":suppressed"),
     level_case("levels_filter_item_label", "Items match by label: `width` finds the Width mate only; a folder's own label never matches (`mates`).", "levels", items=ITEMS_ALL, query="width"),
     level_case("levels_filter_folder_label", "`mates` and `patterns` are folders' labels: folders never match themselves.", "levels", items=ITEMS_ALL, query="patterns"),

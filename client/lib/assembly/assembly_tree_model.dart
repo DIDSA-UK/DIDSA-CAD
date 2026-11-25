@@ -138,14 +138,14 @@ class AssemblyFeature {
 /// How a mate / pattern item row reads: the colour of its icon and note.
 enum AssemblyItemTone { error, warning, info }
 
-/// The state slot of a mate or pattern item row (spec section 14), most severe first: [lost] and [broken] are red, [near] and [held]
-/// amber, [suppressed] dimmed. [wire] is the spelling in the spec and the vectors. Its own enum (not [AssemblyRowState]) so that the
+/// The state slot of a mate or pattern item row (spec section 14), in the spec's order: [lost] and [broken] are red, [held] and [near]
+/// amber, [suppressed] dimmed. A held mate reads [held] even when its listing says `broken` (owner, 25 Nov: C1 review, answer (a)). [wire] is the spelling in the spec and the vectors. Its own enum (not [AssemblyRowState]) so that the
 /// views' switches over the row states stay as they are; an item row's [AssemblyTreeRow.state] is [AssemblyRowState.none].
 enum AssemblyItemState {
   lost('lost'),
+  held('held'),
   broken('broken'),
   near('near'),
-  held('held'),
   suppressed('suppressed'),
   none('none');
 
@@ -209,13 +209,13 @@ class AssemblyFolderItem {
         lost: j['lost'] == true,
       );
 
-  /// The one state the item row shows, most severe first (spec section 14): lost > broken > near > held > suppressed > none. The host form
-  /// (no status; [tone] set) reads red as broken and amber as near.
+  /// The one state the item row shows (spec section 14): lost > held > broken > near > suppressed > none, so a held mate is amber even when
+  /// its listing says `broken`. The host form (no status; [tone] set) reads red as broken and amber as near (it cannot tell held from near).
   AssemblyItemState get state {
     if (lost) return AssemblyItemState.lost;
+    if (held) return AssemblyItemState.held;
     if (status == 'broken' || tone == AssemblyItemTone.error) return AssemblyItemState.broken;
     if (status == 'near' || tone == AssemblyItemTone.warning) return AssemblyItemState.near;
-    if (held) return AssemblyItemState.held;
     if (suppressed) return AssemblyItemState.suppressed;
     return AssemblyItemState.none;
   }

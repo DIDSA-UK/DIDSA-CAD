@@ -291,22 +291,23 @@ def plane_feature_key(owner_key: str, feature_id: str) -> str:
 
 # --- A folder per assembly level (spec section 14) ------------------------------------------------------------------------
 
-ITEM_STATES = ["lost", "broken", "near", "held", "suppressed", "none"]
+ITEM_STATES = ["lost", "held", "broken", "near", "suppressed", "none"]
 
 
 def item_state(item: dict[str, Any]) -> str:
     """The one state a mate or pattern item row shows, most severe first (`ITEM_STATES`). Input as the spec gives it: `status`
     (`ok` / `near` / `broken`, the `/mates` listing's), `held`, `lost` (`lost_references` not empty), `suppressed`; a pattern has
-    only `suppressed`. A missing field is ok / false."""
+    only `suppressed`. A missing field is ok / false. A held mate reads `held` (amber) even when its listing says `broken`: it sits on
+    the faces it was bound to until the person confirms them (owner, 25 Nov: C1 review, answer (a))."""
     if item.get("lost"):
         return "lost"
+    if item.get("held"):
+        return "held"
     status = item.get("status") or "ok"
     if status == "broken":
         return "broken"
     if status == "near":
         return "near"
-    if item.get("held"):
-        return "held"
     if item.get("suppressed"):
         return "suppressed"
     return "none"

@@ -490,12 +490,14 @@ class VersionThree(unittest.TestCase):
                 self.assertNotIn("items", c, c["name"])  # earlier kinds take no items: their inputs did not change
 
     def test_item_state_order(self):
-        self.assertEqual(ref.ITEM_STATES, ["lost", "broken", "near", "held", "suppressed", "none"])
+        # Owner, 25 Nov (C1 review, answer (a)): held comes before broken, as Flutter's mateFolderItems draws it.
+        self.assertEqual(ref.ITEM_STATES, ["lost", "held", "broken", "near", "suppressed", "none"])
         item = {"lost": True, "status": "broken", "held": True, "suppressed": True}
         self.assertEqual(ref.item_state(item), "lost")
-        self.assertEqual(ref.item_state({**item, "lost": False}), "broken")
-        self.assertEqual(ref.item_state({**item, "lost": False, "status": "near"}), "near")
-        self.assertEqual(ref.item_state({**item, "lost": False, "status": "ok"}), "held")
+        self.assertEqual(ref.item_state({**item, "lost": False}), "held")  # held and broken: amber
+        self.assertEqual(ref.item_state({**item, "lost": False, "held": False}), "broken")
+        self.assertEqual(ref.item_state({**item, "lost": False, "held": False, "status": "near"}), "near")
+        self.assertEqual(ref.item_state({**item, "lost": False, "held": True, "status": "near"}), "held")
         self.assertEqual(ref.item_state({"suppressed": True}), "suppressed")
         self.assertEqual(ref.item_state({}), "none")
         seen = {r["state"] for c in cases_of("level_folders") for r in c["expected"] if r["kind"] in ("mate", "pattern")}
@@ -554,7 +556,7 @@ class VersionThree(unittest.TestCase):
         self.assertIsNone(errors[3]["bubble"])  # its folder is listed
         without = {r["key"]: r for r in rows_of(case("levels_filter_row_without_its_folder"))}
         self.assertNotIn("tower/mid/top#mates", without)
-        self.assertEqual(without["tower/mid/top"]["bubble"], {"level": "error", "count": 2})  # keeps its level's bubble
+        self.assertEqual(without["tower/mid/top"]["bubble"], {"level": "error", "count": 3})  # keeps its level's bubble (the held mate counts as broken)
         mates = [r["key"] for r in rows_of(case("levels_filter_mates_token")) if r["match"]]
         self.assertTrue(mates and all("#mates#item:" in k for k in mates))
         self.assertFalse(any(k.startswith("boom_r") for k in (r["key"] for r in rows_of(case("levels_filter_mates_token")))))
@@ -562,6 +564,11 @@ class VersionThree(unittest.TestCase):
         self.assertEqual([r["key"] for r in rows_of(case("levels_filter_item_label")) if r["match"]], ["#mates#item:r1"])
         self.assertEqual(keys_of("levels_filter_folder_label"), [""])
         self.assertEqual([r["key"] for r in rows_of(case("levels_filter_suppressed")) if r["match"]], ["tower/mid/top#mates#item:m4", "tower/mid/top#patterns#item:p2"])
+        # A held mate whose listing says broken (top's m3): held, so amber: :warnings finds it, :errors does not; the folder still counts it.
+        self.assertNotIn("tower/mid/top#mates#item:m3", [r["key"] for r in errors])
+        self.assertEqual([r["key"] for r in rows_of(case("levels_filter_held_and_broken")) if r["match"]], ["tower/mid/top#mates#item:m3"])
+        held = {r["key"]: r for r in case("levels_three_down_every_item_state")["expected"]}
+        self.assertEqual((held["tower/mid/top#mates#item:m3"]["state"], held["tower/mid/top#mates"]["bubble"]), ("held", {"level": "error", "count": 3}))
         warnings = [r["key"] for r in rows_of(case("levels_filter_warnings")) if r["match"] and "#item:" in r["key"]]
         self.assertEqual(warnings, ["boom_l#mates#item:b1", "boom_l#mates#item:b2", "boom_r#mates#item:b1", "boom_r#mates#item:b2", "tower/mid/top#mates#item:m3", "#mates#item:r3"])
 

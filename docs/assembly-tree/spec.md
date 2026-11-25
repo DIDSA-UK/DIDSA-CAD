@@ -9,7 +9,7 @@ Contents: 1. the endpoint; 2. cost and `status`; 3. display names; 4. grouping r
 B's first chunk (B1) and only added: sections 1 to 10 stayed as they were, except the new row kinds in section 7, the new keys in
 section 8 and the version in section 9. Section 14 came with Phase C's first chunk (C1, vectors version 3) and **changes** what
 was there: every open assembly row lists its own Mates and Patterns folders (not only the root), an open assembly row's mates
-bubble moves to its Mates folder, mate and pattern items are rows, the filter lists a folder holding a match, and `:mates` is a
+bubble moves to its Mates folder, mate and pattern items are rows (a held mate reads amber), the filter lists a folder holding a match, and `:mates` is a
 token. Sections 6, 7, 8, 11, 12 and 13 say so where they are affected. The endpoint (section 1) did not change.
 
 Words used below: a **node** is one placed occurrence in the response; a **row** is one line a client draws; **siblings** are
@@ -363,8 +363,8 @@ for the open keys, every `match` is false, `unknown` is empty.
 | Token | A row meets it when |
 |---|---|
 | `:missing` | `state` is `missing` |
-| `:errors` | `state` is `missing`, `cycle`, `broken`, `over_constrained`, (section 13) `lost_reference`, or (section 14, an item) `lost` or `broken`: the red states |
-| `:warnings` | `state` is `near`, (section 13) `moved_reference`, or (section 14, an item) `near` or `held`: the amber states |
+| `:errors` | `state` is `missing`, `cycle`, `broken`, `over_constrained`, (section 13) `lost_reference`, or (section 14, an item) `lost` or `broken`: the red states. A held mate is never one: its state is `held`, even when its listing says `broken` |
+| `:warnings` | `state` is `near`, (section 13) `moved_reference`, or (section 14, an item) `held` or `near`: the amber states (a held mate whose listing says `broken` included) |
 | `:unsaved` | `state` is `unsaved` |
 | `:fixed` | the occurrence's `fixed` flag is true, whatever its `state` (with `status`, a row whose constraint says `fully_constrained` shows that state, not `fixed`, but still meets `:fixed`) |
 | `:hidden` | the row's `hidden` is true (an occurrence, or a feature, body, surface, curve or default plane; whatever its `state`) |
@@ -507,8 +507,10 @@ A collapsed row keeps its rolled-up `problems` bubble (section 6).
 
 **The folder's numbers and its items can differ.** The numbers come from the tree answer: `count` counts every mate,
 `broken` / `near` leave out mates touching a suppressed occurrence of the level, and `held` is not in the bubble. The items show
-each mate as the `/mates` listing gives it. So a folder can say `1` broken and list two red items (one is lost, or touches a
-suppressed occurrence), or show no bubble while an item is amber (held). Neither is wrong.
+each mate as the `/mates` listing gives it, in the item state order below. The folder's `broken` count includes held mates whose
+listing says `broken`, which read amber (`held`) as items. So a folder can say `2` broken and list one red item and one amber (held)
+one, say `1` broken and list two red items (one touches a suppressed occurrence), or show no bubble while an item is amber (a held
+mate whose listing says `ok`). Neither is wrong.
 
 **Items.** When a folder first opens, the client reads its level's listing: `GET /parts/{owner}/mates` for a Mates folder,
 `GET /parts/{owner}/component-patterns` for a Patterns folder, where `owner` is the node's `resolved_part_id` (the root's
@@ -528,13 +530,14 @@ folder whose items are not fetched lists nothing under it** (a client may show p
 | State | When | Suggested look |
 |---|---|---|
 | `lost` | `lost` (a lost mate is also `broken` in the listing; its state is `lost`) | red |
+| `held` | `held`, whatever its `status`: a held mate reads amber even when its listing says `broken` (it sits on the faces it was bound to until the person confirms them; "check this mate") | amber |
 | `broken` | `status` is `broken` | red |
 | `near` | `status` is `near` | amber |
-| `held` | `held` | amber |
 | `suppressed` | `suppressed` | dimmed |
 | `none` | none of the above | nothing |
 
-A pattern item's state is `suppressed` or `none`. `suppressed` is also the row's `suppressed` field, whichever state wins.
+(Owner, 25 Nov 2026, C1's review: `held` comes before `broken`, as Flutter's tree already draws a held mate.) A pattern item's state
+is `suppressed` or `none`. `suppressed` is also the row's `suppressed` field, whichever state wins.
 
 **Mate names.** A mate has no name of its own; its label is made from one level's `/mates` listing, in the listing's order:
 
@@ -556,7 +559,8 @@ A pattern item's state is `suppressed` or `none`. `suppressed` is also the row's
 `Linear 2`). (Flutter's `componentPatternDisplayName`.)
 
 **The filter (section 11).** `:mates` is a known token: any mate item row. `:errors` also matches items in a red state (`lost`,
-`broken`), `:warnings` items in an amber state (`near`, `held`), `:suppressed` suppressed items (mates and patterns). Items match
+`broken`), `:warnings` items in an amber state (`held`, `near`); a held mate whose listing says `broken` is `held`, so `:warnings`
+finds it and `:errors` does not, `:suppressed` suppressed items (mates and patterns). Items match
 by `label` (name terms) like any row. Only fetched items can match (as with features). A match inside a folder lists the folder,
 open, and its ancestors, as a group is listed; only the matching items are listed under it. Folders never match themselves (the
 word `mates` finds no folder). A folder is listed exactly when an item in it matches.

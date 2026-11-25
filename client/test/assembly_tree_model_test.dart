@@ -966,13 +966,21 @@ void main() {
           reason: 'boom_l is listed (its pin is near) but its folder is not: it keeps its level\'s bubble');
     });
 
-    test('the item state order', () {
+    test('the item state order: lost > held > broken > near > suppressed > none (owner, 25 Nov: a held mate is amber)', () {
       AssemblyItemState s({String status = 'ok', bool held = false, bool lost = false, bool suppressed = false}) =>
           AssemblyFolderItem.spec(id: 'x', label: 'x', status: status, held: held, lost: lost, suppressed: suppressed).state;
       expect(s(status: 'broken', lost: true, held: true, suppressed: true), AssemblyItemState.lost);
-      expect(s(status: 'broken', held: true, suppressed: true), AssemblyItemState.broken);
-      expect(s(status: 'near', held: true, suppressed: true), AssemblyItemState.near);
-      expect(s(held: true, suppressed: true), AssemblyItemState.held);
+      expect(s(status: 'broken', held: true, suppressed: true), AssemblyItemState.held);
+      expect(s(status: 'broken', suppressed: true), AssemblyItemState.broken);
+      expect(s(status: 'near', held: true, suppressed: true), AssemblyItemState.held);
+      expect(s(status: 'near', suppressed: true), AssemblyItemState.near);
+      expect([for (final v in AssemblyItemState.values) v.wire], ['lost', 'held', 'broken', 'near', 'suppressed', 'none']);
+      // A held and broken mate is amber: :warnings finds it, :errors does not.
+      final model = levels()
+        ..setFolderItems('tower/mid/top#mates', const [AssemblyFolderItem.spec(id: 'm3', label: 'Distance 1', status: 'broken', held: true)]);
+      bool matched(String q) => model.filteredRows(q).rows.any((r) => r.match && r.key == 'tower/mid/top#mates#item:m3');
+      expect(matched(':warnings'), isTrue);
+      expect(matched(':errors'), isFalse);
       expect(s(suppressed: true), AssemblyItemState.suppressed);
       expect(s(), AssemblyItemState.none);
     });
