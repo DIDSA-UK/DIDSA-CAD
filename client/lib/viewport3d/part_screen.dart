@@ -25989,6 +25989,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return for_ != null && listEquals(for_, _focusStack?.currentOccurrencePath) ? for_ : null;
   }
 
+  /// The focus levels that make up the tree's root path: the Edit Alone target's own, or, while the tree is rooted at the focused Part, the
+  /// whole focus; levels of a row in the tree come after them.
+  List<(String, String, String)> get _treeRootLevels =>
+      _focusRootedPath != null ? (_focusStack?.levels ?? const <(String, String, String)>[]) : (_editAlone?.levels ?? const <(String, String, String)>[]);
+
   /// The root's name for the strips ("in Rover > Mast", the first crumb).
   String get _treeRootDisplayName => _part?.name ?? _treeModel.tree?.partName ?? 'Assembly';
 
@@ -26290,9 +26295,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final stack = _focusStack;
     final levels = _focusLevelsOf(path);
     if (stack == null || levels == null) return false;
-    // Inside Edit Alone the tree's root is the target, and its own levels stay.
-    final base = _editAlone?.levels ?? const <(String, String, String)>[];
-    setState(() => stack.setLevels([...base, ...levels]));
+    setState(() => stack.setLevels([..._treeRootLevels, ...levels]));
     return true;
   }
 
@@ -27032,8 +27035,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
       return;
     }
-    final levels = _focusLevelsOf(rowPath);
-    if (levels == null) return;
+    final relLevels = _focusLevelsOf(rowPath);
+    if (relLevels == null) return;
+    // Whole levels from the document root (the tree may be rooted at the focused Part: its own levels come first).
+    final levels = [..._treeRootLevels, ...relLevels];
     if (_sceneMode) {
       _showSnack('Go back to the default view before editing a component alone');
       return;

@@ -12135,6 +12135,28 @@ void main() {
         expect(_TreeProbe(tester).model.selectedKey, 'c1', reason: 'a refresh does not clear a focus child\'s selection');
       });
 
+      // Review of the fix commits: in the focused-Part-rooted fallback, Make Focus and Edit Alone on a child extend the focus.
+      testWidgets('with the tree rooted at the focused Part, Make Focus and Edit Alone on a child extend the focus path', (tester) async {
+        final backend = await openNested(tester);
+        backend.assemblyTreeMissing = true;
+        await switchLens(tester, 'Part');
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub');
+        List<String> path() => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath;
+        await _TreeProbe(tester).menuAction('c1', 'Make Focus');
+        await settle(tester);
+        expect(path(), ['asm-1', 'c1'], reason: 'the child is pushed below the focus, which stays');
+        await _TreeProbe(tester).exitFocus();
+        await settle(tester);
+        await settle(tester);
+        await _TreeProbe(tester).menuAction('c2', 'Edit Alone');
+        await settle(tester);
+        await settle(tester);
+        expect(path(), ['asm-1', 'c2'], reason: 'Edit Alone on a child of the focused Part targets it by its whole path');
+      });
+
       testWidgets("the focused Part's components are never put at the root under another Part's id", (tester) async {
         var failRootOccurrences = false;
         final backend = await openNested(tester, around: (request) async {
