@@ -1390,6 +1390,9 @@ test in `tests/tree_c6.gd`.
 9. *C7.* The room tree's "in Rover > Mast" line is read-only.
 10. *Headset, from 10.8.* B8.1's root drawn as the way to a room (not dimmed) stays; longer-term testing on the headset may
     settle a preference, so it stays on the device-check list.
+11. *C3, its review (C3-1).* After an edit panel closes, the edited feature stays selected. Fixed at the end of Phase C, not in C3.
+12. *C3, its review (C3-2).* A part is not flagged unsaved when nothing changed (a Cancel, or a Confirm with nothing edited). Fixed at
+    the end of Phase C, not in C3.
 
 **Carried from C1's review (for C2; C1 may not touch the view):** C1-1, **important**: `:mates` is now a known token, so the app no
 longer says "unknown filter :mates", but only folders whose items were set are searched (in the app, only the root's until C2 fetches
@@ -1412,11 +1415,13 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
 - C6-1 (for C7): Table and Bring say "nothing of it is in the arena" in two wrong cases: a closed sub-assembly with a single
   part, read one level at a time; a nested part before the world has been indexed (before C6, the occurrence id alone found
   it). Fix: decide "sub-assembly" from the row's kind, and fall back to the occurrence id for nested rows.
-- C3-1 (for C2): the tree's selection after an edit panel closes follows what the panel left, as for Edit on a live row: Edit in context
-  selects the feature's row while the part loads, but on the phone overlay the host's selection (changed by the panel) clears it while the
-  panel is open. If the owner wants the edited feature still selected afterwards, it is one rule for both ways in.
-- C3-2 (for C2), noticed, not C3's: Cancel on an edit panel restores the feature with a PATCH, which marks the part unsaved (the C3
-  screenshot after Cancel shows "Unsaved: 1 other part"). The same happens from Edit on a live row.
+- C3-1 (**end of Phase C**; owner, 25 Nov: answer 11): the edited feature stays selected. Today the tree's selection after an edit panel
+  closes follows what the panel left: Edit in context selects the feature's row while the part loads, but on the phone overlay the host's
+  selection (changed by the panel) clears it while the panel is open. One rule for both ways in (Edit in context and Edit on a live row):
+  the edited feature's row is still selected after the panel closes, confirmed or cancelled.
+- C3-2 (**end of Phase C**; owner, 25 Nov: answer 12): nothing changed, nothing flagged. Cancel on an edit panel restores the feature
+  with a PATCH, which marks the part unsaved (the C3 screenshot after Cancel shows "Unsaved: 1 other part"); the same happens from Edit on
+  a live row. A Cancel (or a Confirm) that leaves the feature as it was must not mark the part, or its ancestors, unsaved.
 - C3-3 (for C2): a cancelled Edit in context (a focus change or a tool while the part loaded) leaves the focus and the lens it had already
   moved to, with no message; the person's own change is the reason, so nothing is said.
 - C6-2 (for C7): the PARTS list is short when the bar shows two lines of buttons and a long hint. If the headset check says
