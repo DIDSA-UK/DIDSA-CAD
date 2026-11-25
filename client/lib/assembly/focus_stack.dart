@@ -110,7 +110,7 @@ class AssemblyFocusStack {
   /// Un-focuses back to whatever was focused before, or [rootPartId] if this
   /// was the last focus pushed. A no-op (returns null) if already at root.
   String? pop() {
-    _revision++;
+    if (_overrides.isActive || _occurrencePath.isNotEmpty) _revision++;
     if (_occurrencePath.isNotEmpty) {
       _occurrencePath = _occurrencePath.sublist(0, _occurrencePath.length - 1);
     }

@@ -14147,6 +14147,55 @@ void main() {
           await tester.tap(find.text('Edit in context'));
           await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
           expect(focused(tester), ['asm-1', 'c1', 'd1']);
+          // Review fix: the menu never tapped the row, yet once the panel closes the tree selects the feature's live row.
+          await tester.tap(find.descendant(of: find.byType(ExtrudePanel), matching: find.text('Cancel')));
+          await settle(tester);
+          await settle(tester);
+          expect(_TreeProbe(tester).model.liveKey, 'asm-1/c1/d1');
+          expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude');
+        });
+
+        testWidgets('a tool started while the part loads keeps the screen: no panel opens over it', (tester) async {
+          Completer<void>? hold;
+          await openDeep(tester, around: (request) async {
+            if (hold != null && request.url.path == '/document/parts/d1-part/features' && request.method == 'GET') await hold.future;
+          });
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          final held = hold = Completer<void>();
+          await _TreeProbe(tester).menuFeature(tester, 'asm-1/c1/d1#feature:d1-extrude');
+          await _pumpUntil(tester, () => focused(tester).join('/') == 'asm-1/c1/d1');
+          // The part is live already (Part lens): the person opens Mirror meanwhile.
+          await tapStartCommand(tester, 'Mirror');
+          hold = null;
+          held.complete();
+          for (var i = 0; i < 6; i++) {
+            await settle(tester);
+          }
+          expect(find.byType(ExtrudePanel), findsNothing, reason: 'the Mirror tool started meanwhile keeps the screen');
+          expect(find.byType(MirrorPanel), findsOneWidget, reason: 'Mirror is still open');
+          expect(tester.takeException(), isNull);
+        });
+
+        testWidgets('an assembly tool (Mate) open: no Edit in context is offered', (tester) async {
+          tester.view.physicalSize = const Size(390, 844);
+          tester.view.devicePixelRatio = 1;
+          addTearDown(tester.view.reset);
+          await openDeep(tester);
+          tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+                const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c1/d1'),
+              );
+          await settle(tester);
+          await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          AssemblyTreeRow row() => _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1/d1#feature:d1-extrude');
+          expect(_TreeProbe(tester).view.canEditInContext!(row()), isTrue);
+          // The sheet hides the Start button: Mate from the selected part's More (as the component drawer offered it).
+          await tester.tap(find.byKey(const ValueKey('tree-bar-more')));
+          await tester.pump();
+          await tester.pump(const Duration(milliseconds: 400));
+          await tester.tap(find.text('Mate').last);
+          await _settleSheet(tester);
+          expect(find.byType(MatePanel), findsOneWidget);
+          expect(_TreeProbe(tester).view.canEditInContext!(row()), isFalse, reason: "the sheet stays at peek under the Mate panel; its rows offer nothing that moves the focus");
         });
 
         testWidgets('a focus change before the features land opens nothing', (tester) async {

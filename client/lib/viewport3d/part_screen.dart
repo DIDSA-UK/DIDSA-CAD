@@ -29404,6 +29404,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The latest Edit in context: an older one still waiting for its part's features opens nothing.
   int _editInContextToken = 0;
 
+  /// The live feature row Edit in context selected: the tree opens down to it at its next build that selects it ([_buildTreePanel]).
+  String? _editInContextRevealKey;
+
   /// The owner row's path of a read-only feature row (`[]` for the tree's root), or null for any other row.
   static List<String>? _featureRowOwnerPath(AssemblyTreeRow row) {
     if (row.live || row.kind != AssemblyRowKind.feature || row.featureId == null) return null;
@@ -29426,17 +29429,24 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return null;
   }
 
-  /// Whether a read-only feature row offers Edit in context: its feature has an edit panel (an import or a Fill Surface has none), and no tool
-  /// or other session holds the screen (moving the focus would take its target away).
+  /// Whether a read-only feature row offers Edit in context: its feature has an edit panel (an import or a Fill Surface has none), and nothing
+  /// holds the screen ([_editInContextBlocked]).
   bool _canEditFeatureInContext(AssemblyTreeRow row) {
     final type = _readOnlyFeatureType(row);
-    return type != null &&
-        featureTypeHasEditPanel(type) &&
-        _focusStack != null &&
-        !_anyToolSessionActive &&
-        !_assemblyMultiSelect.active &&
-        !_buildMultiSelect.active;
+    return type != null && featureTypeHasEditPanel(type) && _focusStack != null && !_editInContextBlocked;
   }
+
+  /// A tool, an assembly session (Mate, Pattern Component, Move / Rotate), a multi-select or a feature already opening holds the screen: moving
+  /// the focus would take its target away, and a second panel would open over it. Checked when Edit in context starts and again before the
+  /// panel opens (one may have started while the part's content loaded).
+  bool get _editInContextBlocked =>
+      _anyToolSessionActive ||
+      _mateActive ||
+      _componentPatternPanelActive ||
+      _moveRotateComponentActive ||
+      _featureTapOpening ||
+      _assemblyMultiSelect.active ||
+      _buildMultiSelect.active;
 
   /// Edit in context (C3, `docs/assembly-tree-overhaul-scope.md` 12.6): focuses the feature's part (every level down to it, as Make Focus from
   /// a nested row does; inside Edit Alone, within it), switches to the Part lens so that part is live, and once its own features have landed
@@ -29449,6 +29459,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final stack = _focusStack;
     if (path == null || featureId == null || stack == null || !_canEditFeatureInContext(row)) return;
     final token = ++_editInContextToken;
+    _editInContextRevealKey = null;
     _clearTransientError();
     final moved = !pathEquals(path, _focusRelPath);
     if (moved) {
@@ -29459,15 +29470,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (_lens != AssemblyLens.part) _setLens(AssemblyLens.part);
     final revision = stack.revision;
     final lensChanges = _lensChanges;
-    final documentKey = _treeDocumentKey;
     final partId = _focusPartIdOrNull;
+    // Another document gets a new focus stack ([_loadPart]); a save of this one (its key changes) is not a change.
     bool stale() =>
         !mounted ||
         token != _editInContextToken ||
         !identical(stack, _focusStack) ||
         stack.revision != revision ||
         lensChanges != _lensChanges ||
-        documentKey != _treeDocumentKey ||
         partId != _focusPartIdOrNull;
     if (moved) {
       await _refreshFocusTargetContent();
@@ -29476,12 +29486,19 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } else if (_featuresPartId != partId) {
       try {
         await _refreshFeatures();
-      } on ApiException catch (e) {
-        if (!stale()) setState(() => _errorMessage = e.message);
+      } catch (e, st) {
+        if (stale()) return;
+        final text = _bannerTextOf(e);
+        if (text != null) {
+          setState(() => _errorMessage = text);
+        } else {
+          _reportRefreshBug(e, st, 'reading the features for Edit in context');
+        }
         return;
       }
     }
-    if (stale() || _featuresPartId != partId) return;
+    // A tool or a session started while the content loaded keeps the screen: nothing opens over it.
+    if (stale() || _featuresPartId != partId || _editInContextBlocked) return;
     final feature = _featureById(featureId);
     if (feature == null) {
       // Deleted meanwhile (by another client, or the list the row came from was older).
@@ -29493,9 +29510,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (liveKey != null) {
       final key = '$liveKey#feature:$featureId';
       _selectLiveKey(key, _entitiesMadeBy(feature), featureId: featureId);
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _treeModel.selectedKey == key) _treeController.expandToSelection();
-      });
+      // The tree takes it at its next build, once the live part is in the model (the row does not exist before; the menu's way in never
+      // tapped a row), and opens down to it.
+      _editInContextRevealKey = key;
     }
     await _onFeatureTap(feature);
   }
@@ -29575,11 +29592,26 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treeModel.setFolderItems('#patterns', patternFolderItems(_treePatternList));
     }
     _syncTreeLivePart();
+    // C3: Edit in context's feature row is the selection once the live part lists it (the panel it opened may have changed the host's own
+    // selection meanwhile), and the tree opens down to it.
+    final reveal = _editInContextRevealKey;
+    final liveKey = _treeModel.liveKey;
+    if (reveal != null && liveKey != null && _treeModel.livePartShown && reveal.startsWith('$liveKey#feature:')) {
+      _editInContextRevealKey = null;
+      _treeHostSelection = _treeSelectionHostKey;
+      _treeModel.selectedKey = reveal;
+      if (_treeModel.selectedKey == reveal) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && _treeModel.selectedKey == reveal) _treeController.expandToSelection();
+        });
+      }
+    }
     // Only when this screen's own selection changed: a tap on a folder, group or feature row marks that row and keeps its mark.
     final hostKey = _treeSelectionHostKey;
     if (hostKey != _treeHostSelection) {
       _treeHostSelection = hostKey;
       _treeModel.selectedKey = hostKey;
+
       // A body or face picked in the viewport: the tree opens down to its feature's row and scrolls there.
       final fromViewport = hostKey != null && hostKey == _liveSelectionHostKey && !identical(_selectedEntities, _liveTreeTapEntities);
       if (fromViewport) {
