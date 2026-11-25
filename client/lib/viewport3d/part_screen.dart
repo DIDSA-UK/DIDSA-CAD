@@ -4193,7 +4193,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     for (var i = 0; i < _occurrences.length; i++) {
       final partId = _occurrences[i].resolvedPartId;
       if (partId != null && partId != root?.id && unsaved.contains(partId)) {
-        names.add(_treeLabel([_occurrences[i].id], _occurrences[i]));
+        names.add(_treeLabel(_focusChildPath(_occurrences[i].id), _occurrences[i]));
       }
     }
     final unnamed = unsaved.length - names.length;
@@ -6343,7 +6343,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   String? _occurrenceNameForId(String id) {
     final index = _displayOccurrences.indexWhere((o) => o.id == id);
     if (index < 0) return null;
-    return _treeLabel([_displayOccurrences[index].id], _displayOccurrences[index]);
+    return _treeLabel(_focusChildPath(_displayOccurrences[index].id), _displayOccurrences[index]);
   }
 
   /// Phase 11 (`[7]`): removes the source at `index` from the in-progress
@@ -13490,8 +13490,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final focusPartId = _focusStack?.current ?? _part?.id;
     // B3: the tree is the document's (or the Edit Alone target's), not the focused Part's: Make Focus keeps the whole tree. The flat lists
     // below (and everything on this screen that works on them) are the focused Part's.
-    final rootPartId = _treeRootPartIdOrNull;
+    final rootPartId = _nominalRootPartId;
     if (focusPartId == null || rootPartId == null) return;
+    // The focus below the nominal root (the Edit Alone target's levels are the root's own).
+    final focusFull = List<String>.of(_focusStack?.currentOccurrencePath ?? const <String>[]);
+    final nominalRootPath = _editAlone?.rootPath ?? const <String>[];
+    final focusBelowRoot = focusFull.length > nominalRootPath.length ? focusFull.sublist(nominalRootPath.length) : const <String>[];
     // A4: every load has a token; an answer that is not from the latest load is dropped (see [_treeLoadToken]).
     final token = ++_treeLoadToken;
     // B2: a tree that is new for this document (the first answer, or the document's own tree again after a focus) opens the rows it had
@@ -13508,7 +13512,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final List<MateDto> mates;
     final List<ComponentPatternDto> patterns;
     // The Mates and Patterns folders are the tree root's; with a deeper focus they are read besides the focused Part's own lists.
-    List<OccurrenceDto>? rootOccurrences;
     List<MateDto>? rootMates;
     List<ComponentPatternDto>? rootPatterns;
     try {
@@ -13528,7 +13531,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       try {
         rootMates = await _api.listMates(rootPartId);
         rootPatterns = await _api.listComponentPatterns(rootPartId);
-        if (fetched == null) rootOccurrences = await _api.listOccurrences(rootPartId);
       } catch (_) {
         rootMates ??= const <MateDto>[];
         rootPatterns ??= const <ComponentPatternDto>[];
@@ -13536,17 +13538,45 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     // P2: also not when the focus (or the tree's root: Edit Alone) moved since, even before the load for the new one has started: the
     // flat lists are the old focused Part's, and the tree may be another root's.
-    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _treeRootPartIdOrNull) return;
-    // A backend without the endpoint still shows its components: one level, from the lists.
-    final tree = fetched ??
-        assemblyTreeFromLists(
-          partId: rootPartId,
-          partName: _editAlone?.rootLabel ?? _part?.name ?? 'Assembly',
-          occurrences: rootOccurrences ?? occurrences,
-          mates: rootMates ?? mates,
-          patterns: rootPatterns ?? patterns,
-        );
+    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+    // A deeper focus needs a row for it in the tree: without one (the call failed, the answer was cut short or lacks it) the tree is the
+    // focused Part's own, rooted there as before B3, with its own lists. The focused Part's lists are never put under another Part's root.
+    final needsFocusRoot = focusBelowRoot.isNotEmpty && (fetched == null || !_treeHasFocusRow(fetched, focusBelowRoot, focusPartId));
+    AssemblyTreeResponseDto? focusTree;
+    if (needsFocusRoot) {
+      focusTree = await _fetchTreeStructure(focusPartId);
+      if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+    }
+    final builtFromLists = needsFocusRoot ? focusTree == null : fetched == null;
+    final AssemblyTreeResponseDto tree;
+    if (needsFocusRoot) {
+      tree = focusTree ??
+          assemblyTreeFromLists(
+            partId: focusPartId,
+            partName: _focusStack?.currentLabel ?? 'Assembly',
+            occurrences: occurrences,
+            mates: mates,
+            patterns: patterns,
+          );
+      rootMates = null;
+      rootPatterns = null;
+    } else {
+      // A backend without the endpoint still shows its components: one level, from the lists (the focus is the root here, so they are its).
+      tree = fetched ??
+          assemblyTreeFromLists(
+            partId: rootPartId,
+            partName: _editAlone?.rootLabel ?? _part?.name ?? 'Assembly',
+            occurrences: occurrences,
+            mates: mates,
+            patterns: patterns,
+          );
+    }
     setState(() {
+      // The selection is kept as the same component when the tree's root moves (a path from the old root, from the new one).
+      final oldRoot = _treeRootPath;
+      final oldSelected = _selectedTreePath;
+      _focusRootedFor = needsFocusRoot ? focusFull : null;
+      if (oldSelected != null && oldSelected.isNotEmpty) _selectedTreePath = _relativeTreePath([...oldRoot, ...oldSelected]);
       _occurrences = occurrences;
       _mates = _mateFollowedNotes.merge(mates);
       _componentPatterns = patterns;
@@ -13558,10 +13588,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _constraintStatusByOccurrenceId = const {};
       }
       _statusLevelKey = _focusRelPath.join('/');
-      _treeFromBackend = fetched != null;
-      _treeStatusUnavailable = fetched == null;
+      _treeFromBackend = !builtFromLists;
+      _treeStatusUnavailable = builtFromLists;
       // Not for a tree built from the lists (see [_treeFromBackend]), nor when the document is no longer the one the keys were read for.
-      _applyTree(tree, restore: fetched != null && documentKey == _treeDocumentKey ? stored : null);
+      _applyTree(tree, restore: !builtFromLists && documentKey == _treeDocumentKey ? stored : null);
       final path = _selectedTreePath;
       if (path != null && path.isNotEmpty && _treeModel.nodeAtPath(path) == null) {
         _selectedTreePath = null;
@@ -13571,8 +13601,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       }
     });
     _refreshTreeFeatures();
-    if (fetched != null) {
-      unawaited(_loadTreeStatus(rootPartId, token));
+    if (!builtFromLists) {
+      unawaited(_loadTreeStatus(tree.partId, token));
     } else {
       unawaited(_loadFlatConstraintStatus(focusPartId, token));
     }
@@ -16410,7 +16440,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// sibling can never collide with a freshly generated one.
   String _nextComponentName() {
     final existingNames = <String>{
-      for (var i = 0; i < _occurrences.length; i++) _treeLabel([_occurrences[i].id], _occurrences[i]),
+      for (var i = 0; i < _occurrences.length; i++) _treeLabel(_focusChildPath(_occurrences[i].id), _occurrences[i]),
     };
     var ordinal = _occurrences.length + 1;
     var name = 'Component $ordinal';
@@ -25941,10 +25971,38 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// The chain of occurrence ids from the document root down to the tree's root (`[]` at the document root). B3: Make Focus keeps the whole
   /// tree (the focus is a row in it, not its root); only Edit Alone re-roots it, on the target.
-  List<String> get _treeRootPath => _editAlone?.rootPath ?? const <String>[];
+  List<String> get _treeRootPath => _focusRootedPath ?? _editAlone?.rootPath ?? const <String>[];
 
-  /// The Part the tree is rooted at: the Edit Alone target's, else the document's root Part.
-  String? get _treeRootPartIdOrNull => _editAlone?.rootPartId ?? _part?.id;
+  /// The Part the tree is rooted at: the Edit Alone target's, else the document's root Part (while [_focusRootedPath] is the focus: the
+  /// focused Part).
+  String? get _treeRootPartIdOrNull => _focusRootedPath != null ? _focusStack?.current : _nominalRootPartId;
+
+  /// The root the tree should have: the Edit Alone target's, else the document's root Part.
+  String? get _nominalRootPartId => _editAlone?.rootPartId ?? _part?.id;
+
+  /// The focus path (from the document root) of the one case where the tree is rooted at the focused Part: the backend's tree has no row for
+  /// the focus (the call failed, was cut short, or lacks it), so the tree is the focused Part's own, as before B3. Only while the focus is
+  /// still that path; the next load decides again.
+  List<String>? _focusRootedFor;
+  List<String>? get _focusRootedPath {
+    final for_ = _focusRootedFor;
+    return for_ != null && listEquals(for_, _focusStack?.currentOccurrencePath) ? for_ : null;
+  }
+
+  /// The root's name for the strips ("in Rover > Mast", the first crumb).
+  String get _treeRootDisplayName => _part?.name ?? _treeModel.tree?.partName ?? 'Assembly';
+
+  /// Whether [tree] has a row for the focus ([_focusRelPath] below the nominal root) that is the focused Part.
+  bool _treeHasFocusRow(AssemblyTreeResponseDto tree, List<String> rel, String focusPartId) {
+    var nodes = tree.children;
+    AssemblyTreeNodeDto? node;
+    for (final id in rel) {
+      node = nodes.where((n) => n.occurrenceId == id).firstOrNull;
+      if (node == null) return false;
+      nodes = node.children;
+    }
+    return node != null && node.resolvedPartId == focusPartId;
+  }
 
   /// The focused row's path from the tree's root (`[]` when the root itself is the working level). Inside Edit Alone the focus starts at the
   /// target, so it is the levels pushed since.
@@ -26299,7 +26357,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final base = _editAlone?.editDepth ?? 0;
     final labels = stack.labelPath;
     if (labels.length <= base) return const [];
-    final root = base == 0 ? (_treeModel.tree?.partName ?? _part?.name ?? 'Assembly') : labels[base - 1];
+    final root = base == 0 ? _treeRootDisplayName : labels[base - 1];
     return [root, ...labels.sublist(base)];
   }
 
@@ -26934,7 +26992,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final root = _part;
     if (root == null) return null;
     try {
-      return _placementsInTree(await _api.getAssemblyTree(root.id), partId);
+      return _placementsInTree(await _api.getAssemblyTree(root.id), partId, fromBackend: true);
     } catch (_) {
       return null;
     }
@@ -26942,8 +27000,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// [_placementsOfPart] from a tree already read: null when it is not the document's tree (another root, so a count would be of one
   /// assembly's inside) or was cut short (a truncated tree may hold more placements than it lists: unknown, not a smaller number).
-  int? _placementsInTree(AssemblyTreeResponseDto? tree, String partId) {
-    if (tree == null || tree.partId != _part?.id || tree.truncatedDepth || tree.truncatedNodes) return null;
+  int? _placementsInTree(AssemblyTreeResponseDto? tree, String partId, {bool? fromBackend}) {
+    if (tree == null || !(fromBackend ?? _treeFromBackend) || tree.partId != _part?.id || tree.truncatedDepth || tree.truncatedNodes) return null;
     var count = tree.partId == partId ? 1 : 0;
     final stack = <AssemblyTreeNodeDto>[...tree.children];
     while (stack.isNotEmpty) {
@@ -26985,7 +27043,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       return;
     }
     final label = _treeLabel(rowPath, occurrence);
-    final rootName = _treeModel.tree?.partName ?? _part?.name ?? 'Assembly';
+    final rootName = _treeRootDisplayName;
     final session = _EditAloneSession(
       before: focusStack.levels,
       lensBefore: _lens,
@@ -27208,7 +27266,19 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // Only a row directly in the focused Part has a flag of its own to PATCH (B3: the tree is the whole assembly, so a row elsewhere in it, an
     // ancestor's sibling or another branch, is hidden for this session like a nested one).
     if (!_isFocusChild(rowPath)) {
-      _setSessionHidden({fullKey: hidden});
+      if (hidden) {
+        _setSessionHidden({fullKey: true});
+        return;
+      }
+      // Show: drop the session hide, and if the backend says hidden too, clear that flag on the occurrence's own Part (as Fix and Rename do).
+      if (_sessionHiddenPaths.contains(fullKey)) _setSessionHidden({fullKey: false});
+      final ownerPartId = _ownerPartIdOf(rowPath);
+      if (!occurrence.hidden || ownerPartId == null) return;
+      await _runGuarded(() async {
+        await _api.updateOccurrenceHidden(ownerPartId, occurrence.id, false);
+        await _refreshAssemblyTree();
+        await _refreshAssemblyMesh();
+      });
       return;
     }
     // A row hidden for this session (a nested row hidden before the focus moved into its parent) is shown by dropping that; only if the
@@ -28737,7 +28807,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       final occurrence = _occurrences[index];
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
-                        displayName: _treeLabel([_occurrences[index].id], _occurrences[index]),
+                        displayName: _treeLabel(_focusChildPath(_occurrences[index].id), _occurrences[index]),
                         onMove: () {
                           _clearTransientError();
                           setState(() {

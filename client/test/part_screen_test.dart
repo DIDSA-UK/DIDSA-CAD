@@ -12112,6 +12112,89 @@ void main() {
         expect(focusPath(tester), isEmpty);
       });
 
+      // Manager review of #406, items 1 and 2: with a deeper focus and no row for it in the backend's tree, the tree is the focused Part's own.
+      testWidgets('a focus the backend tree has no row for (assembly-tree failed) roots the tree at the focused Part, and keeps a child selected', (tester) async {
+        final backend = await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        backend.assemblyTreeMissing = true;
+        await switchLens(tester, 'Part');
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.tree!.partId, 'sub', reason: 'rooted at the focused Part, as before B3');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.liveKey != null);
+        expect(_TreeProbe(tester).model.liveKey, '', reason: 'the focused Part is the live row');
+        expect(rowKeys(tester), containsAll(['c1', 'c2']));
+        await _TreeProbe(tester).tapRow('c1');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'c1');
+        await switchLens(tester, 'Part');
+        await switchLens(tester, 'Assembly');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'c1', reason: 'a refresh does not clear a focus child\'s selection');
+      });
+
+      testWidgets("the focused Part's components are never put at the root under another Part's id", (tester) async {
+        var failRootOccurrences = false;
+        final backend = await openNested(tester, around: (request) async {
+          if (failRootOccurrences && request.url.path == '/document/parts/part-1/occurrences' && request.method == 'GET') {
+            throw http.ClientException('down');
+          }
+        });
+        failRootOccurrences = true;
+        backend.assemblyTreeMissing = true;
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.tree!.partId, isNot('part-1'), reason: "no tree rooted at the root Part holds the focused Part's list");
+        expect(rowKeys(tester), isNot(contains('plate')));
+        expect(model.tree!.children.map((n) => n.occurrenceId), ['c1', 'c2']);
+      });
+
+      testWidgets('"used N x" is not claimed from a tree built from the lists', (tester) async {
+        await openNested(tester, configure: (b) => b.assemblyTreeMissing = true);
+        await _TreeProbe(tester).menuAction('asm-1', 'Edit Alone');
+        await settle(tester);
+        await settle(tester);
+        await openTree(tester);
+        expect(find.byKey(const ValueKey('edit-alone-pill')), findsOneWidget);
+        expect(find.byKey(const ValueKey('edit-alone-used')), findsNothing, reason: 'the lists show one level: the count is not known');
+      });
+
+      testWidgets('while focused, a component placed twice keeps its <n> in the drawer header', (tester) async {
+        await openNested(tester, configure: (b) {
+          b.subOccurrences = {
+            'sub': [occ('b1', part: 'bolt', ref: 'parts/bolt.didsa'), occ('b2', part: 'bolt', ref: 'parts/bolt.didsa')],
+          };
+        });
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('asm-1/b2');
+        await settle(tester);
+        expect(find.descendant(of: find.byType(AssemblyComponentSelectionDrawer), matching: find.text('bolt <2>')), findsWidgets);
+      });
+
+      testWidgets('Show on a row outside the focus whose backend flag is hidden PATCHes its parent Part', (tester) async {
+        final backend = await openNested(tester, configure: (b) {
+          b.subOccurrences['sub']![0]['hidden'] = true;
+        });
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await settle(tester);
+        final row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1');
+        expect(row.hidden, isTrue);
+        _TreeProbe(tester).view.onVisibilityToggle!(row);
+        await _pumpUntil(tester, () => backend.subOccurrenceWrites.isNotEmpty);
+        await settle(tester);
+        expect(backend.subOccurrenceWrites, hasLength(1));
+        expect(backend.subOccurrenceWrites.single['part'], 'sub');
+        expect(backend.subOccurrenceWrites.single['body'], containsPair('hidden', false));
+      });
+
       testWidgets('Edit Alone on a part shows the strip in the Part lens, over the live part at the root', (tester) async {
         await openNested(tester);
         await _TreeProbe(tester).menuAction('plate', 'Edit Alone');
