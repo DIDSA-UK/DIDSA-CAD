@@ -399,4 +399,116 @@ void main() {
     await tester.pump();
     expect(find.byKey(const ValueKey('sketch-tree-resize-handle')), findsNothing);
   });
+
+  // B3 (P3's review): the sketcher's tree passed no `onFeaturesRequested`, so a component row never opened in the Part screen opened empty.
+  group('a component row opened in the sketcher', () {
+    Widget treeOver(AssemblyTreeModel main, Future<bool> Function(List<String>) request) => _host(
+          SketchFeatureTree(
+            tree: _assembly(),
+            livePart: _live(key: 'a/b/c'),
+            openKeys: const [],
+            fetchedFrom: main,
+            sketchFeatureId: 'current',
+            onFeaturesRequested: request,
+            onClose: () {},
+          ),
+          desktop: true,
+        );
+
+    testWidgets("asks the Part screen for the row's features, and shows them once the Part screen's model has them", (tester) async {
+      final main = AssemblyTreeModel(tree: _assembly());
+      final asked = <List<String>>[];
+      late StateSetter rebuild;
+      await tester.pumpWidget(StatefulBuilder(builder: (context, setState) {
+        rebuild = setState;
+        return treeOver(main, (path) async {
+          asked.add(path);
+          return true;
+        });
+      }));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:z')));
+      await tester.pump();
+      await tester.pump();
+      expect(asked, [
+        ['z']
+      ]);
+      expect(_row('z#feature:zf'), findsNothing, reason: 'not read yet');
+      // The Part screen reads them into its own model and rebuilds, as `_loadTreeFeatures` does.
+      main.setFeatures(const ['z'], const [AssemblyFeature('zf', 'Sketch 9')]);
+      rebuild(() {});
+      await tester.pump();
+      expect(_row('z#feature:zf'), findsOneWidget);
+    });
+
+    testWidgets('a request that failed is forgotten: opening the row again asks again', (tester) async {
+      final main = AssemblyTreeModel(tree: _assembly());
+      final asked = <List<String>>[];
+      await tester.pumpWidget(treeOver(main, (path) async {
+        asked.add(path);
+        return false;
+      }));
+      await tester.pump();
+      for (var i = 0; i < 2; i++) {
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:z')));
+        await tester.pump();
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:z'))); // close it
+        await tester.pump();
+      }
+      expect(asked.where((p) => p.join('/') == 'z'), hasLength(2));
+    });
+
+    testWidgets('a tree whose source has another root asks for nothing (its paths name other rows)', (tester) async {
+      final other = AssemblyTreeModel(
+        tree: AssemblyTreeResponseDto.fromJson({
+          'part_id': 'elsewhere',
+          'part_name': 'Elsewhere',
+          'kind': 'assembly',
+          'feature_count': 0,
+          'status_included': true,
+          'children': [_node('z', ['z'], featureCount: 1)],
+        }),
+      );
+      final asked = <List<String>>[];
+      await tester.pumpWidget(treeOver(other, (path) async {
+        asked.add(path);
+        return true;
+      }));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:z')));
+      await tester.pump();
+      await tester.pump();
+      expect(asked, isEmpty);
+    });
+  });
+
+  // B3 (P3's review): `copyFetchedFrom` took the features, the folder items and the hidden rows, but not the unsaved Parts, so the sketcher's
+  // tree showed no unsaved dot where the Part screen's tree did.
+  test('copyFetchedFrom copies the unsaved Parts, and drops them again when the other model has none', () {
+    final main = AssemblyTreeModel(tree: _assembly(), unsavedPartIds: const {'part-z'});
+    final copy = AssemblyTreeModel(tree: _assembly());
+    AssemblyRowState stateOf(AssemblyTreeModel m, String key) => m.visibleRows().firstWhere((r) => r.key == key).state;
+    expect(stateOf(copy, 'z'), AssemblyRowState.none);
+    copy.copyFetchedFrom(main);
+    expect(copy.unsavedPartIds, {'part-z'});
+    expect(stateOf(copy, 'z'), AssemblyRowState.unsaved);
+    main.setUnsavedPartIds(const []);
+    copy.copyFetchedFrom(main);
+    expect(copy.unsavedPartIds, isEmpty);
+    expect(stateOf(copy, 'z'), AssemblyRowState.none);
+  });
+
+  testWidgets('an unsaved Part shows its dot in the sketcher\'s tree', (tester) async {
+    final main = AssemblyTreeModel(tree: _assembly(), unsavedPartIds: const {'part-z'});
+    await tester.pumpWidget(_host(SketchFeatureTree(
+      tree: _assembly(),
+      livePart: _live(key: 'a/b/c'),
+      fetchedFrom: main,
+      sketchFeatureId: 'current',
+      onClose: () {},
+    ), desktop: true));
+    await tester.pump();
+    expect(find.byKey(const ValueKey('tree-state:z:unsaved')), findsOneWidget);
+  });
 }

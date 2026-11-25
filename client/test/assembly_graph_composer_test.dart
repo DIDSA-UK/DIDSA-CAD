@@ -26,6 +26,11 @@ class _FakeStorageService with FileByFileCommit implements StorageService {
 
   void makeUnreadable(String relativePath) => _unreadable.add(relativePath);
 
+  /// A file whose bytes are [text] as they are (valid JSON of another shape, or not JSON).
+  void putText(String relativePath, String text) {
+    _files[relativePath] = Uint8List.fromList(utf8.encode(text));
+  }
+
   @override
   Future<ProjectRoot> pickOrCreateProjectRoot({String suggestedName = 'didsa/projects'}) =>
       throw UnimplementedError();
@@ -421,5 +426,36 @@ void main() {
     final result = await composer.compose(root, 'Frame.didsa');
 
     expect(result.documentPayload['document']['parts'] as List, hasLength(2));
+  });
+
+  // B3 (P3's review): a project file that is valid JSON of the wrong shape was a TypeError nobody caught, so the Open banner never came; it
+  // is a FormatException like a file that is not JSON at all.
+  group('a project file of the wrong shape', () {
+    for (final entry in {
+      'a list': '[1, 2, 3]',
+      'a document that is not an object': '{"document": 5}',
+      'a document without parts': '{"document": {"id": "d"}}',
+      'parts that are not objects': '{"document": {"parts": [1]}}',
+    }.entries) {
+      test('the root file is ${entry.key}: a FormatException that names the file', () async {
+        storage.putText('top.didsa', entry.value);
+        await expectLater(
+          composer.compose(root, 'top.didsa'),
+          throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('top.didsa is not a valid .didsa save'))),
+        );
+      });
+
+      test('a referenced file is ${entry.key}: the same FormatException, naming that file', () async {
+        storage.putText('bolt.didsa', entry.value);
+        storage.put(
+          'top.didsa',
+          _singlePartPayload(id: 'part-top', name: 'Top', occurrences: [_occurrence('occ-1', 'bolt.didsa')]),
+        );
+        await expectLater(
+          composer.compose(root, 'top.didsa'),
+          throwsA(isA<FormatException>().having((e) => e.message, 'message', contains('bolt.didsa'))),
+        );
+      });
+    }
   });
 }

@@ -155,12 +155,12 @@ class AssemblyGraphComposer {
         final lastModified = await _storageService.lastModified(handle);
         stamps.record(root, relativePath, lastModified);
         if (root is! ServerProjectRoot) await _fileCache.put(root, relativePath, bytes, lastKnownModified: lastModified);
-        return jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+        return _decodeNativeFile(bytes, relativePath);
       } on StorageException {
         final cached = await _fileCache.get(root, relativePath);
         if (cached == null) rethrow;
         stalePaths.add(relativePath);
-        return jsonDecode(utf8.decode(cached.bytes)) as Map<String, dynamic>;
+        return _decodeNativeFile(cached.bytes, relativePath);
       }
     }
 
@@ -177,7 +177,7 @@ class AssemblyGraphComposer {
           final lastModified = await _storageService.lastModified(handle);
           stamps.record(root, relativePath, lastModified);
           if (root is! ServerProjectRoot) await _fileCache.put(root, relativePath, bytes, lastKnownModified: lastModified);
-          payload = jsonDecode(utf8.decode(bytes)) as Map<String, dynamic>;
+          payload = _decodeNativeFile(bytes, relativePath);
         }
       } on StorageException {
         payload = null;
@@ -355,7 +355,7 @@ class AssemblyGraphComposer {
           final resolved = await resolvePart(
             path,
             ancestorPath,
-            preloaded: jsonDecode(utf8.decode(cached.bytes)) as Map<String, dynamic>,
+            preloaded: _decodeNativeFile(cached.bytes, path),
           );
           if (resolved != null) {
             reports.add(report(stale: true));
@@ -390,6 +390,8 @@ class AssemblyGraphComposer {
         }
       }
 
+      // JSON of another shape (a list, a document without parts) is no save: said like a file that is not JSON at all.
+      if (!_hasNativeShape(payload)) throw FormatException('$relativePath is not a valid .didsa save');
       final readParts = ((payload['document'] as Map<String, dynamic>)['parts'] as List).cast<Map<String, dynamic>>();
       if (readParts.length != 1) {
         throw FormatException(
@@ -481,6 +483,32 @@ class AssemblyGraphComposer {
       references: reports,
     );
   }
+}
+
+/// A native file's bytes as its payload. Not JSON is a [FormatException] (as [jsonDecode] says); JSON that is not an object is one too, with
+/// the same short message as a payload of the wrong shape ([_hasNativeShape]), so every unreadable project file reaches the screen's banner.
+Map<String, dynamic> _decodeNativeFile(List<int> bytes, String relativePath) {
+  final decoded = jsonDecode(utf8.decode(bytes));
+  if (decoded is! Map<String, dynamic>) throw FormatException('$relativePath is not a valid .didsa save');
+  return decoded;
+}
+
+/// Whether [payload] has what composing reads: a `document` with a list of Part objects, and the sketches, if any, a list of objects, and
+/// each Part's occurrences, if any, a list of objects.
+bool _hasNativeShape(Map<String, dynamic> payload) {
+  bool objects(Object? list) => list is List && list.every((e) => e is Map<String, dynamic>);
+  final document = payload['document'];
+  if (document is! Map<String, dynamic>) return false;
+  final parts = document['parts'];
+  if (!objects(parts)) return false;
+  final sketches = payload['sketches'];
+  if (sketches != null && !objects(sketches)) return false;
+  for (final part in (parts as List).cast<Map<String, dynamic>>()) {
+    final occurrences = part['occurrences'];
+    if (occurrences != null && !objects(occurrences)) return false;
+    if (part['id'] is! String) return false;
+  }
+  return true;
 }
 
 /// The id of the file an Occurrence placed: its `ref_part_id`, else (a file saved before that field existed) the

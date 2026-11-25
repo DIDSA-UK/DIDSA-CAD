@@ -83,7 +83,7 @@ import 'action_sheet.dart';
 import 'assembly_tree_helpers.dart';
 import 'assembly_tree_open_store.dart';
 import 'assembly_tree_view.dart';
-import 'edit_alone_row.dart';
+import 'assembly_context_strip.dart';
 import 'body_naming.dart';
 import 'boolean_panel.dart';
 import 'cascade_delete_dialog.dart';
@@ -651,6 +651,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   List<OccurrenceDto> _occurrences = [];
   List<MateDto> _mates = [];
 
+  /// B3: the tree root's mates and patterns while the focus is deeper than the root (the tree's Mates and Patterns folders are the root's);
+  /// null when the focused Part is the root, whose lists are [_mates] and [_componentPatterns].
+  List<MateDto>? _rootMates;
+  List<ComponentPatternDto>? _rootPatterns;
+  List<MateDto> get _treeMateList => _rootMates ?? _mates;
+  List<ComponentPatternDto> get _treePatternList => _rootPatterns ?? _componentPatterns;
+
   /// A4: the Assembly tree's rows (`docs/assembly-tree-overhaul-scope.md` 9.6), from `GET /parts/{id}/assembly-tree` for the focused Part. The
   /// model is not a Listenable: every change to it is followed by [_treeController]'s `refresh()`.
   late AssemblyTreeModel _treeModel = _newTreeModel();
@@ -782,14 +789,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Mates a pattern edit left broken ([_announceBrokenMates]): the Assembly tree flashes these rows whenever [_flashMateToken] changes.
   Set<String> _flashMateIds = const {};
   int _flashMateToken = 0;
-  /// A4: the selected component as a path of occurrence ids from the tree's root (the focused Part), null when none. A top-level
-  /// component's path is `[id]`.
+  /// A4: the selected component as a path of occurrence ids from the tree's root (B3: the document's root while a level is focused, the
+  /// Edit Alone target in Edit Alone), null when none. A component directly in the focused Part has the focus path plus its id.
   List<String>? _selectedTreePath;
 
   /// The selected component's id when it is a direct child of the focused Part (what the gizmo, the component drawer, Pattern and the
-  /// rest of this screen work with), else null: a nested selection has no id of its own at this level, see [_selectedTreePath].
-  String? get _selectedOccurrenceId => _selectedTreePath != null && _selectedTreePath!.length == 1 ? _selectedTreePath!.first : null;
-  set _selectedOccurrenceId(String? id) => _selectedTreePath = id == null ? null : [id];
+  /// rest of this screen work with), else null: any other selection (the focused row itself, a row below the focus's children, or one
+  /// outside the focus) has no id of its own at this level, see [_selectedTreePath].
+  String? get _selectedOccurrenceId => _selectedTreePath != null && _isFocusChild(_selectedTreePath!) ? _selectedTreePath!.last : null;
+  set _selectedOccurrenceId(String? id) => _selectedTreePath = id == null ? null : _focusChildPath(id);
 
   /// Test report item 5: [AssemblyTreePanel.selectedMateId]'s own backing
   /// state - mirrors [_selectedOccurrenceId]'s identical "which tree row is
@@ -1425,7 +1433,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (tree == null) return const {};
     final prefix = _treeRootPath;
     // Walked once per loaded tree and focus (the getter is read in build).
-    final cacheKey = prefix.join('/');
+    final cacheKey = '${prefix.join('/')}|${_focusRelPath.join('/')}';
     if (identical(tree, _namesTree) && cacheKey == _namesPrefix) return _namesCache;
     final out = <String, String>{};
     final stack = <AssemblyTreeNodeDto>[...tree.children];
@@ -1433,7 +1441,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       final n = stack.removeLast();
       final label = _treeModel.labelAtPath(n.path);
       if (label == null) continue;
-      if (n.path.length == 1) out[n.occurrenceId] = label;
+      if (_isFocusChild(n.path)) out[n.occurrenceId] = label;
       // Every component by its full path from the document root (the viewport's paths), also at the root: a nested one has no bare id.
       out[[...prefix, ...n.path].join('/')] = label;
       stack.addAll(n.children);
@@ -3283,7 +3291,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// folded into [_selectedEntities].
   void _onBreadcrumbSelect(SelectionEntityRef target) {
     if (target.kind == SelectionEntityKind.component) {
-      setState(() => _selectedOccurrenceId = target.occurrenceId);
+      // The entity names the component by its path from the document root; the selection is a path from the tree's root.
+      setState(() => _selectedTreePath = target.occurrenceId.isEmpty ? null : (_relativeTreePath(splitPath(target.occurrenceId)) ?? [target.occurrenceId]));
       return;
     }
     setState(() => _selectedEntities = {target});
@@ -4184,7 +4193,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     for (var i = 0; i < _occurrences.length; i++) {
       final partId = _occurrences[i].resolvedPartId;
       if (partId != null && partId != root?.id && unsaved.contains(partId)) {
-        names.add(_treeLabel([_occurrences[i].id], _occurrences[i]));
+        names.add(_treeLabel(_focusChildPath(_occurrences[i].id), _occurrences[i]));
       }
     }
     final unnamed = unsaved.length - names.length;
@@ -6334,7 +6343,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   String? _occurrenceNameForId(String id) {
     final index = _displayOccurrences.indexWhere((o) => o.id == id);
     if (index < 0) return null;
-    return _treeLabel([_displayOccurrences[index].id], _displayOccurrences[index]);
+    return _treeLabel(_focusChildPath(_displayOccurrences[index].id), _displayOccurrences[index]);
   }
 
   /// Phase 11 (`[7]`): removes the source at `index` from the in-progress
@@ -13479,22 +13488,32 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   Future<void> _refreshAssemblyTree() async {
     final focusPartId = _focusStack?.current ?? _part?.id;
-    if (focusPartId == null) return;
+    // B3: the tree is the document's (or the Edit Alone target's), not the focused Part's: Make Focus keeps the whole tree. The flat lists
+    // below (and everything on this screen that works on them) are the focused Part's.
+    final rootPartId = _nominalRootPartId;
+    if (focusPartId == null || rootPartId == null) return;
+    // The focus below the nominal root (the Edit Alone target's levels are the root's own).
+    final focusFull = List<String>.of(_focusStack?.currentOccurrencePath ?? const <String>[]);
+    final nominalRootPath = _editAlone?.rootPath ?? const <String>[];
+    final focusBelowRoot = focusFull.length > nominalRootPath.length ? focusFull.sublist(nominalRootPath.length) : const <String>[];
     // A4: every load has a token; an answer that is not from the latest load is dropped (see [_treeLoadToken]).
     final token = ++_treeLoadToken;
     // B2: a tree that is new for this document (the first answer, or the document's own tree again after a focus) opens the rows it had
     // when it was last open. Read at the same time as everything else; applied only if this answer is still the latest and nothing changed
     // under it (below).
     final documentKey = _treeDocumentKey;
-    final isFirstAnswer = _treeSeeded || _treeModel.tree == null || _treeModel.tree!.partId != focusPartId;
-    final storedKeys = documentKey != null && isFirstAnswer && focusPartId == _part?.id
+    final isFirstAnswer = _treeSeeded || _treeModel.tree == null || _treeModel.tree!.partId != rootPartId;
+    final storedKeys = documentKey != null && isFirstAnswer && rootPartId == _part?.id
         ? AssemblyTreeOpenStore.read(documentKey)
         : Future<List<String>?>.value(null);
     // The tree's structure first (no status: it is the slow part), at the same time as the flat lists the rest of the screen works with.
-    final structure = _fetchTreeStructure(focusPartId); // never throws
+    final structure = _fetchTreeStructure(rootPartId); // never throws
     final List<OccurrenceDto> occurrences;
     final List<MateDto> mates;
     final List<ComponentPatternDto> patterns;
+    // The Mates and Patterns folders are the tree root's; with a deeper focus they are read besides the focused Part's own lists.
+    List<MateDto>? rootMates;
+    List<ComponentPatternDto>? rootPatterns;
     try {
       occurrences = await _api.listOccurrences(focusPartId);
       mates = await _api.listMates(focusPartId);
@@ -13506,28 +13525,73 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     final fetched = await structure;
     final stored = await storedKeys; // never throws
-    // P2: also not when the focus moved since (the answer is another Part's tree), even before the load for the new focus has started.
-    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id)) return;
-    // A backend without the endpoint still shows its components: one level, from the lists.
-    final tree = fetched ??
-        assemblyTreeFromLists(
-          partId: focusPartId,
-          partName: _focusStack?.currentLabel ?? _part?.name ?? 'Assembly',
-          occurrences: occurrences,
-          mates: mates,
-          patterns: patterns,
-        );
+    // The tree root's own lists, only when the focus is deeper: a failure here is not the focus change's (the folders read empty, the
+    // components come from the tree itself).
+    if (rootPartId != focusPartId) {
+      try {
+        rootMates = await _api.listMates(rootPartId);
+        rootPatterns = await _api.listComponentPatterns(rootPartId);
+      } catch (_) {
+        rootMates ??= const <MateDto>[];
+        rootPatterns ??= const <ComponentPatternDto>[];
+      }
+    }
+    // P2: also not when the focus (or the tree's root: Edit Alone) moved since, even before the load for the new one has started: the
+    // flat lists are the old focused Part's, and the tree may be another root's.
+    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+    // A deeper focus needs a row for it in the tree: without one (the call failed, the answer was cut short or lacks it) the tree is the
+    // focused Part's own, rooted there as before B3, with its own lists. The focused Part's lists are never put under another Part's root.
+    final needsFocusRoot = focusBelowRoot.isNotEmpty && (fetched == null || !_treeHasFocusRow(fetched, focusBelowRoot, focusPartId));
+    AssemblyTreeResponseDto? focusTree;
+    if (needsFocusRoot) {
+      focusTree = await _fetchTreeStructure(focusPartId);
+      if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+    }
+    final builtFromLists = needsFocusRoot ? focusTree == null : fetched == null;
+    final AssemblyTreeResponseDto tree;
+    if (needsFocusRoot) {
+      tree = focusTree ??
+          assemblyTreeFromLists(
+            partId: focusPartId,
+            partName: _focusStack?.currentLabel ?? 'Assembly',
+            occurrences: occurrences,
+            mates: mates,
+            patterns: patterns,
+          );
+      rootMates = null;
+      rootPatterns = null;
+    } else {
+      // A backend without the endpoint still shows its components: one level, from the lists (the focus is the root here, so they are its).
+      tree = fetched ??
+          assemblyTreeFromLists(
+            partId: rootPartId,
+            partName: _editAlone?.rootLabel ?? _part?.name ?? 'Assembly',
+            occurrences: occurrences,
+            mates: mates,
+            patterns: patterns,
+          );
+    }
     setState(() {
+      // The selection is kept as the same component when the tree's root moves (a path from the old root, from the new one).
+      final oldRoot = _treeRootPath;
+      final oldSelected = _selectedTreePath;
+      _focusRootedFor = needsFocusRoot ? focusFull : null;
+      if (oldSelected != null && oldSelected.isNotEmpty) _selectedTreePath = _relativeTreePath([...oldRoot, ...oldSelected]);
       _occurrences = occurrences;
       _mates = _mateFollowedNotes.merge(mates);
       _componentPatterns = patterns;
+      _rootMates = rootMates == null ? null : _mateFollowedNotes.merge(rootMates);
+      _rootPatterns = rootPatterns;
       // The rows claim no state until the status call answers; the screen's own map (the rigid-set grab notice) keeps the previous one until then
       // (for the same Part: another Part's status is not this one's).
-      if (_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) _constraintStatusByOccurrenceId = const {};
-      _treeFromBackend = fetched != null;
-      _treeStatusUnavailable = fetched == null;
+      if ((_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) || _statusLevelKey != _focusRelPath.join('/')) {
+        _constraintStatusByOccurrenceId = const {};
+      }
+      _statusLevelKey = _focusRelPath.join('/');
+      _treeFromBackend = !builtFromLists;
+      _treeStatusUnavailable = builtFromLists;
       // Not for a tree built from the lists (see [_treeFromBackend]), nor when the document is no longer the one the keys were read for.
-      _applyTree(tree, restore: fetched != null && documentKey == _treeDocumentKey ? stored : null);
+      _applyTree(tree, restore: !builtFromLists && documentKey == _treeDocumentKey ? stored : null);
       final path = _selectedTreePath;
       if (path != null && path.isNotEmpty && _treeModel.nodeAtPath(path) == null) {
         _selectedTreePath = null;
@@ -13537,12 +13601,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       }
     });
     _refreshTreeFeatures();
-    if (fetched != null) {
-      unawaited(_loadTreeStatus(focusPartId, token));
+    if (!builtFromLists) {
+      unawaited(_loadTreeStatus(tree.partId, token));
     } else {
       unawaited(_loadFlatConstraintStatus(focusPartId, token));
     }
   }
+
+  /// The focus level (joined) the screen's constraint map is for: a map of another level is dropped when a load starts to apply.
+  String _statusLevelKey = '';
 
   /// A backend without `assembly-tree` still has `constraint-status`: the grab notice of a rigid set reads it.
   Future<void> _loadFlatConstraintStatus(String partId, int token) async {
@@ -13565,7 +13632,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
-  /// The second call: the same tree with `status=true`, merged over the first when it arrives. Dropped when a newer load has started since. A
+  /// The second call: the same tree with `status=true`, merged over the first when it arrives. Dropped when a newer load has started since
+  /// (a focus change starts one: the late answer of the old focus is dropped, the new load brings its own). A
   /// failure leaves the rows without a state (absent, not wrong). The response is read and the model rebuilt once.
   Future<void> _loadTreeStatus(String partId, int token) async {
     final AssemblyTreeResponseDto withStatus;
@@ -13575,11 +13643,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (mounted && token == _treeLoadToken) setState(() => _treeStatusUnavailable = true);
       return;
     }
-    if (!mounted || token != _treeLoadToken || partId != (_focusStack?.current ?? _part?.id)) return;
+    if (!mounted || token != _treeLoadToken || partId != _treeRootPartIdOrNull) return;
     setState(() {
       _treeStatusUnavailable = false;
       _treeModel.merge(withStatus);
-      _constraintStatusByOccurrenceId = topLevelConstraintStatus(withStatus);
+      // The screen's own map is the focused level's (the rigid-set grab notice works on the Part being edited).
+      final focus = _focusRelPath;
+      final level = focus.isEmpty ? withStatus.children : (_treeModel.nodeAtPath(focus)?.children ?? const <AssemblyTreeNodeDto>[]);
+      _constraintStatusByOccurrenceId = constraintStatusOfChildren(level);
       _syncTreeSideData();
     });
     _treeController.refresh();
@@ -13616,11 +13687,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// What the model keeps besides the tree: the mates and patterns under the root folders, the unsaved Parts, and the nested rows hidden for
   /// this session (as keys relative to the tree's root).
   void _syncTreeSideData() {
-    _treeModel.setFolderItems('#mates', mateFolderItems(_mates));
-    _treeModel.setFolderItems('#patterns', patternFolderItems(_componentPatterns));
+    _treeModel.setFolderItems('#mates', mateFolderItems(_treeMateList));
+    _treeModel.setFolderItems('#patterns', patternFolderItems(_treePatternList));
     _treeModel.setUnsavedPartIds(_unsavedPartIds);
-    final focusPath = _focusStack?.currentOccurrencePath ?? const <String>[];
-    final prefix = focusPath.isEmpty ? '' : '${focusPath.join('/')}/';
+    final rootPath = _treeRootPath;
+    final prefix = rootPath.isEmpty ? '' : '${rootPath.join('/')}/';
     _treeModel.setSessionHiddenKeys({
       for (final full in _sessionHiddenPaths)
         if (full.startsWith(prefix) && full.length > prefix.length) full.substring(prefix.length),
@@ -13643,24 +13714,29 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// The tree opened a part row (or the root) whose features it does not have: read them and hand them to the model. A failure is reported to
   /// the controller, or that part would never ask again.
-  Future<void> _loadTreeFeatures(List<String> path) async {
+  ///
+  /// Returns whether the features were handed to the model (the sketcher's tree, which asks through this, forgets a request that was not
+  /// answered so the row asks again).
+  Future<bool> _loadTreeFeatures(List<String> path) async {
     final model = _treeModel;
     final partId = path.isEmpty ? model.tree?.partId : model.nodeAtPath(path)?.resolvedPartId;
     if (partId == null) {
       _treeController.forgetFeaturesRequest(path);
-      return;
+      return false;
     }
     _treeFeaturePaths.add(path.join('/'));
     try {
       final features = await _api.listFeatures(partId);
       // Not for a model that has been replaced since, nor for a row that is gone.
-      if (!mounted || !identical(model, _treeModel)) return;
-      if (path.isNotEmpty && model.nodeAtPath(path)?.resolvedPartId != partId) return;
+      if (!mounted || !identical(model, _treeModel)) return false;
+      if (path.isNotEmpty && model.nodeAtPath(path)?.resolvedPartId != partId) return false;
       setState(() => model.setFeatureDtos(path, features));
       _treeController.refresh();
+      return true;
     } on ApiException {
       _treeFeaturePaths.remove(path.join('/'));
       _treeController.forgetFeaturesRequest(path);
+      return false;
     }
   }
 
@@ -13673,7 +13749,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final patched = assemblyTreeWithNode(tree, path, (n) => copyAssemblyTreeNode(n, fixed: fixed, clearConstraint: true));
     setState(() {
       _treeModel.merge(patched);
-      if (path.length == 1) _constraintStatusByOccurrenceId = {..._constraintStatusByOccurrenceId}..remove(path.first);
+      if (_isFocusChild(path)) _constraintStatusByOccurrenceId = {..._constraintStatusByOccurrenceId}..remove(path.last);
     });
     _treeController.refresh();
   }
@@ -15970,7 +16046,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// uses, just updating [occurrence] in place instead of adding a new one.
   Future<void> _onLocateMissingFilePressed(OccurrenceDto occurrence, {List<String>? path}) async {
     // A4: a nested missing file is on its parent Part, which is where the link is mended.
-    final rowPath = path ?? [occurrence.id];
+    final rowPath = path ?? _focusChildPath(occurrence.id);
     // A reference the open reported (found by id, several copies, a suggestion, missing) opens the Review sheet, which has the
     // candidates and Locate... too; this plain confirm-and-pick flow is for an Occurrence that went missing some other way.
     if (_referenceReports.value.any((report) => report.occurrenceId == occurrence.id)) {
@@ -16364,7 +16440,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// sibling can never collide with a freshly generated one.
   String _nextComponentName() {
     final existingNames = <String>{
-      for (var i = 0; i < _occurrences.length; i++) _treeLabel([_occurrences[i].id], _occurrences[i]),
+      for (var i = 0; i < _occurrences.length; i++) _treeLabel(_focusChildPath(_occurrences[i].id), _occurrences[i]),
     };
     var ordinal = _occurrences.length + 1;
     var name = 'Component $ordinal';
@@ -25893,8 +25969,70 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   // --- The Assembly tree's rows (A4) ----------------------------------------------------------------------------------
 
-  /// The focus chain of occurrence ids down to the tree's root (`[]` at the document root).
-  List<String> get _treeRootPath => _focusStack?.currentOccurrencePath ?? const <String>[];
+  /// The chain of occurrence ids from the document root down to the tree's root (`[]` at the document root). B3: Make Focus keeps the whole
+  /// tree (the focus is a row in it, not its root); only Edit Alone re-roots it, on the target.
+  List<String> get _treeRootPath => _focusRootedPath ?? _editAlone?.rootPath ?? const <String>[];
+
+  /// The Part the tree is rooted at: the Edit Alone target's, else the document's root Part (while [_focusRootedPath] is the focus: the
+  /// focused Part).
+  String? get _treeRootPartIdOrNull => _focusRootedPath != null ? _focusStack?.current : _nominalRootPartId;
+
+  /// The root the tree should have: the Edit Alone target's, else the document's root Part.
+  String? get _nominalRootPartId => _editAlone?.rootPartId ?? _part?.id;
+
+  /// The focus path (from the document root) of the one case where the tree is rooted at the focused Part: the backend's tree has no row for
+  /// the focus (the call failed, was cut short, or lacks it), so the tree is the focused Part's own, as before B3. Only while the focus is
+  /// still that path; the next load decides again.
+  List<String>? _focusRootedFor;
+  List<String>? get _focusRootedPath {
+    final for_ = _focusRootedFor;
+    return for_ != null && listEquals(for_, _focusStack?.currentOccurrencePath) ? for_ : null;
+  }
+
+  /// The focus levels that make up the tree's root path: the Edit Alone target's own, or, while the tree is rooted at the focused Part, the
+  /// whole focus; levels of a row in the tree come after them.
+  List<(String, String, String)> get _treeRootLevels =>
+      _focusRootedPath != null ? (_focusStack?.levels ?? const <(String, String, String)>[]) : (_editAlone?.levels ?? const <(String, String, String)>[]);
+
+  /// The root's name for the strips ("in Rover > Mast", the first crumb).
+  String get _treeRootDisplayName => _part?.name ?? _treeModel.tree?.partName ?? 'Assembly';
+
+  /// Whether [tree] has a row for the focus ([_focusRelPath] below the nominal root) that is the focused Part.
+  bool _treeHasFocusRow(AssemblyTreeResponseDto tree, List<String> rel, String focusPartId) {
+    var nodes = tree.children;
+    AssemblyTreeNodeDto? node;
+    for (final id in rel) {
+      node = nodes.where((n) => n.occurrenceId == id).firstOrNull;
+      if (node == null) return false;
+      nodes = node.children;
+    }
+    return node != null && node.resolvedPartId == focusPartId;
+  }
+
+  /// The focused row's path from the tree's root (`[]` when the root itself is the working level). Inside Edit Alone the focus starts at the
+  /// target, so it is the levels pushed since.
+  List<String> get _focusRelPath {
+    final focus = _focusStack?.currentOccurrencePath ?? const <String>[];
+    final root = _treeRootPath;
+    return focus.length > root.length ? focus.sublist(root.length) : const <String>[];
+  }
+
+  /// Whether [path] (from the tree's root) is a component directly in the focused Part: the level the flat lists ([_occurrences], [_mates]),
+  /// the gizmo, the multi-select and Pattern work on.
+  bool _isFocusChild(List<String> path) {
+    final focus = _focusRelPath;
+    if (path.length != focus.length + 1) return false;
+    for (var i = 0; i < focus.length; i++) {
+      if (path[i] != focus[i]) return false;
+    }
+    return true;
+  }
+
+  /// The path (from the tree's root) of the component [id] directly in the focused Part.
+  List<String> _focusChildPath(String id) => [..._focusRelPath, id];
+
+  /// Whether the focused Part is the tree's root Part: the flat lists are then the tree's root level too.
+  bool get _focusIsTreeRoot => _focusRelPath.isEmpty;
 
   /// A pick's full path (from the document root) as a path from the tree's root, or null when it is not below the root.
   List<String>? _relativeTreePath(List<String> full) {
@@ -25910,7 +26048,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The Part that owns the occurrence at [path]: the focused Part for a row directly in it, else the Part the parent row places.
   String? _ownerPartIdOf(List<String> path) {
     if (path.isEmpty) return null;
-    if (path.length == 1) return _focusStack?.current ?? _part?.id;
+    if (path.length == 1) return _treeRootPartIdOrNull;
     return _treeModel.nodeAtPath(path.sublist(0, path.length - 1))?.resolvedPartId;
   }
 
@@ -25930,13 +26068,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (path.isEmpty) return null;
     final owner = _ownerPartIdOf(path);
     if (owner == null) return null;
-    if (path.length == 1) {
+    final topLevel = _isFocusChild(path);
+    if (topLevel) {
       for (final o in _occurrences) {
-        if (o.id == path.first) return _TreeTarget(path, o, owner);
+        if (o.id == path.last) return _TreeTarget(path, o, owner, topLevel: true);
       }
     }
     final node = _treeModel.nodeAtPath(path);
-    return node == null ? null : _TreeTarget(path, _occurrenceFromNode(node), owner);
+    return node == null ? null : _TreeTarget(path, _occurrenceFromNode(node), owner, topLevel: topLevel);
   }
 
   void _withTreeTarget(AssemblyTreeRow row, Future<void> Function(_TreeTarget target) action) {
@@ -25949,7 +26088,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   String _treeLabel(List<String> path, OccurrenceDto occurrence) =>
       _treeModel.labelAtPath(path) ?? (() {
         final i = _occurrences.indexWhere((o) => o.id == occurrence.id);
-        return i >= 0 && path.length == 1 ? occurrenceDisplayName(_occurrences, i) : occurrenceDisplayName([occurrence], 0);
+        return i >= 0 && _isFocusChild(path) ? occurrenceDisplayName(_occurrences, i) : occurrenceDisplayName([occurrence], 0);
       })();
 
   /// Whether the row shows hidden now: its own flag, or hidden for this session (a nested row), or the scene's choice while one shows.
@@ -25963,7 +26102,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// (`[]` for the root row, which is everything). Empty when nothing is selected.
   List<List<String>> get _treeSelectionPaths {
     final multi = _assemblyMultiSelect;
-    if (multi.active && multi.selectedIds.isNotEmpty) return [for (final id in multi.selectedIds) [id]];
+    if (multi.active && multi.selectedIds.isNotEmpty) return [for (final id in multi.selectedIds) _focusChildPath(id)];
     final selected = _selectedTreePath;
     return selected == null ? const [] : [selected];
   }
@@ -26021,10 +26160,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         }
       case AssemblyRowKind.mate:
         final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
-        if (mate != null) _onMateTap(mate);
+        // B3: the folder is the tree root's; while the focus is deeper its mates are not the lists this screen's mate actions work on.
+        if (mate != null && _focusIsTreeRoot) _onMateTap(mate);
       case AssemblyRowKind.pattern:
         final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
-        if (pattern != null) _openComponentPatternForEdit(pattern);
+        if (pattern != null && _focusIsTreeRoot) _openComponentPatternForEdit(pattern);
       case AssemblyRowKind.root:
         // The root row stands for everything in the tree: it highlights every part (the old panel's root row selected nothing, A4.1 asked for
         // this). Its path is `[]`, so nothing that works on one component (the gizmo, the drawer) sees a selection.
@@ -26087,10 +26227,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         }
       case AssemblyRowKind.mate:
         final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
-        if (mate != null) unawaited(_onMateLongPress(mate));
+        if (mate != null && _focusIsTreeRoot) unawaited(_onMateLongPress(mate));
       case AssemblyRowKind.pattern:
         final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
-        if (pattern != null) unawaited(_onPatternContextMenu(pattern, null));
+        if (pattern != null && _focusIsTreeRoot) unawaited(_onPatternContextMenu(pattern, null));
       case AssemblyRowKind.root:
       case AssemblyRowKind.group:
       case AssemblyRowKind.feature:
@@ -26118,10 +26258,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, at: at, path: t.path));
       case AssemblyRowKind.mate:
         final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
-        if (mate != null) unawaited(_onMateLongPress(mate, at: at));
+        if (mate != null && _focusIsTreeRoot) unawaited(_onMateLongPress(mate, at: at));
       case AssemblyRowKind.pattern:
         final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
-        if (pattern != null) unawaited(_onPatternContextMenu(pattern, at));
+        if (pattern != null && _focusIsTreeRoot) unawaited(_onPatternContextMenu(pattern, at));
       case AssemblyRowKind.root:
       case AssemblyRowKind.group:
       case AssemblyRowKind.feature:
@@ -26148,17 +26288,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     await _setOccurrenceHidden(target.occurrence, !_treeTargetHidden(target), path: target.path);
   }
 
-  /// Make Focus on the occurrence at [path]: each level from the tree's root down to it is pushed onto [_focusStack] (a nested row pushes
-  /// its parents first), so Exit Focus walks back one level at a time. Refused (with a message) when a level is an unresolved component.
-  bool _pushFocusPath(List<String> path) {
+  /// Make Focus on the occurrence at [path] (from the tree's root): the focus stack becomes exactly the levels down to it (B3: the tree keeps
+  /// its whole assembly, so the row may be anywhere in it: levels that are not on the way are popped, the rest pushed). A nested row pushes its
+  /// parents first, so Exit Focus walks back one level at a time. Refused (with a message) when a level is an unresolved component.
+  bool _focusToTreePath(List<String> path) {
     final stack = _focusStack;
     final levels = _focusLevelsOf(path);
     if (stack == null || levels == null) return false;
-    setState(() {
-      for (final (partId, id, label) in levels) {
-        stack.push(partId, id, label);
-      }
-    });
+    setState(() => stack.setLevels([..._treeRootLevels, ...levels]));
     return true;
   }
 
@@ -26180,8 +26317,51 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   Future<void> _makeFocusOnPath(List<String> path) async {
     _clearTransientError();
-    if (!_pushFocusPath(path)) return;
+    if (!_focusToTreePath(path)) return;
     await _refreshFocusTargetContent();
+    _revealFocusedRow();
+  }
+
+  /// B3: the focused row is revealed in the tree (its ancestors open, the list scrolls to it).
+  void _revealFocusedRow() {
+    final focus = _focusRelPath;
+    if (!mounted || focus.isEmpty) return;
+    _treeController.reveal(focus);
+  }
+
+  /// A crumb of the focus strip: pop the focus to that depth (0 is the tree's root).
+  Future<void> _focusCrumb(int depth) async {
+    final stack = _focusStack;
+    if (stack == null) return;
+    final target = (_editAlone?.editDepth ?? 0) + depth;
+    if (target >= stack.depth) return;
+    _clearTransientError();
+    setState(() {
+      while (stack.depth > target) {
+        stack.pop();
+      }
+    });
+    await _refreshFocusTargetContent();
+    _revealFocusedRow();
+  }
+
+  /// "Focus here" on a row outside the focus.
+  Future<void> _focusHere(AssemblyTreeRow row) async {
+    final path = row.path;
+    if (path == null || path.isEmpty) return;
+    await _makeFocusOnPath(path);
+  }
+
+  /// The labels of the focus strip: the tree's root, then every focused level. Fewer than two (nothing focused) draws no strip. Inside Edit
+  /// Alone the root is the target.
+  List<String> _focusCrumbLabels() {
+    final stack = _focusStack;
+    if (stack == null) return const [];
+    final base = _editAlone?.editDepth ?? 0;
+    final labels = stack.labelPath;
+    if (labels.length <= base) return const [];
+    final root = base == 0 ? _treeRootDisplayName : labels[base - 1];
+    return [root, ...labels.sublist(base)];
   }
 
   /// [AssemblyTreePanel.onOccurrenceLongPress] - Phase 4's real call site
@@ -26233,13 +26413,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// "the whole component that was long-pressed."
   Future<void> _onOccurrenceLongPress(OccurrenceDto occurrence, {Offset? at, List<String>? path}) async {
     // A4: [path] is the row's path from the tree's root; a component directly in the focused Part is `[id]`.
-    final rowPath = path ?? [occurrence.id];
-    final target = _treeTargetOfPath(rowPath) ?? _TreeTarget(rowPath, occurrence, _focusStack?.current ?? _part?.id ?? '');
+    final rowPath = path ?? _focusChildPath(occurrence.id);
+    final target = _treeTargetOfPath(rowPath) ?? _TreeTarget(rowPath, occurrence, _focusStack?.current ?? _part?.id ?? '', topLevel: _isFocusChild(rowPath));
     final nested = !target.topLevel;
     // Bug fix ("selecting a component doesn't highlight it in 3D"): same selection as a tap, so a long-press-selected component highlights
     // too.
     _selectTreeTarget(target);
-    final focusStack = _focusStack;
     // §6 roadmap Phase 10 (`[19]`): was `focusStack.current ==
     // resolvedPartId`, an always-false comparison for any real Occurrence
     // (the Assembly tree only ever shows a Part's own *children*, so that
@@ -26248,7 +26427,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // appendix item 4's own "noticed but out of scope" note). Checking
     // membership in the full focused chain is the real "is *this*
     // Occurrence the one currently focused" question.
-    final isFocused = !nested && (focusStack?.currentOccurrencePath.contains(occurrence.id) ?? false);
+    // B3: the focused row itself (the whole tree stays, so it is a row of the tree like any other).
+    final isFocused = pathEquals(rowPath, _focusRelPath) && rowPath.isNotEmpty;
     final hidden = _treeTargetHidden(target);
     final fixed = occurrence.fixed;
     // Bug fix ("selecting a component shows no contextual toolbar"): this
@@ -26712,8 +26892,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// already loaded, no second round trip needed) and an Undo entry pushed
   /// right before the delete call, capturing exactly what the warning named.
   Future<void> _confirmDeleteOccurrence(OccurrenceDto occurrence, {List<String>? path}) async {
-    final rowPath = path ?? [occurrence.id];
-    final nested = rowPath.length > 1;
+    final rowPath = path ?? _focusChildPath(occurrence.id);
+    final nested = !_isFocusChild(rowPath);
     final part = _part;
     final focusPartId = _ownerPartIdOf(rowPath);
     if (part == null || focusPartId == null) return;
@@ -26809,46 +26989,30 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
-  /// How many times [partId] is placed in the whole document (the root counts once when it is that Part): the "used N\u00D7" of a delete. 1
-  /// when the tree cannot be read (nothing is claimed that is not known).
+  /// How many times [partId] is placed in the whole document (the root counts once when it is that Part): the "used N\u00D7" of a delete and of
+  /// Edit Alone's strip. 1 when the tree cannot be read (nothing is claimed that is not known).
   Future<int?> _placementsOfPart(String partId) async {
     final root = _part;
     if (root == null) return null;
     try {
-      final tree = await _api.getAssemblyTree(root.id);
-      // A truncated tree may hold more placements than it lists: unknown, not a smaller number.
-      if (tree.truncatedDepth || tree.truncatedNodes) return null;
-      var count = tree.partId == partId ? 1 : 0;
-      final stack = <AssemblyTreeNodeDto>[...tree.children];
-      while (stack.isNotEmpty) {
-        final n = stack.removeLast();
-        if (n.resolvedPartId == partId && !n.cycle) count++;
-        stack.addAll(n.children);
-      }
-      return count;
+      return _placementsInTree(await _api.getAssemblyTree(root.id), partId, fromBackend: true);
     } catch (_) {
       return null;
     }
   }
 
-  /// Bug fix: `AssemblyFocusStack.pop`, then re-fetches the tree - the exact
-  /// same two lines the `exitFocus` case above always ran, factored out so
-  /// [AssemblyTreePanel]'s own breadcrumb row (its [AssemblyTreePanel.
-  /// onExitFocus]) can trigger the identical effect without going through
-  /// [showComponentContextMenu]. That menu is only ever reachable by long-
-  /// pressing an *Occurrence row* - a focused Part with no Occurrences of
-  /// its own renders no rows at all (`AssemblyTreePanel._buildGroupedTree`'s
-  /// empty state), which previously left no way back to Part lens or a
-  /// shallower focus depth at all once drilled into a leaf component.
-  Future<void> _exitAssemblyFocus() async {
-    // In Edit Alone the breadcrumb's back leaves Edit Alone altogether, not one level of focus.
-    if (_editAlone != null) {
-      await _exitEditAlone();
-      return;
+  /// [_placementsOfPart] from a tree already read: null when it is not the document's tree (another root, so a count would be of one
+  /// assembly's inside) or was cut short (a truncated tree may hold more placements than it lists: unknown, not a smaller number).
+  int? _placementsInTree(AssemblyTreeResponseDto? tree, String partId, {bool? fromBackend}) {
+    if (tree == null || !(fromBackend ?? _treeFromBackend) || tree.partId != _part?.id || tree.truncatedDepth || tree.truncatedNodes) return null;
+    var count = tree.partId == partId ? 1 : 0;
+    final stack = <AssemblyTreeNodeDto>[...tree.children];
+    while (stack.isNotEmpty) {
+      final n = stack.removeLast();
+      if (n.resolvedPartId == partId && !n.cycle) count++;
+      stack.addAll(n.children);
     }
-    _clearTransientError();
-    setState(() => _focusStack?.pop());
-    await _refreshFocusTargetContent();
+    return count;
   }
 
   // --- Edit Alone (`docs/view-override-edit-alone-sketch-origin-plan.md` Item 2) -------------------------------------
@@ -26864,15 +27028,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _clearTransientError();
     final focusStack = _focusStack;
     if (focusStack == null || _editAlone != null) return;
-    // A4: a nested row pushes every level down to it, like Make Focus.
-    final rowPath = path ?? [occurrence.id];
+    // A4: a nested row pushes every level down to it, like Make Focus (B3: the tree is the document's here, so the path is whole).
+    final rowPath = path ?? _focusChildPath(occurrence.id);
     final resolvedPartId = occurrence.resolvedPartId;
     if (resolvedPartId == null) {
       setState(() => _errorMessage = 'Cannot focus an unresolved component - its file was never loaded');
       return;
     }
-    final levels = _focusLevelsOf(rowPath);
-    if (levels == null) return;
+    final relLevels = _focusLevelsOf(rowPath);
+    if (relLevels == null) return;
+    // Whole levels from the document root (the tree may be rooted at the focused Part: its own levels come first).
+    final levels = [..._treeRootLevels, ...relLevels];
     if (_sceneMode) {
       _showSnack('Go back to the default view before editing a component alone');
       return;
@@ -26882,17 +27048,20 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       return;
     }
     final label = _treeLabel(rowPath, occurrence);
+    final rootName = _treeRootDisplayName;
     final session = _EditAloneSession(
-      baseDepth: focusStack.depth,
+      before: focusStack.levels,
       lensBefore: _lens,
       viewpointBefore: _viewportKey.currentState?.currentViewpoint(),
       label: label,
+      levels: levels,
+      // "in Rover > Mast": the root and every level above the target.
+      inLabels: [rootName, for (final l in levels.sublist(0, levels.length - 1)) l.$3],
+      usedCount: _placementsInTree(_treeModel.tree, levels.last.$1),
     );
     setState(() {
       _editAlone = session;
-      for (final (partId, id, levelLabel) in levels) {
-        focusStack.push(partId, id, levelLabel);
-      }
+      focusStack.setLevels(levels);
       session.editDepth = focusStack.depth;
       _selectedOccurrenceId = null;
       _selectedMateId = null;
@@ -26901,6 +27070,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _selectOtherCandidates = null;
       _selectOtherHighlight = null;
     });
+    // "used N x" when the tree could not say (it was not loaded or was cut short): asked for, and dropped if Edit Alone is over by then.
+    if (session.usedCount == null) {
+      unawaited(_placementsOfPart(levels.last.$1).then((count) {
+        if (mounted && _editAlone == session && count != null) setState(() => session.usedCount = count);
+      }));
+    }
     await _refreshFocusTargetContent();
     if (!mounted || _editAlone != session) return;
     // A sub-assembly is a focus whose own Occurrences are not empty (the tree was just refreshed for it).
@@ -26913,7 +27088,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Done: back to the assembly the user started from (whatever focus was pushed since), the lens and the view as they
   /// were. Nothing was written, so there is nothing to undo. An open tool must be closed first.
-  Future<void> _exitEditAlone() async {
+  Future<void> _exitEditAlone({int? upTo}) async {
     final session = _editAlone;
     if (session == null) return;
     if (_anyToolSessionActive) {
@@ -26923,9 +27098,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _clearTransientError();
     final focusStack = _focusStack;
     setState(() {
-      while (focusStack != null && focusStack.depth > session.baseDepth) {
-        focusStack.pop();
-      }
+      // Where it was before (B3: Edit Alone replaces the focus with the target's levels), or, from a crumb of the strip's "in ...", on that
+      // level of the way down to the target ([upTo] levels of it; 0 is the root).
+      focusStack?.setLevels(upTo == null ? session.before : session.levels.sublist(0, upTo));
       _editAlone = null;
       _selectedOccurrenceId = null;
       _selectedMateId = null;
@@ -26950,6 +27125,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _clearTransientError();
     setState(() => _focusStack?.pop());
     await _refreshFocusTargetContent();
+    _revealFocusedRow();
   }
 
   /// The pill at the top of the viewport while in Edit Alone: what is being edited, and the way back. Only while no tree is
@@ -26957,7 +27133,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// the pill never covers it.
   Widget _buildEditAlonePill() {
     final session = _editAlone!;
-    return EditAloneRow(label: session.label, onDone: () => unawaited(_exitEditAlone()), pill: true);
+    return EditAloneStrip(label: session.label, onDone: () => unawaited(_exitEditAlone()), pill: true, usedCount: session.usedCount);
   }
 
   /// Whether a tree panel (the Build Tree or the Assembly Tree, floating on a phone or docked on the desktop) is on screen,
@@ -27083,7 +27259,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// session only, by its path: the backend's flag sits on the sub-assembly's own occurrence, which every placement of it shares, so a PATCH
   /// would hide it under the other placement too.
   Future<void> _setOccurrenceHidden(OccurrenceDto occurrence, bool hidden, {List<String>? path}) async {
-    final rowPath = path ?? [occurrence.id];
+    final rowPath = path ?? _focusChildPath(occurrence.id);
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null) return;
     if (_sceneMode) {
@@ -27092,8 +27268,22 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       return;
     }
     final fullKey = _fullPath(rowPath).join('/');
-    if (rowPath.length > 1) {
-      _setSessionHidden({fullKey: hidden});
+    // Only a row directly in the focused Part has a flag of its own to PATCH (B3: the tree is the whole assembly, so a row elsewhere in it, an
+    // ancestor's sibling or another branch, is hidden for this session like a nested one).
+    if (!_isFocusChild(rowPath)) {
+      if (hidden) {
+        _setSessionHidden({fullKey: true});
+        return;
+      }
+      // Show: drop the session hide, and if the backend says hidden too, clear that flag on the occurrence's own Part (as Fix and Rename do).
+      if (_sessionHiddenPaths.contains(fullKey)) _setSessionHidden({fullKey: false});
+      final ownerPartId = _ownerPartIdOf(rowPath);
+      if (!occurrence.hidden || ownerPartId == null) return;
+      await _runGuarded(() async {
+        await _api.updateOccurrenceHidden(ownerPartId, occurrence.id, false);
+        await _refreshAssemblyTree();
+        await _refreshAssemblyMesh();
+      });
       return;
     }
     // A row hidden for this session (a nested row hidden before the focus moved into its parent) is shown by dropping that; only if the
@@ -27131,7 +27321,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// A4: goes to the occurrence on its parent Part ([_ownerPartIdOf]), so a nested row PATCHes the sub-assembly's own occurrence. The row says
   /// so at once and drops its old constraint state; any tree load still in flight is stale ([_applyLocalFixed]).
   Future<void> _setOccurrenceFixed(OccurrenceDto occurrence, bool fixed, {List<String>? path}) async {
-    final rowPath = path ?? [occurrence.id];
+    final rowPath = path ?? _focusChildPath(occurrence.id);
     final ownerPartId = _ownerPartIdOf(rowPath);
     if (ownerPartId == null) return;
     await _runGuarded(() async {
@@ -27160,7 +27350,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   ///
   /// A4: the name change goes to the occurrence on its parent Part ([_ownerPartIdOf]), also for a nested row.
   Future<void> _renameOccurrence(OccurrenceDto occurrence, {List<String>? path}) async {
-    final rowPath = path ?? [occurrence.id];
+    final rowPath = path ?? _focusChildPath(occurrence.id);
     final focusPartId = _ownerPartIdOf(rowPath);
     if (focusPartId == null) return;
 
@@ -27271,7 +27461,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The Appearance tool (V3): the disc now opens the Appearance panel on that component (its Part, Pattern, `Every <part>`,
   /// sub-assembly and Whole assembly rows); a click on the part in the viewport adds its Face and Body rows.
   Future<void> _onOccurrenceColorTap(OccurrenceDto occurrence, {List<String>? path}) async {
-    final fullPath = _fullPath(path ?? [occurrence.id]);
+    final fullPath = _fullPath(path ?? _focusChildPath(occurrence.id));
     await _openAppearance(pick: _PaintPick(path: fullPath, label: _paintPickLabel(fullPath)));
   }
 
@@ -27284,23 +27474,33 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// original, so one undo goes all the way back. Without a snapshot (the document arrived already isolated) the undo shows every sibling.
   /// A nested component the backend itself says is hidden stays hidden: that flag is shared by every placement and is not touched here.
   Future<void> _isolateOccurrence(OccurrenceDto occurrence, {List<String>? path}) async {
-    final rowPath = path ?? [occurrence.id];
+    final rowPath = path ?? _focusChildPath(occurrence.id);
     final focusPartId = _focusStack?.current ?? _part?.id;
     if (focusPartId == null || rowPath.isEmpty) return;
     final targetKey = _fullPath(rowPath).join('/');
     final snapshot = _isolateSnapshot;
+    final focusRel = _focusRelPath;
+    // The component of the focused Part the row is (or is in); null for a row outside the focus.
+    final topId = rowPath.length > focusRel.length && pathEquals(rowPath.sublist(0, focusRel.length), focusRel) ? rowPath[focusRel.length] : null;
 
     // The rows hidden to isolate: at each level the siblings of the row's ancestor (or of the row itself at its own level).
     final hideTopLevel = <String>[];
     final hideNested = <String>[];
     for (var level = 0; level < rowPath.length; level++) {
       final parentPath = rowPath.sublist(0, level);
-      final siblingIds = level == 0
+      // The focused Part's own components carry the backend's `hidden` flag; every other level is hidden for this session (B3: the whole
+      // tree is listed, so the levels above the focus are rows here too).
+      final atFocusLevel = pathEquals(parentPath, focusRel);
+      final siblingIds = atFocusLevel
           ? [for (final o in _occurrences) o.id]
-          : [for (final n in _treeModel.nodeAtPath(parentPath)?.children ?? const <AssemblyTreeNodeDto>[]) n.occurrenceId];
+          : [
+              for (final n in (parentPath.isEmpty ? _treeModel.tree?.children : _treeModel.nodeAtPath(parentPath)?.children) ??
+                  const <AssemblyTreeNodeDto>[])
+                n.occurrenceId
+            ];
       for (final id in siblingIds) {
         if (id == rowPath[level]) continue;
-        if (level == 0) {
+        if (atFocusLevel) {
           hideTopLevel.add(id);
         } else {
           hideNested.add(_fullPath([...parentPath, id]).join('/'));
@@ -27312,7 +27512,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // Already isolated: this row's snapshot says so, or (no snapshot) everything else is hidden and the row's own line shown.
     final structurallyIsolated = hideTopLevel.every((id) => topById[id]?.hidden ?? true) &&
         hideNested.every((k) => !isShown(k)) &&
-        !(topById[rowPath.first]?.hidden ?? false) &&
+        !(topId != null && (topById[topId]?.hidden ?? false)) &&
         _fullPathPrefixes(rowPath).every(isShown);
     final undo = (snapshot != null && snapshot.targetKey == targetKey) || (snapshot == null && structurallyIsolated);
 
@@ -27341,7 +27541,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       for (final id in hideTopLevel) {
         topLevelWanted[id] = true;
       }
-      topLevelWanted[rowPath.first] = false;
+      if (topId != null) topLevelWanted[topId] = false;
       // The row and what is in it, and the line down to it, are shown (a row hidden for this session on its own is shown again).
       nextSession.removeWhere((k) => k == targetKey || k.startsWith('$targetKey/') || _fullPathPrefixes(rowPath).contains(k));
       nextSession.addAll(hideNested);
@@ -27507,34 +27707,47 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// work, and in Convert Entities the earlier sketches can be picked. Rebuilt whenever this screen rebuilds while the sketch is open (see
   /// [_pingSketchSource]), so a Hide / Show shows at once.
   Widget _buildSketchTreePanel(FeatureDto sketchFeature, VoidCallback onClose, {required bool docked}) {
-    _syncTreeLivePart(); // the live part is current even while this screen's own tree is not on screen
-    var tree = _treeModel.tree;
-    var live = _treeModel.livePart;
-    if (tree == null || live == null) {
-      // No tree for the document yet, or the focused Part's row is not live in it: the focused Part on its own, as a part opened alone. Its
-      // features and bodies only once they are that Part's own (as [_syncTreeLivePart] requires): another Part's are never listed as its.
-      final focus = _focusPartIdOrNull;
-      final ownData = focus != null && _featuresPartId == focus && _bodiesPartId == focus;
-      final inputs = _treeLiveInputs;
+    // B3: this build changes nothing in this screen's own tree model (it used to bring its live part up to date). The sketcher's tree gets
+    // what it needs from the screen's fields and this screen's model is read only; the model's own live part follows when its tree is built.
+    final tree = _treeModel.tree;
+    // The focused Part's features and bodies only once they are that Part's own (as [_syncTreeLivePart] requires): another Part's are never
+    // listed as its.
+    final focus = _focusPartIdOrNull;
+    final ownData = focus != null && _featuresPartId == focus && _bodiesPartId == focus;
+    final key = ownData ? _liveTreeKey : null;
+    final inputs = _liveInputs(key);
+    AssemblyTreeResponseDto sketchTree;
+    AssemblyLivePart? live;
+    if (tree != null && key != null) {
+      sketchTree = tree;
+      final cached = _sketchLiveCache;
+      if (cached != null && _sameLiveInputs(cached.$1, inputs)) {
+        live = cached.$2;
+      } else {
+        live = _livePartFor(key);
+        _sketchLiveCache = (inputs, live);
+      }
+    } else {
+      // No tree for the document yet, or the focused Part's row is not live in it: the focused Part on its own, as a part opened alone.
       final cached = _sketchTreeFallback;
-      if (cached != null && identical(cached.$1, inputs)) {
-        (_, tree, live) = cached;
+      if (cached != null && _sameLiveInputs(cached.$1, inputs)) {
+        (_, sketchTree, live) = cached;
       } else {
         final partId = _focusPartIdOrNull ?? _part?.id ?? '';
-        tree = AssemblyTreeResponseDto(
+        sketchTree = AssemblyTreeResponseDto(
           partId: partId,
           partName: _focusStack?.currentLabel ?? _part?.name ?? 'Part',
           featureCount: _features.length,
           statusIncluded: true,
         );
         live = ownData ? _livePartFor('') : null;
-        _sketchTreeFallback = (inputs, tree, live);
+        _sketchTreeFallback = (inputs, sketchTree, live);
       }
     }
     return SketchFeatureTree(
       // A new sketch is a new tree (its own open rows and selection).
       key: ValueKey('sketch-tree:${sketchFeature.id}'),
-      tree: tree,
+      tree: sketchTree,
       livePart: live,
       // Both are this screen's tree's: [SketchFeatureTree] uses them only while that tree has the same root as [tree] (not on a seed for the
       // focused Part alone, whose root is another Part).
@@ -27548,12 +27761,18 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         if (_busy) return;
         unawaited(_toggleLiveRowVisibility(row));
       },
+      // A component row never opened in this screen's own tree: its features are read into this screen's model, which the sketcher's copies.
+      onFeaturesRequested: _loadTreeFeatures,
     );
   }
 
   /// The sketcher's tree when this screen's own tree has no live part (see [_buildSketchTreePanel]): what it was built from (the live inputs
   /// it was current for), the seed tree and the live part. Kept so the sketcher's tree is not handed new inputs on every rebuild.
-  (List<Object?>?, AssemblyTreeResponseDto, AssemblyLivePart?)? _sketchTreeFallback;
+  (List<Object?>, AssemblyTreeResponseDto, AssemblyLivePart?)? _sketchTreeFallback;
+
+  /// The sketcher's live part for this screen's tree (see [_buildSketchTreePanel]) and what it was built from, so it is the same object until
+  /// those change.
+  (List<Object?>, AssemblyLivePart)? _sketchLiveCache;
 
   Future<void> _runGuarded(Future<void> Function() body) async {
     setState(() {
@@ -28593,7 +28812,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       final occurrence = _occurrences[index];
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
-                        displayName: _treeLabel([_occurrences[index].id], _occurrences[index]),
+                        displayName: _treeLabel(_focusChildPath(_occurrences[index].id), _occurrences[index]),
                         onMove: () {
                           _clearTransientError();
                           setState(() {
@@ -28787,16 +29006,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The live part is drawn while the Part lens is on, and while a tree picker picks from it (a picker can be opened from either lens).
   bool get _treeLiveShown => _lens == AssemblyLens.part || _treePickerActive;
 
-  /// The key of the live row: the focused Part's row in the tree the model holds. Make Focus re-roots the tree on the focused Part today, so
-  /// that is the root (`""`); a tree rooted at the document while a Part is focused (B3 keeps the whole tree) makes the focused row live.
+  /// The key of the live row: the focused Part's row in the tree the model holds. Make Focus keeps the whole tree (B3), so it is the row at
+  /// the focus path (`""`, the root, while the root itself is the working level: a part opened alone, Edit Alone's target). Null while the
+  /// model holds another root's tree (a load after Edit Alone is on its way) or no row for the focused Part.
   String? get _liveTreeKey {
     final tree = _treeModel.tree;
     final focus = _focusPartIdOrNull;
     if (tree == null || focus == null) return null;
-    if (tree.partId == focus) return '';
-    final path = _focusStack?.currentOccurrencePath ?? const <String>[];
-    if (tree.partId == _part?.id && path.isNotEmpty && _treeModel.nodeAtPath(path)?.resolvedPartId == focus) return path.join('/');
-    return null;
+    final rel = _focusRelPath;
+    if (rel.isEmpty) return tree.partId == focus ? '' : null;
+    return _treeModel.nodeAtPath(rel)?.resolvedPartId == focus ? rel.join('/') : null;
   }
 
   /// What the live part was last built from (see [_syncTreeLivePart]): rebuilding it clears the model's cached rows, so it is done only when
@@ -28812,25 +29031,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // Only once the features and the bodies are the focused Part's own (see [_featuresPartId]; a failed mesh leaves it no bodies, see
     // [_refreshMesh]).
     final key = focus != null && _featuresPartId == focus && _bodiesPartId == focus ? _liveTreeKey : null;
-    final hidden = _hiddenFeatureIds;
-    final rolled = _rollbackExcludedFeatureIds;
-    final pending = _pendingDetailFeatureIds;
     String sorted(Iterable<String> ids) => (ids.toList()..sort()).join(',');
-    final inputs = <Object?>[
-      key,
-      _features,
-      _bodies,
-      sorted(hidden),
-      sorted(rolled),
-      sorted(pending),
-      sorted(_hiddenReferencePlanes.map((p) => p.apiValue)),
-    ];
-    final last = _treeLiveInputs;
-    var same = last != null && last.length == inputs.length;
-    for (var i = 0; same && i < inputs.length; i++) {
-      same = i == 1 || i == 2 ? identical(last![i], inputs[i]) : last![i] == inputs[i];
-    }
-    if (!same || !identical(_treeLiveModel, _treeModel)) {
+    final inputs = _liveInputs(key);
+    if (!_sameLiveInputs(_treeLiveInputs, inputs) || !identical(_treeLiveModel, _treeModel)) {
       _treeLiveInputs = inputs;
       _treeLiveModel = _treeModel;
       if (key == null) {
@@ -28857,6 +29060,29 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
+
+  /// What the live part for [key] is built from: compared by [_sameLiveInputs] to know whether it needs rebuilding (rebuilding it clears the
+  /// model's cached rows). The features and the bodies by identity, the rest by value.
+  List<Object?> _liveInputs(String? key) {
+    String sorted(Iterable<String> ids) => (ids.toList()..sort()).join(',');
+    return <Object?>[
+      key,
+      _features,
+      _bodies,
+      sorted(_hiddenFeatureIds),
+      sorted(_rollbackExcludedFeatureIds),
+      sorted(_pendingDetailFeatureIds),
+      sorted(_hiddenReferencePlanes.map((p) => p.apiValue)),
+    ];
+  }
+
+  bool _sameLiveInputs(List<Object?>? last, List<Object?> inputs) {
+    if (last == null || last.length != inputs.length) return false;
+    for (var i = 0; i < inputs.length; i++) {
+      if (!(i == 1 || i == 2 ? identical(last[i], inputs[i]) : last[i] == inputs[i])) return false;
+    }
+    return true;
+  }
 
   /// The live part's inputs (spec section 13) for the row [key], from this screen's features, bodies and hidden, rolled-back and pending sets.
   AssemblyLivePart _livePartFor(String key) {
@@ -29150,13 +29376,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // The model keeps this screen's selection and unsaved Parts (cheap: nothing changes when they have not).
     _treeModel.setUnsavedPartIds(_unsavedPartIds);
     // The mate and pattern rows follow the lists when something other than a load changed them (a "Got it" on a mate).
-    if (!identical(_mates, _treeMatesSynced)) {
-      _treeMatesSynced = _mates;
-      _treeModel.setFolderItems('#mates', mateFolderItems(_mates));
+    if (!identical(_treeMateList, _treeMatesSynced)) {
+      _treeMatesSynced = _treeMateList;
+      _treeModel.setFolderItems('#mates', mateFolderItems(_treeMateList));
     }
-    if (!identical(_componentPatterns, _treePatternsSynced)) {
-      _treePatternsSynced = _componentPatterns;
-      _treeModel.setFolderItems('#patterns', patternFolderItems(_componentPatterns));
+    if (!identical(_treePatternList, _treePatternsSynced)) {
+      _treePatternsSynced = _treePatternList;
+      _treeModel.setFolderItems('#patterns', patternFolderItems(_treePatternList));
     }
     _syncTreeLivePart();
     // Only when this screen's own selection changed: a tap on a folder, group or feature row marks that row and keeps its mark.
@@ -29172,6 +29398,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         });
       }
     }
+    // B3: which rows are inside, around and outside the focus (dimmed, railed).
+    // Not while the model still holds another root's tree (Edit Alone just ended): its keys are not this path's.
+    _treeModel.focusPath = _treeModel.tree?.partId == _treeRootPartIdOrNull ? _focusRelPath : const <String>[];
     final live = _treeModel.liveKey != null;
     final build = _buildMultiSelect;
     AssemblyTreeView view(bool docked, double width) => AssemblyTreeView(
@@ -29183,10 +29412,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       statusUnavailable: _treeStatusUnavailable,
       // The docked pane is shown or not by the layout itself.
       visible: docked || _featureTreePanelVisible,
-      editAloneLabel: _editAlone?.label,
+      editAlone: _editAlone == null
+          ? null
+          : AssemblyEditAloneInfo(label: _editAlone!.label, inLabels: _editAlone!.inLabels, usedCount: _editAlone!.usedCount),
       onEditAloneDone: _editAlone == null ? null : () => unawaited(_exitEditAlone()),
-      focusedLabel: _focusStack?.currentLabel,
-      onExitFocus: () => unawaited(_exitAssemblyFocus()),
+      // Each crumb of "in Rover > Mast" leaves Edit Alone at that level.
+      onEditAloneCrumb: _editAlone == null ? null : (i) => unawaited(_exitEditAlone(upTo: i)),
+      focusCrumbs: _focusCrumbLabels(),
+      onFocusCrumb: (depth) => unawaited(_focusCrumb(depth)),
+      onFocusHere: (row) => unawaited(_focusHere(row)),
       statusLine: _lens == AssemblyLens.assembly ? _motionStatusText : null,
       // The docked pane has no close.
       onClose: docked ? null : _onTreeClose,
@@ -29205,7 +29439,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // The build session keeps [TreeMultiSelectKeys] (`feature:<id>`...); the tree ticks row keys (P1's mapping).
       selectedKeys: build.active
           ? {for (final k in build.selectedIds) ..._treeModel.rowKeysOfMultiSelect(k)}
-          : _assemblyMultiSelect.selectedIds,
+          : {for (final id in _assemblyMultiSelect.selectedIds) _focusChildPath(id).join('/')},
       // The Assembly session works on the components directly in the assembly being edited (their key is their id), the build session on the
       // live part's features, bodies, surfaces and curves.
       onMultiSelectToggle: (row) {
@@ -29215,7 +29449,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           return;
         }
         final path = row.path;
-        if (path != null && path.length == 1) _toggleMultiSelectMember(_assemblyMultiSelect, path.first);
+        if (path != null && _isFocusChild(path)) _toggleMultiSelectMember(_assemblyMultiSelect, path.last);
       },
       onRowTap: (row) => row.live ? _onLiveTreeRowTap(row) : _onTreeRowTap(row),
       onRowLongPress: (row) {
@@ -31542,20 +31776,36 @@ class _TreeTarget {
   final List<String> path;
   final OccurrenceDto occurrence;
   final String ownerPartId;
-  const _TreeTarget(this.path, this.occurrence, this.ownerPartId);
-  bool get topLevel => path.length == 1;
+
+  /// A component directly in the focused Part (B3: the focus path is a prefix of [path]): what the flat lists and the gizmo work on.
+  final bool topLevel;
+  const _TreeTarget(this.path, this.occurrence, this.ownerPartId, {required this.topLevel});
 }
 
 /// Edit Alone's screen state (`_enterEditAlone`): where to go back to. Not part of [AssemblyFocusStack], which stays a plain
 /// focus path.
 class _EditAloneSession {
-  /// [AssemblyFocusStack.depth] before entering; Done pops back to it (it may be deeper if the user used Make Focus inside).
-  final int baseDepth;
+  /// The focus before entering (B3: Edit Alone makes the focus the target's levels; Done puts it back).
+  final List<(String, String, String)> before;
   final AssemblyLens lensBefore;
 
   /// `PartViewportState.currentViewpoint()` before entering, restored by Done.
   final Map<String, dynamic>? viewpointBefore;
   final String label;
+
+  /// The target's own levels from the document root, as (Part id, occurrence id, label): the tree is re-rooted on the last one.
+  final List<(String, String, String)> levels;
+
+  /// "in Rover > Mast": the root's name, then the label of every level above the target.
+  final List<String> inLabels;
+
+  /// How many times the target's Part is placed in the document, when known (the strip says "used N x" from 2).
+  int? usedCount;
+
+  /// The occurrence ids from the document root down to the target: the tree's root path while Edit Alone lasts.
+  List<String> get rootPath => [for (final l in levels) l.$2];
+  String get rootPartId => levels.last.$1;
+  String get rootLabel => label;
 
   /// Set once the target's own Occurrences are known: a sub-assembly has some, a part has none.
   bool isSubAssembly = false;
@@ -31563,5 +31813,13 @@ class _EditAloneSession {
   /// [AssemblyFocusStack.depth] right after Edit Alone pushed its levels (a nested target pushes several): Exit Focus at or below it is Done.
   int editDepth = 0;
 
-  _EditAloneSession({required this.baseDepth, required this.lensBefore, required this.viewpointBefore, required this.label});
+  _EditAloneSession({
+    required this.before,
+    required this.lensBefore,
+    required this.viewpointBefore,
+    required this.label,
+    required this.levels,
+    required this.inLabels,
+    this.usedCount,
+  });
 }

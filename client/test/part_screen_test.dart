@@ -36,7 +36,7 @@ import 'package:didsa_cad_client/viewport3d/assembly_tree_open_store.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
 import 'package:didsa_cad_client/viewport3d/selection_list_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
-import 'package:didsa_cad_client/viewport3d/edit_alone_row.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_context_strip.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_feature_tree.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
@@ -1636,9 +1636,9 @@ class _TreeProbe {
     await tester.pump(const Duration(milliseconds: 250));
   }
 
-  /// The "Focused on ..." row's Exit (the floating tree is slid off the screen while closed, so it is called, not tapped).
+  /// The focus strip's second-last crumb: one level out (the floating tree is slid off the screen while closed, so it is called, not tapped).
   Future<void> exitFocus() async {
-    view.onExitFocus!();
+    view.onFocusCrumb!(view.focusCrumbs.length - 2);
     await tester.pump();
   }
 
@@ -3283,6 +3283,61 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.byKey(const ValueKey('tree-eye-off:#feature:feature-1')), findsOneWidget);
     expect(find.descendant(of: tree, matching: find.byTooltip('Show')), findsOneWidget);
+    expect(tester.takeException(), isNull);
+  });
+
+  // B3 (P3's review): `_buildSketchTreePanel` brought this screen's own tree model up to date from inside the sketcher's build (a side effect of
+  // building another route's widget). With the desktop pane folded this screen builds no tree of its own, so the model is the screen's alone
+  // and must stay as the screen left it while the sketcher draws its copy.
+  testWidgets("building the sketcher's tree changes nothing in the Part screen's own tree model", (tester) async {
+    tester.view.physicalSize = const Size(1280, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final backend = _FakeDocumentBackend();
+    final sketchBackend = _FakeSketchBackend();
+    final layout = LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: LayoutModeScope(
+          controller: layout,
+          child: PartScreen(
+            documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+            sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+          ),
+        ),
+      ),
+    );
+    await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+    // The screen's own tree model, read while the docked pane shows it; then the pane is folded, so nothing but the sketcher builds a tree.
+    final model = _TreeProbe(tester).model;
+    final liveBefore = model.livePart;
+    expect(liveBefore, isNotNull);
+    expect(liveBefore!.features, isEmpty);
+    await tester.tap(find.byTooltip('Hide the tree'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(find.byType(AssemblyTreeView), findsNothing, reason: 'folded: the screen builds no tree of its own');
+
+    // A new sketch (the part gains a feature, which the screen's tree model has not been told about) and the sketcher over it.
+    await tester.tap(find.byKey(const ValueKey('ribbon-New Sketch')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    tester.widget<PartViewport>(find.byType(PartViewport)).onPlaneTap(ReferencePlaneKind.xy);
+    await _pumpUntil(tester, () => find.text('Continue').evaluate().isNotEmpty);
+    await tester.tap(find.text('Continue'));
+    await _pumpUntil(tester, () => find.byType(SketchScreen).evaluate().isNotEmpty);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.byKey(const ValueKey('sketch-tree-fab')));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // The sketcher's tree has the new sketch (it is built from the screen's fields)...
+    final tree = find.descendant(of: find.byType(SketchScreen), matching: find.byType(SketchFeatureTree));
+    expect(tree, findsOneWidget);
+    expect(find.descendant(of: tree, matching: find.text('Sketch 1')), findsOneWidget);
+    // ...and the screen's own model is as it was: building the sketcher's tree did not update it.
+    expect(identical(model.livePart, liveBefore), isTrue);
+    expect(model.livePart!.features, isEmpty);
     expect(tester.takeException(), isNull);
   });
 
@@ -7599,15 +7654,18 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
 
-      // A4: the tree now shows the focused Part's own children, so the focused component has no row of its own to long-press again; the way
-      // back out is the "Focused on ..." row's Exit (the old panel's breadcrumb), which pops one level.
-      expect(find.byKey(const ValueKey('tree-exit-focus')), findsOneWidget);
-      expect(find.textContaining('Focused on'), findsOneWidget);
-      expect(_TreeProbe(tester).occurrences, isEmpty, reason: 'the focused leaf has no components of its own');
+      // B3: the whole tree stays and the focused component is a row in it (the focus path says which); above it the breadcrumb strip names the
+      // levels, and its first crumb (the root) is the way back out.
+      expect(find.byKey(const ValueKey('focus-strip')), findsOneWidget);
+      expect(find.byKey(const ValueKey('focus-crumb:0')), findsOneWidget);
+      expect(find.byKey(const ValueKey('focus-crumb:1')), findsOneWidget);
+      expect(_TreeProbe(tester).model.focusPath, [occurrence.id]);
+      expect(_TreeProbe(tester).occurrences.map((o) => o.id), [occurrence.id], reason: 'the root still lists its component');
       await _TreeProbe(tester).exitFocus();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 250));
-      expect(find.byKey(const ValueKey('tree-exit-focus')), findsNothing);
+      expect(find.byKey(const ValueKey('focus-strip')), findsNothing);
+      expect(_TreeProbe(tester).model.focusPath, isEmpty);
       expect(_TreeProbe(tester).occurrences.map((o) => o.id), [occurrence.id]);
     });
   });
@@ -10975,7 +11033,7 @@ void main() {
       // No tree open: the pill is the floating one at the top, outside any tree.
       expect(pill, findsOneWidget);
       expect(find.descendant(of: find.byType(AssemblyTreeView), matching: pill), findsNothing);
-      final topPill = tester.widget<EditAloneRow>(pill);
+      final topPill = tester.widget<EditAloneStrip>(pill);
       expect(topPill.pill, isTrue);
 
       await tester.tap(find.byTooltip('Feature tree'));
@@ -10983,10 +11041,11 @@ void main() {
       // Tree open (Part lens: the Build Tree): exactly one row, inside the tree, directly under the header row, not floating.
       expect(pill, findsOneWidget);
       expect(find.descendant(of: find.byType(AssemblyTreeView), matching: pill), findsOneWidget);
-      expect(tester.widget<EditAloneRow>(pill).pill, isFalse);
+      expect(tester.widget<EditAloneStrip>(pill).pill, isFalse);
       expect(tester.getTopLeft(pill).dy, greaterThan(tester.getTopLeft(find.text('Build Tree')).dy));
-      // P2: above the first row (the live root), not floating.
-      expect(tester.getTopLeft(pill).dy, lessThan(tester.getTopLeft(find.byKey(const ValueKey('tree-row:'))).dy));
+      // B3: the strip stands for the root row (rule 5: nothing twice), so it is above the first row listed, the live part's folders.
+      expect(find.byKey(const ValueKey('tree-row:')), findsNothing);
+      expect(tester.getTopLeft(pill).dy, lessThan(tester.getTopLeft(find.byKey(const ValueKey('tree-row:#planes'))).dy));
       expect(find.descendant(of: pill, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
 
       await tester.tap(done);
@@ -11855,29 +11914,323 @@ void main() {
       expect(_TreeProbe(tester).model.nodeAtPath(const ['asm-2', 'c2']), isNull);
     });
 
-    testWidgets('Make Focus from a nested row pushes each level; the Exit row walks back one level at a time', (tester) async {
+    testWidgets('Make Focus from a nested row pushes each level and keeps the whole tree; a crumb walks back', (tester) async {
       final backend = await openNested(tester);
       final probe = _TreeProbe(tester);
       probe.model.openAll(const ['asm-1', 'asm-2']);
 
       await probe.menuAction('asm-1/c1', 'Make Focus');
-      await _pumpUntil(tester, () => backend.assemblyTreeRequests.any((r) => r['part'] == 'c1-part'));
       await settle(tester);
 
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, ['asm-1', 'c1']);
-      expect(_TreeProbe(tester).model.tree!.partId, 'c1-part', reason: 'the tree shows the focused Part');
-      expect(find.textContaining('Focused on'), findsOneWidget);
+      // B3: the tree is still the document's; the focus is a row in it.
+      expect(_TreeProbe(tester).model.tree!.partId, 'part-1', reason: 'the whole tree stays');
+      expect(_TreeProbe(tester).model.focusPath, ['asm-1', 'c1']);
+      expect(_TreeProbe(tester).view.focusCrumbs.length, 3, reason: 'the root and each pushed level');
+      expect(backend.assemblyTreeRequests.every((r) => r['part'] == 'part-1'), isTrue, reason: 'no tree is fetched for a focused Part');
 
       await _TreeProbe(tester).exitFocus();
       await settle(tester);
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, ['asm-1']);
-      expect(_TreeProbe(tester).model.tree!.partId, 'sub');
-      expect(rowKeys(tester), ['', 'c1', 'c2']);
+      expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+      expect(_TreeProbe(tester).model.focusPath, ['asm-1']);
+      expect(rowKeys(tester), containsAll(['asm-1', 'asm-1/c1', 'asm-1/c2']));
 
       await _TreeProbe(tester).exitFocus();
       await settle(tester);
       expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, isEmpty);
       expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+      expect(_TreeProbe(tester).view.focusCrumbs, isEmpty, reason: 'nothing focused: no strip');
+    });
+
+    // B3 (`docs/assembly-tree-overhaul-scope.md` 10.6): Focus keeps the whole tree, dims the outside and rails the branch; the strip names the
+    // levels; Edit Alone re-roots the tree on its target under one strip.
+    group('Focus and Edit Alone context (B3)', () {
+      Future<void> openTree(WidgetTester tester) async {
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+      }
+
+      AssemblyFocusRole role(WidgetTester tester, String key) {
+        final model = _TreeProbe(tester).model;
+        return model.focusRoleOf(model.visibleRows().firstWhere((r) => r.key == key));
+      }
+
+      List<String> focusPath(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath;
+
+      testWidgets('Make Focus on a nested row keeps the root\'s rows, dims the outside, rails the branch and reveals the focused row', (tester) async {
+        await openNested(tester);
+        final probe = _TreeProbe(tester);
+        probe.model.openAll(const ['asm-1', 'asm-2']);
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1/c1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+
+        final model = _TreeProbe(tester).model;
+        expect(model.tree!.partId, 'part-1', reason: 'the tree is still the whole document');
+        expect(rowKeys(tester), containsAll(['asm-1', 'asm-1/c1', 'asm-1/c2', 'asm-2', 'asm-2/c1', 'plate']));
+        expect(role(tester, 'asm-1/c1'), AssemblyFocusRole.focused);
+        expect(role(tester, 'asm-1'), AssemblyFocusRole.ancestor, reason: 'on the way down: context, not dimmed');
+        for (final key in ['asm-1/c2', 'asm-2', 'asm-2/c1', 'plate']) {
+          expect(role(tester, key), AssemblyFocusRole.outside, reason: key);
+        }
+        // Drawn: the outside rows are dimmed, the focused branch carries the rail, the way down and the root do not.
+        for (final key in ['asm-1/c2', 'asm-2', 'asm-2/c1', 'plate']) {
+          expect(find.byKey(ValueKey('tree-dimmed:$key')), findsOneWidget, reason: key);
+          expect(find.byKey(ValueKey('tree-focus-rail:$key')), findsNothing, reason: key);
+        }
+        expect(find.byKey(const ValueKey('tree-focus-rail:asm-1/c1')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-dimmed:asm-1')), findsNothing);
+        expect(find.byKey(const ValueKey('tree-focus-rail:asm-1')), findsNothing);
+        // The strip stands for the root row: it is not drawn twice.
+        expect(find.byKey(const ValueKey('focus-strip')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-row:')), findsNothing);
+        expect(_TreeProbe(tester).view.focusCrumbs, ['Part 1', model.labelAtPath(['asm-1'])!, model.labelAtPath(['asm-1', 'c1'])!]);
+      });
+
+      testWidgets('a crumb pops the focus to that level: two levels at once, or one', (tester) async {
+        await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1/c1', 'Make Focus');
+        await settle(tester);
+        expect(focusPath(tester), ['asm-1', 'c1']);
+
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:1')));
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), ['asm-1']);
+        expect(_TreeProbe(tester).model.focusPath, ['asm-1']);
+
+        await _TreeProbe(tester).menuAction('asm-1/c1', 'Make Focus');
+        await settle(tester);
+        expect(focusPath(tester), ['asm-1', 'c1']);
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), isEmpty, reason: 'the root crumb pops two levels at once');
+        expect(find.byKey(const ValueKey('focus-strip')), findsNothing);
+        expect(find.byKey(const ValueKey('tree-row:')), findsOneWidget, reason: 'nothing focused: the root row is drawn again');
+        expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+      });
+
+      testWidgets('a tap on a dimmed row selects it and offers "Focus here", which pops and pushes the focus to that path', (tester) async {
+        await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1', 'asm-2']);
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1/c1', 'Make Focus');
+        await settle(tester);
+        expect(find.byKey(const ValueKey('tree-focus-here')), findsNothing, reason: 'nothing outside is selected');
+
+        await _TreeProbe(tester).tapRow('asm-2/c1');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-2/c1');
+        expect(find.byKey(const ValueKey('tree-focus-here')), findsOneWidget, reason: 'the row is outside the focus');
+        await tester.tap(find.byKey(const ValueKey('tree-focus-here')));
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), ['asm-2', 'c1'], reason: 'popped out of asm-1 and pushed into asm-2');
+        expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+        expect(role(tester, 'asm-2/c1'), AssemblyFocusRole.focused);
+        expect(role(tester, 'asm-1/c1'), AssemblyFocusRole.outside);
+        expect(find.byKey(const ValueKey('tree-focus-here')), findsNothing, reason: 'the selected row is the focused one now');
+
+        // From the focused row to a row higher up: pops.
+        await _TreeProbe(tester).tapRow('plate');
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('tree-focus-here')));
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), ['plate']);
+      });
+
+      testWidgets('Edit Alone re-roots the tree on the target: its subtree only, "in ..." above it and "used 2 x"', (tester) async {
+        await openNested(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Edit Alone');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'sub');
+        await settle(tester);
+        await openTree(tester);
+
+        final model = _TreeProbe(tester).model;
+        expect(model.tree!.partId, 'sub');
+        expect(rowKeys(tester), ['', 'c1', 'c2'], reason: 'nothing upstream gets a row');
+        expect(find.byKey(const ValueKey('tree-row:')), findsNothing, reason: 'the strip stands for the root row');
+        expect(find.byKey(const ValueKey('tree-row:plate')), findsNothing);
+        final strip = find.byKey(const ValueKey('edit-alone-pill'));
+        expect(find.descendant(of: find.byType(AssemblyTreeView), matching: strip), findsOneWidget);
+        expect(find.descendant(of: strip, matching: find.textContaining('Editing', findRichText: true)), findsOneWidget);
+        expect(tester.widget<EditAloneStrip>(strip).inLabels, ['Part 1']);
+        expect(find.descendant(of: strip, matching: find.byKey(const ValueKey('edit-alone-crumb:0'))), findsOneWidget);
+        expect(find.descendant(of: strip, matching: find.text('used 2 \u00D7')), findsOneWidget,
+            reason: 'the Part is placed twice (asm-1 and asm-2): an edit changes both');
+      });
+
+      testWidgets('a part placed once says nothing about its use', (tester) async {
+        await openNested(tester);
+        await _TreeProbe(tester).menuAction('plate', 'Edit Alone');
+        await settle(tester);
+        await settle(tester);
+        await openTree(tester);
+        expect(find.byKey(const ValueKey('edit-alone-pill')), findsOneWidget);
+        expect(find.byKey(const ValueKey('edit-alone-used')), findsNothing);
+      });
+
+      testWidgets('a crumb of the Edit Alone line leaves Edit Alone at that level', (tester) async {
+        await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await _TreeProbe(tester).menuAction('asm-1/c1', 'Edit Alone');
+        await _pumpUntil(tester, () => focusPath(tester).length == 2);
+        await settle(tester);
+        await settle(tester);
+        await openTree(tester);
+        final strip = tester.widget<EditAloneStrip>(find.byKey(const ValueKey('edit-alone-pill')));
+        expect(strip.inLabels.length, 2, reason: 'in Part 1 > the sub-assembly');
+        expect(strip.usedCount, 2, reason: "c1's Part is placed under both sub-assemblies");
+
+        // The second crumb: the sub-assembly the target is in.
+        await tester.tap(find.byKey(const ValueKey('edit-alone-crumb:1')));
+        await settle(tester);
+        await settle(tester);
+        await settle(tester);
+        expect(find.byKey(const ValueKey('edit-alone-pill')), findsNothing, reason: 'Edit Alone is over');
+        expect(focusPath(tester), ['asm-1'], reason: 'left at that level: that sub-assembly is focused');
+        expect(tester.widget<PartViewport>(find.byType(PartViewport)).soloFocus, isFalse);
+        expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+        expect(find.byKey(const ValueKey('focus-strip')), findsOneWidget);
+
+        // And the first: the root.
+        await _TreeProbe(tester).menuAction('asm-1/c1', 'Edit Alone');
+        await _pumpUntil(tester, () => focusPath(tester).length == 2);
+        await settle(tester);
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('edit-alone-crumb:0')));
+        await settle(tester);
+        await settle(tester);
+        await settle(tester);
+        expect(find.byKey(const ValueKey('edit-alone-pill')), findsNothing);
+        expect(focusPath(tester), isEmpty);
+      });
+
+      // Manager review of #406, items 1 and 2: with a deeper focus and no row for it in the backend's tree, the tree is the focused Part's own.
+      testWidgets('a focus the backend tree has no row for (assembly-tree failed) roots the tree at the focused Part, and keeps a child selected', (tester) async {
+        final backend = await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        backend.assemblyTreeMissing = true;
+        await switchLens(tester, 'Part');
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.tree!.partId, 'sub', reason: 'rooted at the focused Part, as before B3');
+        await _pumpUntil(tester, () => _TreeProbe(tester).model.liveKey != null);
+        expect(_TreeProbe(tester).model.liveKey, '', reason: 'the focused Part is the live row');
+        expect(rowKeys(tester), containsAll(['c1', 'c2']));
+        await _TreeProbe(tester).tapRow('c1');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'c1');
+        await switchLens(tester, 'Part');
+        await switchLens(tester, 'Assembly');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'c1', reason: 'a refresh does not clear a focus child\'s selection');
+      });
+
+      // Review of the fix commits: in the focused-Part-rooted fallback, Make Focus and Edit Alone on a child extend the focus.
+      testWidgets('with the tree rooted at the focused Part, Make Focus and Edit Alone on a child extend the focus path', (tester) async {
+        final backend = await openNested(tester);
+        backend.assemblyTreeMissing = true;
+        await switchLens(tester, 'Part');
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub');
+        List<String> path() => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath;
+        await _TreeProbe(tester).menuAction('c1', 'Make Focus');
+        await settle(tester);
+        expect(path(), ['asm-1', 'c1'], reason: 'the child is pushed below the focus, which stays');
+        await _TreeProbe(tester).exitFocus();
+        await settle(tester);
+        await settle(tester);
+        await _TreeProbe(tester).menuAction('c2', 'Edit Alone');
+        await settle(tester);
+        await settle(tester);
+        expect(path(), ['asm-1', 'c2'], reason: 'Edit Alone on a child of the focused Part targets it by its whole path');
+      });
+
+      testWidgets("the focused Part's components are never put at the root under another Part's id", (tester) async {
+        var failRootOccurrences = false;
+        final backend = await openNested(tester, around: (request) async {
+          if (failRootOccurrences && request.url.path == '/document/parts/part-1/occurrences' && request.method == 'GET') {
+            throw http.ClientException('down');
+          }
+        });
+        failRootOccurrences = true;
+        backend.assemblyTreeMissing = true;
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.tree!.partId, isNot('part-1'), reason: "no tree rooted at the root Part holds the focused Part's list");
+        expect(rowKeys(tester), isNot(contains('plate')));
+        expect(model.tree!.children.map((n) => n.occurrenceId), ['c1', 'c2']);
+      });
+
+      testWidgets('"used N x" is not claimed from a tree built from the lists', (tester) async {
+        await openNested(tester, configure: (b) => b.assemblyTreeMissing = true);
+        await _TreeProbe(tester).menuAction('asm-1', 'Edit Alone');
+        await settle(tester);
+        await settle(tester);
+        await openTree(tester);
+        expect(find.byKey(const ValueKey('edit-alone-pill')), findsOneWidget);
+        expect(find.byKey(const ValueKey('edit-alone-used')), findsNothing, reason: 'the lists show one level: the count is not known');
+      });
+
+      testWidgets('while focused, a component placed twice keeps its <n> in the drawer header', (tester) async {
+        await openNested(tester, configure: (b) {
+          b.subOccurrences = {
+            'sub': [occ('b1', part: 'bolt', ref: 'parts/bolt.didsa'), occ('b2', part: 'bolt', ref: 'parts/bolt.didsa')],
+          };
+        });
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('asm-1/b2');
+        await settle(tester);
+        expect(find.descendant(of: find.byType(AssemblyComponentSelectionDrawer), matching: find.text('bolt <2>')), findsWidgets);
+      });
+
+      testWidgets('Show on a row outside the focus whose backend flag is hidden PATCHes its parent Part', (tester) async {
+        final backend = await openNested(tester, configure: (b) {
+          b.subOccurrences['sub']![0]['hidden'] = true;
+        });
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await settle(tester);
+        final row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1');
+        expect(row.hidden, isTrue);
+        _TreeProbe(tester).view.onVisibilityToggle!(row);
+        await _pumpUntil(tester, () => backend.subOccurrenceWrites.isNotEmpty);
+        await settle(tester);
+        expect(backend.subOccurrenceWrites, hasLength(1));
+        expect(backend.subOccurrenceWrites.single['part'], 'sub');
+        expect(backend.subOccurrenceWrites.single['body'], containsPair('hidden', false));
+      });
+
+      testWidgets('Edit Alone on a part shows the strip in the Part lens, over the live part at the root', (tester) async {
+        await openNested(tester);
+        await _TreeProbe(tester).menuAction('plate', 'Edit Alone');
+        await settle(tester);
+        await settle(tester);
+        await openTree(tester);
+        final view = _TreeProbe(tester).view;
+        expect(view.title, 'Build Tree', reason: 'a part opens in the Part lens');
+        expect(view.editAlone, isNotNull);
+        expect(_TreeProbe(tester).model.liveKey, '', reason: 'the target is the root of the re-rooted tree, and live');
+        expect(find.descendant(of: find.byType(AssemblyTreeView), matching: find.byKey(const ValueKey('edit-alone-pill'))), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-row:')), findsNothing, reason: 'the strip stands for the root row');
+        expect(find.byKey(const ValueKey('tree-row:#planes')), findsOneWidget);
+      });
     });
 
     testWidgets('names read `Bolt <2>` for a Part placed twice, in the tree and in the component drawer alike', (tester) async {
@@ -12048,16 +12401,17 @@ void main() {
       expect(instanceHidden(tester, ['asm-1', 'c1']), isTrue);
 
       await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
-      await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'sub');
       await settle(tester);
-      final row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'c1');
+      // B3: the tree is still the document's, so the row keeps its key.
+      expect(_TreeProbe(tester).model.focusPath, ['asm-1']);
+      final row = _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1');
       expect(row.hidden, isTrue, reason: 'hidden for this session, whatever the focus');
 
       _TreeProbe(tester).view.onVisibilityToggle!(row);
       await settle(tester);
       expect(backend.subOccurrenceWrites, isEmpty, reason: 'Show drops the session hide; nothing is written');
       expect(instanceHidden(tester, ['asm-1', 'c1']), isFalse);
-      expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'c1').hidden, isFalse);
+      expect(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1').hidden, isFalse);
     });
 
     testWidgets('review: a backend without assembly-tree still has its constraint status read', (tester) async {
@@ -13049,14 +13403,20 @@ void main() {
         return backend;
       }
 
+      /// Make Focus on the plate (a part directly in the root) and wait until the focus has landed (B3: the tree stays the document's, so
+      /// there is no other tree to wait for).
+      Future<void> focusPlate(WidgetTester tester) async {
+        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
+        await _pumpUntil(tester, () => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath.join('/') == 'plate');
+        await settle(tester);
+      }
+
       testWidgets('P2 review: Make Focus on a Part whose mesh fails with a non-backend error and whose features fail: both in the banner',
           (tester) async {
         final backend = await openNestedInPartLens(tester);
         backend.badMeshFor.add('plate-part');
         backend.failFeaturesFor.add('plate-part');
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
-        await settle(tester);
+        await focusPlate(tester);
         await settle(tester);
         expect(tester.takeException(), isNull, reason: 'neither error escapes the focus change');
         expect(find.textContaining('The features could not be read'), findsOneWidget);
@@ -13076,13 +13436,11 @@ void main() {
           {'type': 'sketch', 'id': 'plate-sketch', 'sketch_id': 'sketch-1', 'locked': false, 'produces': 'sketch'},
         ];
         backend.failMeshFor.add('plate-part');
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
-        await settle(tester);
+        await focusPlate(tester);
         await settle(tester);
         final model = _TreeProbe(tester).model;
-        expect(model.liveKey, '', reason: 'the features alone make the live row when the mesh failed');
-        expect(rowKeys(tester), contains('#feature:plate-sketch'));
+        expect(model.liveKey, 'plate', reason: 'the features alone make the live row when the mesh failed (B3: the plate is a row of the whole tree)');
+        expect(rowKeys(tester), contains('plate#feature:plate-sketch'));
         expect(rowKeys(tester).where((k) => k.contains('#body')), isEmpty, reason: 'no bodies: those in hand were the root\'s');
         expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies, isEmpty,
             reason: 'the root\'s bodies are not offered as the plate\'s (to pick, to edit)');
@@ -13100,16 +13458,14 @@ void main() {
         await settle(tester);
         expect(_TreeProbe(tester).model.liveFeatureKey('root-sketch'), '#feature:root-sketch');
         final held = holdPlateFeatures = Completer<void>();
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
-        await settle(tester);
+        await focusPlate(tester);
         final model = _TreeProbe(tester).model;
         expect(model.liveKey, isNull, reason: 'no live row until the focused Part\'s own features and bodies are in');
         expect(rowKeys(tester).where((k) => k.contains('root-sketch')), isEmpty, reason: 'the root\'s features are not the plate\'s');
         held.complete();
         await settle(tester);
         await settle(tester);
-        expect(_TreeProbe(tester).model.liveKey, '');
+        expect(_TreeProbe(tester).model.liveKey, 'plate');
         expect(rowKeys(tester).where((k) => k.contains('root-sketch')), isEmpty);
       });
 
@@ -13123,79 +13479,76 @@ void main() {
         expect(rowKeys(tester).indexOf('#planes'), greaterThan(rowKeys(tester).indexOf('plate')),
             reason: "the live root's folders follow its components");
 
-        // Make Focus on a part: the focused Part is the live row (today the tree is re-rooted on it; B3 keeps the whole tree).
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
-        await settle(tester);
-        expect(_TreeProbe(tester).model.liveKey, '');
-        expect(rowKeys(tester), contains('#planes'));
+        // Make Focus on a part: the focused Part's row is the live row, and the tree is still the whole document's (B3).
+        await focusPlate(tester);
+        expect(_TreeProbe(tester).model.tree?.partId, 'part-1');
+        expect(_TreeProbe(tester).model.liveKey, 'plate');
+        expect(rowKeys(tester), containsAll(['asm-1', 'asm-2', 'plate', 'plate#planes']));
+        expect(rowKeys(tester), isNot(contains('#planes')), reason: "the root's own folders are not the plate's");
       });
 
       testWidgets('a late features answer for the Part focused before is dropped; the focused Part keeps its own', (tester) async {
         Completer<void>? holdRootFeatures;
-        Completer<void>? holdPlateTree;
+        Completer<void>? holdPlateFeatures;
         final backend = await openNestedInPartLens(tester, around: (request) async {
           final p = request.url.path;
           if (holdRootFeatures != null && p == '/document/parts/part-1/features' && request.method == 'GET') await holdRootFeatures.future;
-          if (holdPlateTree != null && p == '/document/parts/plate-part/assembly-tree') await holdPlateTree.future;
+          if (holdPlateFeatures != null && p == '/document/parts/plate-part/features' && request.method == 'GET') {
+            await holdPlateFeatures.future;
+          }
         });
         // Focus the plate, and come back: the way back asks for the root's features, which is held.
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
-        await settle(tester);
+        await focusPlate(tester);
         backend.features.add({'type': 'sketch', 'id': 'feature-late', 'sketch_id': 'sketch-1', 'locked': false});
         final late = holdRootFeatures = Completer<void>();
-        _TreeProbe(tester).view.onExitFocus!();
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'part-1');
+        await _TreeProbe(tester).exitFocus();
+        await _pumpUntil(tester, () => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath.isEmpty);
         await settle(tester);
-        // The root's features are on their way when the plate is focused again (its tree held, so its features are not asked for yet).
+        // The root's features are on their way when the plate is focused again (its own are held, so the live row has none to show yet).
         holdRootFeatures = null;
-        holdPlateTree = Completer<void>();
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await settle(tester);
+        holdPlateFeatures = Completer<void>();
+        await focusPlate(tester);
         late.complete();
         await settle(tester);
         await settle(tester);
-        bool lateShown() =>
-            _TreeProbe(tester).model.livePart?.features.any((f) => f.id == 'feature-late') ?? false;
+        bool lateShown() => _TreeProbe(tester).model.livePart?.features.any((f) => f.id == 'feature-late') ?? false;
         expect(lateShown(), isFalse, reason: "the root's answer landed after the focus moved: it is dropped");
-        holdPlateTree.complete();
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        holdPlateFeatures.complete();
+        await settle(tester);
         await settle(tester);
         expect(lateShown(), isFalse);
-        expect(_TreeProbe(tester).model.liveKey, '');
+        expect(_TreeProbe(tester).model.liveKey, 'plate');
       });
 
       testWidgets('a late mesh answer for the Part focused before is dropped', (tester) async {
         Completer<void>? holdRootMesh;
-        Completer<void>? holdPlateTree;
+        Completer<void>? holdPlateMesh;
         final backend = await openNestedInPartLens(tester, around: (request) async {
           final p = request.url.path;
           if (holdRootMesh != null && p == '/document/parts/part-1/mesh' && request.url.queryParameters['tier'] != 'coarse') {
             await holdRootMesh.future;
           }
-          if (holdPlateTree != null && p == '/document/parts/plate-part/assembly-tree') await holdPlateTree.future;
+          if (holdPlateMesh != null && p == '/document/parts/plate-part/mesh' && request.url.queryParameters['tier'] != 'coarse') {
+            await holdPlateMesh.future;
+          }
         });
         backend.meshBodies = [
           {'body_id': 'root-body', 'source': 'computed', 'mesh': _FakeDocumentBackend._placeholderMesh},
         ];
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
-        await settle(tester);
+        await focusPlate(tester);
         final late = holdRootMesh = Completer<void>();
-        _TreeProbe(tester).view.onExitFocus!();
+        await _TreeProbe(tester).exitFocus();
         await settle(tester);
         await settle(tester);
         holdRootMesh = null;
-        holdPlateTree = Completer<void>();
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await settle(tester);
+        holdPlateMesh = Completer<void>();
+        await focusPlate(tester);
         late.complete();
         await settle(tester);
         expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies.map((b) => b.bodyId), isNot(contains('root-body')),
             reason: "the root's bodies landed after the focus moved: dropped");
-        holdPlateTree.complete();
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        holdPlateMesh.complete();
+        await settle(tester);
         await settle(tester);
         expect(tester.widget<PartViewport>(find.byType(PartViewport)).bodies.map((b) => b.bodyId), isNot(contains('root-body')));
       });
@@ -13231,19 +13584,25 @@ void main() {
 
       testWidgets('an older tree load that lands after a newer one is dropped, across a focus change', (tester) async {
         Completer<void>? hold;
-        await openNestedInPartLens(tester, around: (request) async {
+        final backend = await openNestedInPartLens(tester, around: (request) async {
           if (hold != null && request.url.path == '/document/parts/part-1/assembly-tree') await hold.future;
         });
-        // The root's tree is on its way (the Assembly lens asks for it) when the plate is focused.
+        backend.constraintStatus['plate'] = {'status': 'under_constrained', 'dof': 3, 'rigid_set': 'plate'};
+        // The root's tree (the Assembly lens asks for it) is on its way, with the plate under-constrained, when the plate is focused and the
+        // backend has meanwhile fixed it: the newer load's answer is what stays.
         final late = hold = Completer<void>();
         await switchLens(tester, 'Assembly');
+        backend.constraintStatus['plate'] = {'status': 'fully_constrained', 'dof': 0, 'rigid_set': 'plate'};
         hold = null;
-        await _TreeProbe(tester).menuAction('plate', 'Make Focus');
-        await _pumpUntil(tester, () => _TreeProbe(tester).model.tree?.partId == 'plate-part');
+        await focusPlate(tester);
         late.complete();
         await settle(tester);
         await settle(tester);
-        expect(_TreeProbe(tester).model.tree?.partId, 'plate-part', reason: "the root's late tree did not replace the focused Part's");
+        final model = _TreeProbe(tester).model;
+        expect(model.tree?.partId, 'part-1');
+        expect(model.nodeAtPath(['plate'])?.constraint?.status, ConstraintState.fullyConstrained,
+            reason: "the older load's answer (under-constrained) did not replace the newer one's");
+        expect(model.focusPath, ['plate']);
       });
     });
   });

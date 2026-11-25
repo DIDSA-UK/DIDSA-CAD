@@ -32,20 +32,21 @@ class ApiException implements Exception {
 }
 
 /// Decodes a 2xx answer's [body] and hands it to [onSuccess]. An answer that cannot be read (not JSON, a proxy's HTML page, or JSON of the
-/// wrong shape for its DTO: a [FormatException] or a [TypeError] while decoding) is the server's failure, said like any other: an
-/// [ApiException] with a short message and the answer's [statusCode] (a 2xx: the server took the request, so it is not retried as a
-/// transport failure would be), and a caller's banner shows it. The raw error, which can carry the response body, goes to the log only. Any
-/// other error is a bug here and goes through with its stack.
+/// wrong shape for its DTO: a [FormatException], a [TypeError], a [NoSuchMethodError] on a missing object, a [RangeError] or a [StateError] on a
+/// missing list entry, while decoding) is the server's failure, said like any other: an [ApiException] with a short message and the answer's
+/// [statusCode] (a 2xx: the server took the request, so it is not retried as a transport failure would be), and a caller's banner shows it. The
+/// raw error, which can carry the response body, goes to the log only. An [ApiException] from [onSuccess] and any other error is a bug here and
+/// goes through with its stack.
 T decodeOrUnreadable<T>(String body, T Function(dynamic decodedBody) onSuccess, {required String name, required int statusCode}) {
   try {
     final decoded = body.isEmpty ? null : jsonDecode(body);
     return onSuccess(decoded);
-  } on FormatException catch (e, st) {
-    developer.log('unreadable answer', name: name, error: e, stackTrace: st);
-    throw ApiException(ApiException.unreadableAnswerMessage, statusCode: statusCode);
-  } on TypeError catch (e, st) {
-    developer.log('unreadable answer', name: name, error: e, stackTrace: st);
-    throw ApiException(ApiException.unreadableAnswerMessage, statusCode: statusCode);
+  } catch (e, st) {
+    if (e is FormatException || e is TypeError || e is NoSuchMethodError || e is RangeError || e is StateError) {
+      developer.log('unreadable answer', name: name, error: e, stackTrace: st);
+      throw ApiException(ApiException.unreadableAnswerMessage, statusCode: statusCode);
+    }
+    rethrow;
   }
 }
 

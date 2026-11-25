@@ -5,6 +5,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
 import 'package:didsa_cad_client/layout/layout_mode.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_context_strip.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
 
 Map<String, dynamic> _node(
@@ -600,16 +601,16 @@ void main() {
 
     testWidgets('the Edit Alone row is in the floating tree only while it is open (the pill is the way out when it is closed)', (tester) async {
       final model = withFolders();
-      Widget view(bool visible) => _host(AssemblyTreeView(model: model, visible: visible, editAloneLabel: 'Arm', onEditAloneDone: () {}));
+      Widget view(bool visible) => _host(AssemblyTreeView(model: model, visible: visible, editAlone: const AssemblyEditAloneInfo(label: 'Arm'), onEditAloneDone: () {}));
       await tester.pumpWidget(view(true));
       expect(find.byKey(const ValueKey('edit-alone-done')), findsOneWidget);
       await tester.pumpWidget(view(false));
       await tester.pumpAndSettle();
       expect(find.byKey(const ValueKey('edit-alone-done')), findsNothing);
       // Docked, it is always there.
-      await tester.pumpWidget(_host(AssemblyTreeView(model: model, docked: true, visible: false, editAloneLabel: 'Arm', onEditAloneDone: () {}), layout: LayoutPreference.desktop));
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, docked: true, visible: false, editAlone: const AssemblyEditAloneInfo(label: 'Arm'), onEditAloneDone: () {}), layout: LayoutPreference.desktop));
       expect(find.byKey(const ValueKey('edit-alone-done')), findsNothing, reason: 'a docked tree that is not shown draws nothing; the host shows it');
-      await tester.pumpWidget(_host(AssemblyTreeView(model: model, docked: true, editAloneLabel: 'Arm', onEditAloneDone: () {}), layout: LayoutPreference.desktop));
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, docked: true, editAlone: const AssemblyEditAloneInfo(label: 'Arm'), onEditAloneDone: () {}), layout: LayoutPreference.desktop));
       expect(find.byKey(const ValueKey('edit-alone-done')), findsOneWidget);
     });
 
@@ -881,6 +882,156 @@ void main() {
         expect(keysShown(), ['', 'a', 'z', 'y']);
         expect(find.text('Assembly'), findsOneWidget);
       });
+    });
+  });
+
+  // B3 (`docs/assembly-tree-overhaul-scope.md` 10.6): the whole tree stays while a level is focused; the strip above it names the levels.
+  group('B3: focus and Edit Alone context', () {
+    /// root > a > b > c, root > z, and a second branch root > a2 > x.
+    AssemblyTreeModel nested() => AssemblyTreeModel(
+          tree: _tree([
+            _node('a', ['a'], kind: 'assembly', name: 'Mast', children: [
+              _node('b', ['a', 'b'], kind: 'assembly', name: 'Arm', children: [
+                _node('c', ['a', 'b', 'c'], name: 'Bolt'),
+              ]),
+            ]),
+            _node('z', ['z'], name: 'Plate'),
+            _node('a2', ['a2'], kind: 'assembly', name: 'Mast copy', children: [_node('x', ['a2', 'x'], name: 'Pin')]),
+          ]),
+        )..openAll(const ['a', 'a/b', 'a2']);
+
+    testWidgets('the focus roles: the focused row, the rows below it, the way down (and the root) as context, the rest outside', (tester) async {
+      final model = nested()..focusPath = const ['a', 'b'];
+      AssemblyFocusRole role(String key) => model.focusRoleOf(model.visibleRows().firstWhere((r) => r.key == key));
+      expect(role('a/b'), AssemblyFocusRole.focused);
+      expect(role('a/b/c'), AssemblyFocusRole.inside);
+      expect(role(''), AssemblyFocusRole.ancestor);
+      expect(role('a'), AssemblyFocusRole.ancestor);
+      for (final key in ['z', 'a2', 'a2/x']) {
+        expect(role(key), AssemblyFocusRole.outside, reason: key);
+      }
+      model.focusPath = const [];
+      expect(role('z'), AssemblyFocusRole.none, reason: 'nothing focused: no row is outside');
+    });
+
+    testWidgets('a group on the way down is context; another group is outside', (tester) async {
+      // Four identical siblings group (spec section 3): the focus is the second of them.
+      final model = AssemblyTreeModel(
+        tree: _tree([
+          for (var i = 1; i <= 4; i++) {..._node('s$i', ['s$i'], name: 'Screw'), 'resolved_part_id': 'part-screw'},
+          _node('z', ['z'], name: 'Plate'),
+        ]),
+      )..openAll(const ['#group:s1'])..focusPath = const ['s2'];
+      final rows = model.visibleRows();
+      final group = rows.firstWhere((r) => r.kind == AssemblyRowKind.group);
+      expect(model.focusRoleOf(group), AssemblyFocusRole.ancestor, reason: 'the focused screw sits in this group');
+      expect(model.focusRoleOf(rows.firstWhere((r) => r.key == 's2')), AssemblyFocusRole.focused);
+      expect(model.focusRoleOf(rows.firstWhere((r) => r.key == 's3')), AssemblyFocusRole.outside);
+      expect(model.focusRoleOf(rows.firstWhere((r) => r.key == 'z')), AssemblyFocusRole.outside);
+    });
+
+    testWidgets('outside rows are dimmed and the focused branch has the rail; the strip stands for the root row', (tester) async {
+      final model = nested()..focusPath = const ['a', 'b'];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, focusCrumbs: const ['Root', 'Mast', 'Arm'], onFocusCrumb: (_) {})));
+      for (final key in ['z', 'a2', 'a2/x']) {
+        expect(find.byKey(ValueKey('tree-dimmed:$key')), findsOneWidget, reason: key);
+      }
+      for (final key in ['a', 'a/b', 'a/b/c']) {
+        expect(find.byKey(ValueKey('tree-dimmed:$key')), findsNothing, reason: key);
+      }
+      expect(find.byKey(const ValueKey('tree-focus-rail:a/b')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tree-focus-rail:a/b/c')), findsOneWidget);
+      expect(find.byKey(const ValueKey('tree-focus-rail:a')), findsNothing);
+      expect(find.byKey(const ValueKey('tree-focus-rail:z')), findsNothing);
+      expect(find.byKey(const ValueKey('focus-strip')), findsOneWidget);
+      expect(_row(''), findsNothing, reason: 'rule 5: the root crumb is the root row');
+      expect(_row('a'), findsOneWidget);
+    });
+
+    testWidgets('a crumb above the last reports its depth; the last does nothing; one crumb is no strip', (tester) async {
+      final model = nested()..focusPath = const ['a', 'b'];
+      final taps = <int>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, focusCrumbs: const ['Root', 'Mast', 'Arm'], onFocusCrumb: taps.add)));
+      await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+      await tester.tap(find.byKey(const ValueKey('focus-crumb:1')));
+      await tester.tap(find.byKey(const ValueKey('focus-crumb:2')));
+      expect(taps, [0, 1]);
+      await tester.pumpWidget(_host(AssemblyTreeView(model: nested(), focusCrumbs: const ['Root'], onFocusCrumb: taps.add)));
+      expect(find.byKey(const ValueKey('focus-strip')), findsNothing);
+      expect(_row(''), findsOneWidget, reason: 'nothing focused: the root row is drawn');
+    });
+
+    testWidgets('with the root row in the strip the list still scrolls to and marks the right rows', (tester) async {
+      final model = nested()..focusPath = const ['a', 'b'];
+      final controller = AssemblyTreeController();
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, controller: controller, focusCrumbs: const ['Root', 'Mast', 'Arm'])));
+      controller.reveal(const ['a2', 'x'], select: true);
+      await tester.pump();
+      await tester.pump();
+      expect(model.selectedKey, 'a2/x');
+      expect(_row('a2/x'), findsOneWidget);
+      // No row went missing under the strip's list offset: the first row is the first below the root.
+      final first = tester.getTopLeft(_row('a')).dy;
+      expect(first, lessThan(tester.getTopLeft(_row('a/b')).dy));
+    });
+
+    testWidgets('a selected row outside the focus offers "Focus here"; inside or on the way, nothing is offered', (tester) async {
+      final model = nested()..focusPath = const ['a', 'b'];
+      final here = <String>[];
+      Widget view() => _host(AssemblyTreeView(model: model, focusCrumbs: const ['Root', 'Mast', 'Arm'], onFocusHere: (row) => here.add(row.key)));
+      await tester.pumpWidget(view());
+      expect(find.byKey(const ValueKey('tree-focus-here')), findsNothing);
+      model.selectedKey = 'a/b/c';
+      await tester.pumpWidget(view());
+      await tester.pump();
+      expect(find.byKey(const ValueKey('tree-focus-here')), findsNothing, reason: 'inside the focus');
+      model.selectedKey = 'a';
+      await tester.pumpWidget(view());
+      await tester.pump();
+      expect(find.byKey(const ValueKey('tree-focus-here')), findsNothing, reason: 'on the way down');
+      await tester.tap(_row('a2/x'));
+      await tester.pump();
+      expect(model.selectedKey, 'a2/x');
+      expect(find.byKey(const ValueKey('tree-focus-here-note')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('tree-focus-here')));
+      expect(here, ['a2/x']);
+    });
+
+    testWidgets('the Edit Alone strip: Editing, Done, "in ..." crumbs and "used N x" from 2; the root row is not drawn', (tester) async {
+      final crumbs = <int>[];
+      var done = 0;
+      Widget view(int? used) => _host(AssemblyTreeView(
+            model: nested(),
+            editAlone: AssemblyEditAloneInfo(label: 'Arm', inLabels: const ['Rover', 'Mast'], usedCount: used),
+            onEditAloneDone: () => done++,
+            onEditAloneCrumb: crumbs.add,
+          ));
+      await tester.pumpWidget(view(2));
+      expect(find.textContaining('Editing', findRichText: true), findsOneWidget);
+      expect(find.text('used 2 \u00D7'), findsOneWidget);
+      expect(_row(''), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('edit-alone-crumb:1')));
+      await tester.tap(find.byKey(const ValueKey('edit-alone-crumb:0')));
+      expect(crumbs, [1, 0]);
+      await tester.tap(find.byKey(const ValueKey('edit-alone-done')));
+      expect(done, 1);
+      await tester.pumpWidget(view(1));
+      expect(find.byKey(const ValueKey('edit-alone-used')), findsNothing, reason: 'placed once: nothing to say');
+      await tester.pumpWidget(view(null));
+      expect(find.byKey(const ValueKey('edit-alone-used')), findsNothing, reason: 'not known: nothing is claimed');
+    });
+
+    testWidgets('a filter with the root in the strip lists the matches, and says when nothing matches', (tester) async {
+      final model = nested()..focusPath = const ['a', 'b'];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, focusCrumbs: const ['Root', 'Mast', 'Arm']), layout: LayoutPreference.desktop));
+      await tester.enterText(find.byType(TextField), 'pin');
+      await tester.pump();
+      expect(_row('a2/x'), findsOneWidget);
+      expect(_row('a2'), findsOneWidget, reason: 'the way to the match');
+      expect(_row(''), findsNothing);
+      await tester.enterText(find.byType(TextField), 'nothing like this');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('tree-filter-empty')), findsOneWidget);
     });
   });
 }

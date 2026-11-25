@@ -92,6 +92,24 @@ enum AssemblyRowKind {
 /// What a picker says about a row ([AssemblyPicker]).
 enum AssemblyPickState { none, pickable, picked, locked }
 
+/// A row's place against the focus (B3, `docs/assembly-tree-overhaul-scope.md` section 4): see [AssemblyTreeModel.focusRoleOf].
+enum AssemblyFocusRole {
+  /// Nothing is focused (the whole assembly is the working level).
+  none,
+
+  /// The focused row itself.
+  focused,
+
+  /// Below the focused row: the viewport draws it opaque, the tree marks it with the rail.
+  inside,
+
+  /// The root, or a row (or group) the way down to the focused row passes: context, not dimmed.
+  ancestor,
+
+  /// Anywhere else: the viewport fades it, the tree dims it, and a tap offers "Focus here".
+  outside,
+}
+
 enum AssemblyBubbleLevel { error, warning, unsaved }
 
 /// The count a collapsed row shows (spec section 6): at most one per row, the most severe level that has anything.
@@ -976,17 +994,24 @@ class AssemblyTreeModel {
   }
 
   /// Takes what [other]'s host fetched, for a copy that only reads (P3: the sketcher's tree): the features [setFeatures] gave each row, the
-  /// Mates and Patterns folder items and the rows hidden for this session. The tree, the open keys, the live part, the selection and the
-  /// picker stay this model's own. Nothing changes (and no rows are rebuilt) when [other] holds what was copied last.
+  /// Mates and Patterns folder items, the rows hidden for this session and the unsaved Parts (B3: the two trees agree on which Parts show
+  /// the unsaved dot). The tree, the open keys, the live part, the selection and the picker stay this model's own. Nothing changes (and no rows
+  /// are rebuilt) when [other] holds what was copied last.
   void copyFetchedFrom(AssemblyTreeModel other) {
     bool sameLists<T>(Map<String, List<T>> a, Map<String, List<T>> b) =>
         a.length == b.length && b.entries.every((e) => identical(a[e.key], e.value));
     final hidden = other._sessionHidden;
+    final unsavedSame = other._unsaved.length == _unsaved.length && other._unsaved.containsAll(_unsaved);
     if (sameLists(_features, other._features) &&
         sameLists(_folderItems, other._folderItems) &&
         hidden.length == _sessionHidden.length &&
-        hidden.containsAll(_sessionHidden)) {
+        hidden.containsAll(_sessionHidden) &&
+        unsavedSame) {
       return;
+    }
+    if (!unsavedSame) {
+      _unsaved = {...other._unsaved};
+      _countUnsaved();
     }
     _features
       ..clear()
@@ -996,6 +1021,48 @@ class AssemblyTreeModel {
       ..addAll(other._folderItems);
     _sessionHidden = {...hidden};
     _invalidate();
+  }
+
+  // ----- Focus (B3) -----
+
+  List<String> _focus = const [];
+  String _focusKey = '';
+
+  /// The focused row's path from the tree's root (`[]`: nothing is focused). The host sets it from the focus stack; the model only reads it
+  /// to say which rows are inside, around or outside the focus ([focusRoleOf]). It changes no row.
+  List<String> get focusPath => _focus;
+  set focusPath(List<String> path) {
+    if (path.length == _focus.length) {
+      var same = true;
+      for (var i = 0; i < path.length; i++) {
+        if (path[i] != _focus[i]) {
+          same = false;
+          break;
+        }
+      }
+      if (same) return;
+    }
+    _focus = List.unmodifiable(path);
+    _focusKey = path.join('/');
+  }
+
+  /// Where [row] stands against the focus: the focused row, a row inside it, an ancestor (the root, the rows on the way down, and the group
+  /// a row on the way sits in) or outside. Rows of the live part (folders, features) are inside when the live row is the focused one.
+  AssemblyFocusRole focusRoleOf(AssemblyTreeRow row) {
+    if (_focus.isEmpty) return AssemblyFocusRole.none;
+    final focus = _focusKey;
+    final key = row.key;
+    if (key == focus) return AssemblyFocusRole.focused;
+    if (key.startsWith('$focus/') || key.startsWith('$focus#')) return AssemblyFocusRole.inside;
+    if (key.isEmpty || focus.startsWith('$key/')) return AssemblyFocusRole.ancestor;
+    final group = row.kind == AssemblyRowKind.group ? _groupsByKey[key] : null;
+    if (group != null) {
+      for (final member in group.members) {
+        final mk = member.key;
+        if (mk == focus || focus.startsWith('$mk/')) return AssemblyFocusRole.ancestor;
+      }
+    }
+    return AssemblyFocusRole.outside;
   }
 
   // ----- Lookups -----

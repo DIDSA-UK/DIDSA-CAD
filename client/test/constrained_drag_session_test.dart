@@ -62,6 +62,8 @@ class _FakeBackend {
     final mode = script.isEmpty ? 'ok' : script.removeAt(0);
     if (mode == 'transport') throw ApiException('Could not reach the server: boom');
     if (mode == 'http422') throw ApiException('Server returned 422', statusCode: 422);
+    // A 2xx the client could not read (`decodeOrUnreadable`).
+    if (mode == 'unreadable') throw ApiException(ApiException.unreadableAnswerMessage, statusCode: 200);
     if (mode == 'not_converged') {
       return MateMotionDto(converged: false, quality: const MateMotionQualityDto(residualInf: 5.0));
     }
@@ -314,6 +316,38 @@ void main() {
       await _settle();
       expect(cues.length, 2);
       await s.finish();
+    });
+
+    test('a garbled 200 answer is counted as "unreadable", not as an HTTP failure (B3, P3 review)', () async {
+      final api = _FakeBackend();
+      final clock = _Clock();
+      final s = _session(api, clock);
+      await s.begin();
+      clock.now += 16;
+      s.update(_at(1, 0, 0));
+      api.script.add('unreadable');
+      clock.now += 160;
+      s.update(_at(2, 0, 0));
+      await _settle();
+      expect(s.counters.anchorsRejected['unreadable'], 1);
+      expect(s.counters.anchorsRejected.keys, isNot(contains('http_200')));
+      expect(s.counters.transportErrors, 0, reason: 'the server answered: it is not a transport failure');
+      await s.finish();
+    });
+
+    test('a commit whose 200 answer cannot be read is not retried (owner decision, 24 Nov): nothing is claimed stored', () async {
+      final api = _FakeBackend();
+      final clock = _Clock();
+      final s = _session(api, clock);
+      await s.begin();
+      clock.now += 16;
+      s.update(_at(1, 0, 0));
+      api.script.add('unreadable');
+      final result = await s.finish();
+      expect(api.commitCalls, 1, reason: 'the server took the request: a second commit could move the part twice');
+      expect(result.committed, isFalse);
+      expect(result.message, ApiException.unreadableAnswerMessage);
+      expect(s.counters.transportErrors, 0);
     });
 
     test('release sends ONE commit:true with the release-time wish (not the shown pose) and the in-flight answer is ignored', () async {

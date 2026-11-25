@@ -6,11 +6,13 @@ import 'package:material_ui/material_ui.dart';
 
 import '../ai/ai_theme.dart' show AiPalette;
 import '../api/document_api_client.dart';
+import '../assembly/assembly_lens.dart';
+import '../assembly/assembly_lens_theme.dart';
 import '../assembly/assembly_tree_model.dart';
 import '../layout/layout_mode.dart';
 import 'action_sheet.dart' show MouseContextMenuRegion;
 import 'feature_tree_helpers.dart';
-import 'edit_alone_row.dart';
+import 'assembly_context_strip.dart';
 import 'svg_icon.dart';
 import 'view_preferences.dart';
 
@@ -82,10 +84,12 @@ class AssemblyTreeView extends StatefulWidget {
     this.docked = false,
     this.width = 320,
     this.title = 'Assembly',
-    this.editAloneLabel,
+    this.editAlone,
     this.onEditAloneDone,
-    this.focusedLabel,
-    this.onExitFocus,
+    this.onEditAloneCrumb,
+    this.focusCrumbs = const [],
+    this.onFocusCrumb,
+    this.onFocusHere,
     this.onClose,
     this.onRowTap,
     this.onRowLongPress,
@@ -130,13 +134,20 @@ class AssemblyTreeView extends StatefulWidget {
   final double width;
   final String title;
 
-  /// Edit Alone: "Editing <label> [Done]" as the first row under the header.
-  final String? editAloneLabel;
+  /// Edit Alone (B3): the tree is re-rooted on the target, and one strip above it says "Editing <label> [Done]", "in Rover > Mast" (each
+  /// crumb leaves Edit Alone at that level, [onEditAloneCrumb]) and "used N x". The strip stands for the root row, which is not drawn.
+  final AssemblyEditAloneInfo? editAlone;
   final VoidCallback? onEditAloneDone;
+  final ValueChanged<int>? onEditAloneCrumb;
 
-  /// Focus: a "Focused on <label> [Exit]" row under the header while set.
-  final String? focusedLabel;
-  final VoidCallback? onExitFocus;
+  /// Make Focus (B3): the labels of every level of the focus path, the root first, for the strip above the tree (no strip with fewer than
+  /// two: nothing is focused). A crumb above the last jumps there ([onFocusCrumb] gets its depth). The strip stands for the root row, which is
+  /// not drawn. The rows outside the focus are dimmed ([AssemblyTreeModel.focusPath]), and a tap on one offers [onFocusHere].
+  final List<String> focusCrumbs;
+  final ValueChanged<int>? onFocusCrumb;
+
+  /// "Focus here" on a selected row outside the focus: move the focus to that row (the host pops and pushes the focus stack).
+  final void Function(AssemblyTreeRow row)? onFocusHere;
   final VoidCallback? onClose;
 
   /// Tap on any row (the model's `selectedKey` is already set). For a row that can open, the chevron opens it; a group or folder row also
@@ -536,9 +547,25 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     });
   }
 
+  /// The strips above the tree that stand for the root row (B3): Edit Alone's, and the focus path's (two crumbs or more; inside Edit Alone, below
+  /// its target).
+  bool get _editAloneStrip => widget.editAlone != null && widget.onEditAloneDone != null;
+  bool get _focusStrip => widget.focusCrumbs.length > 1;
+
+  /// The root row is not drawn while a strip stands for it (rule 5: nothing twice). The model's rows are unchanged; the list just starts after it.
+  bool get _rootInStrip => _editAloneStrip || _focusStrip;
+
+  /// The rows the list draws, in the filter's order when one is on.
+  List<AssemblyTreeRow> _displayRows(AssemblyFilterResult? filter) {
+    final rows = filter?.rows ?? widget.model.visibleRows();
+    return _rootInStrip && rows.isNotEmpty && rows.first.kind == AssemblyRowKind.root ? rows.sublist(1) : rows;
+  }
+
   int _indexOfRow(String key) {
-    if (!_filtering) return widget.model.indexOf(key);
-    return widget.model.filteredRows(_query).rows.indexWhere((r) => r.key == key);
+    if (_filtering) return _displayRows(widget.model.filteredRows(_query)).indexWhere((r) => r.key == key);
+    final i = widget.model.indexOf(key);
+    // The root is the first row of the model's list; with a strip standing for it the list starts after it.
+    return i < 0 || !_rootInStrip ? i : i - 1;
   }
 
   double _rowHeight() => LayoutModeScope.isDesktop(context) ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
@@ -576,7 +603,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final desktop = LayoutModeScope.isDesktop(context);
     final model = widget.model;
     final filter = _filtering ? model.filteredRows(_query) : null;
-    final rows = filter?.rows ?? model.visibleRows();
+    final rows = _displayRows(filter);
+    // A filter that listed only the root (which a strip may have taken out of the list): nothing matches.
+    final noMatch = filter != null && filter.unknown.isEmpty && (_rootInStrip ? rows.isEmpty && model.tree != null : rows.length == 1);
     final h = desktop ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
     final colours = _rigidColours();
     final scheme = Theme.of(context).colorScheme;
@@ -627,9 +656,16 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           if (widget.multiSelectHeader == null && desktop) _desktopFilterRow(context),
           if (filter != null) _filterNotes(context, filter),
           // Not while the floating tree is closed: the pill at the top of the viewport is the way out then.
-          if (widget.editAloneLabel != null && widget.onEditAloneDone != null && (widget.visible || widget.docked))
-            EditAloneRow(label: widget.editAloneLabel!, onDone: widget.onEditAloneDone!),
-          if (widget.focusedLabel != null) _focusRow(context),
+          if (_editAloneStrip && (widget.visible || widget.docked))
+            EditAloneStrip(
+              label: widget.editAlone!.label,
+              onDone: widget.onEditAloneDone!,
+              inLabels: widget.editAlone!.inLabels,
+              onCrumb: widget.onEditAloneCrumb,
+              usedCount: widget.editAlone!.usedCount,
+            ),
+          if (_focusStrip) FocusBreadcrumbStrip(labels: widget.focusCrumbs, onCrumb: (i) => widget.onFocusCrumb?.call(i)),
+          if (_focusHereRow(selectedRow) case final outside?) _focusHereBar(context, outside),
           if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
           if (widget.statusLine != null && widget.statusLine!.isNotEmpty)
             Padding(
@@ -644,13 +680,13 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
               ),
             ),
           Expanded(
-            child: rows.isEmpty
+            child: noMatch
+                ? Center(
+                    child: Text('Nothing matches',
+                        key: const ValueKey('tree-filter-empty'), style: TextStyle(color: scheme.onSurfaceVariant)))
+                : rows.isEmpty
                 ? const Center(child: Text('Nothing to show yet'))
-                : filter != null && rows.length == 1 && filter.unknown.isEmpty
-                    ? Center(
-                        child: Text('Nothing matches',
-                            key: const ValueKey('tree-filter-empty'), style: TextStyle(color: scheme.onSurfaceVariant)))
-                    : ListView.builder(
+                : ListView.builder(
                         key: const ValueKey('assembly-tree-list'),
                         controller: _scroll,
                         itemExtent: h,
@@ -682,6 +718,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                                     ? () => _edit(r)
                                     : null,
                                 bracket: _bracketFor(r, colours),
+                                focusRole: model.focusRoleOf(r),
                                 canToggle: _canToggle(r),
                                 showEye: widget.onVisibilityToggle != null,
                                 lockedEye: widget.lockedEyes && widget.onVisibilityToggle != null
@@ -926,24 +963,28 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     );
   }
 
-  Widget _focusRow(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(left: 16, right: 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text.rich(
-              TextSpan(children: [
-                const TextSpan(text: 'Focused on '),
-                TextSpan(text: widget.focusedLabel, style: const TextStyle(fontWeight: FontWeight.bold)),
-              ]),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+  /// B3: a selected row outside the focus offers to move the focus there (a dimmed row is context, so a tap selects it and says so here).
+  AssemblyTreeRow? _focusHereRow(AssemblyTreeRow? selected) {
+    if (selected == null || widget.onFocusHere == null || widget.isMultiSelectMode || widget.model.picker != null) return null;
+    if (selected.path == null || selected.path!.isEmpty) return null;
+    return widget.model.focusRoleOf(selected) == AssemblyFocusRole.outside ? selected : null;
+  }
+
+  Widget _focusHereBar(BuildContext context, AssemblyTreeRow row) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.tertiaryContainer.withValues(alpha: 0.4),
+      child: Padding(
+        padding: const EdgeInsets.only(left: 16, right: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text('${row.label} is outside the focus',
+                  key: const ValueKey('tree-focus-here-note'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
             ),
-          ),
-          if (widget.onExitFocus != null)
-            TextButton(key: const ValueKey('tree-exit-focus'), onPressed: widget.onExitFocus, child: const Text('Exit')),
-        ],
+            TextButton(key: const ValueKey('tree-focus-here'), onPressed: () => widget.onFocusHere!(row), child: const Text('Focus here')),
+          ],
+        ),
       ),
     );
   }
@@ -1102,6 +1143,7 @@ class _TreeRow extends StatefulWidget {
     required this.onDoubleTap,
     required this.pickMulti,
     required this.bracket,
+    this.focusRole = AssemblyFocusRole.none,
     required this.canToggle,
     required this.showEye,
     this.lockedEye,
@@ -1134,6 +1176,9 @@ class _TreeRow extends StatefulWidget {
   /// The model's picker ticks several rows: a pickable row draws an empty tick circle.
   final bool pickMulti;
   final Color? bracket;
+
+  /// B3: a row outside the focus is dimmed (as the viewport fades it); the focused row and the rows below it carry the rail.
+  final AssemblyFocusRole focusRole;
   final bool canToggle;
   final bool showEye;
 
@@ -1347,12 +1392,31 @@ class _TreeRowState extends State<_TreeRow> {
       ],
     );
 
-    if (widget.bracket != null) {
+    if (widget.focusRole == AssemblyFocusRole.outside) {
+      content = Opacity(key: ValueKey('tree-dimmed:${r.key}'), opacity: 0.5, child: content);
+    }
+    final railed = widget.focusRole == AssemblyFocusRole.focused || widget.focusRole == AssemblyFocusRole.inside;
+    if (railed) {
+      // The assembly lens' colour (the focus is the assembly lens' working level).
       content = Stack(
         children: [
           Positioned.fill(child: content),
           Positioned(
             left: 0,
+            top: 0,
+            bottom: 0,
+            width: 3,
+            child: ColoredBox(key: ValueKey('tree-focus-rail:${r.key}'), color: assemblyLensAccentColor(scheme, AssemblyLens.assembly)),
+          ),
+        ],
+      );
+    }
+    if (widget.bracket != null) {
+      content = Stack(
+        children: [
+          Positioned.fill(child: content),
+          Positioned(
+            left: railed ? 4 : 0,
             top: 0,
             bottom: 0,
             width: 3,
