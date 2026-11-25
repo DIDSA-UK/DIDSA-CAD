@@ -1353,7 +1353,7 @@ Frame (answer 8).
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
-| C1 contract + Flutter model | PR open, awaiting the manager's review (12.5 step 3) | (this PR) | Opus 5.5 | Spec 14, vectors v3 (124 cases, 13 earlier ones changed: listed in the PR), Flutter model passes v3; own reviews done |
+| C1 contract + Flutter model | PR open, awaiting the manager's review (12.5 step 3) | #412 | Opus 5.5 | Spec 14, vectors v3 (124 cases, 13 earlier ones changed: listed in the PR), Flutter model passes v3; own reviews done |
 | C2 Flutter #7 | not started | | | |
 | C3 Flutter #13 | not started | | | |
 | C4 Flutter #12 + #15 | not started | | | |
