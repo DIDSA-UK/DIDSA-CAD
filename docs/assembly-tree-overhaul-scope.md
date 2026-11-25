@@ -5,7 +5,7 @@ The prompt was that sub-assemblies and parts don't expand: you cannot see the ch
 leading CAD products do, what ours do today, a ranked list of what's missing and how to add it, and how the tree should treat
 the upstream assembly in Make Focus and Edit Alone, on desktop and on a phone.
 
-**Status:** Phase A built and closed 21 Nov (section 9). Phase B briefs in section 10 (approved 21 Nov), with the build tree (P1-P3) folded in. How every phase is run: section 11.
+**Status:** Phase A built and closed 21 Nov (section 9). Phase B complete 25 Nov (section 10), with the build tree (P1-P3) folded in. Phase C briefs in section 12 (25 Nov; owner's answers in 12.8). How every phase is run: section 11.
 
 **Visual concepts** (desktop, Focus, Edit Alone, phone sheet, deep nesting on a phone, VR room tree) are in the published page
 <https://claude.ai/artifact/9bvc9fbpAnC2uhoq5vxpBW> (private to the owner until shared). This file is the text of record.
@@ -142,7 +142,7 @@ Edit Alone; two trees side by side on a phone.
 |---|---|---|
 | A, foundation | #2, #1, #3, #4, #6, the shared spec and vectors (#11) | The headline fix. VR can adopt the endpoint and bubbles at the same time |
 | B, context | #5, #9, #10, #8; the build tree (P1-P3) | Q2 and Q3 answered (section 8). Briefs: section 10 |
-| C, depth | #7, #13, #12, #14, #15; VR T2 | Run as section 11 says |
+| C, depth | #7, #13, #12, #14, #15; VR T2 | Run as section 11 says. Briefs: section 12. The VR parts of #7 and #12 move to Phase D with T3 (12.8, answer 8) |
 | D, power | #16, #17, #18; VR T3 | Backend work. Run as section 11 says |
 
 **Tests:** pure model tests against the shared vectors in both clients (paths, merge on refresh, bubbles, names, actions per
@@ -860,7 +860,7 @@ storing Edit Alone's open rows.
 | B7.1 VR follow-up | merged 24 Nov | VR #101 | mid-tier | Three rounds (squash-merged: two commit trailers named a model). Round 2's review found rarer orders of the same status-hint race and an older observer bug: carried into B8 (10.8). |
 | B8 VR room context, hints | merged 24 Nov | VR #102 | mid-tier | Two rounds (squash-merged). Manager send-back: a level read in flight across a same-document re-read landed on the rebuilt row; a failed placement count read as 0 ("Not placed"). The count is now -1 when unknown, kept per row and re-read only after a change. Leftovers carried into the next VR chunk (10.8). |
 | B8.1 VR follow-up | merged 25 Nov | VR #104 | mid-tier | Owner-run (section 11). B8's items 1-7 done (a test each where a bug). Item 6 decided: an unreadable count is asked again once per tree answer. New: a fainter rail (40 %) on the way to a room, and the root counts as the way (10.6 said dimmed: owner to confirm). Self-review high (1 important: no retry in the fallback) then medium (one finding acted on). |
-| B2.1 Flutter follow-up | not started | | | B2's two leftovers plus whatever the owner's B2 device check finds |
+| B2.1 Flutter follow-up | folded into C0 | | | B2's two leftovers plus whatever the owner's B2 device check finds: now Phase C's C0 (12.6) |
 
 ### 10.8 Hand-off (25 Nov): Phase B complete
 
@@ -868,9 +868,9 @@ From B4 on there is no standing manager session (section 11, "Owner-run chunks")
 its 10.7 row and this section's lists in its PR, and the owner checks CI and merges.
 
 **In flight:** nothing. Every Phase B chunk is merged (B5 #409, B8.1 VR #104 on 25 Nov). What is left is the owner's
-device checks below, then B2.1 if they find anything.
+device checks below; what they find, B2's leftovers and the nits below go to Phase C's C0 (12.6), which replaces B2.1.
 
-**Next:** B2.1 only if the owner's checks give it anything (10.7). Nits carried from B5's reviews, for whichever chunk next touches the sheet:
+**Next:** Phase C (section 12). Nits carried from B5's reviews (now in C0):
   1. The sheet's strips and banners get what is left after a hard-coded 48 dp header and 100 dp for the bar (`_sheetFrame` / body); the phone filter header or the multi-select header can differ, and an overfull set of strips is clipped (Done, Focus here can be cut off at half on a small phone). Measure instead.
   2. `_peekPixels` does not count the Focus here bar that peek now shows for a selected row outside the focus: the drag's peek snap is one row short then.
   3. With more ancestors than `maxPinned` the deepest are kept and drawn at shallower slots than they were tested for, so a kept ancestor's own row can show twice (and `_flushScroll` assumes slot `min(level, maxPinned)`).
@@ -888,7 +888,7 @@ device checks below, then B2.1 if they find anything.
   3. `session_observer._queue_doc` compares against `loaded_rev` before a model change resets it (low risk: events are
      held until the model is shown).
   4. For the owner: B8.1 shows the root row as the way to a room (not dimmed) when a room's Part is anywhere below it;
-     10.6 said the root is dimmed. Confirm on the headset.
+     10.6 said the root is dimmed. Kept (owner, 25 Nov: 12.8, answer 10); headset use may settle a preference.
 
 **Owner decisions:** row-hint order as proposed (21 Nov); "Roll back to here" waits for the rollback bar (#17, Phase D;
 24 Nov); a mate-drag commit whose 200 answer cannot be read is not retried (option A, 24 Nov).
@@ -963,6 +963,435 @@ not the review, so the review moves to the worker and the manager goes:
    merges.
 3. A manager session is opened only to write a phase's briefs, for a contract or other risky chunk, or when a chunk's
    rounds stop converging; it hands off and closes.
+
+## 12. Phase C: implementation briefs
+
+Phase C is #7 (a Mates folder per assembly level, and the selection's mates), #13 (edit a feature in context), #12 (hover
+linking), #14 (flyout tree), #15 (optional columns) and VR T2 (DIDSA-VR `docs/feature-tree-review-2026-11-11.md` R1, R4's
+BUILD-tab move and R6: one tree component with scopes, the PARTS tab on it, the room's docked tree with its context strip and
+"used N x"), with VR's BUILD tab adopting spec section 13. It also takes Phase B's leftovers (10.8). Written 25 Nov 2026.
+
+It runs **owner-run** (section 11, "Owner-run chunks"): no standing manager. Each worker builds its chunk, reviews its own PR
+and records its row and leftovers; the owner checks CI and merges. A manager session is opened only for C1 (a contract) or
+when a chunk's rounds stop converging. This section is the source of truth for Phase C; where it says "as 9.x" or "as 10.x",
+that subsection applies with `A` or `B` read as `C`.
+
+Chunks: **C0-C5 are Flutter / contract** (DIDSA-CAD), **C6-C9 are VR** (DIDSA-VR). Section 7's VR parts of #7 and #12 are
+in VR T3 (Phase D) (owner, 25 Nov: 12.8, answer 8).
+
+### 12.1 Order and gates
+
+```
+C1 contract + Flutter model (spec 14, vectors v3; no part_screen.dart) ──────────────┐
+C0 Flutter Phase B follow-up ─┐                                                      v
+C3 Flutter #13 ───────────────┴─ (one after the other, either first) ──> C2 Flutter #7 ──> C4 Flutter #12 + #15 ──> C5 Flutter #14
+C6 VR one tree component, PARTS tab ──> C7 VR room tree ──> C8 VR BUILD tab on spec 13 ──> C9 VR parts open to features
+```
+
+- A chunk starts only after the chunks it depends on are **merged to `main`**, and starts from `main`.
+- **Flutter chunks that touch `part_screen.dart` run one at a time:** C0 and C3 in either order (whichever can start), then
+  C2, C4, C5. C1 touches only the contract, the reference, `assembly_tree_model.dart` and its test (it keeps the model's
+  existing API, see its brief), so it runs alongside C0 or C3. The VR chain runs alongside all of
+  them, one VR chunk at a time (they all touch `assembly_tree_window.gd` or what C6 splits it into).
+- **C0 waits for the owner's Phase B device checks** (10.8), since it takes what they find. If they are not done when Phase C
+  starts, run C3 first and C0 after it.
+- **First to start:** C1, C6, and C3 (or C0 if the Phase B checks are done).
+- **Owner device checks** after Phase C is complete, not after each chunk (as 10.8 settled): each worker adds its chunk's
+  check to 12.8. C1 has none.
+
+### 12.2 Contract additions (C1; fixed once C1 merges)
+
+C1 adds spec **section 14** and vectors **version 3**, so both clients draw a Mates (and Patterns) folder under every
+assembly level the same way, with mate rows that can be filtered. After C1 merges, changes go through a manager session, as
+9.2 says. **The endpoint does not change** (owner, 25 Nov: 12.8, answer 1).
+
+**Spec section 14, a folder per assembly level (#7).**
+
+- **Where:** under an **open assembly occurrence row** (kind `assembly`), after its children and before its features: the
+  **Mates** folder when that node's `mates.count > 0`, then **Patterns** when `patterns.count > 0` (answer 2), at depth + 1.
+  The root's folders (section 7 item 5) are the same rule at depth 1. Group rows and part rows have none. Folders are
+  collapsed by default. Under a **live** assembly row (section 13): its children, then its Mates and Patterns folders, then
+  the live part's folders and features (section 13's "after anything section 7 lists under it" with these folders added).
+- **Keys:** the owning row's key and `#mates` / `#patterns` (section 8 already says so: `mast/arm#mates`; the root's stay
+  `#mates`, `#patterns`). Folder keys can be open keys (section 12 restore keeps them when the folder still shows).
+- **Bubble:** the folder carries its level's mates: `error` = `mates.broken`, `warning` = `mates.near` (as the root's folder
+  today), from the tree answer, so it shows before the items are fetched. An **open** assembly row then shows no bubble of
+  its own while its Mates folder is listed (rule 5: not twice; section 6's "open occurrence row" line changes; answer 3);
+  when the folder is not listed (a filter is on and nothing in it matches) the open row keeps its level's bubble, so a broken
+  mate never vanishes. A collapsed row keeps its rolled-up `problems` bubble. The folder's numbers and its items can differ,
+  and the spec says so: the numbers leave out mates touching a suppressed occurrence and do not count `held`; the items show
+  each mate as it is.
+- **Item rows** (kind `mate` / `pattern`, new in the spec; Flutter has them as client-only rows since A4): the client fetches
+  a level's items when its folder first opens (`GET /parts/{owner part}/mates`, `/component-patterns`, the owner being the
+  node's `resolved_part_id`) and passes them in, as features are passed. Input per folder key: `[{id, label, status,
+  suppressed, held, lost}]` (`status` `ok` / `near` / `broken` from the listing; `held`; `lost` = `lost_references` not
+  empty; patterns: `id`, `label`, `suppressed`). Keys: the folder key, `#item:` and the id (`mast/arm#mates#item:m3`, what
+  Flutter writes today at the root). Item keys are never open keys.
+- **Item label:** the mate naming rule, written from Flutter's `mateDisplayName` (`client/lib/viewport3d/assembly_tree_helpers.dart`:
+  "Coincident 2", "Width 1", "Symmetric 1", counted per type within the level) and VR's mate names where they agree; the
+  reference implements it and the vectors carry a `mate_names` case kind (input: one level's `/mates` entries; expected: the
+  labels). Patterns keep `componentPatternDisplayName`'s rule, written into the spec the same way.
+- **Item state slot**, one value, most severe first: `lost` > `broken` (both red) > `near` > `held` (both amber) >
+  `suppressed` (dimmed) > `none`. (A lost mate is also `broken` in the listing; its state is `lost`.) Item rows carry no
+  bubble and cannot open.
+- **Filter (section 11):** `:mates` (any mate item row) becomes a known token; `:errors` matches red items, `:warnings` amber,
+  `:suppressed` suppressed items. Items match by label. Only fetched items can match (as features). A match inside a folder
+  lists the folder (open) and its ancestors, as a group is listed. Folders never match themselves. Folders were not listed
+  while a filter is on (B1); with this section they are listed exactly when an item in them matches.
+- **Unfetched folder:** an open folder whose items are not fetched lists nothing under it (a client may show progress).
+
+**Vectors, version 3.** New kinds `level_folders` (section 7's inputs plus `items`, folder key -> item list; expected: rows),
+`level_folders_filter`, `level_folders_restore` and `mate_names`. Existing `rows`, `filter` and `restore` cases whose open
+rows include an assembly with mates or patterns **change** (they now list that level's folder, and the open row loses its
+bubble): C1 lists in its PR every existing case whose expectation changed, and why. All generated by
+`tools/assembly_tree_vectors/`, never by hand. The Flutter model passes v3 in C1 itself (below), so `main` stays green. VR keeps
+its v2 copy (C8 needs only the v2 `live_part` kinds) until the chunk that brings #7 to VR copies v3.
+
+### 12.3 Every worker
+
+As 9.3 and 10.3 (stale answers dropped with a test, the contract's behaviour kept, screenshots where a render is possible,
+the repo's rules), plus:
+
+- **PR title** `Tree C<n>: <summary>`; body as 12.4.
+- **Owner-run:** the steps in 12.5 are part of the chunk, not optional.
+- **Records:** DIDSA-CAD chunks update their 12.7 row and the 12.8 lists in the same PR. VR chunks cannot edit this file:
+  they put their 12.7 row and their 12.8 text in the report, and the next DIDSA-CAD chunk to open a PR copies them in (or the
+  owner does, in a small docs PR).
+- **Leftovers:** a chunk that takes items from 10.8 or 12.8 marks each one done (with its test) or carried, by number.
+
+**The worker prompt** (the owner fills in `<repo>` and `<chunk>`):
+
+```
+Start from main in <repo>. Follow section 12.6 <chunk> of docs/assembly-tree-overhaul-scope.md (on main in DIDSA-UK/DIDSA-CAD);
+reply with the report (12.4) and open the PR. You may commit and push to your session's branch and open the PR. Process
+(section 11, owner-run): when written, run /code-review high on the whole PR (origin/main...HEAD, naming the repo and its
+worktree path) and fix the important findings; then /code-review medium on your fix commits and fix those; nits go to 12.8.
+Update your 12.7 row and the 12.8 lists in the same PR (VR chunks put that text in their report instead). Say what you could
+not verify.
+```
+
+`<repo>` is `DIDSA-UK/DIDSA-CAD` for C0-C5 and `DIDSA-UK/DIDSA-VR` for C6-C9. This is section 11's prompt with the review
+steps made explicit; the file's path and repo are in the prompt because a VR session does not have this file in its own
+repo.
+
+### 12.4 Report format
+
+As 10.4 with `Chunk: C<n>`, plus two lines before "Not verified":
+
+```
+Review: high -> <n> important (<what>, fixed, a test each); medium on the fix commits -> <n> (fixed); nits -> 12.8
+Records: 12.7 row and 12.8 text updated in this PR (VR: the row and the text, here)
+```
+
+### 12.5 The owner-run steps (section 11)
+
+1. **Worker:** builds the chunk; runs `/code-review high` on the whole PR (`origin/main...HEAD`, naming the repo and its
+   worktree path); fixes every important finding with a test where it is a bug; runs `/code-review medium` on its fix commits
+   only and fixes those; puts nits in 12.8, not another round; updates 12.7 and 12.8 (VR: in the report); replies with 12.4.
+2. **Owner:** checks that CI **ran and passed on the PR's head commit** (a run that never started is not green), then merges.
+   For C1, also wait for the manager's review (step 3) and any fix round it asks for.
+   Device checks wait for the end of the phase (12.1).
+3. **Manager session** (mid-tier is enough; the strongest for C1): opened only for **C1** (a high review of the contract
+   before merge: spec wording a client author can follow, the reference and the regenerated vectors, the list of changed
+   cases), or when a chunk's rounds stop converging (section 11, "Stop a send-back spiral"). It posts its findings on the PR
+   (the worker fixes the important ones in the same PR), puts nits in 12.8, says "merge", and closes.
+
+### 12.6 The briefs
+
+#### C0. Flutter: Phase B follow-up (DIDSA-CAD `client/`)
+
+**Suggested model:** mid-tier. **Size:** S-M. **Depends on:** the owner's Phase B device checks (12.1). Replaces B2.1 (10.7).
+
+**Build:**
+- 10.8's B5 sheet nits 1-8: measure the sheet's header and bar instead of the hard-coded 48 dp / 100 dp (1); count the Focus
+  here bar in `_peekPixels` (2); keep pinned ancestors at their tested slots when there are more than `maxPinned` (3); capture
+  `_appliedFocusPath` before the awaits (4); one semantics node per pinned row (5); reset the pin index cache when clearing the
+  filter brings `_dropOutside` back (6); Fix, Rename, Delete, Isolate and `_TreeTarget`'s fallback take their owner Part from
+  the loaded tree, not `_focusStack.current`, while a root change is loading (7); the chain's push-out and fling (8, optional:
+  say if left).
+- B2's two leftovers (10.7): rows opened before the first answer on a never-stored document are stored; a rename during the
+  first load does not store rows that are not shown.
+- What the owner's Phase B device checks found (the owner lists it in the prompt or in 12.8 before starting).
+
+**Done when:** a test per bug (1-7, the two B2 items, each device-check bug); screenshots at 390 x 844 for 1-3;
+`flutter analyze` clean, whole `flutter test` passes.
+
+**Don't touch:** the contract, `assembly_tree_model.dart` (C1 owns it), Phase C features.
+
+**Left for later:** 10.8 item 9 stays with the owner's device check.
+
+#### C1. Contract: a folder per assembly level, mate rows, `:mates` (DIDSA-CAD)
+
+**Suggested model:** strongest. **Size:** M. **Depends on:** nothing (Phase B merged; answers 1-3 given, 12.8).
+
+**Build:**
+- Spec section 14 as 12.2 sets it, plus the additions it needs in sections 6 (the open-row bubble), 7 (the folders' place
+  and the `mate` / `pattern` kinds), 8 (item keys), 11 (`:mates`, folders listed with a match), 12 (folder keys of any
+  level) and 13 (the order under a live assembly row). Worded for a client author who never reads the backend.
+- `tools/assembly_tree_vectors/reference.py`, `test_reference.py`, `generate.py` writing `version: 3`; `vectors.json`
+  regenerated. Cases at least: a folder under an open sub-assembly placed twice (two folder keys); a level with mates and
+  no patterns; an open row's bubble moved to its folder; an unfetched open folder; every item state and two on one item;
+  `:mates`; `:errors` matching a broken mate three levels down inside a collapsed branch (folder and ancestors listed open);
+  restore with a nested folder key, an item key, and a folder whose level lost its mates; a filter that lists an open
+  assembly row but not its folder (the row keeps its bubble); a live assembly row with mates (`live_part`); `mate_names` with
+  Width and Symmetric mates.
+- `client/lib/assembly/assembly_tree_model.dart` passes v3: per-level folders, items with the spec's state, `:mates` known;
+  `client/test/assembly_tree_model_test.dart` runs the new kinds. **The model's existing API stays** (`setFolderItems` and
+  the host-named `AssemblyFolderItem` with `note` / `tone`, which `part_screen.dart`, `assembly_tree_helpers.dart`,
+  `assembly_tree_view.dart` and their tests use): add the spec's item input beside it, so no other file changes. C2 moves
+  the callers over and removes the old form. If that cannot be done, C1 stops and says so: it then runs in the
+  `part_screen.dart` chain, not alongside it.
+
+**Done when:** `test_reference.py` passes and fails when `vectors.json` differs from the generator; the PR lists every
+existing case whose expectation changed and why; `flutter test test/assembly_tree_model_test.dart` passes every v3 case;
+`flutter analyze` clean, whole `flutter test` passes; the vectors workflow is green; the manager's review (12.5 step 3) is on
+the PR and its important findings are fixed.
+
+**Don't touch:** the endpoint and spec section 1 (answer 1), `part_screen.dart`, `assembly_tree_view.dart`, `assembly_tree_helpers.dart` and their tests, DIDSA-VR.
+
+**Left for later:** VR's copy of v3 (with #7 in VR, Phase D: answer 8).
+
+#### C2. Flutter: mates per assembly level and the selection's mates (#7) (DIDSA-CAD `client/`)
+
+**Suggested model:** strongest (`part_screen.dart`). **Size:** M. **Depends on:** C1; C0 and C3 (one Flutter chunk at a time).
+
+**Build:**
+- **Per-level folders:** when a level's Mates or Patterns folder opens, fetch `listMates(owner)` /
+  `/component-patterns` for that node's `resolved_part_id`, once per Part per tree answer (a Part placed twice shares one fetch);
+  name and state them by the spec (moving `part_screen.dart` and the view off C1's kept `AssemblyFolderItem` form, then
+  removing it); drop stale answers (a newer tree, a document change, a mate edit). The focused level's
+  `_mates` / `_componentPatterns` (`part_screen.dart`, loaded with `listMates(focusPartId)`) feed its folder, so it is not
+  fetched twice.
+- **Mate rows at any level:** a tap selects the mate and highlights its two components (by full path under that placement); the
+  bar / menu for a mate on the focused level is today's (`_onMateTap`, `_onMateLongPress`, which run only while
+  `_focusIsTreeRoot` today); a mate on another level gets **Focus here to edit** (pushes the focus to that level, then opens
+  the mate as `_onMateTap` does); no edits in place (answer 4). Pattern rows the same way.
+- **The selection's mates:** the component drawer (`AssemblyComponentSelectionDrawer`; it docks under the tree on desktop) and
+  the phone sheet's More list the selected component's mates on its parent level (mates whose references' top occurrence is
+  the component), each with its state; a tap selects that mate and reveals its row.
+- The filter hint gains `:mates`; a `:mates` filter says when some levels' mates are not fetched yet (as features).
+
+**Done when:** `part_screen_test` "Assembly tree" adds: a nested level's folder fetches once and lists its mates with a broken
+one red; two placements of one sub-assembly share the fetch and each highlights its own components; a late mates answer
+after a mate edit is dropped; Focus here to edit from a nested mate; the drawer lists the selected nested component's mates
+and a tap reveals the row; `:mates :errors` finds a broken mate in a collapsed branch once fetched. Desktop and 390 x 844
+screenshots. Analyze and the whole suite pass.
+
+**Don't touch:** the contract, the model's rules (raise a problem in the report), VR.
+
+**Left for later:** mates repeated under components (left out on purpose, section 6); editing a nested level's mates in place
+(not wanted: answer 4).
+
+#### C3. Flutter: edit a feature in context from the tree (#13) (DIDSA-CAD `client/`)
+
+**Suggested model:** strongest (`part_screen.dart`, focus and lens state). **Size:** S-M. **Depends on:** nothing in
+Phase C (runs after C0 if C0 started first).
+
+**Build** (Phase 20 in-context editing, `docs/assembly-scope.md` section 2v, already retargets Part-lens tools through the
+focused path; this chunk is the way in from the tree):
+- A read-only feature row under a part that is not live (P2: `onRowEdit` is null for them today, `part_screen.dart`
+  `onRowEdit: live ? _editLiveRow : null`) gets **Edit in context**: on a double-click (desktop), a double-tap (touch), in its
+  bar and in its menu.
+- It pushes `AssemblyFocusStack` to the part's path (each level, as Make Focus from a nested row does), switches to the Part
+  lens (the part becomes live), and once that part's live features land opens the feature's panel at its rollback point, as
+  `_editLiveRow` / `_onFeatureTap` do. A focus change, a lens switch or a document change before the features land cancels
+  it (the stale-answer rule).
+- Inside Edit Alone, a feature row under a part in the re-rooted tree does the same within Edit Alone.
+- After the panel closes the focus and lens stay where they are (answer 5).
+
+**Done when:** `part_screen_test` "Build tree" adds: double-click a feature three levels down focuses its part, Part lens,
+the panel open on that feature; the same from the bar on a phone; a focus change before the features land opens nothing; the
+second placement of a sub-assembly focuses the second path; inside Edit Alone. Desktop screenshots of before and after.
+Analyze and the whole suite pass.
+
+**Don't touch:** the contract, the model, the Phase 20 retargeting itself, VR.
+
+**Left for later:** VR's analogue is C9's Table action.
+
+#### C4. Flutter desktop: hover linking and the Columns menu (#12, #15) (DIDSA-CAD `client/`)
+
+**Suggested model:** mid-tier. **Size:** S-M. **Depends on:** C2 (one at a time; mate rows to hover).
+
+**Build** (desktop layout only; touch gets neither, rule 4):
+- **Row hover lights the part:** hovering an occurrence row lights that placement (by full path) in the viewport, a feature
+  row of the live part what it made, a mate row its two components. Not through `PartViewport.highlightOverride`, which dims
+  everything else for Select Other: a separate hover input that only lights. Cleared on exit; nothing while a picker or a
+  drag is active.
+- **Part hover lights the row:** `PartViewport` reports its hover changes (its `_recomputeHover` / `_syncHoverNode`) to the
+  screen; the tree marks the hovered row, or the nearest listed ancestor when the row is collapsed. It never opens, scrolls or
+  selects. Throttled so a moving pointer does not rebuild the tree each frame.
+- **Columns menu** in the desktop tree header, saved in `ViewPreferences`; every column off by default: **Eye** (a column instead of the
+  hover eye), **Colour** (the placement's colour; a click opens `occurrence_colour_sheet.dart`), **DOF** (from `constraint.dof`;
+  empty while status loads), **Coarse pin** (P1's icon toggle moves here, `ViewPreferences.assemblyTreePinColumn` kept), and
+  the **grouping** switch (section 8, answer 6: header or Columns menu), which keeps its own default (on) and saved value. No **Transparency** column (answer 7: no
+  per-placement transparency exists in the client or the backend today).
+
+**Done when:** view tests: hovering a row reports its key once and clearing it reports null; a hovered collapsed descendant
+marks its ancestor; each column on and off, saved and restored; the pin setting survives the move. `part_screen_test`: a row
+hover lights the second placement only and dims nothing; a viewport hover marks the row and does not scroll. Desktop
+screenshots with every column on. Analyze and the whole suite pass.
+
+**Don't touch:** the contract, the phone layouts, VR.
+
+**Left for later:** hover in VR (Phase D, answer 8); Transparency (once per-placement transparency exists, answer 7).
+
+#### C5. Flutter desktop: the flyout tree (#14) (DIDSA-CAD `client/`)
+
+**Suggested model:** mid-tier. **Size:** S-M. **Depends on:** C4.
+
+**Build:** while a docked tool panel holds the left pane (`_desktopFrame` hides the tree while `_desktopToolPanelOpen`), a
+translucent **pick-only** tree over the viewport's top left, below the picker prompt card (`picker_ribbon.dart`) so neither
+covers the other: the same model, open rows and selection as the docked tree; a row click selects, as a tree click does
+today, so the open tool takes it where it takes a tree selection now; no bar, no menu, no columns, no filter (or the filter
+only: say which). It opens from a small "Tree" tab, closed by default (answer 6), closes on Esc and when the tool closes, and the docked tree
+then shows the same open rows.
+
+**Done when:** `part_screen_test`: opening a tool panel hides the pane and shows the tab; the flyout opens with the docked
+tree's open rows; a row click selects and the tool sees the selection; no menu on right-click; Esc and closing the tool close
+it; it does not overlap the picker prompt. Desktop screenshots. Analyze and the whole suite pass.
+
+**Don't touch:** the contract, the docked panel's layout (L3), the phone layouts, VR.
+
+**Left for later:** a flyout on a phone or tablet (not planned: the sheet drops to peek, B4).
+
+#### C6. VR: one tree component with scopes; the PARTS tab on it (T2: R1, R4) (DIDSA-VR)
+
+**Suggested model:** strongest (it splits the 1,866-line `scripts/assembly_tree_window.gd`). **Size:** M. **Depends on:**
+nothing (Phase B merged).
+
+**Build:**
+- The shared component (the review's R1): the rows, the pooled row build (B6), the bottom bar, search, remembered rows, room
+  context, refresh in place and selection both ways move from `assembly_tree_window.gd` into `scripts/tree/occurrence_tree_view.gd`
+  (or as R1 names them), driven by a **scope** object: World (root `main.current_root_part_id()`, nodes from
+  `RoomRegistry.world_parts`, adds Room), Table PARTS (the world's root, adds Table / Bring), and Room (C7). `occurrence_tree_model.gd`
+  stays the pure rules.
+- `assembly_tree_window.gd` becomes the World window on it. `scripts/design_table/table_tree_window.gd`'s PARTS tab uses it:
+  **Table** and **Bring** move into the bottom bar (`_uses_action_bar()` returns true; the inline `_add_row_actions` buttons
+  go), and **Room** and **Delete** come back (the review's B5). The BUILD tab is untouched (C8).
+- VR leftovers from 10.8: 1 (the per-level fallback shows the way to a room below a closed row whose children are not
+  fetched, or says why it cannot), 2 (`apply_theme` re-binds only rows on screen), 3 (`session_observer._queue_doc` compares
+  after the model change resets `loaded_rev`).
+
+**Done when:** every existing tree test passes unchanged in meaning (`tests/assembly_tree_window.gd`, `occurrence_tree_actions.gd`,
+`assembly_tree_pool*.gd`, `assembly_tree_races.gd`, `assembly_tree_render.gd`, `tree_b71.gd`, `tree_b8.gd`, `tree_b8_render.gd`,
+`tree_open_settings.gd`, `design_table_tree.gd`, and `e2e_assembly_tree.gd` against a live backend: every `tests/*tree*.gd`; say
+which needed a path change); new headless tests: the PARTS tab's bar offers Table / Bring / Room / Delete for a placed part
+and greys Table with its reason for a sub-assembly; a test per leftover; the render check's scenarios still pass, plus a
+PARTS-tab screenshot. `tests/ci.sh` clean; tests registered.
+
+**Don't touch:** the model's rules, rooms' own tree (C7), the BUILD tab (C8), DIDSA-CAD.
+
+**Left for later:** the review's R4 extras (Mate, Appearance, Suppress in the bar), T3.
+
+#### C7. VR: the room's docked tree and its context strip (T2: R6, section 4) (DIDSA-VR)
+
+**Suggested model:** mid-tier. **Size:** M. **Depends on:** C6.
+
+**Build:**
+- The room console (`scripts/room/room_console.gd`) gets a **Tree** button that opens a tree window in the Room scope, docked
+  beside the console (as the table tree docks to the table) in the room's colour; it moves with the console.
+- Rooted at the room's Part; rows resolve to the room's nodes (`RoomRegistry.parts_in_room`), never the world's hidden copy.
+  Fix / Float, Rename and Delete write to the room's Part (as `room_edit.gd` and the room's mates already do); Hide is
+  view-only (owner, 11 Nov).
+- **The context strip** above it (section 4): the room's name, one read-only line "in Rover > Mast" (the placements of the
+  room's Part in the world; the first one, and "+1 more" when there are several), and **"used N x"** from the console's
+  `uses_text` when the Part is placed more than once. Crumbs are read-only (answer 9).
+- Selection both ways inside the room (a pick in the room reveals its row); its open rows remembered per room's Part, as B7's
+  are per document.
+
+**Done when:** headless tests: the room tree lists the room Part's children; a row selects the room's node, not the world's;
+Fix on a room row PATCHes the room's Part; the strip shows "in ..." and "used 2 x" for a Part placed twice; a pick in the room
+reveals its row; closing the room closes its tree. Render-check screenshots of a room with its tree. `tests/ci.sh` clean;
+tests registered.
+
+**Don't touch:** the contract, the BUILD tab (C8), DIDSA-CAD.
+
+**Left for later:** crumbs that act (not wanted for now: answer 9); a room tree for nested rooms beyond what the scope gives.
+
+#### C8. VR: the BUILD tab on spec section 13, its actions in the bottom bar (DIDSA-VR)
+
+**Suggested model:** mid-tier; the strongest if C6's report flags trouble in the shared view. **Size:** M. **Depends on:** C7.
+
+**Build:**
+- `occurrence_tree_model.gd` implements spec section 13 (the live part): folders Bodies, Planes (the three default planes,
+  then the plane features), Surfaces, Curves; features in build order; the feature state slot. `tests/occurrence_tree_model.gd`
+  stops skipping the three `live_part` kinds (`SKIPPED_KINDS`) and passes them (VR's v2 copy has them).
+- The BUILD tab (`table_tree_window.gd` `_redraw_build`, today its own rows over `build_tree.gd`) draws the part on the table
+  as the live part through the shared view. `build_tree.gd` keeps only what the spec does not cover (summaries, LABELS) or is
+  retired; say which.
+- Its action strip under the selected row (`_action_strip`: Edit, Fix a reference, Lines, Hide / Show, Roll back / forward,
+  Delete) moves to the bottom bar (owner, 11 Nov: one pattern everywhere). The group eyes become the folders' Hide / Show.
+
+**Done when:** every `live_part*` vector passes; `tests/design_table_build_tree.gd`, `design_table_visibility_tree.gd` and
+`e2e_build_tree.gd` pass (moved to the new rows where needed: say which); new tests: the bar's actions for a feature, a body and
+a default plane; a lost reference shows red with its reason in the bar. Render-check screenshots of the BUILD tab. `tests/ci.sh`
+clean; tests registered.
+
+**Don't touch:** the contract, the vectors (copy only), DIDSA-CAD.
+
+**Left for later:** the rollback bar (#17, Phase D).
+
+#### C9. VR: parts open to their features in the world and room trees (#19) (DIDSA-VR)
+
+**Suggested model:** mid-tier. **Size:** S. **Depends on:** C8.
+
+**Build:** a part row opens to its features (read-only names from `GET /parts/{id}/features`, fetched on first open with the
+stale-answer rule; spec 7 feature rows). A selected feature row's bar offers **Table**: puts that part on the table and selects
+that feature in the BUILD tab (VR's analogue of #13).
+
+**Done when:** headless tests: opening a part row fetches once and lists its features; a late answer for another document is
+dropped; Table from a feature row seats the part and selects the feature. Render-check screenshot. `tests/ci.sh` clean; tests
+registered.
+
+**Don't touch:** the contract, DIDSA-CAD.
+
+**Left for later (Phase D, VR T3):** the Mates and Patterns folders in VR (with vectors v3), laser hover, the leader line and
+Frame (answer 8).
+
+### 12.7 Progress
+
+| Chunk | Status | PR | Model used | Notes |
+|---|---|---|---|---|
+| C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
+| C1 contract + Flutter model | not started | | | Answers 1-3 given (12.8); manager review before merge |
+| C2 Flutter #7 | not started | | | |
+| C3 Flutter #13 | not started | | | |
+| C4 Flutter #12 + #15 | not started | | | |
+| C5 Flutter #14 | not started | | | |
+| C6 VR one tree component | not started | | | |
+| C7 VR room tree | not started | | | |
+| C8 VR BUILD tab on spec 13 | not started | | | |
+| C9 VR parts to features | not started | | | |
+
+### 12.8 Hand-off
+
+**In flight:** nothing; briefs written 25 Nov 2026.
+
+**Leftovers placed:** 10.8's B5 sheet nits 1-8 and B2.1 -> C0 (item 9 stays with the device check); VR leftovers 1-3 -> C6;
+VR item 4 (the root as the way to a room): kept, answer 10 below.
+
+**Owner's answers (25 Nov 2026):** every recommendation accepted.
+1. *C1.* A level's mates are fetched from `GET /parts/{owner}/mates` when its folder opens; the endpoint does not change, and
+   `:mates` finds only fetched mates (as with features).
+2. *C1.* A Patterns folder per level as well as Mates.
+3. *C1.* An open assembly row's own mates bubble moves to its Mates folder (rule 5), except while a filter hides the folder.
+4. *C2.* A mate on a level other than the focused one: select and highlight, with **Focus here to edit**; no edits in place.
+5. *C3.* After editing a feature in context, the focus stays on that part in the Part lens.
+6. *C5.* The flyout tree opens from a small Tree tab, closed by default.
+7. *C4.* No Transparency column until there is per-placement transparency (none exists).
+8. *Phase plan.* #7 and #12 for VR (Mates folders, laser hover) wait for Phase D with T3; no C10.
+9. *C7.* The room tree's "in Rover > Mast" line is read-only.
+10. *Headset, from 10.8.* B8.1's root drawn as the way to a room (not dimmed) stays; longer-term testing on the headset may
+    settle a preference, so it stays on the device-check list.
+
+**Nits carried:** none yet (each chunk adds its own here, with the chunk it is for).
+
+**Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
+C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
+Focus here to edit, the drawer's mates); C3 (desktop and phone: edit a feature three levels down from the tree); C4 (desktop:
+hover both ways on a large assembly, each column); C5 (desktop: the flyout with Extrude, Mirror and a mate tool open); C6
+(headset: the World tree as before, the PARTS tab's bar); C7 (headset: a room's tree beside its console, its strip, Fix from
+it); C8 (headset: the BUILD tab's folders and bar); C9 (headset: a part opened to its features, Table from a feature).
 
 ## Sources
 
