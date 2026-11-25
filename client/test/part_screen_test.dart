@@ -12159,6 +12159,43 @@ void main() {
         expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1', reason: 'the same component, now under the document root');
       });
 
+      // Review of B4, finding 6: a pick made while the load after a focus change was in flight was read from the next root, then remapped
+      // from the old one: the two roots were joined and the selection dropped.
+      testWidgets('a pick made while the load after a focus change is in flight is kept', (tester) async {
+        Completer<void>? gate;
+        final backend = await openNested(tester, around: (request) async {
+          final g = gate;
+          if (g != null && request.url.path.endsWith('/assembly-tree')) {
+            gate = null;
+            await g.future;
+          }
+        });
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        backend.assemblyTreeMissing = true;
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'rooted at the focused Part');
+
+        backend.assemblyTreeMissing = false;
+        final release = Completer<void>();
+        gate = release;
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await tester.pump();
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'the load is held');
+        tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c2'),
+        );
+        await tester.pump();
+        release.complete();
+        await settle(tester);
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c2');
+      });
+
       // B4 (B3's review, item 2): a crumb tapped during a multi-select left it holding the old level's components.
       testWidgets('a crumb tapped during a multi-select ends the multi-select', (tester) async {
         await openNested(tester);
@@ -13086,6 +13123,89 @@ void main() {
         expect(find.byKey(const ValueKey('component-zoom')), findsOneWidget);
         expect(find.byKey(const ValueKey('component-edit-alone')), findsOneWidget);
         expect(find.byKey(const ValueKey('tree-selection-bar')), findsNothing);
+        // Review: a nested component has no drawer (it is not directly in the focused Part), so its row keeps the bar.
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:asm-1')));
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('tree-row:asm-1/c1')));
+        await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 20));
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1');
+        expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-bar-focus')), findsOneWidget);
+      });
+
+      // Review of B4, finding 1: the pick's peek was written into the person's height, so the tree opened at peek from then on.
+      testWidgets("a pick's peek does not change the height the tree opens at afterwards", (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        await tester.tap(find.byKey(const ValueKey('tree-close')));
+        await settle(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half);
+      });
+
+      // Review of B4, finding 2: a sheet a pick opened stayed up as an empty header once the selection was cleared.
+      testWidgets('a sheet a pick opened closes when the selection is cleared; one the person opened stays', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue);
+        // A tap on empty space (the viewport's clear).
+        tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, isNull);
+        expect(_TreeProbe(tester).view.visible, isFalse);
+
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue, reason: 'the person opened it');
+      });
+
+      // Review of B4, finding 4: Pattern Component's source pick needs the rows; a sheet at peek listed none.
+      testWidgets("Pattern Component's source pick raises a sheet at peek to half", (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('plate');
+        await settle(tester);
+        _TreeProbe(tester).view.onSheetHeightChanged!(AssemblyTreeSheetHeight.peek);
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        await _TreeProbe(tester).menuAction('plate', 'Pattern');
+        await settle(tester);
+        final panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek, reason: 'the Direction step: a tool panel');
+        panel.onDirectionChanged(ComponentPatternAxisPreset.z);
+        await settle(tester);
+        expect(tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel)).pickingMoreSources, isTrue);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half);
+      });
+
+      // Review of B4, finding 5: under a tool panel the filter opened a field with no list, and a drag snapped back.
+      testWidgets('a sheet held at peek by a tool panel offers no filter and no drag', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.onSheetHeightChanged, isNotNull);
+        expect(find.byKey(const ValueKey('tree-filter-toggle')), findsOneWidget);
+        await _TreeProbe(tester).menuAction('plate', 'Mate');
+        await settle(tester);
+        expect(find.byType(MatePanel), findsOneWidget);
+        expect(_TreeProbe(tester).view.onSheetHeightChanged, isNull);
+        expect(find.byKey(const ValueKey('tree-filter-toggle')), findsNothing);
       });
     });
 

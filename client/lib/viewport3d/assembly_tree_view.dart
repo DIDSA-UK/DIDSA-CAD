@@ -301,6 +301,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
 
   bool get _sheet => widget.sheetHeight != null && !LayoutModeScope.isDesktop(context);
 
+  /// The host holds the sheet where it is (a tool panel keeps it at peek): no drag, no handle tap, and no filter, which would want full.
+  bool get _sheetLocked => _sheet && widget.onSheetHeightChanged == null;
+
   @override
   void initState() {
     super.initState();
@@ -658,12 +661,13 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   /// The handle strip and whatever header is on top of the sheet: both take the vertical drag.
   Widget _sheetDragArea(BuildContext context, Widget header) {
     final scheme = Theme.of(context).colorScheme;
+    final locked = _sheetLocked;
     return GestureDetector(
       key: const ValueKey('tree-sheet-drag'),
       behavior: HitTestBehavior.translucent,
-      onVerticalDragStart: _sheetDragStart,
-      onVerticalDragUpdate: _sheetDragUpdate,
-      onVerticalDragEnd: _sheetDragEnd,
+      onVerticalDragStart: locked ? null : _sheetDragStart,
+      onVerticalDragUpdate: locked ? null : _sheetDragUpdate,
+      onVerticalDragEnd: locked ? null : _sheetDragEnd,
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -671,7 +675,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           GestureDetector(
             key: const ValueKey('tree-sheet-handle'),
             behavior: HitTestBehavior.opaque,
-            onTap: _sheetHandleTap,
+            onTap: locked ? null : _sheetHandleTap,
             child: SizedBox(
               height: kAssemblyTreeSheetHandleHeight,
               child: Center(
@@ -925,7 +929,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         elevation: 8,
         clipBehavior: Clip.antiAlias,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        child: height == null ? content : SizedBox(height: height, child: content),
+        // The bottom inset (a home indicator, gesture navigation): the last row or the bar is not drawn under it.
+        child: SafeArea(top: false, child: height == null ? content : SizedBox(height: height, child: content)),
       );
       return Align(
         alignment: Alignment.bottomCenter,
@@ -989,7 +994,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
               child: Text(_sheet ? (_rootLabel ?? widget.title) : widget.title,
                   key: const ValueKey('tree-title'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
-            if (!desktop)
+            if (!desktop && !_sheetLocked)
               button(
                   key: 'tree-filter-toggle',
                   tooltip: 'Filter',

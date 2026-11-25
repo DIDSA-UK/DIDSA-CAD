@@ -185,4 +185,21 @@ void main() {
     await _pump(tester, AssemblyTreeView(model: model, onHideSelected: (_) {}, onMoreSelected: (_) {}));
     expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget, reason: 'the default keeps the bar');
   });
+
+  // Review of B4, finding 7: the sheet sat under the home indicator / gesture area.
+  testWidgets('the sheet keeps its rows above the bottom inset', (tester) async {
+    tester.view.padding = const FakeViewPadding(bottom: 34);
+    addTearDown(tester.view.resetPadding);
+    await _pump(tester, _SheetHost(model: _model(), initial: AssemblyTreeSheetHeight.full));
+    expect(tester.getRect(find.byKey(const ValueKey('assembly-tree-list'))).bottom, lessThanOrEqualTo(844 - 34));
+  });
+
+  testWidgets('a sheet the host holds (no height callback) offers no filter, and a drag does not move it', (tester) async {
+    await _pump(tester, AssemblyTreeView(model: _model(), sheetHeight: AssemblyTreeSheetHeight.peek, onClose: () {}));
+    expect(find.byKey(const ValueKey('tree-filter-toggle')), findsNothing);
+    final before = _sheetHeight(tester);
+    await tester.drag(find.byKey(const ValueKey('tree-sheet-handle')), const Offset(0, -300));
+    await tester.pumpAndSettle();
+    expect(_sheetHeight(tester), before);
+  });
 }
