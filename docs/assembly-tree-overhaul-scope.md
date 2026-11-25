@@ -142,7 +142,7 @@ Edit Alone; two trees side by side on a phone.
 |---|---|---|
 | A, foundation | #2, #1, #3, #4, #6, the shared spec and vectors (#11) | The headline fix. VR can adopt the endpoint and bubbles at the same time |
 | B, context | #5, #9, #10, #8; the build tree (P1-P3) | Q2 and Q3 answered (section 8). Briefs: section 10 |
-| C, depth | #7, #13, #12, #14, #15; VR T2 | Run as section 11 says. Briefs: section 12 |
+| C, depth | #7, #13, #12, #14, #15; VR T2 | Run as section 11 says. Briefs: section 12. The VR parts of #7 and #12 are proposed for Phase D with T3 (12.8, question 8) |
 | D, power | #16, #17, #18; VR T3 | Backend work. Run as section 11 says |
 
 **Tests:** pure model tests against the shared vectors in both clients (paths, merge on refresh, bubbles, names, actions per
@@ -868,9 +868,9 @@ From B4 on there is no standing manager session (section 11, "Owner-run chunks")
 its 10.7 row and this section's lists in its PR, and the owner checks CI and merges.
 
 **In flight:** nothing. Every Phase B chunk is merged (B5 #409, B8.1 VR #104 on 25 Nov). What is left is the owner's
-device checks below, then B2.1 if they find anything.
+device checks below; what they find, B2's leftovers and the nits below go to Phase C's C0 (12.6), which replaces B2.1.
 
-**Next:** B2.1 only if the owner's checks give it anything (10.7). Nits carried from B5's reviews, for whichever chunk next touches the sheet:
+**Next:** Phase C (section 12). Nits carried from B5's reviews (now in C0):
   1. The sheet's strips and banners get what is left after a hard-coded 48 dp header and 100 dp for the bar (`_sheetFrame` / body); the phone filter header or the multi-select header can differ, and an overfull set of strips is clipped (Done, Focus here can be cut off at half on a small phone). Measure instead.
   2. `_peekPixels` does not count the Focus here bar that peek now shows for a selected row outside the focus: the drag's peek snap is one row short then.
   3. With more ancestors than `maxPinned` the deepest are kept and drawn at shallower slots than they were tested for, so a kept ancestor's own row can show twice (and `_flushScroll` assumes slot `min(level, maxPinned)`).
@@ -983,13 +983,15 @@ in VR T3 (Phase D) unless the owner moves them (12.8, question 8).
 
 ```
 C1 contract + Flutter model (spec 14, vectors v3; no part_screen.dart) ──────────────┐
-C0 Flutter Phase B follow-up ──> C3 Flutter #13 ──> C2 Flutter #7 (after C1) ──> C4 Flutter #12 + #15 ──> C5 Flutter #14
+C0 Flutter Phase B follow-up ─┐                                                      v
+C3 Flutter #13 ───────────────┴─ (one after the other, either first) ──> C2 Flutter #7 ──> C4 Flutter #12 + #15 ──> C5 Flutter #14
 C6 VR one tree component, PARTS tab ──> C7 VR room tree ──> C8 VR BUILD tab on spec 13 ──> C9 VR parts open to features
 ```
 
 - A chunk starts only after the chunks it depends on are **merged to `main`**, and starts from `main`.
-- **Flutter chunks that touch `part_screen.dart` run one at a time** (C0, C3, C2, C4, C5, in that order). C1 touches only the
-  contract, the reference and `assembly_tree_model.dart`, so it runs alongside C0 or C3. The VR chain runs alongside all of
+- **Flutter chunks that touch `part_screen.dart` run one at a time:** C0 and C3 in either order (whichever can start), then
+  C2, C4, C5. C1 touches only the contract, the reference, `assembly_tree_model.dart` and its test (it keeps the model's
+  existing API, see its brief), so it runs alongside C0 or C3. The VR chain runs alongside all of
   them, one VR chunk at a time (they all touch `assembly_tree_window.gd` or what C6 splits it into).
 - **C0 waits for the owner's Phase B device checks** (10.8), since it takes what they find. If they are not done when Phase C
   starts, run C3 first and C0 after it.
@@ -1008,12 +1010,17 @@ assembly level the same way, with mate rows that can be filtered. After C1 merge
 - **Where:** under an **open assembly occurrence row** (kind `assembly`), after its children and before its features: the
   **Mates** folder when that node's `mates.count > 0`, then **Patterns** when `patterns.count > 0` (question 2), at depth + 1.
   The root's folders (section 7 item 5) are the same rule at depth 1. Group rows and part rows have none. Folders are
-  collapsed by default.
+  collapsed by default. Under a **live** assembly row (section 13): its children, then its Mates and Patterns folders, then
+  the live part's folders and features (section 13's "after anything section 7 lists under it" with these folders added).
 - **Keys:** the owning row's key and `#mates` / `#patterns` (section 8 already says so: `mast/arm#mates`; the root's stay
   `#mates`, `#patterns`). Folder keys can be open keys (section 12 restore keeps them when the folder still shows).
 - **Bubble:** the folder carries its level's mates: `error` = `mates.broken`, `warning` = `mates.near` (as the root's folder
-  today). An **open** assembly row then shows no bubble of its own (rule 5: not twice; section 6's "open occurrence row" line
-  changes; question 3). A collapsed row keeps its rolled-up `problems` bubble.
+  today), from the tree answer, so it shows before the items are fetched. An **open** assembly row then shows no bubble of
+  its own while its Mates folder is listed (rule 5: not twice; section 6's "open occurrence row" line changes; question 3);
+  when the folder is not listed (a filter is on and nothing in it matches) the open row keeps its level's bubble, so a broken
+  mate never vanishes. A collapsed row keeps its rolled-up `problems` bubble. The folder's numbers and its items can differ,
+  and the spec says so: the numbers leave out mates touching a suppressed occurrence and do not count `held`; the items show
+  each mate as it is.
 - **Item rows** (kind `mate` / `pattern`, new in the spec; Flutter has them as client-only rows since A4): the client fetches
   a level's items when its folder first opens (`GET /parts/{owner part}/mates`, `/component-patterns`, the owner being the
   node's `resolved_part_id`) and passes them in, as features are passed. Input per folder key: `[{id, label, status,
@@ -1024,8 +1031,9 @@ assembly level the same way, with mate rows that can be filtered. After C1 merge
   "Coincident 2", "Width 1", "Symmetric 1", counted per type within the level) and VR's mate names where they agree; the
   reference implements it and the vectors carry a `mate_names` case kind (input: one level's `/mates` entries; expected: the
   labels). Patterns keep `componentPatternDisplayName`'s rule, written into the spec the same way.
-- **Item state slot**, most severe first: `lost` or `broken` (red) > `near` or `held` (amber) > `suppressed` (dimmed) > `none`.
-  Item rows carry no bubble and cannot open.
+- **Item state slot**, one value, most severe first: `lost` > `broken` (both red) > `near` > `held` (both amber) >
+  `suppressed` (dimmed) > `none`. (A lost mate is also `broken` in the listing; its state is `lost`.) Item rows carry no
+  bubble and cannot open.
 - **Filter (section 11):** `:mates` (any mate item row) becomes a known token; `:errors` matches red items, `:warnings` amber,
   `:suppressed` suppressed items. Items match by label. Only fetched items can match (as features). A match inside a folder
   lists the folder (open) and its ancestors, as a group is listed. Folders never match themselves. Folders were not listed
@@ -1054,15 +1062,17 @@ the repo's rules), plus:
 **The worker prompt** (the owner fills in `<repo>` and `<chunk>`):
 
 ```
-Start from main in <repo>. Follow section 12.6 <chunk>; reply with the report (12.4) and open the PR. You may commit and push
-to your session's branch and open the PR. Process (section 11, owner-run): when written, run /code-review high on the whole
-PR (origin/main...HEAD) and fix the important findings; then /code-review medium on your fix commits and fix those; nits go
-to 12.8. Update your 12.7 row and the 12.8 lists in the same PR (VR chunks put that text in their report instead). Say what
-you could not verify.
+Start from main in <repo>. Follow section 12.6 <chunk> of docs/assembly-tree-overhaul-scope.md (on main in DIDSA-UK/DIDSA-CAD);
+reply with the report (12.4) and open the PR. You may commit and push to your session's branch and open the PR. Process
+(section 11, owner-run): when written, run /code-review high on the whole PR (origin/main...HEAD, naming the repo and its
+worktree path) and fix the important findings; then /code-review medium on your fix commits and fix those; nits go to 12.8.
+Update your 12.7 row and the 12.8 lists in the same PR (VR chunks put that text in their report instead). Say what you could
+not verify.
 ```
 
-`<repo>` is `DIDSA-UK/DIDSA-CAD` for C0-C5 and `DIDSA-UK/DIDSA-VR` for C6-C9 (a VR worker reads this file from DIDSA-CAD's
-`main`: `docs/assembly-tree-overhaul-scope.md`).
+`<repo>` is `DIDSA-UK/DIDSA-CAD` for C0-C5 and `DIDSA-UK/DIDSA-VR` for C6-C9. This is section 11's prompt with the review
+steps made explicit; the file's path and repo are in the prompt because a VR session does not have this file in its own
+repo.
 
 ### 12.4 Report format
 
@@ -1079,11 +1089,12 @@ Records: 12.7 row and 12.8 text updated in this PR (VR: the row and the text, he
    worktree path); fixes every important finding with a test where it is a bug; runs `/code-review medium` on its fix commits
    only and fixes those; puts nits in 12.8, not another round; updates 12.7 and 12.8 (VR: in the report); replies with 12.4.
 2. **Owner:** checks that CI **ran and passed on the PR's head commit** (a run that never started is not green), then merges.
+   For C1, also wait for the manager's review (step 3) and any fix round it asks for.
    Device checks wait for the end of the phase (12.1).
 3. **Manager session** (mid-tier is enough; the strongest for C1): opened only for **C1** (a high review of the contract
    before merge: spec wording a client author can follow, the reference and the regenerated vectors, the list of changed
-   cases), or when a chunk's rounds stop converging (section 11, "Stop a send-back spiral"). It writes its findings into 12.8
-   and closes.
+   cases), or when a chunk's rounds stop converging (section 11, "Stop a send-back spiral"). It posts its findings on the PR
+   (the worker fixes the important ones in the same PR), puts nits in 12.8, says "merge", and closes.
 
 ### 12.6 The briefs
 
@@ -1115,37 +1126,41 @@ Records: 12.7 row and 12.8 text updated in this PR (VR: the row and the text, he
 
 **Build:**
 - Spec section 14 as 12.2 sets it, plus the additions it needs in sections 6 (the open-row bubble), 7 (the folders' place
-  and the `mate` / `pattern` kinds), 8 (item keys), 11 (`:mates`, folders listed with a match) and 12 (folder keys of any
-  level). Worded for a client author who never reads the backend.
+  and the `mate` / `pattern` kinds), 8 (item keys), 11 (`:mates`, folders listed with a match), 12 (folder keys of any
+  level) and 13 (the order under a live assembly row). Worded for a client author who never reads the backend.
 - `tools/assembly_tree_vectors/reference.py`, `test_reference.py`, `generate.py` writing `version: 3`; `vectors.json`
   regenerated. Cases at least: a folder under an open sub-assembly placed twice (two folder keys); a level with mates and
   no patterns; an open row's bubble moved to its folder; an unfetched open folder; every item state and two on one item;
   `:mates`; `:errors` matching a broken mate three levels down inside a collapsed branch (folder and ancestors listed open);
-  restore with a nested folder key, an item key, and a folder whose level lost its mates; `mate_names` with Width and
-  Symmetric mates.
-- `client/lib/assembly/assembly_tree_model.dart` passes v3: per-level folders; `setFolderItems` takes any folder key (today
-  `#mates` / `#patterns` at the root only, built from host-named `AssemblyFolderItem`s) and items carry the spec's state;
-  `:mates` known; `client/test/assembly_tree_model_test.dart` runs the new kinds. `part_screen.dart` keeps compiling with the
-  root's folders as today (C2 wires the rest).
+  restore with a nested folder key, an item key, and a folder whose level lost its mates; a filter that lists an open
+  assembly row but not its folder (the row keeps its bubble); a live assembly row with mates (`live_part`); `mate_names` with
+  Width and Symmetric mates.
+- `client/lib/assembly/assembly_tree_model.dart` passes v3: per-level folders, items with the spec's state, `:mates` known;
+  `client/test/assembly_tree_model_test.dart` runs the new kinds. **The model's existing API stays** (`setFolderItems` and
+  the host-named `AssemblyFolderItem` with `note` / `tone`, which `part_screen.dart`, `assembly_tree_helpers.dart`,
+  `assembly_tree_view.dart` and their tests use): add the spec's item input beside it, so no other file changes. C2 moves
+  the callers over and removes the old form. If that cannot be done, C1 stops and says so: it then runs in the
+  `part_screen.dart` chain, not alongside it.
 
 **Done when:** `test_reference.py` passes and fails when `vectors.json` differs from the generator; the PR lists every
 existing case whose expectation changed and why; `flutter test test/assembly_tree_model_test.dart` passes every v3 case;
-`flutter analyze` clean, whole `flutter test` passes; the vectors workflow is green; the manager's review (12.5 step 3) is in
-the PR.
+`flutter analyze` clean, whole `flutter test` passes; the vectors workflow is green; the manager's review (12.5 step 3) is on
+the PR and its important findings are fixed.
 
 **Don't touch:** the endpoint (unless question 1 says otherwise; then its tests in `backend/tests/test_assembly_tree.py` and the
-spec's section 1), `part_screen.dart` beyond what keeps it compiling, `assembly_tree_view.dart`, DIDSA-VR.
+spec's section 1), `part_screen.dart`, `assembly_tree_view.dart`, `assembly_tree_helpers.dart` and their tests, DIDSA-VR.
 
 **Left for later:** VR's copy of v3 (with #7 in VR, Phase D or question 8).
 
 #### C2. Flutter: mates per assembly level and the selection's mates (#7) (DIDSA-CAD `client/`)
 
-**Suggested model:** strongest (`part_screen.dart`). **Size:** M. **Depends on:** C1; C3 (one Flutter chunk at a time).
+**Suggested model:** strongest (`part_screen.dart`). **Size:** M. **Depends on:** C1; C0 and C3 (one Flutter chunk at a time).
 
 **Build:**
 - **Per-level folders:** when a level's Mates or Patterns folder opens, fetch `listMates(owner)` /
   `/component-patterns` for that node's `resolved_part_id`, once per Part per tree answer (a Part placed twice shares one fetch);
-  name and state them by the spec; drop stale answers (a newer tree, a document change, a mate edit). The focused level's
+  name and state them by the spec (moving `part_screen.dart` and the view off C1's kept `AssemblyFolderItem` form, then
+  removing it); drop stale answers (a newer tree, a document change, a mate edit). The focused level's
   `_mates` / `_componentPatterns` (`part_screen.dart`, loaded with `listMates(focusPartId)`) feed its folder, so it is not
   fetched twice.
 - **Mate rows at any level:** a tap selects the mate and highlights its two components (by full path under that placement); the
@@ -1206,10 +1221,10 @@ Analyze and the whole suite pass.
 - **Part hover lights the row:** `PartViewport` reports its hover changes (its `_recomputeHover` / `_syncHoverNode`) to the
   screen; the tree marks the hovered row, or the nearest listed ancestor when the row is collapsed. It never opens, scrolls or
   selects. Throttled so a moving pointer does not rebuild the tree each frame.
-- **Columns menu** in the desktop tree header, off by default, saved in `ViewPreferences`: **Eye** (a column instead of the
+- **Columns menu** in the desktop tree header, saved in `ViewPreferences`; every column off by default: **Eye** (a column instead of the
   hover eye), **Colour** (the placement's colour; a click opens `occurrence_colour_sheet.dart`), **DOF** (from `constraint.dof`;
   empty while status loads), **Coarse pin** (P1's icon toggle moves here, `ViewPreferences.assemblyTreePinColumn` kept), and
-  the **grouping** switch (section 8, answer 6: header or Columns menu). **Transparency** only if question 7 says so (no
+  the **grouping** switch (section 8, answer 6: header or Columns menu), which keeps its own default (on) and saved value. **Transparency** only if question 7 says so (no
   per-placement transparency exists in the client or the backend today).
 
 **Done when:** view tests: hovering a row reports its key once and clearing it reports null; a hovered collapsed descendant
@@ -1259,8 +1274,9 @@ nothing (Phase B merged).
   after the model change resets `loaded_rev`).
 
 **Done when:** every existing tree test passes unchanged in meaning (`tests/assembly_tree_window.gd`, `occurrence_tree_actions.gd`,
-`assembly_tree_pool*.gd`, `assembly_tree_races.gd`, `tree_b71.gd`, `tree_b8.gd`, `tree_open_settings.gd`, `design_table_tree.gd`:
-say which needed a path change); new headless tests: the PARTS tab's bar offers Table / Bring / Room / Delete for a placed part
+`assembly_tree_pool*.gd`, `assembly_tree_races.gd`, `assembly_tree_render.gd`, `tree_b71.gd`, `tree_b8.gd`, `tree_b8_render.gd`,
+`tree_open_settings.gd`, `design_table_tree.gd`, and `e2e_assembly_tree.gd` against a live backend: every `tests/*tree*.gd`; say
+which needed a path change); new headless tests: the PARTS tab's bar offers Table / Bring / Room / Delete for a placed part
 and greys Table with its reason for a sub-assembly; a test per leftover; the render check's scenarios still pass, plus a
 PARTS-tab screenshot. `tests/ci.sh` clean; tests registered.
 
