@@ -13508,6 +13508,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final focusBelowRoot = focusFull.length > nominalRootPath.length ? focusFull.sublist(nominalRootPath.length) : const <String>[];
     // A4: every load has a token; an answer that is not from the latest load is dropped (see [_treeLoadToken]).
     final token = ++_treeLoadToken;
+    // C2: a level's mates read before this load (a mate edit, a newer tree, another document) are stale: their answers are dropped. A load
+    // that fails or is dropped reads the opened levels again ([_refreshLevelItems]), so no open folder is left empty (review).
+    _levelItemsGen++;
     // B2: a tree that is new for this document (the first answer, or the document's own tree again after a focus) opens the rows it had
     // when it was last open. Read at the same time as everything else; applied only if this answer is still the latest and nothing changed
     // under it (below).
@@ -13531,6 +13534,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } catch (_) {
       await structure; // never left unawaited
       await storedKeys;
+      if (mounted) _refreshLevelItems();
       rethrow;
     }
     final fetched = await structure;
@@ -13548,14 +13552,20 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     // P2: also not when the focus (or the tree's root: Edit Alone) moved since, even before the load for the new one has started: the
     // flat lists are the old focused Part's, and the tree may be another root's.
-    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) {
+      if (mounted) _refreshLevelItems();
+      return;
+    }
     // A deeper focus needs a row for it in the tree: without one (the call failed, the answer was cut short or lacks it) the tree is the
     // focused Part's own, rooted there as before B3, with its own lists. The focused Part's lists are never put under another Part's root.
     final needsFocusRoot = focusBelowRoot.isNotEmpty && (fetched == null || !_treeHasFocusRow(fetched, focusBelowRoot, focusPartId));
     AssemblyTreeResponseDto? focusTree;
     if (needsFocusRoot) {
       focusTree = await _fetchTreeStructure(focusPartId);
-      if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+      if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) {
+        if (mounted) _refreshLevelItems();
+        return;
+      }
     }
     final builtFromLists = needsFocusRoot ? focusTree == null : fetched == null;
     final AssemblyTreeResponseDto tree;
@@ -13597,10 +13607,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _rootMates = rootMates == null ? null : _mateFollowedNotes.merge(rootMates);
       _rootPatterns = rootPatterns;
       _listsPartId = focusPartId;
-      // C2: every other level's mates are read again for this answer (once per Part), as the parts' features are. A read started before this
-      // answer (before a mate edit, a newer tree, another document) is stale and its answer dropped. Bumped here, where the answer is applied,
-      // not when the load starts: a load that fails or is dropped leaves the reads in flight valid (review).
-      _levelItemsGen++;
+      // C2: every other level's mates are read again for this answer (once per Part), as the parts' features are.
       _levelItems.clear();
       _levelItemsFailed.clear();
       // The rows claim no state until the status call answers; the screen's own map (the rigid-set grab notice) keeps the previous one until then
@@ -28882,6 +28889,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return _treeModel.nodeAtPath(path);
   }
 
+  /// The drawer's Retry while the component's level could not be read; null otherwise.
+  VoidCallback? _retryMatesCallback(List<String> path) {
+    final failed = _componentMatesFailed(path);
+    return failed == null ? null : () => unawaited(_retryLevelItems(failed));
+  }
+
   /// The drawer's list of the selected component's mates ([_selectedComponentMates]).
   List<AssemblyComponentMate>? _drawerMates(List<String> path) => _selectedComponentMates(path)
       ?.map((m) => AssemblyComponentMate(
@@ -28906,6 +28919,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                           selectedComponent: occurrence,
                           displayName: _treeLabel(path, occurrence),
                           mates: _drawerMates(path),
+                          onRetryMates: _retryMatesCallback(path),
                           onZoom: _zoomToTreeSelection,
                           onClose: _clearSelectionFromDrawer,
                         );
@@ -28915,6 +28929,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                         selectedComponent: occurrence,
                         displayName: _treeLabel(_focusChildPath(_occurrences[index].id), _occurrences[index]),
                         mates: _drawerMates(_focusChildPath(occurrence.id)),
+                        onRetryMates: _retryMatesCallback(_focusChildPath(occurrence.id)),
                         onMove: () {
                           _clearTransientError();
                           setState(() {
@@ -29455,7 +29470,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Reads in flight, by Part id, with the generation they were started in.
   final Map<String, (int, Future<void>)> _levelItemsInFlight = {};
 
-  /// Bumped by every tree load: a read started before it is stale (a mate edit, a newer tree, another document) and its answer is dropped.
+  /// Bumped when a tree load starts: a read started before it is stale (a mate edit, a newer tree, another document) and its answer is dropped;
+  /// the load reads the opened levels again when it is applied, fails or is dropped.
   int _levelItemsGen = 0;
 
   /// What [_syncLevelFolderItems] last gave the model, per folder key: the source list (by identity), so an unchanged level is not set again.
@@ -29524,6 +29540,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       return;
     }
     _levelItemsWanted.add(partId);
+    // The view asks again only when the folder was opened again: a deliberate retry of a failed read.
+    _levelItemsFailed.remove(partId);
     if (_listsFor(partId) != null) {
       setState(_syncLevelFolderItems);
       _treeController.refresh();
@@ -29552,7 +29570,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   /// `GET /parts/{partId}/mates` and `/component-patterns` for a level's folders. Dropped when a load has started since (the stale-answer
-  /// rule: that load reads the Part again) or the tree model was replaced. A failure forgets the request, so opening the folder asks again.
+  /// rule: that load reads the Part again) or the tree model was replaced. A failure marks the Part failed until the next tree answer or a
+  /// deliberate retry (the folder opened again, the drawer's Retry, the menu's Mates), with a banner.
   Future<void> _fetchLevelItems(String partId) {
     final gen = _levelItemsGen;
     if (_levelItemsFailed.contains(partId)) return Future<void>.value();
@@ -29579,7 +29598,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (mounted && gen == _levelItemsGen && identical(model, _treeModel)) {
         setState(() {
           _levelItemsFailed.add(partId);
-          _errorMessage = 'The mates of ${_partNameInTree(partId)} could not be read';
+          _errorMessage ??= 'The mates and patterns of ${_partNameInTree(partId)} could not be read';
         });
       }
     } finally {
@@ -29722,11 +29741,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final partId = parent.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(parent)?.resolvedPartId;
     if (partId == null) return const [];
     final lists = _listsFor(partId);
-    // Its read failed (the banner says so): nothing to list until the next tree answer reads it again.
-    if (lists == null && _levelItemsFailed.contains(partId)) return const [];
     if (lists == null) {
       final mates = parent.isEmpty ? _treeModel.tree?.mates : _treeModel.nodeAtPath(parent)?.mates;
       if ((mates?.count ?? 0) == 0) return const [];
+      // Its read failed (the banner says so): not known, and not read again by itself ([_componentMatesFailed]).
+      if (_levelItemsFailed.contains(partId)) return null;
       _levelItemsWanted.add(partId);
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) unawaited(_fetchLevelItems(partId));
@@ -29748,7 +29767,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (list == null) {
       final parent = path.sublist(0, path.length - 1);
       final partId = parent.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(parent)?.resolvedPartId;
-      if (partId != null) await _fetchLevelItems(partId);
+      if (partId != null) await _retryLevelItems(partId);
       if (!mounted) return;
       list = _selectedComponentMates(path);
     }
@@ -29767,6 +29786,23 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (picked == null || !mounted) return;
     final i = picked.indexOf('#item:');
     _selectComponentMate(picked.substring(0, i), picked.substring(i + '#item:'.length));
+  }
+
+  /// The Part of the parent level of the component at [path] when its mates could not be read (the drawer offers Retry); null otherwise.
+  String? _componentMatesFailed(List<String> path) {
+    if (path.isEmpty) return null;
+    final parent = path.sublist(0, path.length - 1);
+    final partId = parent.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(parent)?.resolvedPartId;
+    return partId != null && _levelItemsFailed.contains(partId) && _listsFor(partId) == null ? partId : null;
+  }
+
+  /// Reads a failed level again (the person asked: the drawer's Retry, the menu's Mates).
+  Future<void> _retryLevelItems(String partId) {
+    setState(() {
+      _levelItemsFailed.remove(partId);
+      _levelItemsWanted.add(partId);
+    });
+    return _fetchLevelItems(partId);
   }
 
   /// A mate in the selection's list (the drawer, the phone's More): selects it as a tap on its row does, and reveals the row (its level and

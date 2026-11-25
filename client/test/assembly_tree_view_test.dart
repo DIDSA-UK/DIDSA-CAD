@@ -654,13 +654,16 @@ void main() {
       await tester.pump();
       await tester.pump();
       expect(asked, ['#mates', 'a#mates']);
-      // Asked once: closing and opening again does not ask a second time while the first is out.
-      await tester.tap(find.byKey(const ValueKey('tree-chevron:a#mates')));
-      await tester.pump();
-      await tester.tap(find.byKey(const ValueKey('tree-chevron:a#mates')));
-      await tester.pump();
+      // Asked once while it stays open (rebuilds ask nothing more); closing and opening again asks again (the host's retry).
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onFolderItemsRequested: asked.add)));
       await tester.pump();
       expect(asked, ['#mates', 'a#mates']);
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:a#mates')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:a#mates')));
+      await tester.pump();
+      await tester.pump();
+      expect(asked, ['#mates', 'a#mates', 'a#mates']);
 
       // C1-1: a filter while some folders are not read says so (and :mates is not an unknown token).
       await tester.tap(find.byTooltip('Filter'));
@@ -701,6 +704,15 @@ void main() {
       await tester.pump();
       await tester.pump();
       expect(asked, ['a#mates']);
+      // Medium review: a tap on the folder's own row (not its chevron) closes and opens it too, and asks again when it opens.
+      await tester.tap(_row('a#mates'));
+      await tester.pump();
+      expect(model.isOpen('a#mates'), isFalse);
+      await tester.tap(_row('a#mates'));
+      await tester.pump(kDoubleTapTimeout);
+      await tester.pump();
+      expect(model.isOpen('a#mates'), isTrue);
+      expect(asked, ['a#mates', 'a#mates']);
     });
 
     testWidgets("C2: a selected item of another level shows the strip with Focus here to edit; the host's own level shows none",

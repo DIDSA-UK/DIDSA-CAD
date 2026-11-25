@@ -36,6 +36,9 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
   /// Empty lists nothing; null says they are being read.
   final List<AssemblyComponentMate>? mates;
 
+  /// The level's mates could not be read: the list says so and offers this Retry (with [mates] null). Null otherwise.
+  final VoidCallback? onRetryMates;
+
   /// Edit Alone for the selected component (the first button). Null hides it (inside Edit Alone, or when the screen
   /// cannot start one).
   final VoidCallback? onEditAlone;
@@ -58,6 +61,7 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
     this.onFixFloat,
     this.onDelete,
     this.mates = const [],
+    this.onRetryMates,
     this.onEditAlone,
     this.onZoom,
     this.onClose,
@@ -230,7 +234,17 @@ extension on AssemblyComponentSelectionDrawer {
       const SizedBox(height: 8),
       Text(list == null ? 'Mates' : 'Mates (${list.length})',
           key: const ValueKey('component-mates-heading'), style: theme.textTheme.labelMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
-      if (list == null)
+      if (list == null && onRetryMates != null)
+        Row(
+          children: [
+            Expanded(
+              child: Text('Mates could not be read',
+                  key: const ValueKey('component-mates-failed'), style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)),
+            ),
+            TextButton(key: const ValueKey('component-mates-retry'), onPressed: onRetryMates, child: const Text('Retry')),
+          ],
+        )
+      else if (list == null)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
           child: Text('Reading mates...', key: const ValueKey('component-mates-reading'), style: theme.textTheme.bodySmall),

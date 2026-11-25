@@ -224,8 +224,8 @@ class AssemblyTreeView extends StatefulWidget {
 
   /// C2 (spec section 14): a level's Mates or Patterns folder is open (opened, restored, or listed open by a filter) and the model has no items
   /// for it ([AssemblyTreeModel.hasFolderItems]): read that level's `/mates` and `/component-patterns` and call `model.setFolderItems` (then
-  /// [AssemblyTreeController.refresh]). Asked once per folder key until the model has its items, the tree changes, or
-  /// [AssemblyTreeController.forgetFolderRequest].
+  /// [AssemblyTreeController.refresh]). Asked once per folder key until the model has its items, the tree changes, the folder is closed and
+  /// opened again (the host's retry of a failed read), or [AssemblyTreeController.forgetFolderRequest].
   final void Function(String folderKey)? onFolderItemsRequested;
 
   /// C2 (#7, answer 4): a selected mate or pattern row on a level other than the focused one is shown and highlighted, not edited. This names
@@ -490,6 +490,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     widget.model.toggle(row.key);
     setState(() {});
     if (!row.open) _askForFeatures(row.path);
+    // C2: a folder closed forgets that it asked, so opening it again asks again (the host's retry of a failed read).
+    if (row.open && (row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder)) _folderRequested.remove(row.key);
     // C2 (review): opening a row can list folders that were open already (restored keys under a collapsed row), and opening a folder lists it.
     if (!row.open) _askForOpenFolders();
   }
@@ -523,6 +525,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (groupLike && !_filtering) {
       widget.model.toggle(row.key);
       if (!row.open) _askForFeatures(row.path);
+      if (!row.open) _askForOpenFolders();
+      // C2: a folder closed forgets that it asked, so opening it again asks again (the host's retry of a failed read).
+      if (row.open && (row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder)) _folderRequested.remove(row.key);
     }
     setState(() {});
     if (!picking) widget.onRowTap?.call(row);
