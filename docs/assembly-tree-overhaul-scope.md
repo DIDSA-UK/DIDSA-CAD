@@ -1356,7 +1356,7 @@ Frame (answer 8).
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
 | C1 contract + Flutter model | merged 25 Nov | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
 | C2 Flutter #7 | not started | | | |
-| C3 Flutter #13 | not started | | | |
+| C3 Flutter #13 | PR open: the owner checks CI, then merges | #PRNUM | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
 | C4 Flutter #12 + #15 | not started | | | |
 | C5 Flutter #14 | not started | | | |
 | C6 VR one tree component | PR open: the owner checks CI, then merges | DIDSA-VR #105 | Opus 5.5 | occurrence_tree_view.gd + occurrence_tree_scope.gd (World, Table PARTS); PARTS bar Table / Bring / Fix / Hide / Isolate / Rename / Room / Delete; 10.8 VR leftovers 1-3 done (tests/tree_c6.gd) |
@@ -1366,7 +1366,7 @@ Frame (answer 8).
 
 ### 12.8 Hand-off
 
-**In flight:** C6 (VR #105, PR open). C1 merged (#412).
+**In flight:** C3 (#PRNUM, PR open), C6 (VR #105, PR open). C1 merged (#412).
 
 **For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
 with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
@@ -1412,6 +1412,13 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
 - C6-1 (for C7): Table and Bring say "nothing of it is in the arena" in two wrong cases: a closed sub-assembly with a single
   part, read one level at a time; a nested part before the world has been indexed (before C6, the occurrence id alone found
   it). Fix: decide "sub-assembly" from the row's kind, and fall back to the occurrence id for nested rows.
+- C3-1 (for C2): the tree's selection after an edit panel closes follows what the panel left, as for Edit on a live row: Edit in context
+  selects the feature's row while the part loads, but on the phone overlay the host's selection (changed by the panel) clears it while the
+  panel is open. If the owner wants the edited feature still selected afterwards, it is one rule for both ways in.
+- C3-2 (for C2), noticed, not C3's: Cancel on an edit panel restores the feature with a PATCH, which marks the part unsaved (the C3
+  screenshot after Cancel shows "Unsaved: 1 other part"). The same happens from Edit on a live row.
+- C3-3 (for C2): a cancelled Edit in context (a focus change or a tool while the part loaded) leaves the focus and the lens it had already
+  moved to, with no message; the person's own change is the reason, so nothing is said.
 - C6-2 (for C7): the PARTS list is short when the bar shows two lines of buttons and a long hint. If the headset check says
   so, the options are a shorter hint or a taller docked tree, but a taller tree moves the pop-up keyboard.
 
