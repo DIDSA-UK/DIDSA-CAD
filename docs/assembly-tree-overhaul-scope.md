@@ -1376,7 +1376,7 @@ whole `flutter test` passes.
 |---|---|---|---|---|
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
 | C1 contract + Flutter model | merged 25 Nov | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
-| C2 Flutter #7 | PR open: the owner checks CI, then merges | (this PR) | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
+| C2 Flutter #7 | PR open: the owner checks CI, then merges | #416 | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
 | C3 Flutter #13 | PR open: the owner checks CI, then merges | #414 | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
 | C4 Flutter #12 + #15 | not started | | | |
 | C5 Flutter #14 | not started | | | |
@@ -1388,7 +1388,7 @@ whole `flutter test` passes.
 
 ### 12.8 Hand-off
 
-**In flight:** C2 (PR open), C6 (VR #105, PR open). C1 merged (#412), C3 merged (#414).
+**In flight:** C2 (#416, PR open), C6 (VR #105, PR open). C1 merged (#412), C3 merged (#414).
 
 **For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
 with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
