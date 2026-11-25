@@ -617,9 +617,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   /// rows are unchanged; the list just starts after it.
   bool get _rootInStrip => _editAloneStrip || _focusStrip || _sheet;
 
-  /// B5 (section 4, section 8 answer 3): on a phone held upright the rows outside the focus are not shown. What is left of them is the chain of
+  /// B5 (section 4, section 8 answer 3): on a phone held upright the rows outside the focus are not shown (a filter's matches are: the person
+  /// asked for them, and they stay dimmed). What is left of them is the chain of
   /// ancestors the list pins, and the focused branch.
-  bool get _dropOutside => _sheet && widget.model.focusPath.isNotEmpty;
+  bool get _dropOutside => _sheet && widget.model.focusPath.isNotEmpty && !_filtering;
 
   /// The rows the list draws, in the filter's order when one is on.
   List<AssemblyTreeRow> _displayRows(AssemblyFilterResult? filter) {
@@ -691,10 +692,22 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         listenable: _scroll,
         builder: (context, _) {
           final offset = _scroll.hasClients ? _scroll.offset : 0.0;
+          // A layout that clamps the offset (a branch closed above) does not notify: look again after the frame.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _scroll.hasClients && _scroll.offset != offset) setState(() {});
+          });
           final chain = pin.pinnedAt(offset, h, maxPinned: maxPinned);
           if (chain.isEmpty) return const SizedBox.shrink();
           final scheme = Theme.of(context).colorScheme;
-          return Align(
+          // A finger on the chain scrolls the list under it (the chain is above the list, so the list would never see it).
+          return GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onVerticalDragUpdate: (d) {
+              if (!_scroll.hasClients) return;
+              final p = _scroll.position;
+              _scroll.jumpTo((p.pixels - d.delta.dy).clamp(p.minScrollExtent, p.maxScrollExtent));
+            },
+            child: Align(
             alignment: Alignment.topCenter,
             child: Material(
             key: const ValueKey('tree-pinned-chain'),
@@ -712,7 +725,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
               ],
             ),
             ),
-          );
+          ));
         },
       );
     });

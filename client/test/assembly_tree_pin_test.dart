@@ -214,6 +214,59 @@ void main() {
     expect(tester.getTopLeft(_row('n1/n2')).dy, listTop + 48);
   });
 
+  // /code-review high on B5, finding 1: a finger on the chain did not reach the list.
+  testWidgets('a drag that starts on the pinned chain scrolls the list', (tester) async {
+    final model = _modelOf([_chain(2, leaves: 60)]);
+    model.openAll(['n1', 'n1/n2']);
+    await _pump(tester, _Host(model: model));
+    _scroll(tester).jumpTo(10 * 48);
+    await tester.pump();
+    final before = _scroll(tester).offset;
+    await tester.drag(_pinned('n1/n2'), const Offset(0, -120));
+    await tester.pump();
+    expect(_scroll(tester).offset, greaterThan(before + 50));
+  });
+
+  // /code-review high on B5, finding 2: a closed branch above clamped the offset without the chain hearing of it.
+  testWidgets('the chain follows an offset the layout clamped when a branch above closes', (tester) async {
+    final model = _modelOf([
+      _chain(1, leaves: 40),
+      _node('m', ['m'], leaves: 3),
+      for (var i = 0; i < 20; i++) _node('t$i', ['t$i']),
+    ]);
+    model.openAll(['n1', 'm']);
+    final controller = AssemblyTreeController();
+    await _pump(tester, _Host(model: model, controller: controller));
+    _scroll(tester).jumpTo(_scroll(tester).position.maxScrollExtent);
+    await tester.pump();
+    model.toggle('n1');
+    controller.refresh();
+    await tester.pumpAndSettle();
+    await tester.pump();
+    final keys = _pinnedKeys(tester);
+    // Whatever is pinned now is a branch with rows below the chain in the shortened list.
+    final off = _scroll(tester).offset;
+    expect(off, lessThanOrEqualTo(_scroll(tester).position.maxScrollExtent));
+    expect(keys.contains('n1'), isFalse, reason: 'n1 is closed: it has nothing below it to pin for');
+  });
+
+  // /code-review high on B5, finding 3: the filter's matches outside the focus were taken out with the rest.
+  testWidgets('under Focus a filter still lists its matches outside the focus', (tester) async {
+    final model = _modelOf([
+      _node('x', ['x'], leaves: 2),
+      _node('y', ['y'], leaves: 2),
+    ]);
+    model.openAll(['x', 'y']);
+    model.focusPath = const ['y'];
+    await _pump(tester, _Host(model: model));
+    await tester.tap(find.byKey(const ValueKey('tree-filter-toggle')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), 'Item x_');
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('tree-filter-empty')), findsNothing);
+    expect(_row('x'), findsOneWidget, reason: 'x_0 and x_1 match and x is the way to them');
+  });
+
   testWidgets('a tap on a pinned row does not collapse while a filter is on', (tester) async {
     final model = _modelOf([_chain(2, leaves: 40)]);
     model.openAll(['n1', 'n1/n2']);
