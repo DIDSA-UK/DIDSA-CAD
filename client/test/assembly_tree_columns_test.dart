@@ -307,6 +307,14 @@ void main() {
       await tester.pump(const Duration(milliseconds: 60));
     });
 
+    testWidgets('a disposed throttle passes nothing on and leaves no timer (a pending one would fail the test)', (tester) async {
+      final seen = <int>[];
+      final t = HoverThrottle<int>(seen.add, window: const Duration(milliseconds: 20));
+      t.dispose();
+      t.push(1); // a teardown's late "none" lands here
+      expect(seen, isEmpty);
+    });
+
     test('a value that went there and back inside one window is not passed on twice', () async {
       final seen = <String?>[];
       final t = HoverThrottle<String?>(seen.add, window: const Duration(milliseconds: 20));

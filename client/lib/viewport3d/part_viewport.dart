@@ -6883,6 +6883,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       }
     }
     for (final entity in hover.entities) {
+      // What a live feature made, unless it is not drawn (a hidden feature's body, or every body hidden).
+      if (widget.bodiesHidden || (entity.bodyId.isNotEmpty && _bodyFor(entity.bodyId)?.hidden == true)) continue;
       final node = _buildEntityHighlightNode(entity, _hoverColor);
       if (node == null) continue;
       scene.add(node);
@@ -7716,7 +7718,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               onEnter: (_) => _pointerOverViewport = true,
               onExit: (_) {
                 _pointerOverViewport = false;
-                _reportHoverOccurrence();
+                // Also fired as the region is torn down with the viewport: nothing to tell then.
+                if (mounted) _reportHoverOccurrence();
               },
               child: Listener(
                 onPointerDown: _onPointerDown,

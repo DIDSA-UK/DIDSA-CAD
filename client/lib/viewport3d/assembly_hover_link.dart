@@ -25,7 +25,8 @@ class ViewportTreeHover {
 }
 
 /// C4 (#12): [keys] without the placed instances [instances] say are hidden. A hidden part is not drawn, so a hover must not light a ghost
-/// of it; an instance the list does not know stays in (it lights nothing either, there is nothing to find).
+/// of it; an instance the list does not know stays in (it lights nothing either, there is nothing to find). The list the viewport is given
+/// marks every descendant of a hidden sub-assembly hidden itself (the host's display list does), so no ancestor check is needed here.
 Set<String> shownInstanceKeys(Set<String> keys, List<AssemblyOccurrenceInstanceDto> instances) {
   final hidden = {
     for (final i in instances)
@@ -49,7 +50,10 @@ class HoverThrottle<T> {
   bool _hasPending = false;
   T? _pending;
 
+  bool _disposed = false;
+
   void push(T value) {
+    if (_disposed) return;
     if (_timer == null) {
       _emit(value);
       _timer = Timer(window, _windowEnded);
@@ -79,6 +83,7 @@ class HoverThrottle<T> {
   }
 
   void dispose() {
+    _disposed = true;
     _timer?.cancel();
     _timer = null;
     _hasPending = false;
