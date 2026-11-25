@@ -854,19 +854,21 @@ storing Edit Alone's open rows.
 | P3 sketcher's tree, old panel gone | merged 24 Nov | #404 | strongest | Two rounds (squash-merged). Manager send-back: the sketcher's fallback tree took another root's features; a mesh error that was not an `ApiException` escaped the banner. The fix brought one unreadable-answer rule to both API clients (`decodeOrUnreadable`). Owner, 24 Nov: a mate-drag commit whose 200 answer cannot be read is not retried (option A). Leftovers carried into B3 (10.8). |
 | B3 Flutter #5 | merged 25 Nov | #406 | mid-tier (brief said strongest) | Two rounds. Manager send-back: with a deeper focus, a tree built from the lists (or truncated, or without the focus node) lost the focused level and its selection; the focused Part's list under the root; "used N ×" counted from a one-level tree; `<n>` lost while focused; Show outside the focus did nothing. A fallback tree rooted at the focused Part (as before B3) covers those cases. P3's four carried items done. Nits carried into B4 (10.8). |
 | B4 Flutter phone sheet | merged 25 Nov | #408 | strongest | Owner-run (section 11). Self-review: `/code-review high` on the PR (7 important: a pick's peek overwrote the person's height and left an empty sheet; landscape lost the bar for nested and live rows; Pattern's source pick at peek; the filter under a held sheet; picks during a reload; the bottom inset), then `medium` on the fix commit (6 important: an open filter under a held sheet, the drag with an inset, the pick's peek across a tool and a turn, two surfaces for a Part-lens pick in landscape, a focus-level id during a reload). All fixed with a test each. P2's drawer behind the bar: fixed. B3's and P3's carried items done. Nits carried into B5 (10.8). |
-| B5 Flutter phone deep trees | PR open 25 Nov | see the PR | mid-tier | Owner-run (section 11). Self-review: `/code-review high` on the PR (3 important: a drag on the pinned chain did not scroll the list; the chain kept a stale offset after a layout clamped it; under Focus a filter's matches outside it were dropped), then `medium` on the fix commit (2 important: the drag handler covered the whole list, a post-frame `setState` on every scroll). All fixed with a test each. B4's items 1-4 done (item 4 in part: see 10.8). Nits carried (10.8). |
+| B5 Flutter phone deep trees | merged 25 Nov | #409 | mid-tier | Owner-run (section 11). Self-review: `/code-review high` on the PR (3 important: a drag on the pinned chain did not scroll the list; the chain kept a stale offset after a layout clamped it; under Focus a filter's matches outside it were dropped), then `medium` on the fix commit (2 important: the drag handler covered the whole list, a post-frame `setState` on every scroll). All fixed with a test each. B4's items 1-4 done (item 4 in part: see 10.8). Nits carried (10.8). |
 | B6 VR row build | merged 21 Nov | VR #99 | mid-tier | Two send-backs (PARTS-tab scroll box, folder bubble, press guard). 2,002 rows, Mesa 943+337 ms -> 67+112 ms; PARTS tab scroll ~12 ms/frame slower (Table / Bring rebuilt per bind). Owner headset check pending. |
 | B7 VR #10 + #8 | merged 22 Nov | VR #100 | mid-tier | Fix round merged before the manager's check; post-merge review found five issues: follow-up B7.1. |
 | B7.1 VR follow-up | merged 24 Nov | VR #101 | mid-tier | Three rounds (squash-merged: two commit trailers named a model). Round 2's review found rarer orders of the same status-hint race and an older observer bug: carried into B8 (10.8). |
 | B8 VR room context, hints | merged 24 Nov | VR #102 | mid-tier | Two rounds (squash-merged). Manager send-back: a level read in flight across a same-document re-read landed on the rebuilt row; a failed placement count read as 0 ("Not placed"). The count is now -1 when unknown, kept per row and re-read only after a change. Leftovers carried into the next VR chunk (10.8). |
+| B8.1 VR follow-up | merged 25 Nov | VR #104 | mid-tier | Owner-run (section 11). B8's items 1-7 done (a test each where a bug). Item 6 decided: an unreadable count is asked again once per tree answer. New: a fainter rail (40 %) on the way to a room, and the root counts as the way (10.6 said dimmed: owner to confirm). Self-review high (1 important: no retry in the fallback) then medium (one finding acted on). |
 | B2.1 Flutter follow-up | not started | | | B2's two leftovers plus whatever the owner's B2 device check finds |
 
-### 10.8 Hand-off (25 Nov): owner-run from here
+### 10.8 Hand-off (25 Nov): Phase B complete
 
 From B4 on there is no standing manager session (section 11, "Owner-run chunks"). Each worker reviews its own PR, updates
 its 10.7 row and this section's lists in its PR, and the owner checks CI and merges.
 
-**In flight:** B5 (phone deep trees, Focus in portrait), PR open 25 Nov; it did B4's nits 1-4 (a test each, item 4 in part).
+**In flight:** nothing. Every Phase B chunk is merged (B5 #409, B8.1 VR #104 on 25 Nov). What is left is the owner's
+device checks below, then B2.1 if they find anything.
 
 **Next:** B2.1 only if the owner's checks give it anything (10.7). Nits carried from B5's reviews, for whichever chunk next touches the sheet:
   1. The sheet's strips and banners get what is left after a hard-coded 48 dp header and 100 dp for the bar (`_sheetFrame` / body); the phone filter header or the multi-select header can differ, and an overfull set of strips is clipped (Done, Focus here can be cut off at half on a small phone). Measure instead.
@@ -879,16 +881,14 @@ its 10.7 row and this section's lists in its PR, and the owner checks CI and mer
   8. The pinned chain has no push-out animation (a row leaves when its branch has nothing left under the chain) and a flick from the chain does not fling.
   9. For the owner's device check (not bugs): a tap on a pinned ancestor on the way to the focus only selects it (closing it would hide the focus); the chain takes at most half the list; B4's open questions of the Start button, the close at peek, the peek under a tool panel and the sketcher's floating tree stay open.
 
-**Next VR chunk** (a B8.1, or whichever VR chunk comes next) carries these from B8's review:
-  1. `room_keys` lights a group only when a direct member is the room's Part: an ancestor or a group further up shows no
-     way to the room.
-  2. The per-level fallback (`_add_rows`, no `/assembly-tree` route) shows no room context.
-  3. The room rail keeps the old accent after a theme change (set `rail.color` in `_bind_line`).
-  4. `_spec_open_set`'s local `set` shadows `Object.set()` (a parse warning).
-  5. `load_tree_open` skips an unfit entry but keeps an earlier entry for the same document; storing removes it.
-  6. An unreadable placement count is read again on every bar rebuild while the backend fails (kept on purpose; decide).
-  7. Older bugs: `session_observer._refetch_parts` has no model-change / session-end check after `_fetch_glb`; `_drain`
-     raises `loaded_rev` with a dropped refetch's revision, so the next model's events can be ignored.
+**VR leftovers** from B8.1's reviews, for whichever VR chunk next touches the tree:
+  1. The per-level fallback shows no way to a room below a closed row whose children are not fetched (it cannot tell a
+     leaf from an assembly).
+  2. `apply_theme` re-binds every pooled row (cosmetic).
+  3. `session_observer._queue_doc` compares against `loaded_rev` before a model change resets it (low risk: events are
+     held until the model is shown).
+  4. For the owner: B8.1 shows the root row as the way to a room (not dimmed) when a room's Part is anywhere below it;
+     10.6 said the root is dimmed. Confirm on the headset.
 
 **Owner decisions:** row-hint order as proposed (21 Nov); "Roll back to here" waits for the rollback bar (#17, Phase D;
 24 Nov); a mate-drag commit whose 200 answer cannot be read is not retried (option A, 24 Nov).
@@ -906,7 +906,10 @@ it to full; Edit Alone's pill at peek; the bar above the home indicator; and in 
 only for nested components and rows tapped in the tree); B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1
 (headset: Find kept after adding a component and after Save As, To selection, Collapse, remembered rows after reopening,
 the "unavailable" hint); B8 (headset: rows outside an open room dimmed and the rail on the inside rows, the bar's "Placed
-N times" against a real backend, the hint order on the row width). Each worker adds its chunk's check from 10.1 here.
+N times" against a real backend, the hint order on the row width); B8.1 (headset: a room on a Part placed inside a
+sub-assembly: the sub-assembly and the root full with a faint rail, the placements with the full rail, the rest dimmed;
+the faint rail kept when the sub-assembly is collapsed; a theme change with a room open moves the rails to the new
+accent; "Placed N times" on a room row). Each worker adds its chunk's check from 10.1 here.
 
 ## 11. Running a phase: cost and process (Phases B, C and D)
 
