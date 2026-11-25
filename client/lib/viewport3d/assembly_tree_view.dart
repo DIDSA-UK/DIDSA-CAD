@@ -14,6 +14,7 @@ import '../layout/layout_mode.dart';
 import 'action_sheet.dart' show MouseContextMenuRegion;
 import 'feature_tree_helpers.dart';
 import 'assembly_context_strip.dart';
+import 'assembly_tree_pin.dart';
 import 'svg_icon.dart';
 import 'view_preferences.dart';
 
@@ -30,6 +31,11 @@ const double kAssemblyTreeSheetHandleHeight = 20;
 
 /// What of the viewport full height leaves showing above the sheet.
 const double kAssemblyTreeSheetTopGap = 24;
+
+/// B5 (section 5, "Phone, deep trees"): in the sheet a level of indent is 12 dp and the indent stops growing after 4 levels (below the title):
+/// deeper rows stand where the fourth level does, and the pinned chain above them says where they are.
+const double kAssemblyTreeSheetIndentStep = 12;
+const int kAssemblyTreeSheetMaxIndentLevels = 4;
 
 /// Scrolls an [AssemblyTreeView] to a row. Create one, pass it to the view, call [reveal] (for example when a 3D pick selects a part).
 /// [refresh] repaints the view after the host changed the model by hand (`setFeatures`, `merge`, `setUnsavedPartIds`...).
@@ -300,6 +306,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   double _fullPixels = 0;
   final GlobalKey _sheetKey = GlobalKey(debugLabel: 'assembly-tree-sheet');
 
+  /// B5: the pin arithmetic for the rows the last build listed (see [AssemblyTreePinIndex]); null outside the sheet.
+  List<AssemblyTreeRow>? _pinRows;
+  AssemblyTreePinIndex? _pinIndex;
+
   bool get _sheet => widget.sheetHeight != null && !LayoutModeScope.isDesktop(context);
 
   /// The host holds the sheet where it is (a tool panel keeps it at peek): no drag, no handle tap, and no filter, which would want full.
@@ -518,9 +528,15 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final h = _rowHeight();
     final p = _scroll.position;
     final top = i * h;
+    // B5: in the sheet the pinned chain covers the top of the list. A row under it (or above) goes to the first slot below the chain it would
+    // have there: under its own ancestors, which pin as it arrives.
+    final pin = _sheet ? _pinIndex : null;
+    final maxPinned = _maxPinned(p.viewportDimension);
+    final stack = pin == null ? 0 : pin.pinnedAt(p.pixels, h, maxPinned: maxPinned).length;
+    final slots = pin == null || i >= pin.length ? 0 : math.min(pin.levelOf(i), maxPinned);
     double? target;
-    if (top < p.pixels) {
-      target = top;
+    if (top < p.pixels + stack * h) {
+      target = top - slots * h;
     } else if (top + h > p.pixels + p.viewportDimension) {
       target = top + h - p.viewportDimension;
     }
@@ -601,14 +617,28 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   /// rows are unchanged; the list just starts after it.
   bool get _rootInStrip => _editAloneStrip || _focusStrip || _sheet;
 
+  /// B5 (section 4, section 8 answer 3): on a phone held upright the rows outside the focus are not shown. What is left of them is the chain of
+  /// ancestors the list pins, and the focused branch.
+  bool get _dropOutside => _sheet && widget.model.focusPath.isNotEmpty;
+
   /// The rows the list draws, in the filter's order when one is on.
   List<AssemblyTreeRow> _displayRows(AssemblyFilterResult? filter) {
+    final rows = _listedRows(filter);
+    if (!_dropOutside) return rows;
+    final m = widget.model;
+    return [for (final r in rows) if (m.focusRoleOf(r) != AssemblyFocusRole.outside) r];
+  }
+
+  /// [_displayRows] before the rows outside the focus are taken out.
+  List<AssemblyTreeRow> _listedRows(AssemblyFilterResult? filter) {
     final rows = filter?.rows ?? widget.model.visibleRows();
     return _rootInStrip && rows.isNotEmpty && rows.first.kind == AssemblyRowKind.root ? rows.sublist(1) : rows;
   }
 
   int _indexOfRow(String key) {
-    if (_filtering) return _displayRows(widget.model.filteredRows(_query)).indexWhere((r) => r.key == key);
+    if (_filtering || _dropOutside) {
+      return _displayRows(_filtering ? widget.model.filteredRows(_query) : null).indexWhere((r) => r.key == key);
+    }
     final i = widget.model.indexOf(key);
     // The root is the first row of the model's list; with a strip standing for it the list starts after it.
     return i < 0 || !_rootInStrip ? i : i - 1;
@@ -617,6 +647,76 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   double _rowHeight() => LayoutModeScope.isDesktop(context) ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
 
   // --- The phone sheet (B4) ---------------------------------------------------------------------------------------------------------------
+
+  // --- Pinned ancestors (B5) --------------------------------------------------------------------------------------------------------------
+
+  /// The pin arithmetic for [rows], kept while the same list is drawn.
+  AssemblyTreePinIndex _pinIndexFor(List<AssemblyTreeRow> rows) {
+    final known = _pinIndex;
+    if (known != null && identical(_pinRows, rows)) return known;
+    _pinRows = rows;
+    return _pinIndex = AssemblyTreePinIndex([for (final r in rows) r.depth]);
+  }
+
+  /// How many rows the pinned chain may take of a list [viewport] px high: half of it, so the rows under the chain keep room.
+  int _maxPinned(double viewport) => math.max(1, (viewport * 0.5 / _rowHeight()).floor());
+
+  /// A tap on a pinned ancestor collapses back to it: it closes, and the list puts it where the chain's next slot is. The selection stays
+  /// unless the collapse hid it, and then the ancestor is selected. Not while a filter is on (what is open is not changed from a list of
+  /// matches), a picker or a multi-select (the row takes its usual tap), nor on the way down to the focus (closing it would hide the focused
+  /// branch): those rows are only selected as a tap does.
+  void _pinnedTap(AssemblyTreeRow row) {
+    final m = widget.model;
+    final role = m.focusRoleOf(row);
+    final onTheWayToFocus = role == AssemblyFocusRole.ancestor || role == AssemblyFocusRole.focused;
+    if (widget.isMultiSelectMode || m.picker != null || _filtering || onTheWayToFocus || !row.open) {
+      _tap(row);
+      return;
+    }
+    m.toggle(row.key);
+    final sel = m.selectedKey;
+    final hidden = sel != null && sel.isNotEmpty && m.indexOf(sel) < 0;
+    if (hidden) m.selectedKey = row.key;
+    setState(() {});
+    _scheduleScroll(row.key);
+    if (hidden) widget.onRowTap?.call(row);
+  }
+
+  /// The chain of pinned ancestors over the top of the list (an unbroken stack of rows, outermost first), or nothing.
+  Widget _pinnedOverlay(BuildContext context, AssemblyTreePinIndex pin, List<AssemblyTreeRow> rows, double h,
+      Widget Function(AssemblyTreeRow r, {bool pinned}) treeRow) {
+    return LayoutBuilder(builder: (context, constraints) {
+      final maxPinned = _maxPinned(constraints.maxHeight);
+      return ListenableBuilder(
+        listenable: _scroll,
+        builder: (context, _) {
+          final offset = _scroll.hasClients ? _scroll.offset : 0.0;
+          final chain = pin.pinnedAt(offset, h, maxPinned: maxPinned);
+          if (chain.isEmpty) return const SizedBox.shrink();
+          final scheme = Theme.of(context).colorScheme;
+          return Align(
+            alignment: Alignment.topCenter,
+            child: Material(
+            key: const ValueKey('tree-pinned-chain'),
+            color: scheme.surface,
+            elevation: 2,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final i in chain)
+                  SizedBox(
+                    key: ValueKey('tree-pinned:${rows[i].key}'),
+                    height: h,
+                    child: treeRow(rows[i], pinned: true),
+                  ),
+              ],
+            ),
+            ),
+          );
+        },
+      );
+    });
+  }
 
   void _sheetDragStart(DragStartDetails _) {
     final box = _sheetKey.currentContext?.findRenderObject() as RenderBox?;
@@ -652,6 +752,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
     widget.onSheetHeightChanged?.call(to);
   }
+
+  /// B5 (B4's review): whether a strip under the sheet's header names the root already (Edit Alone's "Editing NAME", the focus path's first
+  /// crumb), so the title keeps its own words instead of saying it twice (rule 5). Peek draws no strip, and its title is the root.
+  bool get _stripNamesRoot => (_editAloneStrip || _focusStrip) && !(widget.sheetHeight == AssemblyTreeSheetHeight.peek && _dragHeight == null);
 
   /// The root row's label: the sheet's title.
   String? get _rootLabel {
@@ -758,7 +862,12 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     _seenLiveShown = liveShown;
 
     final selectedIndex = model.selectedKey == null ? -1 : _indexOfRow(model.selectedKey!);
-    final selectedRow = selectedIndex < 0 ? null : rows[selectedIndex];
+    // B5: a selected row outside the focus is not listed in the sheet, but it is still the selection: its bar and "Focus here" stay.
+    final selectedRow = selectedIndex >= 0
+        ? rows[selectedIndex]
+        : _dropOutside && model.selectedKey != null
+            ? _listedRows(filter).where((r) => r.key == model.selectedKey).firstOrNull
+            : null;
     final picker = model.picker;
     if (!identical(picker, _seenPicker)) {
       _seenPicker = picker;
@@ -775,12 +884,17 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           }
         : const <String>{};
 
-    Widget treeRow(AssemblyTreeRow r) {
+    // B5: the pinned chain is worked out from the rows this build lists (the sheet's list only).
+    final pin = _sheet && !(widget.sheetHeight == AssemblyTreeSheetHeight.peek && _dragHeight == null) ? _pinIndexFor(rows) : null;
+
+    Widget treeRow(AssemblyTreeRow r, {bool pinned = false}) {
       final flashing = r.kind == AssemblyRowKind.mate && r.itemId != null && widget.flashItemIds.contains(r.itemId);
       Widget rowWidget(double pulse) => _TreeRow(
             key: ValueKey('tree-row:${r.key}'),
             pulse: pulse,
             indentShift: _sheet ? 1 : 0,
+            indentStep: _sheet ? kAssemblyTreeSheetIndentStep : (desktop ? 14.0 : 16.0),
+            maxIndentLevels: _sheet ? kAssemblyTreeSheetMaxIndentLevels : null,
             row: r,
             height: h,
             desktop: desktop,
@@ -809,7 +923,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                 ? r.live && !r.kind.isLiveFolder && r.key != model.selectedKey
                 : null,
             onToggle: () => _toggle(r),
-            onTap: () => _tap(r),
+            onTap: pinned ? () => _pinnedTap(r) : () => _tap(r),
             onLongPress: () => _longPress(r),
             onContextMenu: widget.isMultiSelectMode || picker != null || widget.onRowContextMenu == null
                 ? null
@@ -836,6 +950,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           children: [
             _sheetDragArea(context, header),
             if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
+            // B5: under Focus a selected row outside it (a viewport pick) offers to move the focus there at peek too.
+            if (_focusHereRow(selectedRow) case final outside?) _focusHereBar(context, outside),
             if (selectedRow != null && !widget.isMultiSelectMode) SizedBox(height: h, child: treeRow(selectedRow)),
             if (showBar) _selectionBar(context, selectedRow!, bar),
           ],
@@ -843,41 +959,59 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       );
     }
 
+    // The notes, strips and banners between the header and the rows.
+    final List<Widget> chrome = <Widget>[
+        if (filter != null) _filterNotes(context, filter),
+        // Not while the floating tree is closed: the pill at the top of the viewport is the way out then.
+        if (_editAloneStrip && (widget.visible || widget.docked))
+          EditAloneStrip(
+            label: widget.editAlone!.label,
+            onDone: widget.onEditAloneDone!,
+            inLabels: widget.editAlone!.inLabels,
+            onCrumb: widget.onEditAloneCrumb,
+            usedCount: widget.editAlone!.usedCount,
+          ),
+        if (_focusStrip) FocusBreadcrumbStrip(labels: widget.focusCrumbs, onCrumb: (i) => widget.onFocusCrumb?.call(i)),
+        if (_focusHereRow(selectedRow) case final outside?) _focusHereBar(context, outside),
+        if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
+        if (widget.statusLine != null && widget.statusLine!.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                widget.statusLine!,
+                key: const ValueKey('assembly-motion-summary'),
+                style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+              ),
+            ),
+          ),
+    ];
+
     final body = Material(
       color: scheme.surface,
       // In the sheet the frame ([_sheetFrame]) carries the elevation and the rounded top.
       elevation: widget.docked || sheet ? 0 : 6,
-      child: Column(
+      child: LayoutBuilder(builder: (context, bodyConstraints) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (sheet) _sheetDragArea(context, header) else header,
           // Desktop: the filter box is always there; a phone has the field in the header while it is open.
           if (widget.multiSelectHeader == null && desktop) _desktopFilterRow(context),
-          if (filter != null) _filterNotes(context, filter),
-          // Not while the floating tree is closed: the pill at the top of the viewport is the way out then.
-          if (_editAloneStrip && (widget.visible || widget.docked))
-            EditAloneStrip(
-              label: widget.editAlone!.label,
-              onDone: widget.onEditAloneDone!,
-              inLabels: widget.editAlone!.inLabels,
-              onCrumb: widget.onEditAloneCrumb,
-              usedCount: widget.editAlone!.usedCount,
-            ),
-          if (_focusStrip) FocusBreadcrumbStrip(labels: widget.focusCrumbs, onCrumb: (i) => widget.onFocusCrumb?.call(i)),
-          if (_focusHereRow(selectedRow) case final outside?) _focusHereBar(context, outside),
-          if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
-          if (widget.statusLine != null && widget.statusLine!.isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 12, 4),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  widget.statusLine!,
-                  key: const ValueKey('assembly-motion-summary'),
-                  style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+          if (sheet)
+            // B5 (B4's review): the strips and banners are the part of the column that can be taller than the sheet is while a drag from peek
+            // has hardly begun. In the sheet they get what is left over (a bar's worth kept back), clipped, so nothing overflows.
+            ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: math.max(0.0, bodyConstraints.maxHeight - kAssemblyTreeSheetHandleHeight - 48 - 100)),
+              child: ClipRect(
+                child: SingleChildScrollView(
+                  physics: const NeverScrollableScrollPhysics(),
+                  child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: chrome),
                 ),
               ),
-            ),
+            )
+          else
+            ...chrome,
           Expanded(
             child: noMatch
                 ? Center(
@@ -885,17 +1019,22 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                         key: const ValueKey('tree-filter-empty'), style: TextStyle(color: scheme.onSurfaceVariant)))
                 : rows.isEmpty
                 ? const Center(child: Text('Nothing to show yet'))
-                : ListView.builder(
-                        key: const ValueKey('assembly-tree-list'),
-                        controller: _scroll,
-                        itemExtent: h,
-                        itemCount: rows.length,
-                        itemBuilder: (context, i) => treeRow(rows[i]),
+                : Stack(
+                        children: [
+                          ListView.builder(
+                            key: const ValueKey('assembly-tree-list'),
+                            controller: _scroll,
+                            itemExtent: h,
+                            itemCount: rows.length,
+                            itemBuilder: (context, i) => treeRow(rows[i]),
+                          ),
+                          if (pin != null) Positioned.fill(child: _pinnedOverlay(context, pin, rows, h, treeRow)),
+                        ],
                       ),
           ),
           if (showBar) _selectionBar(context, selectedRow!, bar),
         ],
-      ),
+      )),
     );
 
     if (sheet) return _sheetFrame(context, body);
@@ -999,7 +1138,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           children: [
             Expanded(
               // B4: in the sheet the root row is the title (section 5: one level of indent saved).
-              child: Text(_sheet ? (_rootLabel ?? widget.title) : widget.title,
+              child: Text(_sheet && !_stripNamesRoot ? (_rootLabel ?? widget.title) : widget.title,
                   key: const ValueKey('tree-title'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
             if (!desktop && !_sheetLocked)
@@ -1354,7 +1493,13 @@ class _TreeRow extends StatefulWidget {
     required this.onEye,
     this.pulse = 0,
     this.indentShift = 0,
+    this.indentStep,
+    this.maxIndentLevels,
   });
+
+  /// dp per level of indent (null: 14 on desktop, 16 on a phone), and how many levels it grows to (null: no cap). B5: the sheet's are 12 and 4.
+  final double? indentStep;
+  final int? maxIndentLevels;
 
   /// Levels of indent taken off every row: 1 in the phone sheet, whose title is the root row (B4, section 5: one level saved).
   final int indentShift;
@@ -1421,6 +1566,13 @@ class _TreeRowState extends State<_TreeRow> {
         AssemblyRowKind.mate => Icons.link,
         AssemblyRowKind.pattern => Icons.grid_view_outlined,
       };
+
+  /// The levels of indent of [r]: its depth below the title, to the cap when there is one (B5).
+  int _indentLevels(AssemblyTreeRow r) {
+    final levels = math.max(0, r.depth - widget.indentShift);
+    final cap = widget.maxIndentLevels;
+    return cap == null ? levels : math.min(levels, cap);
+  }
 
   /// The icon of a row of the live part: the existing feature glyphs, a folder, a body, a plane.
   Widget _liveIcon(AssemblyTreeRow r, double size, Color colour) {
@@ -1514,7 +1666,7 @@ class _TreeRowState extends State<_TreeRow> {
 
     Widget content = Row(
       children: [
-        SizedBox(width: 6 + math.max(0, r.depth - widget.indentShift) * (desktop ? 14.0 : 16.0)),
+        SizedBox(width: 6 + _indentLevels(r) * (widget.indentStep ?? (desktop ? 14.0 : 16.0))),
         chevron,
         Opacity(
           opacity: dim,

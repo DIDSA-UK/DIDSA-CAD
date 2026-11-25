@@ -12199,6 +12199,44 @@ void main() {
         expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c2');
       });
 
+      // B5 (B4's review, item 4): the focus helpers and the owner of a row measured from the next root while the rows were the old tree's.
+      testWidgets("a row acted on while the load after a focus change is in flight is the old tree's: its own Part is the owner", (tester) async {
+        Completer<void>? gate;
+        final patched = <String>[];
+        final backend = await openNested(tester, around: (request) async {
+          if (request.method == 'PATCH') patched.add(request.url.path);
+          final g = gate;
+          if (g != null && request.url.path.endsWith('/assembly-tree')) {
+            gate = null;
+            await g.future;
+          }
+        });
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        backend.assemblyTreeMissing = true;
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'rooted at the focused Part');
+
+        backend.assemblyTreeMissing = false;
+        final release = Completer<void>();
+        gate = release;
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await tester.pump();
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'the load is held');
+        patched.clear();
+        // c1 is a row of the tree in the model (the sub-assembly's component), so it is Hidden on that Part, not on the document's.
+        await _TreeProbe(tester).menuAction('c1', 'Hide');
+        await tester.pump();
+        expect(patched.where((p) => p.contains('occurrences/c1')), isNotEmpty);
+        expect(patched.where((p) => p.contains('occurrences/c1')).every((p) => p.contains('/sub/')), isTrue,
+            reason: 'the Part the tree in the model is rooted at, not the next root\'s: $patched');
+        release.complete();
+        await settle(tester);
+        await settle(tester);
+      });
+
       // B4 (B3's review, item 2): a crumb tapped during a multi-select left it holding the old level's components.
       testWidgets('a crumb tapped during a multi-select ends the multi-select', (tester) async {
         await openNested(tester);

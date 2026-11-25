@@ -151,8 +151,11 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
         _model = _newModel(_startKeys());
         _model.openAll(carried, remember: false);
       }
-    } else if (!_sourceKeysApplied && _source != null) {
-      // The Part screen's tree has this tree's root now (it had another when this tree started): its open rows apply from here on.
+    }
+    // The Part screen's tree has this tree's root now (it had another when this tree started): its open rows apply from here on, whether or
+    // not this tree changed with it (B5, B4's review: a new tree of the same root, the `merge` branch above, left them waiting). A tree that was
+    // rebuilt above started from the source's keys already ([_startKeys] marks them applied).
+    if (!_sourceKeysApplied && _source != null) {
       _sourceKeysApplied = true;
       _model.openAll(widget.openKeys, remember: false);
     }
