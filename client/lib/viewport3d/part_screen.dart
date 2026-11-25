@@ -29404,9 +29404,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The latest Edit in context: an older one still waiting for its part's features opens nothing.
   int _editInContextToken = 0;
 
-  /// The live feature row Edit in context selected: the tree opens down to it at its next build that selects it ([_buildTreePanel]).
-  String? _editInContextRevealKey;
-
   /// The owner row's path of a read-only feature row (`[]` for the tree's root), or null for any other row.
   static List<String>? _featureRowOwnerPath(AssemblyTreeRow row) {
     if (row.live || row.kind != AssemblyRowKind.feature || row.featureId == null) return null;
@@ -29459,8 +29456,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final stack = _focusStack;
     if (path == null || featureId == null || stack == null || !_canEditFeatureInContext(row)) return;
     final token = ++_editInContextToken;
-    _editInContextRevealKey = null;
     _clearTransientError();
+    // The row is the tree's selection, as a tap makes it (the menu's way in never tapped it). Its key is the key the part's live row for the
+    // feature will have, so the selection carries over when the part becomes live.
+    setState(() => _treeModel.selectedKey = row.key);
     final moved = !pathEquals(path, _focusRelPath);
     if (moved) {
       // As a crumb or a lens switch: a multi-select belongs to the level being left.
@@ -29479,23 +29478,23 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         stack.revision != revision ||
         lensChanges != _lensChanges ||
         partId != _focusPartIdOrNull;
-    if (moved) {
-      await _refreshFocusTargetContent();
-      if (stale()) return;
-      _revealFocusedRow();
-    } else if (_featuresPartId != partId) {
-      try {
-        await _refreshFeatures();
-      } catch (e, st) {
+    try {
+      if (moved) {
+        // Reports its own failures (the banner, or a bug report).
+        await _refreshFocusTargetContent();
         if (stale()) return;
-        final text = _bannerTextOf(e);
-        if (text != null) {
-          setState(() => _errorMessage = text);
-        } else {
-          _reportRefreshBug(e, st, 'reading the features for Edit in context');
-        }
-        return;
+        _revealFocusedRow();
+      } else if (_featuresPartId != partId) {
+        await _refreshFeatures();
       }
+    } catch (e, st) {
+      final text = _bannerTextOf(e);
+      if (text == null) {
+        _reportRefreshBug(e, st, 'reading the part for Edit in context');
+      } else if (!stale()) {
+        setState(() => _errorMessage = text);
+      }
+      return;
     }
     // A tool or a session started while the content loaded keeps the screen: nothing opens over it.
     if (stale() || _featuresPartId != partId || _editInContextBlocked) return;
@@ -29510,9 +29509,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (liveKey != null) {
       final key = '$liveKey#feature:$featureId';
       _selectLiveKey(key, _entitiesMadeBy(feature), featureId: featureId);
-      // The tree takes it at its next build, once the live part is in the model (the row does not exist before; the menu's way in never
-      // tapped a row), and opens down to it.
-      _editInContextRevealKey = key;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _treeModel.selectedKey == key) _treeController.expandToSelection();
+      });
     }
     await _onFeatureTap(feature);
   }
@@ -29592,26 +29591,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _treeModel.setFolderItems('#patterns', patternFolderItems(_treePatternList));
     }
     _syncTreeLivePart();
-    // C3: Edit in context's feature row is the selection once the live part lists it (the panel it opened may have changed the host's own
-    // selection meanwhile), and the tree opens down to it.
-    final reveal = _editInContextRevealKey;
-    final liveKey = _treeModel.liveKey;
-    if (reveal != null && liveKey != null && _treeModel.livePartShown && reveal.startsWith('$liveKey#feature:')) {
-      _editInContextRevealKey = null;
-      _treeHostSelection = _treeSelectionHostKey;
-      _treeModel.selectedKey = reveal;
-      if (_treeModel.selectedKey == reveal) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _treeModel.selectedKey == reveal) _treeController.expandToSelection();
-        });
-      }
-    }
     // Only when this screen's own selection changed: a tap on a folder, group or feature row marks that row and keeps its mark.
     final hostKey = _treeSelectionHostKey;
     if (hostKey != _treeHostSelection) {
       _treeHostSelection = hostKey;
       _treeModel.selectedKey = hostKey;
-
       // A body or face picked in the viewport: the tree opens down to its feature's row and scrolls there.
       final fromViewport = hostKey != null && hostKey == _liveSelectionHostKey && !identical(_selectedEntities, _liveTreeTapEntities);
       if (fromViewport) {

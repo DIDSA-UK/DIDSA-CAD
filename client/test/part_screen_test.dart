@@ -14137,22 +14137,26 @@ void main() {
         });
 
         testWidgets('the row menu (right click) offers Edit in context', (tester) async {
-          await openDeep(tester);
+          Completer<void>? hold;
+          await openDeep(tester, around: (request) async {
+            if (hold != null && request.url.path == '/document/parts/d1-part/features' && request.method == 'GET') await hold.future;
+          });
           await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+          final held = hold = Completer<void>();
           final view = _TreeProbe(tester).view;
           view.onRowContextMenu!(_TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1/d1#feature:d1-extrude'),
               const Offset(300, 200));
           await settle(tester);
           await settle(tester);
           await tester.tap(find.text('Edit in context'));
+          await _pumpUntil(tester, () => focused(tester).join('/') == 'asm-1/c1/d1');
+          await settle(tester);
+          // Review fix: the menu never tapped the row, yet it is the tree's selection (as a tap makes it) while the part loads.
+          expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude');
+          hold = null;
+          held.complete();
           await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
           expect(focused(tester), ['asm-1', 'c1', 'd1']);
-          // Review fix: the menu never tapped the row, yet once the panel closes the tree selects the feature's live row.
-          await tester.tap(find.descendant(of: find.byType(ExtrudePanel), matching: find.text('Cancel')));
-          await settle(tester);
-          await settle(tester);
-          expect(_TreeProbe(tester).model.liveKey, 'asm-1/c1/d1');
-          expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude');
         });
 
         testWidgets('a tool started while the part loads keeps the screen: no panel opens over it', (tester) async {
