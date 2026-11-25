@@ -16,7 +16,12 @@ The file is self-contained, so DIDSA-VR copies it as-is (`tests/fixtures/assembl
   `why` says what the case pins. Deterministic: no randomness, keys sorted.
 - Version 2 adds (spec sections 11 to 13): `kind: "filter"` (the rows inputs plus `query`; `expected`: `{rows, unknown}`, every row
   with `match`), `"restore"` (`stored`, `grouping`, `limit`; `expected`: the kept keys), `"live_part"` (the rows inputs plus
-  `live`; every row has `type`), `"live_part_filter"` and `"live_part_restore"`. The 36 version 1 cases come first, unchanged.
+  `live`; every row has `type`), `"live_part_filter"` and `"live_part_restore"`. The 36 version 1 cases come first.
+- Version 3 adds (spec section 14): `kind: "level_folders"` (the rows inputs plus `items`, folder key -> mate / pattern items),
+  `"level_folders_filter"` (plus `query`), `"level_folders_restore"`, `"mate_names"` (`mates`: one level's `/mates` entries;
+  `expected`: the labels) and `"pattern_names"` (`patterns`: one level's `/component-patterns` entries). Earlier cases keep their
+  inputs; those whose rows show an open assembly with mates or patterns now list that level's folders (`generate.py --changed`
+  lists them against a version 2 file).
 """
 from __future__ import annotations
 
@@ -32,7 +37,7 @@ OUT = REPO / "docs" / "assembly-tree" / "vectors.json"
 # The backend's copy of a few models as native documents, with the trees the reference builds for them (no status): the
 # endpoint must answer exactly these (backend/tests/test_assembly_tree.py). The CI image holds backend/ only, hence a copy.
 BACKEND_OUT = REPO / "backend" / "tests" / "data" / "assembly_tree_rollup_vectors.json"
-VERSION = 2  # vectors.json: 2 adds the filter, restore and live-part cases (spec sections 11-13); the 36 version 1 cases are first and unchanged
+VERSION = 3  # vectors.json: 2 added the filter, restore and live-part cases (spec sections 11-13); 3 adds a folder per assembly level (spec section 14)
 BACKEND_VERSION = 1  # the backend roll-up file did not change
 
 
@@ -271,6 +276,103 @@ REPEATS = {
 # ---- version 2: three identical bolts, not enough to group (a group key stored earlier no longer names a row) -----------------
 THREE_BOLTS = {"parts": {"wheel": part("Wheel", [occ("b1", "bolt", constraint=FULL), occ("b2", "bolt", constraint=FULL), occ("b3", "bolt", constraint=FULL)], feature_count=0), "bolt": part("Bolt M4")}}
 
+# ---- version 3: a folder per assembly level (spec section 14) --------------------------------------------------------------
+# crane places a base, one Boom sub-assembly twice (mates, no patterns), and a tower (patterns, no mates) that places mid, which
+# places top: three levels down, top has mates in every state (two broken, one of them lost; one held; one suppressed) and two
+# patterns (one suppressed). The root has mates (a Width, a Symmetric, a held one) and a pattern. Top's held mate is also broken in its
+# listing: it counts in the folder's `broken` but reads amber (held) as an item.
+LEVELS_PARTS = {
+    "crane": part(
+        "Crane",
+        [occ("base", "base_p", fixed=True, constraint=FIXED), occ("boom_l", "boom", constraint=FULL), occ("boom_r", "boom", constraint=UNDER), occ("tower", "tower", constraint=FULL)],
+        feature_count=1,
+        mates={"count": 3, "suppressed": 0, "broken": 0, "near": 0, "held": 1, "lost": 0},
+        patterns={"count": 1, "suppressed": 0},
+    ),
+    "boom": part(
+        "Boom",
+        [occ("arm", "boom_arm", fixed=True, constraint=FIXED), occ("pin", "pin", constraint={"status": "over_constrained", "dof": 0, "near_mates": 2})],
+        feature_count=0,
+        mates={"count": 2, "suppressed": 0, "broken": 0, "near": 2, "held": 1, "lost": 0},
+    ),
+    "tower": part("Tower", [occ("mid", "mid", constraint=FULL), occ("ladder", "ladder", constraint=FULL)], feature_count=0, patterns={"count": 1, "suppressed": 0}),
+    "mid": part("Mid", [occ("top", "top", constraint=FULL)], feature_count=0, mates={"count": 1}),
+    "top": part(
+        "Top",
+        [occ("hook", "hook", constraint={"status": "under_constrained", "dof": 1, "broken_mates": 1}), occ("pulley", "pulley", constraint={"status": "fully_constrained", "dof": 0, "broken_mates": 1})],
+        feature_count=2,
+        mates={"count": 5, "suppressed": 1, "broken": 3, "near": 0, "held": 1, "lost": 1},
+        patterns={"count": 2, "suppressed": 1},
+    ),
+    **{pid: part(name) for pid, name in (("base_p", "Base"), ("boom_arm", "Boom arm"), ("pin", "Pin"), ("ladder", "Ladder"), ("hook", "Hook"), ("pulley", "Pulley"))},
+}
+LEVELS = {"parts": LEVELS_PARTS}
+# The same crane after top's mates were deleted (its patterns stay): a stored `tower/mid/top#mates` names no row any more.
+LEVELS_MATES_DELETED = {"parts": {**LEVELS_PARTS, "top": {**LEVELS_PARTS["top"], "mates": {"count": 0}}}}
+
+
+def ref_(occurrence_id, midplane=False):
+    """One side of a `/mates` entry; `midplane=True` makes it a mid-plane reference (a Width or Symmetric mate's)."""
+    plane = {"face_ref": None, "fixed_plane": "XY", "plane_feature_id": None}
+    return {
+        "occurrence_id": occurrence_id,
+        "subshape_ref": None,
+        "plane_ref": None if midplane else plane,
+        "point_ref": None,
+        "midplane": {"a": plane, "b": plane, "b_occurrence_id": None} if midplane else None,
+    }
+
+
+def mate(id_, type_, refs=None, status="ok", suppressed=False, held=False, lost=False):
+    """A `/mates` listing entry with the fields section 14 reads (and what a client's own parser needs)."""
+    return {
+        "id": id_,
+        "type": type_,
+        "references": refs if refs is not None else [ref_("a"), ref_("b")],
+        "suppressed": suppressed,
+        "status": status,
+        "held": held,
+        "lost_references": ["references[0].plane_ref.face_ref"] if lost else [],
+    }
+
+
+def pattern(id_, type_, suppressed=False):
+    """A `/component-patterns` entry with the fields section 14 reads (and what a client's own parser needs)."""
+    return {"id": id_, "source_occurrence_ids": ["a"], "pattern_type": type_, "direction": [1.0, 0.0, 0.0], "count": 3, "suppressed": suppressed}
+
+
+def mate_items(listing):
+    """What a client passes in for one Mates folder (section 14): `{id, label, status, suppressed, held, lost}` per mate."""
+    labels = ref.mate_names(listing)
+    return [{"id": m["id"], "label": label, "status": m["status"], "suppressed": m["suppressed"], "held": m["held"], "lost": bool(m["lost_references"])} for m, label in zip(listing, labels)]
+
+
+def pattern_items(listing):
+    return [{"id": p["id"], "label": label, "suppressed": p["suppressed"]} for p, label in zip(listing, ref.pattern_names(listing))]
+
+
+# Each level's listing, as `GET /parts/{owner}/mates` and `/component-patterns` would give it.
+ROOT_MATES = [mate("r1", "coincident", [ref_("base"), ref_("tower", midplane=True)]), mate("r2", "distance", [ref_("base", midplane=True), ref_("boom_l")]), mate("r3", "coincident", held=True)]
+BOOM_MATES = [mate("b1", "parallel", status="near"), mate("b2", "coincident", status="near", held=True)]
+TOP_MATES = [
+    mate("m1", "coincident"),
+    mate("m2", "coincident", status="broken", lost=True),
+    mate("m3", "distance", status="broken", held=True),
+    mate("m4", "concentric", suppressed=True),
+    mate("m5", "angle", status="broken"),
+]
+TOP_PATTERNS = [pattern("p1", "linear"), pattern("p2", "circular", suppressed=True)]
+ROOT_PATTERNS = [pattern("q1", "linear")]
+ITEMS_ALL = {
+    "#mates": mate_items(ROOT_MATES),
+    "#patterns": pattern_items(ROOT_PATTERNS),
+    "boom_l#mates": mate_items(BOOM_MATES),
+    "boom_r#mates": mate_items(BOOM_MATES),
+    "tower/mid/top#mates": mate_items(TOP_MATES),
+    "tower/mid/top#patterns": pattern_items(TOP_PATTERNS),
+}
+ITEMS_TOP = {k: v for k, v in ITEMS_ALL.items() if k.startswith("tower/mid/top#")}
+
 TREES = {
     "rover": ref.build_tree(ROVER, "rover", status=True),
     "rover_no_status": ref.build_tree(ROVER, "rover", status=False),
@@ -286,6 +388,8 @@ TREES = {
     "single_part": ref.build_tree(SINGLE, "solo", status=True),
     "repeats": ref.build_tree(REPEATS, "root", status=True),
     "wheel_three_bolts": ref.build_tree(THREE_BOLTS, "wheel", status=True),
+    "levels": ref.build_tree(LEVELS, "crane", status=True),
+    "levels_mates_deleted": ref.build_tree(LEVELS_MATES_DELETED, "crane", status=True),
 }
 
 FEATURES_LENS = {"mast/arm/head/lens": [{"id": "f1", "label": "Sketch 1"}, {"id": "f2", "label": "Revolve 1"}, {"id": "f3", "label": "Fillet 1"}]}
@@ -557,16 +661,154 @@ CASES += [
 ]
 
 
+# ---- version 3: a folder per assembly level (spec section 14) ------------------------------------------------------------
+def level_case(name, why, tree, open_keys=(), items=None, grouping=True, unsaved=(), features=None, query=None):
+    base = rows_case(name, why, tree, open_keys, grouping, unsaved, features)
+    if query is None:
+        return {**base, "kind": "level_folders", "items": items or {}}
+    return {**base, "kind": "level_folders_filter", "items": items or {}, "query": query}
+
+
+def level_restore_case(name, why, tree, stored, grouping=True, limit=ref.MAX_STORED_KEYS):
+    return {**restore_case(name, why, tree, stored, grouping, limit), "kind": "level_folders_restore"}
+
+
+LIVE_TOP = {
+    "key": "tower/mid/top",
+    "features": [lf("t1", "Sketch 1", "sketch"), lf("t2", "Extrude 1", "extrude")],
+    "bodies": [{"id": "tb1", "label": "Top body", "hidden": False}],
+    "surfaces": [],
+    "curves": [],
+    "default_planes_hidden": PLANES_SHOWN,
+}
+TOP_OPEN = ["tower", "tower/mid", "tower/mid/top"]
+NAMES_LISTING = [
+    mate("n1", "coincident"),
+    mate("n2", "coincident", [ref_("a"), ref_("b", midplane=True)]),
+    mate("n3", "distance"),
+    mate("n4", "distance", [ref_("a", midplane=True), ref_("b")]),
+    mate("n5", "coincident"),
+    mate("n6", "parallel", [ref_("a", midplane=True), ref_("b", midplane=True)]),
+    mate("n7", "coincident", [ref_("a", midplane=True), ref_("b")]),
+    mate("n8", "gear"),
+    mate("n9", "rack_pinion"),
+    mate("n10", "limit_angle"),
+    mate("n11", "limit_distance"),
+    mate("n12", "screw"),
+    mate("n13", "concentric"),
+    mate("n14", "angle"),
+    mate("n15", "cam"),
+]
+
+CASES += [
+    # --- rows
+    level_case("levels_collapsed", "The default: only the root's folders show (after its children); a collapsed sub-assembly keeps its rolled-up problems bubble.", "levels"),
+    level_case(
+        "levels_sub_assembly_placed_twice",
+        "One sub-assembly placed twice, both open: a Mates folder under each placement (two folder keys, boom_l#mates and boom_r#mates), "
+        "after its children; no Patterns folder (the level has none); each open row's own mates bubble has moved to its folder.",
+        "levels",
+        ["boom_l", "boom_r"],
+    ),
+    level_case("levels_folder_open_with_items", "An open level folder lists its fetched items at depth + 1, keyed <folder>#item:<id>; items carry no bubble and cannot open; held beats near on one item.", "levels", ["boom_l", "boom_l#mates"], ITEMS_ALL),
+    level_case("levels_unfetched_open_folder", "An open folder whose items are not fetched lists nothing under it (a client may show progress).", "levels", ["boom_l", "boom_l#mates"]),
+    level_case(
+        "levels_three_down_every_item_state",
+        "Three levels down: top's children, then its Mates and Patterns folders, then its fetched features. Every item state: lost (also broken), "
+        "held (also broken: amber, though the folder's broken count includes it), broken, suppressed, none; a suppressed pattern. A level with patterns and no mates (tower) has only Patterns; open and unfetched, it lists nothing.",
+        "levels",
+        TOP_OPEN + ["tower#patterns", "tower/mid/top#mates", "tower/mid/top#patterns"],
+        ITEMS_ALL,
+        features={"tower/mid/top": [{"id": "t1", "label": "Sketch 1"}, {"id": "t2", "label": "Extrude 1"}]},
+    ),
+    level_case("levels_root_folders_with_items", "The root's folders, open with items: a Width and a Symmetric mate, a held one; a pattern.", "levels", ["#mates", "#patterns"], ITEMS_ALL),
+    level_case("levels_grouping_off", "Grouping makes no difference to the folders.", "levels", ["boom_r", "boom_r#mates"], ITEMS_ALL, grouping=False),
+    # --- the live part on an assembly row with mates
+    live_case(
+        "live_part_assembly_with_mates",
+        "A live assembly row with mates: its children, then its Mates and Patterns folders, then the live part's folders and features; the row's own bubble is on its Mates folder.",
+        "levels",
+        LIVE_TOP,
+        TOP_OPEN,
+    ),
+    # --- filter
+    level_case("levels_filter_empty_query", "An empty query is the rows for the open keys (folders and items as usual), every match false.", "levels", ["boom_l", "boom_l#mates"], ITEMS_ALL, query=""),
+    level_case(
+        "levels_filter_mates_token",
+        "`:mates`: every fetched mate item; each folder holding a match is listed open with its ancestors. boom_r's items were not fetched: nothing of it is listed. Patterns never match `:mates`.",
+        "levels",
+        items={k: v for k, v in ITEMS_ALL.items() if k != "boom_r#mates"},
+        query=":mates",
+    ),
+    level_case("levels_filter_mates_unfetched", "`:mates` with nothing fetched: only fetched items can match, so the root alone.", "levels", query=":mates"),
+    level_case(
+        "levels_filter_errors_three_down",
+        "`:errors` inside a collapsed branch: the broken hook and pulley, and the lost and broken mates three levels down (the folder and every ancestor listed, open); the held mate that is also broken is amber, not listed.",
+        "levels",
+        items=ITEMS_TOP,
+        query=":errors",
+    ),
+    level_case(
+        "levels_filter_row_without_its_folder",
+        "A filter lists the open top row (its child matches) but not its Mates folder (no item matches): the row keeps its level's bubble, so a broken mate never vanishes.",
+        "levels",
+        items=ITEMS_TOP,
+        query="hook",
+    ),
+    level_case("levels_filter_warnings", "`:warnings`: near and held items (and the near pin rows); a held mate whose listing says broken is amber.", "levels", items=ITEMS_ALL, query=":warnings"),
+    level_case(
+        "levels_filter_held_and_broken",
+        "One item both held and broken (top's Distance 1): its state is held, so `:warnings distance` finds it and `:errors` (levels_filter_errors_three_down) does not.",
+        "levels",
+        items=ITEMS_TOP,
+        query=":warnings distance",
+    ),
+    level_case("levels_filter_suppressed", "`:suppressed`: a suppressed mate and a suppressed pattern.", "levels", items=ITEMS_ALL, query=":suppressed"),
+    level_case("levels_filter_item_label", "Items match by label: `width` finds the Width mate only; a folder's own label never matches (`mates`).", "levels", items=ITEMS_ALL, query="width"),
+    level_case("levels_filter_folder_label", "`mates` and `patterns` are folders' labels: folders never match themselves.", "levels", items=ITEMS_ALL, query="patterns"),
+    level_case("levels_filter_term_and_token", "A name term and a token on items: `coincident :errors`.", "levels", items=ITEMS_ALL, query="coincident :errors"),
+    # --- restore
+    level_restore_case(
+        "levels_restore_nested_folders",
+        "Folder keys of any level are open keys (kept when the folder shows); an item key never is; a folder the level does not have (tower#mates) is dropped.",
+        "levels",
+        ["tower/mid/top#mates", "tower/mid/top#mates#item:m1", "boom_r#mates", "tower#patterns", "tower#mates", "tower/mid", "#mates", "boom_l#mates", "tower/mid/top#patterns"],
+    ),
+    level_restore_case(
+        "levels_restore_level_lost_its_mates",
+        "The same keys after top's mates were deleted: tower/mid/top#mates names no row and is dropped; its Patterns folder stays.",
+        "levels_mates_deleted",
+        ["tower/mid/top#mates", "tower/mid/top#mates#item:m1", "boom_r#mates", "tower#patterns", "tower#mates", "tower/mid", "#mates", "boom_l#mates", "tower/mid/top#patterns"],
+    ),
+    # --- names
+    {
+        "kind": "mate_names",
+        "name": "mate_names",
+        "why": "Type N, counted per type in listing order; a mid-plane reference makes a Width mate, counted apart; exactly two references with only the first a mid-plane is Symmetric; an unknown type is written as it is.",
+        "mates": NAMES_LISTING,
+    },
+    {
+        "kind": "pattern_names",
+        "name": "pattern_names",
+        "why": "Linear N, Circular N, counted per type in listing order; an unknown type as it is.",
+        "patterns": [pattern("p1", "linear"), pattern("p2", "circular"), pattern("p3", "linear"), pattern("p4", "grid")],
+    },
+]
+
 def expected(case: dict) -> object:
+    if case["kind"] == "mate_names":
+        return ref.mate_names(case["mates"])
+    if case["kind"] == "pattern_names":
+        return ref.pattern_names(case["patterns"])
     tree = TREES[case["tree"]]
     live = case.get("live")
     if case["kind"] == "reveal":
         return ref.reveal(tree, case["path"], case["grouping"])
-    if case["kind"] in ("restore", "live_part_restore"):
+    if case["kind"] in ("restore", "live_part_restore", "level_folders_restore"):
         return ref.restore(tree, case["stored"], live, case["limit"])
-    if case["kind"] in ("filter", "live_part_filter"):
-        return ref.filter_rows(tree, case["query"], set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"], live)
-    return ref.visible_rows(tree, set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"], live)
+    if case["kind"] in ("filter", "live_part_filter", "level_folders_filter"):
+        return ref.filter_rows(tree, case["query"], set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"], live, case.get("items"))
+    return ref.visible_rows(tree, set(case["open"]), case["grouping"], set(case["unsaved_part_ids"]), case["features"], live, case.get("items"))
 
 
 def native_document(model: dict, root_id: str) -> dict:
@@ -631,7 +873,7 @@ def build() -> dict:
         "about": (
             "Assembly tree golden vectors. The rules: DIDSA-CAD docs/assembly-tree/spec.md. Generated by DIDSA-CAD "
             "tools/assembly_tree_vectors/generate.py from its reference implementation; never edit by hand. `trees` are "
-            "GET /parts/{id}/assembly-tree responses (ids are made up); `cases` are rows or reveal cases over them."
+            "GET /parts/{id}/assembly-tree responses (ids are made up); `cases` pin the spec's rules over them, one `kind` each."
         ),
         "states": ref.STATES,
         "trees": TREES,
@@ -647,7 +889,18 @@ def outputs() -> dict[Path, str]:
     return {OUT: dumps(build()), BACKEND_OUT: dumps(build_backend())}
 
 
+def changed_cases(old_path: Path) -> list[str]:
+    """Names of the cases of an older vectors file whose `expected` differs from what this generator writes (same name)."""
+    old = {c["name"]: c for c in json.loads(old_path.read_text())["cases"]}
+    new = {c["name"]: c for c in build()["cases"]}
+    return [name for name in old if name in new and old[name]["expected"] != new[name]["expected"]]
+
+
 def main() -> int:
+    if "--changed" in sys.argv:  # python generate.py --changed <older vectors.json>
+        for name in changed_cases(Path(sys.argv[sys.argv.index("--changed") + 1])):
+            print(name)
+        return 0
     files = outputs()
     if "--check" in sys.argv:
         stale = [str(p.relative_to(REPO)) for p, text in files.items() if not p.exists() or p.read_text() != text]

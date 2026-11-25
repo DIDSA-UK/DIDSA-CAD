@@ -1031,9 +1031,10 @@ assembly level the same way, with mate rows that can be filtered. After C1 merge
   "Coincident 2", "Width 1", "Symmetric 1", counted per type within the level) and VR's mate names where they agree; the
   reference implements it and the vectors carry a `mate_names` case kind (input: one level's `/mates` entries; expected: the
   labels). Patterns keep `componentPatternDisplayName`'s rule, written into the spec the same way.
-- **Item state slot**, one value, most severe first: `lost` > `broken` (both red) > `near` > `held` (both amber) >
-  `suppressed` (dimmed) > `none`. (A lost mate is also `broken` in the listing; its state is `lost`.) Item rows carry no
-  bubble and cannot open.
+- **Item state slot**, one value: `lost` (red) > `held` (amber) > `broken` (red) > `near` (amber) > `suppressed` (dimmed) >
+  `none`. (A lost mate is also `broken` in the listing; its state is `lost`. A held mate reads amber even when its listing says
+  `broken`, as Flutter's tree draws it: owner, 25 Nov, C1's manager review, answer (a); this replaced C1's first order,
+  lost > broken > near > held.) Item rows carry no bubble and cannot open.
 - **Filter (section 11):** `:mates` (any mate item row) becomes a known token; `:errors` matches red items, `:warnings` amber,
   `:suppressed` suppressed items. Items match by label. Only fetched items can match (as features). A match inside a folder
   lists the folder (open) and its ancestors, as a group is listed. Folders never match themselves. Folders were not listed
@@ -1353,7 +1354,7 @@ Frame (answer 8).
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
-| C1 contract + Flutter model | not started | | | Answers 1-3 given (12.8); manager review before merge |
+| C1 contract + Flutter model | manager review done; its fix round (item order, answer (a)) pushed: the owner checks CI, then merges | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
 | C2 Flutter #7 | not started | | | |
 | C3 Flutter #13 | not started | | | |
 | C4 Flutter #12 + #15 | not started | | | |
@@ -1365,7 +1366,7 @@ Frame (answer 8).
 
 ### 12.8 Hand-off
 
-**In flight:** nothing; briefs written 25 Nov 2026.
+**In flight:** C1 (PR open; the owner opens the manager review of 12.5 step 3 before merging).
 
 **Leftovers placed:** 10.8's B5 sheet nits 1-8 and B2.1 -> C0 (item 9 stays with the device check); VR leftovers 1-3 -> C6;
 VR item 4 (the root as the way to a room): kept, answer 10 below.
@@ -1384,7 +1385,24 @@ VR item 4 (the root as the way to a room): kept, answer 10 below.
 10. *Headset, from 10.8.* B8.1's root drawn as the way to a room (not dimmed) stays; longer-term testing on the headset may
     settle a preference, so it stays on the device-check list.
 
-**Nits carried:** none yet (each chunk adds its own here, with the chunk it is for).
+**Carried from C1's review (for C2; C1 may not touch the view):** C1-1, **important**: `:mates` is now a known token, so the app no
+longer says "unknown filter :mates", but only folders whose items were set are searched (in the app, only the root's until C2 fetches
+the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_tree_view.dart`'s `_filterNotes` must show it, e.g.
+"Mates and patterns are searched only in folders you have opened" (spec section 11's hint). C2 adds it with a test.
+
+**Nits carried:** (each chunk adds its own here, with the chunk it is for)
+- C1-2 (for C2): `merge` drops the features of rows that are gone but keeps `setFolderItems` lists of folders that are gone; when a level
+  gets mates again, its folder lists the old items until the host reads it again. C2's "once per Part per tree answer" fetch should
+  reset them; or prune them in `merge` as features are.
+- C1-3 (for C2): `generate.py --changed` with no file after it ends in an `IndexError`, not a usage line.
+- C1-6 (for C2), the manager review's N1: `generate.py` ignores flags it does not know, so `generate.py --help` (or a mistyped
+  `--chek`) rewrites the vector files instead of stopping. With C1-3: accept only `--check` and `--changed <file>`, else print the
+  usage and exit 2.
+- C1-4 (for C2), the manager review's N2: the host form cannot tell held from near, so until C2 moves `mateFolderItems` to the spec's
+  form a held root mate is classed `near` (amber either way; `:warnings` finds it, as the spec now says; a lost one reads `broken`,
+  red either way).
+- C1-5 (for C2): the view colours item rows from `tone` only; a spec-form item (`AssemblyFolderItem.spec` / `fromJson`) has none, so
+  C2 colours item rows from `AssemblyTreeRow.itemState` (red: lost, broken; amber: near, held; dimmed: suppressed).
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
