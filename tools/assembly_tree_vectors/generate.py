@@ -896,13 +896,23 @@ def changed_cases(old_path: Path) -> list[str]:
     return [name for name in old if name in new and old[name]["expected"] != new[name]["expected"]]
 
 
-def main() -> int:
-    if "--changed" in sys.argv:  # python generate.py --changed <older vectors.json>
-        for name in changed_cases(Path(sys.argv[sys.argv.index("--changed") + 1])):
+USAGE = """usage: generate.py              (re)write the vector files
+       generate.py --check      exit 1 if a committed file differs
+       generate.py --changed <older vectors.json>   list the cases whose expectation changed"""
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    # Only these three forms: anything else (--help, a mistyped --chek, --changed with no file) prints the usage and writes nothing.
+    if args[:1] == ["--changed"] and len(args) == 2 and not args[1].startswith("-"):
+        for name in changed_cases(Path(args[1])):
             print(name)
         return 0
+    if args not in ([], ["--check"]):
+        print(USAGE, file=sys.stderr)
+        return 2
     files = outputs()
-    if "--check" in sys.argv:
+    if args == ["--check"]:
         stale = [str(p.relative_to(REPO)) for p, text in files.items() if not p.exists() or p.read_text() != text]
         if stale:
             print(f"stale: {', '.join(stale)}: run python tools/assembly_tree_vectors/generate.py")

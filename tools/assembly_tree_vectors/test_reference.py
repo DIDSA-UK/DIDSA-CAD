@@ -67,6 +67,35 @@ class CheckedIn(unittest.TestCase):
             self.assertIn(c["tree"], VECTORS["trees"], c["name"])
 
 
+class Arguments(unittest.TestCase):
+    """C1-3, C1-6: the generator takes only its three forms; anything else is a usage error that writes nothing."""
+
+    def _run(self, argv):
+        import contextlib
+        import io
+        from unittest import mock
+
+        err = io.StringIO()
+        with mock.patch.object(generate, "outputs", side_effect=AssertionError("wrote the files")), contextlib.redirect_stderr(err):
+            code = generate.main(argv)
+        return code, err.getvalue()
+
+    def test_unknown_flags_and_a_bare_changed_print_the_usage(self):
+        for argv in (["--help"], ["--chek"], ["--changed"], ["--check", "--changed"], ["--changed", "--check"], ["x"]):
+            code, err = self._run(argv)
+            self.assertEqual(code, 2, argv)
+            self.assertIn("usage: generate.py", err, argv)
+
+    def test_changed_with_a_file_lists_names(self):
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(generate.main(["--changed", str(generate.OUT)]), 0)
+        self.assertEqual(out.getvalue(), "")  # the committed file against itself: nothing changed
+
+
 class DisplayNames(unittest.TestCase):
     def test_order_override_part_file_ordinal(self):
         self.assertEqual(ref.base_name(node("a", name_override="Left"), 0), ("Left", "override"))

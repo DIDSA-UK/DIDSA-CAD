@@ -135,9 +135,6 @@ class AssemblyFeature {
   const AssemblyFeature(this.id, this.label);
 }
 
-/// How a mate / pattern item row reads: the colour of its icon and note.
-enum AssemblyItemTone { error, warning, info }
-
 /// The state slot of a mate or pattern item row (spec section 14), in the spec's order: [lost] and [broken] are red, [held] and [near]
 /// amber, [suppressed] dimmed. A held mate reads [held] even when its listing says `broken` (owner, 25 Nov: C1 review, answer (a)). [wire] is the spelling in the spec and the vectors. Its own enum (not [AssemblyRowState]) so that the
 /// views' switches over the row states stay as they are; an item row's [AssemblyTreeRow.state] is [AssemblyRowState.none].
@@ -161,18 +158,18 @@ enum AssemblyItemState {
 
 /// A mate or a pattern under its level's Mates or Patterns folder (spec section 14).
 ///
-/// Two forms, one class. The spec's input ([AssemblyFolderItem.spec], [AssemblyFolderItem.fromJson]): the label and the `/mates` listing's
-/// `status`, `held`, `lost` and `suppressed` (a pattern: `suppressed`), from which [state] follows. The host-named form (A4, `note` / `tone`,
-/// what `part_screen.dart` and `assembly_tree_helpers.dart` still pass for the root's folders): [note] is the second line (a phone row) or the
-/// dimmed text after the label (a desktop row), [tone] colours the row, [suppressed] draws it dimmed. It carries no status, so its [state] is
-/// read from [tone] (red: [AssemblyItemState.broken], amber: [AssemblyItemState.near]), which keeps `:errors` and `:warnings` finding what the
-/// row shows red or amber. (C2 moves the callers to the spec's form and drops the other.)
+/// The spec's input ([AssemblyFolderItem.spec], [AssemblyFolderItem.fromJson]): the label and the `/mates` listing's `status`, `held`, `lost`
+/// and `suppressed` (a pattern: `suppressed`), from which [state] follows, and so the row's colour. Two things only the app draws ride along and
+/// change no rule: [note], the second line (a phone row) or the dimmed text after the label (a desktop row), and [followed], an info icon for
+/// a mate whose reference was re-found after an edit. (C2 moved the callers here and dropped A4's `tone` form.)
 class AssemblyFolderItem {
   final String id;
   final String label;
   final String? note;
-  final AssemblyItemTone? tone;
   final bool suppressed;
+
+  /// A reference of the mate was re-found after an edit (the app's info line); no part of [state].
+  final bool followed;
 
   /// The `/mates` listing's `status`: `ok`, `near` or `broken` (a pattern: `ok`).
   final String status;
@@ -183,12 +180,7 @@ class AssemblyFolderItem {
   /// A reference of the mate is lost (the listing's `lost_references` is not empty).
   final bool lost;
 
-  const AssemblyFolderItem(this.id, this.label, {this.note, this.tone, this.suppressed = false})
-      : status = 'ok',
-        held = false,
-        lost = false;
-
-  /// The spec's item input (section 14).
+  /// The spec's item input (section 14), with the app's [note] and [followed].
   const AssemblyFolderItem.spec({
     required this.id,
     required this.label,
@@ -196,8 +188,9 @@ class AssemblyFolderItem {
     this.suppressed = false,
     this.held = false,
     this.lost = false,
-  })  : note = null,
-        tone = null;
+    this.note,
+    this.followed = false,
+  });
 
   /// One entry of the vectors' `items` (`{id, label, status, suppressed, held, lost}`; a pattern `{id, label, suppressed}`).
   factory AssemblyFolderItem.fromJson(Map<String, dynamic> j) => AssemblyFolderItem.spec(
@@ -210,12 +203,12 @@ class AssemblyFolderItem {
       );
 
   /// The one state the item row shows (spec section 14): lost > held > broken > near > suppressed > none, so a held mate is amber even when
-  /// its listing says `broken`. The host form (no status; [tone] set) reads red as broken and amber as near (it cannot tell held from near).
+  /// its listing says `broken`.
   AssemblyItemState get state {
     if (lost) return AssemblyItemState.lost;
     if (held) return AssemblyItemState.held;
-    if (status == 'broken' || tone == AssemblyItemTone.error) return AssemblyItemState.broken;
-    if (status == 'near' || tone == AssemblyItemTone.warning) return AssemblyItemState.near;
+    if (status == 'broken') return AssemblyItemState.broken;
+    if (status == 'near') return AssemblyItemState.near;
     if (suppressed) return AssemblyItemState.suppressed;
     return AssemblyItemState.none;
   }
@@ -435,10 +428,10 @@ class AssemblyTreeRow {
   /// The Feature id of a feature row; null otherwise.
   final String? featureId;
 
-  /// A mate or pattern item row (see [AssemblyFolderItem]): its id, note and tone; null otherwise.
+  /// A mate or pattern item row (see [AssemblyFolderItem]): its id and note; null otherwise. [followed]: the item's info icon.
   final String? itemId;
   final String? note;
-  final AssemblyItemTone? tone;
+  final bool followed;
 
   /// A mate or pattern item row's state slot (spec section 14); null on every other row. ([state] is [AssemblyRowState.none] on an item row.)
   final AssemblyItemState? itemState;
@@ -478,7 +471,7 @@ class AssemblyTreeRow {
     this.featureId,
     this.itemId,
     this.note,
-    this.tone,
+    this.followed = false,
     this.itemState,
     this.match = false,
     this.live = false,
@@ -514,7 +507,7 @@ class AssemblyTreeRow {
         featureId: featureId,
         itemId: itemId,
         note: note,
-        tone: tone,
+        followed: followed,
         itemState: itemState,
         match: match,
         live: live,
@@ -1063,6 +1056,15 @@ class AssemblyTreeModel {
   /// What [setFolderItems] last set for [folderKey] (empty when nothing was).
   List<AssemblyFolderItem> folderItems(String folderKey) => _folderItems[folderKey] ?? const [];
 
+  /// Whether [setFolderItems] has set [folderKey] (an empty list counts): a folder without lists nothing yet, and the host reads it.
+  bool hasFolderItems(String folderKey) => _folderItems.containsKey(folderKey);
+
+  /// The owning row's path (`[]` for the root) when [folderKey] is a Mates or Patterns folder that shows (spec section 14); null otherwise.
+  List<String>? levelFolderOwnerPath(String folderKey) {
+    final owner = _levelFolderOwner(folderKey);
+    return owner == null ? null : (owner.isEmpty ? const <String>[] : _byKey[owner]!.dto.path);
+  }
+
   // ----- Hidden for this session (A4) -----
 
   /// Row keys hidden for this session only, on top of each node's own `hidden`: Hide on a nested row hides that placement alone (the
@@ -1376,6 +1378,9 @@ class AssemblyTreeModel {
     _open.removeWhere((k) => !_rowKeyExists(k) && !_clearedLiveFolder(k)); // a cleared live row's folders wait for it
     _autoOpen.retainAll(_open);
     _features.removeWhere((k, _) => !_ownerExists(k));
+    // C1-2: the items of a folder that no longer shows (its row is gone, or its level has no mates / patterns now) go too, so a level that
+    // gets mates again lists nothing until the host reads them again (spec section 14: an unfetched folder lists nothing).
+    _folderItems.removeWhere((k, _) => _levelFolderOwner(k) == null);
     final sel = selectedKey;
     if (sel != null && !_selectionExists(sel)) selectedKey = null;
     _invalidate();
@@ -1826,7 +1831,7 @@ class AssemblyTreeModel {
           suppressed: it.suppressed,
           itemId: it.id,
           note: it.note,
-          tone: it.tone,
+          followed: it.followed,
           itemState: it.state,
         ),
         folderKey,

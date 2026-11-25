@@ -146,6 +146,13 @@ class _FakeDocumentBackend {
   /// Occurrences of a sub-assembly (a Part other than `part-1`), by Part id: `GET .../parts/{id}/occurrences` answers them.
   Map<String, List<Map<String, dynamic>>> subOccurrences = {};
 
+  /// C2: the mates and component patterns of Parts other than `part-1` (a sub-assembly's level), by Part id: `GET .../mates` /
+  /// `.../component-patterns` answer them, and the tree's nodes that place the Part carry their counts. [levelMatesGets] counts the mates
+  /// reads per Part.
+  Map<String, List<Map<String, dynamic>>> subMates = {};
+  Map<String, List<Map<String, dynamic>>> subPatterns = {};
+  final Map<String, int> levelMatesGets = {};
+
   /// Every request that is not a GET, in order (so a test can check that nothing was written).
   final List<String> writes = [];
 
@@ -307,6 +314,8 @@ class _FakeDocumentBackend {
             final cycle = resolved != null && ancestors.contains(resolved);
             final subs = resolved == null || cycle ? const <dynamic>[] : (subOccurrences[resolved] ?? const <dynamic>[]);
             final constraint = status && owner == 'part-1' ? constraintStatus[id] : null;
+            final levelMates = subs.isEmpty ? const <Map<String, dynamic>>[] : (subMates[resolved] ?? const <Map<String, dynamic>>[]);
+            final levelPatterns = subs.isEmpty ? const <Map<String, dynamic>>[] : (subPatterns[resolved] ?? const <Map<String, dynamic>>[]);
             return <String, dynamic>{
               'occurrence_id': id,
               'path': path,
@@ -324,6 +333,13 @@ class _FakeDocumentBackend {
               'feature_count': resolved == null ? null : (treeFeatureCounts[resolved] ?? 0),
               'placements': resolved == null ? null : seen[resolved],
               'cycle': cycle,
+              if (levelMates.isNotEmpty)
+                'mates': {
+                  'count': levelMates.length,
+                  if (status) 'broken': levelMates.where((m) => m['status'] == 'broken').length,
+                  if (status) 'near': levelMates.where((m) => m['status'] == 'near').length,
+                },
+              if (levelPatterns.isNotEmpty) 'patterns': {'count': levelPatterns.length},
               'children': level(resolved ?? '', subs, path, resolved == null ? ancestors : {...ancestors, resolved}),
             };
           }(),
@@ -1040,7 +1056,9 @@ class _FakeDocumentBackend {
     }
     final matesGetMatch = RegExp(r'^/document/parts/([^/]+)/mates$').firstMatch(path);
     if (matesGetMatch != null && method == 'GET') {
-      return _json(matesGetMatch.group(1) == 'part-1' ? mates : <dynamic>[], 200);
+      final listed = matesGetMatch.group(1)!;
+      levelMatesGets[listed] = (levelMatesGets[listed] ?? 0) + 1;
+      return _json(listed == 'part-1' ? mates : (subMates[listed] ?? <dynamic>[]), 200);
     }
     if (matesGetMatch != null && method == 'POST') {
       if (failMateCreate) return _json({'detail': 'No placement satisfies these mates together.'}, 422);
@@ -1072,7 +1090,8 @@ class _FakeDocumentBackend {
     }
     final patternsGetMatch = RegExp(r'^/document/parts/([^/]+)/component-patterns$').firstMatch(path);
     if (patternsGetMatch != null && method == 'GET') {
-      return _json(patternsGetMatch.group(1) == 'part-1' ? componentPatterns : <dynamic>[], 200);
+      final listed = patternsGetMatch.group(1)!;
+      return _json(listed == 'part-1' ? componentPatterns : (subPatterns[listed] ?? <dynamic>[]), 200);
     }
     if (patternsGetMatch != null && method == 'POST') {
       final pattern = {
@@ -7783,7 +7802,7 @@ void main() {
       );
       backend.brokenMateIdsOnPatternEdit = ['mate-1'];
       var panel = _TreeProbe(tester);
-      expect(panel.mates.single.tone, isNull);
+      expect(panel.mates.single.state, AssemblyItemState.none);
       expect(panel.flashMateIds, isEmpty);
 
       await panel.onPatternTap!(panel.patterns.single);
@@ -7799,7 +7818,7 @@ void main() {
 
       expect(backend.patternPatches, hasLength(1));
       panel = _TreeProbe(tester);
-      expect(panel.mates.single.tone, AssemblyItemTone.error, reason: 'the refreshed tree carries the mate\'s status');
+      expect(panel.mates.single.state, AssemblyItemState.broken, reason: 'the refreshed tree carries the mate\'s status');
       expect(panel.flashMateIds, {'mate-1'});
       expect(panel.flashToken, 1);
       expect(find.text('Pattern updated - 1 mate could not be kept'), findsOneWidget);
@@ -14177,6 +14196,10 @@ void main() {
           }
           expect(find.byType(ExtrudePanel), findsNothing, reason: 'the Mirror tool started meanwhile keeps the screen');
           expect(find.byType(MirrorPanel), findsOneWidget, reason: 'Mirror is still open');
+          // C3-3: the person's own change cancelled it, so nothing is said; the focus and the lens it had moved to stay.
+          expect(find.byKey(const ValueKey('error-banner-dismiss')), findsNothing);
+          expect(focused(tester), ['asm-1', 'c1', 'd1']);
+          expect(_TreeProbe(tester).view.title, isNot('Assembly Tree'), reason: 'still the Part lens');
           expect(tester.takeException(), isNull);
         });
 
@@ -14222,6 +14245,9 @@ void main() {
           }
           expect(find.byType(ExtrudePanel), findsNothing, reason: 'the focus changed while it waited: stale, dropped');
           expect(focused(tester), ['asm-1', 'c1'], reason: "the person's focus stays");
+          // C3-3: no message for a cancel the person's own change caused; the lens stays the Part lens it had switched to.
+          expect(find.byKey(const ValueKey('error-banner-dismiss')), findsNothing);
+          expect(_TreeProbe(tester).view.title, isNot('Assembly Tree'));
           expect(tester.takeException(), isNull);
         });
 
@@ -14266,6 +14292,249 @@ void main() {
           expect(find.byKey(const ValueKey('edit-alone-pill')), findsOneWidget, reason: 'still in Edit Alone');
           expect(backend.meshRequestsByPartId['d1-part']!.map((r) => r['rollback_excluded_feature_ids']), contains('d1-plane'));
         });
+      });
+    });
+
+    // C2 (#7, `docs/assembly-tree-overhaul-scope.md` 12.6): a Mates (and Patterns) folder under every assembly level, its items read when it
+    // opens, and the selection's mates.
+    group('Mates per assembly level (C2)', () {
+      Map<String, dynamic> levelMate(String id, List<String> occurrences, {String status = 'ok'}) => {
+            'id': id,
+            'type': 'coincident',
+            'references': [
+              for (final o in occurrences)
+                {
+                  'occurrence_id': o,
+                  'subshape_ref': null,
+                  'plane_ref': {'face_ref': null, 'fixed_plane': 'XY', 'plane_feature_id': null},
+                  'point_ref': null,
+                },
+            ],
+            'value': null,
+            'flipped': false,
+            'suppressed': false,
+            'allow_rotation': true,
+            'status': status,
+          };
+
+      /// The nested document with mates in `sub` (placed twice, asm-1 and asm-2): m1 (broken) between c1 and c2, m2 (ok) on c2 alone; and one
+      /// root mate, rm1, on the plate.
+      Future<_FakeDocumentBackend> openWithLevelMates(WidgetTester tester,
+          {LayoutModeController? layout, Future<void> Function(http.Request request)? around}) {
+        return openNested(tester, layout: layout, around: around, configure: (b) {
+          b.subMates = {
+            'sub': [levelMate('m1', ['c1', 'c2'], status: 'broken'), levelMate('m2', ['c2'])],
+          };
+          b.mates.add(levelMate('rm1', ['plate']));
+        });
+      }
+
+      LayoutModeController desktop() =>
+          LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+
+      /// Opens [keys] in order the way the chevrons do (the view asks for a folder's items when it opens).
+      Future<void> open(WidgetTester tester, List<String> keys) async {
+        for (final k in keys) {
+          if (!_TreeProbe(tester).model.isOpen(k)) {
+            await tester.tap(find.byKey(ValueKey('tree-chevron:$k')));
+            await settle(tester);
+          }
+        }
+        await settle(tester);
+      }
+
+      List<SelectionEntityRef> selected(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).selectedEntities.toList();
+      List<String> focused(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath;
+
+      testWidgets("a nested level's folder fetches once and lists its mates, the broken one red", (tester) async {
+        final backend = await openWithLevelMates(tester, layout: desktop());
+        expect(rowKeys(tester), contains('asm-1'));
+        expect(backend.levelMatesGets['sub'], isNull, reason: 'nothing is read before a folder opens');
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        expect(backend.levelMatesGets['sub'], 1);
+        final rows = _TreeProbe(tester).model.visibleRows();
+        final items = [for (final r in rows) if (r.key.startsWith('asm-1#mates#item:')) r];
+        expect([for (final r in items) r.key], ['asm-1#mates#item:m1', 'asm-1#mates#item:m2']);
+        expect([for (final r in items) r.label], ['Coincident 1', 'Coincident 2']);
+        expect([for (final r in items) r.itemState], [AssemblyItemState.broken, AssemblyItemState.none]);
+        // Drawn red: the warning icon in the theme's error colour.
+        final rowFinder = find.byKey(const ValueKey('tree-row:asm-1#mates#item:m1'));
+        final icon = tester.widget<Icon>(find.descendant(of: rowFinder, matching: find.byIcon(Icons.warning_amber_rounded)));
+        expect(icon.color, Theme.of(tester.element(rowFinder)).colorScheme.error);
+        // Closing and opening again reads nothing more (once per Part per tree answer).
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:asm-1#mates')));
+        await settle(tester);
+        await open(tester, ['asm-1#mates']);
+        expect(backend.levelMatesGets['sub'], 1);
+      });
+
+      testWidgets('two placements of one sub-assembly share the fetch, and each highlights its own components', (tester) async {
+        final backend = await openWithLevelMates(tester, layout: desktop());
+        final writesBefore = backend.writes.length;
+        await open(tester, ['asm-1', 'asm-2', 'asm-1#mates', 'asm-2#mates']);
+        expect(backend.levelMatesGets['sub'], 1, reason: 'asm-1 and asm-2 place the same Part: one read');
+        expect(_TreeProbe(tester).model.folderItems('asm-2#mates').map((i) => i.id), ['m1', 'm2']);
+
+        await _TreeProbe(tester).tapRow('asm-1#mates#item:m1');
+        await settle(tester);
+        expect(selected(tester).map((e) => e.occurrenceId).toSet(), {'asm-1/c1', 'asm-1/c2'});
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1#mates#item:m1');
+
+        await _TreeProbe(tester).tapRow('asm-2#mates#item:m1');
+        await settle(tester);
+        expect(selected(tester).map((e) => e.occurrenceId).toSet(), {'asm-2/c1', 'asm-2/c2'});
+        expect(selected(tester).every((e) => e.kind == SelectionEntityKind.component), isTrue);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-2#mates#item:m1');
+        expect(backend.writes.length, writesBefore, reason: 'a mate of another level is not edited from here');
+      });
+
+      testWidgets('a late mates answer after a mate edit is dropped', (tester) async {
+        Completer<void>? hold;
+        final backend = await openWithLevelMates(tester, layout: desktop(), around: (request) async {
+          final h = hold;
+          if (h != null && request.url.path == '/document/parts/sub/mates' && request.method == 'GET') {
+            hold = null; // only the first read
+            await h.future;
+          }
+        });
+        final held = hold = Completer<void>();
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        expect(backend.levelMatesGets['sub'], 1, reason: 'the read is out (its answer, m1 broken, is fixed already)');
+        expect(_TreeProbe(tester).model.hasFolderItems('asm-1#mates'), isFalse);
+
+        // A mate edit (the root's rm1 deleted) while it is out; the sub-assembly's mates have changed meanwhile.
+        backend.subMates['sub'] = [levelMate('m1', ['c1', 'c2']), levelMate('m3', ['c1'])];
+        await open(tester, ['#mates']);
+        final probe = _TreeProbe(tester);
+        probe.view.onRowLongPress!(probe.model.visibleRows().firstWhere((r) => r.key == '#mates#item:rm1'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.tap(find.text('Delete').last);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('Delete').last); // the confirm dialog
+        await settle(tester);
+        await settle(tester);
+        expect(backend.mates, isEmpty, reason: 'rm1 was deleted');
+        expect(backend.levelMatesGets['sub'], 2, reason: 'the edit reloads the tree, which reads the opened level again');
+        expect(_TreeProbe(tester).model.folderItems('asm-1#mates').map((i) => i.id), ['m1', 'm3']);
+
+        held.complete();
+        await settle(tester);
+        await settle(tester);
+        final items = _TreeProbe(tester).model.folderItems('asm-1#mates');
+        expect(items.map((i) => i.id), ['m1', 'm3'], reason: 'the answer read before the edit is dropped');
+        expect(items.first.state, AssemblyItemState.none);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Focus here to edit from a nested mate focuses its level and selects the mate there', (tester) async {
+        await openWithLevelMates(tester, layout: desktop());
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        await _TreeProbe(tester).tapRow('asm-1#mates#item:m1');
+        await settle(tester);
+        expect(tester.widget<Text>(find.byKey(const ValueKey('tree-focus-to-edit-note'))).data, startsWith('Coincident 1 is in '));
+
+        await tester.tap(find.byKey(const ValueKey('tree-focus-to-edit')));
+        await _pumpUntil(tester, () => focused(tester).join('/') == 'asm-1');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1#mates#item:m1', reason: 'the mate is selected on its own level now');
+        expect(find.byKey(const ValueKey('tree-focus-to-edit')), findsNothing, reason: 'it is on the focused level: no strip');
+        // The focused level's mates are its own lists: the row's menu is the mate's own (Edit, Delete), not Focus here to edit.
+        final probe = _TreeProbe(tester);
+        probe.view.onRowContextMenu!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1#mates#item:m1'), const Offset(300, 200));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        expect(find.text('Delete'), findsWidgets);
+        expect(find.text('Focus here to edit'), findsNothing);
+      });
+
+      testWidgets("the drawer lists the selected nested component's mates; a tap selects one and reveals its row", (tester) async {
+        final backend = await openWithLevelMates(tester, layout: desktop());
+        await open(tester, ['asm-1']);
+        await _TreeProbe(tester).tapRow('asm-1/c1');
+        await settle(tester);
+        await settle(tester);
+        expect(find.byKey(const ValueKey('nested-component-drawer')), findsOneWidget);
+        expect(backend.levelMatesGets['sub'], 1, reason: "the drawer reads the component's level");
+        expect(find.byKey(const ValueKey('component-mate:m1')), findsOneWidget, reason: 'm1 is on c1');
+        expect(find.byKey(const ValueKey('component-mate:m2')), findsNothing, reason: 'm2 is on c2 only');
+
+        await tester.tap(find.byKey(const ValueKey('component-mate:m1')));
+        await settle(tester);
+        await settle(tester);
+        final model = _TreeProbe(tester).model;
+        expect(model.selectedKey, 'asm-1#mates#item:m1');
+        expect(model.isOpen('asm-1#mates'), isTrue, reason: 'the folder opened to show the row');
+        expect(find.byKey(const ValueKey('tree-row:asm-1#mates#item:m1')), findsOneWidget);
+        expect(selected(tester).map((e) => e.occurrenceId).toSet(), {'asm-1/c1', 'asm-1/c2'});
+      });
+
+      testWidgets('the drawer of a component on the focused level lists its mates too', (tester) async {
+        await openWithLevelMates(tester, layout: desktop());
+        await _TreeProbe(tester).tapRow('plate');
+        await settle(tester);
+        expect(find.byKey(const ValueKey('component-mate:rm1')), findsOneWidget);
+        await tester.tap(find.byKey(const ValueKey('component-mate:rm1')));
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, '#mates#item:rm1');
+      });
+
+      testWidgets(':mates :errors finds a broken mate in a collapsed branch once fetched; until then the filter says so', (tester) async {
+        await openWithLevelMates(tester, layout: desktop());
+        await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':mates :errors');
+        await settle(tester);
+        expect(tester.widget<Text>(find.byKey(const ValueKey('tree-filter-notes'))).data,
+            contains('Mates and patterns are searched only in folders you have opened'));
+        expect(find.textContaining('Unknown filter'), findsNothing);
+
+        await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), '');
+        await settle(tester);
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:asm-1')));
+        await settle(tester);
+        expect(rowKeys(tester), isNot(contains('asm-1#mates')), reason: 'the branch is collapsed again');
+
+        await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':mates :errors');
+        await settle(tester);
+        final result = _TreeProbe(tester).model.filteredRows(':mates :errors');
+        // asm-2 places the same Part: its folder has the same items (one read), so its broken mate is found too, though asm-2 was never opened.
+        expect([for (final r in result.rows) if (r.match) r.key], ['asm-1#mates#item:m1', 'asm-2#mates#item:m1']);
+        expect([for (final r in result.rows) r.key], containsAllInOrder(['asm-1', 'asm-1#mates', 'asm-1#mates#item:m1']));
+        expect(find.byKey(const ValueKey('tree-row:asm-1#mates#item:m1')), findsOneWidget);
+      });
+
+      testWidgets('on a phone: the More menu of a selected nested component lists its mates; picking one selects it', (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        await openWithLevelMates(tester);
+        // The sheet is at peek: open the row in the model, as the half sheet's chevron would.
+        _TreeProbe(tester).model.setOpen('asm-1', true);
+        _TreeProbe(tester).view.controller!.refresh();
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('asm-1/c1');
+        await settle(tester);
+        await settle(tester);
+        // The bar's More (called directly: the 800-px test view's sheet puts the bar below the screen).
+        final probe = _TreeProbe(tester);
+        expect(find.byKey(const ValueKey('tree-bar-more')), findsOneWidget);
+        probe.view.onMoreSelected!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        // The sheet's selection has not read the level yet: the entry waits for it ('Mates...'); with the level read it counts them.
+        final entry = find.textContaining(RegExp(r'^Mates( \(1\))?\.\.\.$'));
+        await tester.ensureVisible(entry);
+        await tester.tap(entry);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.tap(find.text('Coincident 1 - Broken'));
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1#mates#item:m1');
+        expect(_TreeProbe(tester).model.isOpen('asm-1#mates'), isTrue);
       });
     });
   });

@@ -2,6 +2,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:didsa_cad_client/ai/ai_theme.dart' show AiPalette;
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'package:didsa_cad_client/assembly/assembly_tree_model.dart';
 import 'package:didsa_cad_client/layout/layout_mode.dart';
@@ -555,10 +556,10 @@ void main() {
         }),
       );
       model.setFolderItems('#mates', const [
-        AssemblyFolderItem('m1', 'Coincident 1', note: "Broken - can't be satisfied", tone: AssemblyItemTone.error),
-        AssemblyFolderItem('m2', 'Distance 1', note: '5 mm', suppressed: true),
+        AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1', status: 'broken', note: "Broken - can't be satisfied"),
+        AssemblyFolderItem.spec(id: 'm2', label: 'Distance 1', note: '5 mm', suppressed: true),
       ]);
-      model.setFolderItems('#patterns', const [AssemblyFolderItem('p1', 'Linear 1', note: '×3')]);
+      model.setFolderItems('#patterns', const [AssemblyFolderItem.spec(id: 'p1', label: 'Linear 1', note: '×3')]);
       return model;
     }
 
@@ -602,6 +603,99 @@ void main() {
       expect(tester.widget<Text>(find.descendant(of: _row('#mates#item:m1'), matching: find.text('Coincident 1'))).style?.color, error);
       expect(icon('m2').icon, Icons.link);
       expect(tester.widget<Opacity>(find.descendant(of: _row('#mates#item:m2'), matching: find.byType(Opacity)).first).opacity, lessThan(1));
+    });
+
+    testWidgets('C2: an item row is coloured by its state: lost and broken red, held and near amber, a followed reference an info icon',
+        (tester) async {
+      final model = withFolders();
+      model.setFolderItems('#mates', const [
+        AssemblyFolderItem.spec(id: 'l', label: 'Coincident 1', status: 'broken', lost: true),
+        AssemblyFolderItem.spec(id: 'h', label: 'Coincident 2', status: 'broken', held: true),
+        AssemblyFolderItem.spec(id: 'n', label: 'Coincident 3', status: 'near'),
+        AssemblyFolderItem.spec(id: 'f', label: 'Coincident 4', followed: true, note: 'Followed'),
+      ]);
+      model.setOpen('#mates', true);
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model)));
+      final scheme = Theme.of(tester.element(find.text('Mates'))).colorScheme;
+      final amber = AiPalette.of(tester.element(find.text('Mates'))).warning;
+      Icon icon(String id) => tester.widget<Icon>(find.descendant(of: _row('#mates#item:$id'), matching: find.byType(Icon)).first);
+      expect(icon('l').color, scheme.error);
+      expect(icon('h').color, amber, reason: 'a held mate reads amber though its listing says broken');
+      expect(icon('n').color, amber);
+      expect(icon('f').icon, Icons.info_outline);
+      expect(icon('f').color, scheme.primary);
+    });
+
+    testWidgets('C2: an open folder without items asks for them once (opened, or open already); a filter notes the folders not read',
+        (tester) async {
+      final model = AssemblyTreeModel(
+        tree: AssemblyTreeResponseDto.fromJson({
+          'part_id': 'root',
+          'part_name': 'Root',
+          'kind': 'assembly',
+          'mates': {'count': 1},
+          'children': [
+            {
+              ..._node('a', ['a'], name: 'Arm'),
+              'kind': 'assembly',
+              'mates': {'count': 2},
+              'children': [_node('x', ['a', 'x'], name: 'X')],
+            },
+          ],
+        }),
+      )..openAll(['#mates'], remember: false);
+      final asked = <String>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onFolderItemsRequested: asked.add)));
+      await tester.pump();
+      expect(asked, ['#mates'], reason: 'the root folder was open already (restored)');
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:a')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:a#mates')));
+      await tester.pump();
+      await tester.pump();
+      expect(asked, ['#mates', 'a#mates']);
+      // Asked once: closing and opening again does not ask a second time while the first is out.
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:a#mates')));
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:a#mates')));
+      await tester.pump();
+      await tester.pump();
+      expect(asked, ['#mates', 'a#mates']);
+
+      // C1-1: a filter while some folders are not read says so (and :mates is not an unknown token).
+      await tester.tap(find.byTooltip('Filter'));
+      await tester.pump();
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':mates');
+      await tester.pump();
+      final notes = tester.widget<Text>(find.byKey(const ValueKey('tree-filter-notes'))).data!;
+      expect(notes, contains('Mates and patterns are searched only in folders you have opened'));
+      expect(notes, isNot(contains('Unknown filter')));
+      model.setFolderItems('#mates', const [AssemblyFolderItem.spec(id: 'r', label: 'Coincident 1')]);
+      model.setFolderItems('a#mates', const [AssemblyFolderItem.spec(id: 'm', label: 'Coincident 1')]);
+      await tester.enterText(find.byKey(const ValueKey('tree-filter-field')), ':mates ');
+      await tester.pump();
+      expect(find.byKey(const ValueKey('tree-filter-notes')), findsNothing, reason: 'every folder is read now');
+    });
+
+    testWidgets("C2: a selected item of another level shows the strip with Focus here to edit; the host's own level shows none",
+        (tester) async {
+      final model = withFolders()..setOpen('#mates', true);
+      final focused = <String>[];
+      String? level = 'Root';
+      Widget view() => _host(AssemblyTreeView(
+            model: model,
+            itemOtherLevel: (r) => r.itemId == null ? null : level,
+            onItemFocusToEdit: (r) => focused.add(r.key),
+          ));
+      await tester.pumpWidget(view());
+      await tester.tap(_row('#mates#item:m1'));
+      await tester.pump();
+      expect(tester.widget<Text>(find.byKey(const ValueKey('tree-focus-to-edit-note'))).data, 'Coincident 1 is in Root');
+      await tester.tap(find.byKey(const ValueKey('tree-focus-to-edit')));
+      expect(focused, ['#mates#item:m1']);
+      level = null;
+      await tester.pumpWidget(view());
+      expect(find.byKey(const ValueKey('tree-focus-to-edit')), findsNothing);
     });
 
     testWidgets('a desktop row has the note after the label, on one line', (tester) async {

@@ -303,7 +303,7 @@ void main() {
     addTearDown(tester.view.reset);
     final main = AssemblyTreeModel(tree: _assembly())
       ..setFeatures(const ['z'], const [AssemblyFeature('zf', 'Sketch 9')])
-      ..setFolderItems('#mates', const [AssemblyFolderItem('m1', 'Coincident 1')])
+      ..setFolderItems('#mates', const [AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1')])
       ..setSessionHiddenKeys({'z'});
     await tester.pumpWidget(_host(SketchFeatureTree(
       tree: _assembly(),
