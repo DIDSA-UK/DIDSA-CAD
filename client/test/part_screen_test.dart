@@ -14722,6 +14722,21 @@ void main() {
         expect(lit(tester), {'asm-2/c1'});
       });
 
+      testWidgets('a screen closed while the mouse rests on a row takes its light back without an error', (tester) async {
+        await openBoth(tester);
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: Offset.zero);
+        addTearDown(mouse.removePointer);
+        await mouse.moveTo(tester.getCenter(find.byKey(const ValueKey('tree-row:asm-2/c1'))));
+        await tester.pump();
+        expect(lit(tester), {'asm-2/c1'});
+        // The screen goes away (back, or another document): the tree's "none" arrives after its notifiers are disposed.
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(tester.takeException(), isNull);
+      });
+
       testWidgets('the part under the viewport pointer marks its row, or the nearest listed ancestor, and never opens, scrolls or selects', (tester) async {
         await openBoth(tester);
         final probe = _TreeProbe(tester);

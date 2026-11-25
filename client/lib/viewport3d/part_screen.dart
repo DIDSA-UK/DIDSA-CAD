@@ -26273,6 +26273,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// The tree's pointer moved onto [row] (or off every row: null). Lights what it stands for in the viewport.
   void _onTreeRowHover(AssemblyTreeRow? row) {
+    // The tree calls this with null from a post-frame callback when it is torn down: the screen may be gone (its notifiers disposed) by then.
+    if (!mounted) return;
     final hover = row == null || !_treeHoverAllowed ? null : _treeHoverOfRow(row);
     _treeHover.value = hover == null || hover.isEmpty ? null : hover;
   }

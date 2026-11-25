@@ -318,6 +318,19 @@ void main() {
       t.dispose();
     });
 
+    test('shownInstanceKeys leaves out the hidden placements, and keeps the rest', () {
+      AssemblyOccurrenceInstanceDto at(List<String> path, {bool hidden = false}) => AssemblyOccurrenceInstanceDto(
+            occurrencePath: path,
+            partId: 'p',
+            worldTransform: RigidTransformDto(translation: const [0.0, 0.0, 0.0], rotationAxis: const [0.0, 0.0, 1.0], rotationAngleDegrees: 0.0),
+            hidden: hidden,
+          );
+      final instances = [at(['a']), at(['s', 'c'], hidden: true), at(['s', 'd'])];
+      expect(shownInstanceKeys({'a', 's/c', 's/d'}, instances), {'a', 's/d'});
+      final same = {'a'};
+      expect(identical(shownInstanceKeys(same, [at(['a'])]), same), isTrue, reason: 'nothing hidden: no copy');
+    });
+
     test('ViewportTreeHover compares by what it lights', () {
       final one = ViewportTreeHover(instanceKeys: {'a', 'b'}, entities: {const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'x')});
       final two = ViewportTreeHover(instanceKeys: {'b', 'a'}, entities: {const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'x')});

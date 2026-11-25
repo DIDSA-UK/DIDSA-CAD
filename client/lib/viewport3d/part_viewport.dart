@@ -1291,6 +1291,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Set<String> get debugAssemblyInstanceEdgesNodeKeys => _assemblyInstanceEdgesNodes.keys.toSet();
   @visibleForTesting
   Object? get debugSelectedFacesNode => _selectedFacesNode;
+
+  /// C4: how many nodes light [PartViewport.treeHover] now.
+  int get debugTreeHoverNodeCount => _treeHoverNodes.length;
   @visibleForTesting
   Set<String> get debugTransientMeshNodeBodyIds => _transientMeshNodes.keys.toSet();
 
@@ -1923,6 +1926,10 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// C4: the nodes lighting [PartViewport.treeHover], and the hover [PartViewport.onHoverOccurrenceChanged] last reported.
   final List<Node> _treeHoverNodes = [];
   String? _reportedHoverOccurrence;
+
+  /// C4: whether a mouse is over the viewport. A hover hit outlives the pointer (it is only cleared by moving over empty space), so the
+  /// tree's row marking follows this too: leaving the viewport reports no hover.
+  bool _pointerOverViewport = false;
   Node? _selectedFacesNode;
   Node? _selectedEdgesNode;
   Node? _selectedVerticesNode;
@@ -6832,7 +6839,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     final callback = widget.onHoverOccurrenceChanged;
     if (callback == null) return;
     // Nothing is hovered while Select Other shows its own candidate or a Select Other sheet is open (its hover is the override's).
-    final hit = widget.highlightOverride != null || widget.suppressHoverFallback ? null : _hoverHit;
+    final hit = widget.highlightOverride != null || widget.suppressHoverFallback || !_pointerOverViewport ? null : _hoverHit;
     final id = hit == null || hit.entity.occurrenceId.isEmpty ? null : hit.entity.occurrenceId;
     if (id == _reportedHoverOccurrence) return;
     _reportedHoverOccurrence = id;
@@ -6865,7 +6872,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
     if (_componentGizmoDragHandle != null || widget.highlightOverride != null) return;
     if (hover.instanceKeys.isNotEmpty) {
       final triangles = <(vm.Vector3, vm.Vector3, vm.Vector3)>[];
-      for (final key in hover.instanceKeys) {
+      // A hidden part is not drawn, so it is not lit either (its row is still listed, struck through).
+      for (final key in shownInstanceKeys(hover.instanceKeys, widget.assemblyInstances)) {
         triangles.addAll(_worldTrianglesForOccurrence(key));
       }
       if (triangles.isNotEmpty) {
@@ -7705,6 +7713,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             MouseRegion(
               cursor: _viewportMouseCursor,
+              onEnter: (_) => _pointerOverViewport = true,
+              onExit: (_) {
+                _pointerOverViewport = false;
+                _reportHoverOccurrence();
+              },
               child: Listener(
                 onPointerDown: _onPointerDown,
                 onPointerMove: _onPointerMove,

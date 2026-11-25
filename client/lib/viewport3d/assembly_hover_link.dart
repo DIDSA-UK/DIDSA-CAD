@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import '../api/document_api_client.dart' show AssemblyOccurrenceInstanceDto;
 import 'selection_hit_test.dart' show SelectionEntityRef;
 
 /// C4 (#12): what hovering a tree row lights in the viewport, separate from the Select Other override ([PartViewport.highlightOverride] dims
@@ -21,6 +22,16 @@ class ViewportTreeHover {
   int get hashCode => Object.hash(Object.hashAllUnordered(instanceKeys), Object.hashAllUnordered(entities));
 
   static bool _setEq<T>(Set<T> a, Set<T> b) => identical(a, b) || (a.length == b.length && a.containsAll(b));
+}
+
+/// C4 (#12): [keys] without the placed instances [instances] say are hidden. A hidden part is not drawn, so a hover must not light a ghost
+/// of it; an instance the list does not know stays in (it lights nothing either, there is nothing to find).
+Set<String> shownInstanceKeys(Set<String> keys, List<AssemblyOccurrenceInstanceDto> instances) {
+  final hidden = {
+    for (final i in instances)
+      if (i.hidden) i.occurrencePath.join('/'),
+  };
+  return hidden.isEmpty ? keys : keys.difference(hidden);
 }
 
 /// C4 (#12): passes a value on at most once per [window], the newest one last, so a pointer moving over the viewport does not rebuild the
