@@ -22,7 +22,23 @@ class ApiException implements Exception {
   final String message;
   final int? statusCode;
 
-  ApiException(this.message, {this.statusCode});
+  /// For an answer that could not be read ([decodeOrUnreadable]): the error decoding raised and its stack. A [NoSuchMethodError], [RangeError] or
+  /// [StateError] there is usually a wrong-shaped answer but can be a bug in a DTO's `fromJson`; the banner says "unreadable", and whoever
+  /// reports errors can still reach what really happened. Null otherwise.
+  final Object? cause;
+  final StackTrace? causeStackTrace;
+
+  ApiException(this.message, {this.statusCode, this.cause, this.causeStackTrace});
+
+  /// Several failures said as one (each message once, in order), keeping a status code: the first one given (B4, from P3's review: the
+  /// joined exception had none, so a caller that reads the status could not tell a server's 4xx from a transport failure).
+  factory ApiException.joined(Iterable<ApiException> errors) {
+    final list = errors.toList();
+    return ApiException(
+      {for (final e in list) e.message}.join('\n'),
+      statusCode: list.map((e) => e.statusCode).whereType<int>().firstOrNull,
+    );
+  }
 
   /// The message of an answer that cannot be read ([decodeOrUnreadable]).
   static const String unreadableAnswerMessage = "Could not read the server's answer";
@@ -43,8 +59,12 @@ T decodeOrUnreadable<T>(String body, T Function(dynamic decodedBody) onSuccess, 
     return onSuccess(decoded);
   } catch (e, st) {
     if (e is FormatException || e is TypeError || e is NoSuchMethodError || e is RangeError || e is StateError) {
-      developer.log('unreadable answer', name: name, error: e, stackTrace: st);
-      throw ApiException(ApiException.unreadableAnswerMessage, statusCode: statusCode);
+      // B4 (B3's review): the last three can also be a bug in a `fromJson`, not the answer: logged as severe, and the error and its stack ride
+      // along on the exception ([ApiException.cause]), so mapping them does not lose a client bug.
+      final maybeBug = e is NoSuchMethodError || e is RangeError || e is StateError;
+      developer.log(maybeBug ? 'unreadable answer (or a bug decoding it)' : 'unreadable answer',
+          name: name, error: e, stackTrace: st, level: maybeBug ? 1000 : 800);
+      throw ApiException(ApiException.unreadableAnswerMessage, statusCode: statusCode, cause: e, causeStackTrace: st);
     }
     rethrow;
   }

@@ -436,6 +436,9 @@ void main() {
       'a document that is not an object': '{"document": 5}',
       'a document without parts': '{"document": {"id": "d"}}',
       'parts that are not objects': '{"document": {"parts": [1]}}',
+      // B4 (B3's review): a sketch's id is read as a String later; one that is not was a TypeError, not the banner's message.
+      'a sketch whose id is not a String': '{"document": {"parts": [{"id": "p"}]}, "sketches": [{"id": 7}]}',
+      'a part whose id is not a String': '{"document": {"parts": [{"id": 7}]}}',
     }.entries) {
       test('the root file is ${entry.key}: a FormatException that names the file', () async {
         storage.putText('top.didsa', entry.value);

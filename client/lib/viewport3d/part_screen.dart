@@ -13315,6 +13315,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _sessionHiddenPaths = const {};
       _isolateSnapshot = null;
       _selectedTreePath = null;
+      _appliedTreeRootPath = const <String>[];
       // Assembly support Phase 20: seed the root Part's own per-Part state
       // now that its real id is finally known - [_focusPartId] reads as
       // `part.id` at this exact point (nothing has been focused yet), so
@@ -13572,10 +13573,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           );
     }
     setState(() {
-      // The selection is kept as the same component when the tree's root moves (a path from the old root, from the new one).
-      final oldRoot = _treeRootPath;
+      // The selection is kept as the same component when the tree's root moves (a path from the old root, from the new one). B4 (B3's
+      // review): the old root is the one the tree was last applied at, not [_treeRootPath] now: after a focus change that getter has already
+      // let go of a focus-rooted tree's root, so a child of the old focus was read from the wrong root and dropped.
+      final oldRoot = _appliedTreeRootPath;
       final oldSelected = _selectedTreePath;
       _focusRootedFor = needsFocusRoot ? focusFull : null;
+      _appliedTreeRootPath = _treeRootPath;
       if (oldSelected != null && oldSelected.isNotEmpty) _selectedTreePath = _relativeTreePath([...oldRoot, ...oldSelected]);
       _occurrences = occurrences;
       _mates = _mateFollowedNotes.merge(mates);
@@ -25984,6 +25988,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// the focus (the call failed, was cut short, or lacks it), so the tree is the focused Part's own, as before B3. Only while the focus is
   /// still that path; the next load decides again.
   List<String>? _focusRootedFor;
+
+  /// The root path ([_treeRootPath]) the tree in [_treeModel] was applied at, and so the root [_selectedTreePath] was last remapped from.
+  List<String> _appliedTreeRootPath = const <String>[];
   List<String>? get _focusRootedPath {
     final for_ = _focusRootedFor;
     return for_ != null && listEquals(for_, _focusStack?.currentOccurrencePath) ? for_ : null;
@@ -26336,6 +26343,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final target = (_editAlone?.editDepth ?? 0) + depth;
     if (target >= stack.depth) return;
     _clearTransientError();
+    // B4 (B3's review): a multi-select holds components of the level being left (their ids are the focused Part's); it ends here, as a lens
+    // switch ends it, rather than acting on another level's components afterwards.
+    _exitMultiSelect();
     setState(() {
       while (stack.depth > target) {
         stack.pop();
@@ -27096,6 +27106,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       return;
     }
     _clearTransientError();
+    // B4 (B3's review): the multi-select's components are the Edit Alone target's; it ends with it (see [_focusCrumb]).
+    _exitMultiSelect();
     final focusStack = _focusStack;
     setState(() {
       // Where it was before (B3: Edit Alone replaces the focus with the target's levels), or, from a crumb of the strip's "in ...", on that
@@ -27212,7 +27224,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       FlutterErrorDetails(exception: error, stack: stack, library: 'part screen', context: ErrorDescription(context)));
 
   /// Throws what refreshes that ran one after the other left ([failures], in order), for the caller's [_runGuarded]. The server's failures go
-  /// to the banner: one [ApiException] as it is (its status code kept), several as one with each message once; a failure that is not the
+  /// to the banner: one [ApiException] as it is (its status code kept), several as one with each message once and the first status code
+  /// ([ApiException.joined]); a failure that is not the
   /// server's is then reported with its stack ([_reportRefreshBug]). With no server failure, the first other one is rethrown with its stack
   /// (the rest reported).
   static Never _throwRefreshFailures(List<(Object, StackTrace)> failures) {
@@ -27228,7 +27241,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _reportRefreshBug(e, st, 'refreshing the Part');
     }
     if (server.length == 1) Error.throwWithStackTrace(server.single.$1, server.single.$2);
-    throw ApiException({for (final (e, _) in server) (e as ApiException).message}.join('\n'));
+    throw ApiException.joined([for (final (e, _) in server) e as ApiException]);
   }
 
   /// The mesh, then the features: a mesh that fails does not skip the features (a broken feature's Part still lists them, P2 review). The

@@ -12135,6 +12135,49 @@ void main() {
         expect(_TreeProbe(tester).model.selectedKey, 'c1', reason: 'a refresh does not clear a focus child\'s selection');
       });
 
+      // B4 (B3's review, item 1): the remap after a focus change read the selection from the new root, not the one the tree had.
+      testWidgets('leaving a focus-rooted tree keeps the selected child as the same component under the document root', (tester) async {
+        final backend = await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        backend.assemblyTreeMissing = true;
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'rooted at the focused Part');
+        await _TreeProbe(tester).tapRow('c1');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'c1');
+
+        backend.assemblyTreeMissing = false;
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await settle(tester);
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), isEmpty);
+        expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1', reason: 'the same component, now under the document root');
+      });
+
+      // B4 (B3's review, item 2): a crumb tapped during a multi-select left it holding the old level's components.
+      testWidgets('a crumb tapped during a multi-select ends the multi-select', (tester) async {
+        await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        await tester.longPress(find.byKey(const ValueKey('tree-row:asm-1/c1')));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.isMultiSelectMode, isTrue);
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), isEmpty);
+        expect(_TreeProbe(tester).view.isMultiSelectMode, isFalse, reason: "the selected components were asm-1's");
+        expect(_TreeProbe(tester).view.selectedKeys, isEmpty);
+      });
+
       // Review of the fix commits: in the focused-Part-rooted fallback, Make Focus and Edit Alone on a child extend the focus.
       testWidgets('with the tree rooted at the focused Part, Make Focus and Edit Alone on a child extend the focus path', (tester) async {
         final backend = await openNested(tester);
