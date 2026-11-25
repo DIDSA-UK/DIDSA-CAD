@@ -1394,6 +1394,11 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
   gets mates again, its folder lists the old items until the host reads it again. C2's "once per Part per tree answer" fetch should
   reset them; or prune them in `merge` as features are.
 - C1-3 (for C2): `generate.py --changed` with no file after it ends in an `IndexError`, not a usage line.
+- C1-4 (for C2): the host form's state is read from its tone, and `mateFolderItems` makes a held mate amber even when the listing says
+  `broken` (by design: "check this mate"), so at the root such a mate is found by `:warnings`, not `:errors`, and a lost one reads
+  `broken`, not `lost`. Moving `mateFolderItems` to the spec's form (C2) gives section 14's states.
+- C1-5 (for C2): the view colours item rows from `tone` only; a spec-form item (`AssemblyFolderItem.spec` / `fromJson`) has none, so
+  C2 colours item rows from `AssemblyTreeRow.itemState` (red: lost, broken; amber: near, held; dimmed: suppressed).
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
