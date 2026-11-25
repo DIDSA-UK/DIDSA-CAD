@@ -853,7 +853,7 @@ storing Edit Alone's open rows.
 | P1 live part (model, view) | merged 21 Nov | #400 | strongest | Fix round merged before the manager's check; a post-merge review found model issues (auto-open key, restore, stale live selection, folders closed on clear): fixed in P2's round. |
 | P2 Part lens on the one tree | merged 24 Nov | #401 | strongest | Three rounds. Round 1 fixed the send-back (live folders, previous Part's features, surface picks, ticks, superseded refresh, P1's model items) but brought in three regressions (a failed mesh hid the features, a moved live row kept its selection, a superseded call swallowed the newer error); round 2 fixed them. Round 2's review found only rarer cases: carried into P3 (10.8). "Roll back to here" left out until the rollback bar (#17, Phase D): owner, 24 Nov. |
 | P3 sketcher's tree, old panel gone | merged 24 Nov | #404 | strongest | Two rounds (squash-merged). Manager send-back: the sketcher's fallback tree took another root's features; a mesh error that was not an `ApiException` escaped the banner. The fix brought one unreadable-answer rule to both API clients (`decodeOrUnreadable`). Owner, 24 Nov: a mate-drag commit whose 200 answer cannot be read is not retried (option A). Leftovers carried into B3 (10.8). |
-| B3 Flutter #5 | not started | | | |
+| B3 Flutter #5 | merged 25 Nov | #406 | mid-tier (brief said strongest) | Two rounds. Manager send-back: with a deeper focus, a tree built from the lists (or truncated, or without the focus node) lost the focused level and its selection; the focused Part's list under the root; "used N ×" counted from a one-level tree; `<n>` lost while focused; Show outside the focus did nothing. A fallback tree rooted at the focused Part (as before B3) covers those cases. P3's four carried items done. Nits carried into B4 (10.8). |
 | B4 Flutter phone sheet | not started | | | Also: P2 saw the Part-lens drawer behind the bar on a phone |
 | B5 Flutter phone deep trees | not started | | | |
 | B6 VR row build | merged 21 Nov | VR #99 | mid-tier | Two send-backs (PARTS-tab scroll box, folder bubble, press guard). 2,002 rows, Mesa 943+337 ms -> 67+112 ms; PARTS tab scroll ~12 ms/frame slower (Table / Bring rebuilt per bind). Owner headset check pending. |
@@ -862,22 +862,23 @@ storing Edit Alone's open rows.
 | B8 VR room context, hints | merged 24 Nov | VR #102 | mid-tier | Two rounds (squash-merged). Manager send-back: a level read in flight across a same-document re-read landed on the rebuilt row; a failed placement count read as 0 ("Not placed"). The count is now -1 when unknown, kept per row and re-read only after a change. Leftovers carried into the next VR chunk (10.8). |
 | B2.1 Flutter follow-up | not started | | | B2's two leftovers plus whatever the owner's B2 device check finds |
 
-### 10.8 Manager hand-off (24 Nov, third)
+### 10.8 Hand-off (25 Nov): owner-run from here
 
-A new manager reads this section 10 and DIDSA-VR's `CLAUDE.md`, and other files only when a check needs them.
+From B4 on there is no standing manager session (section 11, "Owner-run chunks"). Each worker reviews its own PR, updates
+its 10.7 row and this section's lists in its PR, and the owner checks CI and trailers and merges.
 
-**In flight:** nothing. P3 (#404) and B8 (VR #102) merged 24 Nov.
+**In flight:** nothing. B3 (#406) merged 25 Nov.
 
-**Next manager step:** brief B3 (10.6, Flutter `client/`; it is unblocked by P3) and carry these from P3's review into it,
-one test each where it is a bug:
-  1. The sketcher's tree passes no `onFeaturesRequested`: a component row never opened in the Part screen opens empty
-     with no hint. Forward the request, or mark the row as not loaded.
-  2. `copyFetchedFrom` does not copy the unsaved markers (`_unsaved`), so the two trees disagree about unsaved Parts.
-  3. `_buildSketchTreePanel` changes the Part screen's tree model (`_syncTreeLivePart`) from inside the sketcher's build;
-     keep the build free of side effects.
-  4. Same as on `main`: a project sub-file that is valid JSON of the wrong shape fails with no banner; other decode
-     errors (`NoSuchMethodError` and the like) escape the API clients raw; a garbled 2xx is logged as `http_200` in the
-     drag counters.
+**Next:** B4 (10.6, phone portrait sheet; strongest model). It carries these from B3's review, one test each where it is a bug:
+  1. The selection remap after a focus change uses the wrong root.
+  2. Crumbs during a multi-select.
+  3. `_hasNativeShape` does not check that each sketch's and part's `id` is a String (a later `as String` throws a
+     `TypeError`, not the "not a valid .didsa save" banner).
+  4. `decodeOrUnreadable` maps `NoSuchMethodError` / `RangeError` / `StateError` to "unreadable answer", which can hide a
+     client bug; narrow it or report the stack too.
+  5. From P3: the sketcher's own open rows are not carried across a change of root; open rows are not applied when the
+     Part screen's tree only later gets the seed's root; a joined `ApiException` has no status code.
+Then B5 (after B4), and B2.1 only if the owner's checks give it anything.
 
 **Next VR chunk** (a B8.1, or whichever VR chunk comes next) carries these from B8's review:
   1. `room_keys` lights a group only when a direct member is the room's Part: an ancestor or a group further up shows no
@@ -890,23 +891,19 @@ one test each where it is a bug:
   7. Older bugs: `session_observer._refetch_parts` has no model-change / session-end check after `_fetch_glb`; `_drain`
      raises `loaded_rev` with a dropped refetch's revision, so the next model's events can be ignored.
 
-Then B4, B5 and B2.1 as 10.1 orders them, and B2.1 only if the owner's checks give it anything.
+**Owner decisions:** row-hint order as proposed (21 Nov); "Roll back to here" waits for the rollback bar (#17, Phase D;
+24 Nov); a mate-drag commit whose 200 answer cannot be read is not retried (option A, 24 Nov).
 
-**Commit trailers:** workers must use `Co-Authored-By: Claude <noreply@anthropic.com>`; a model name there breaks the
-no-identifiers rule. Squash-merge a PR whose trailers name a model.
-
-**VR CI:** runs were getting runners again on 24 Nov (VR #102). Never say merge on a run that did not start.
-
-**Owner device checks:** the owner does them all once Phase B is complete, not after each chunk. Owed so far:
+**Owner device checks:** all once Phase B is complete, not after each chunk. Owed so far:
 B2 (phone and desktop: remembered rows, Save As, Expand to selection, filter tokens, phone header); P2 (a part opened
 alone; a part focused in an assembly in the Part lens; lens switching with folders open and a row selected); P3 (desktop
 and phone: the sketcher's tree beside a sketch, a convert pick from it, locked rows, the banner when the server's answer
-cannot be read); B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1
+cannot be read); B3 (desktop, and a tablet or a phone in landscape: Make Focus on a nested part with dim, rail, crumbs and
+Focus here on a dimmed row; Edit Alone on a twice-placed sub-assembly and on a nested part with "in ...", "used 2 ×",
+crumbs and Done); B6 (headset: fast scroll, deep reveal, Fix / Float hints, PARTS tab Table and back); B7 and B7.1
 (headset: Find kept after adding a component and after Save As, To selection, Collapse, remembered rows after reopening,
 the "unavailable" hint); B8 (headset: rows outside an open room dimmed and the rail on the inside rows, the bar's "Placed
-N times" against a real backend, the hint order on the row width). Add each chunk's check from 10.1 here as it merges.
-
-**How to run it:** section 11.
+N times" against a real backend, the hint order on the row width). Each worker adds its chunk's check from 10.1 here.
 
 ## 11. Running a phase: cost and process (Phases B, C and D)
 
@@ -948,6 +945,17 @@ briefs refer to them rather than repeating them.
   branch and open the PR" (B1's session was blocked without it); "Run /code-review on your PR and fix what it finds
   before you reply"; "No model identifiers in any file, doc or PR text".
 - **Keep prompts short:** the brief lives in the doc, and the prompt adds only what was learned since.
+
+**Owner-run chunks** (from 25 Nov, B4 on). The manager's reviews kept finding important bugs the workers' own reviews
+missed (P3 2, B8 2, B3 5), because workers reviewed at medium and only their last commit. A standing manager was the cost,
+not the review, so the review moves to the worker and the manager goes:
+1. The worker writes the chunk, then runs `/code-review high` on the whole PR (`origin/main...HEAD`), fixes the important
+   findings, runs `/code-review medium` on its fix commits, fixes those, and updates its 10.7 row and the 10.8 lists
+   (leftover nits, the device check) in the same PR. Nits go to 10.8, not another round.
+2. The owner checks that CI ran and passed on the PR's head commit (a run that never started is not green) and that no
+   commit trailer names a model, then merges (squash-merge if a trailer names one).
+3. A manager session is opened only to write a phase's briefs, for a contract or other risky chunk, or when a chunk's
+   rounds stop converging; it hands off and closes.
 
 ## Sources
 
