@@ -61,6 +61,9 @@ class CheckedIn(unittest.TestCase):
         for needle in ("/home/", "/tmp/", "C:\\", "backend/"):
             self.assertNotIn(needle, text)
         for c in VECTORS["cases"]:
+            if c["kind"] in ("mate_names", "pattern_names"):  # their input is a listing, not a tree
+                self.assertNotIn("tree", c, c["name"])
+                continue
             self.assertIn(c["tree"], VECTORS["trees"], c["name"])
 
 
@@ -234,14 +237,17 @@ class VersionTwo(unittest.TestCase):
     """Spec sections 11 to 13 (B1). Hand-written from the spec, like the rest."""
 
     def test_version_and_the_36_version_1_cases_come_first(self):
-        self.assertEqual(VECTORS["version"], 2)
+        self.assertEqual(VECTORS["version"], 3)
         first = VECTORS["cases"][:36]
         self.assertTrue(all(c["kind"] in ("rows", "reveal") for c in first))
         self.assertEqual(sum(c["kind"] == "reveal" for c in first), 6)
         self.assertEqual(first[0]["name"], "rover_collapsed")
         self.assertEqual(first[-1]["name"], "reveal_inside_group_member")
         self.assertFalse(any(c["kind"] in ("rows", "reveal") for c in VECTORS["cases"][36:]))
-        self.assertEqual({c["kind"] for c in VECTORS["cases"]}, {"rows", "reveal", "filter", "restore", "live_part", "live_part_filter", "live_part_restore"})
+        self.assertEqual(
+            {c["kind"] for c in VECTORS["cases"]},
+            {"rows", "reveal", "filter", "restore", "live_part", "live_part_filter", "live_part_restore", "level_folders", "level_folders_filter", "level_folders_restore", "mate_names", "pattern_names"},
+        )
 
     def test_the_backend_file_is_untouched_by_version_2(self):
         self.assertEqual(json.loads(generate.BACKEND_OUT.read_text())["version"], 1)
@@ -272,7 +278,12 @@ class VersionTwo(unittest.TestCase):
         self.assertTrue(t[":assemblies"](row(kind="assembly"), False) and not t[":assemblies"](row(kind="group"), False))
         self.assertTrue(t[":features"](row(kind="feature"), False) and not t[":features"](row(kind="part"), False))
         self.assertTrue(t[":sketches"](row(kind="feature", type="sketch"), False) and not t[":sketches"](row(kind="feature"), False))
-        self.assertNotIn(":mates", t)  # waits for Phase C
+        self.assertTrue(t[":mates"](row(kind="mate"), False) and not t[":mates"](row(kind="mates_folder"), False) and not t[":mates"](row(kind="pattern"), False))
+        for state in ("lost", "broken"):
+            self.assertTrue(t[":errors"](row(kind="mate", state=state), False), state)
+        for state in ("near", "held"):
+            self.assertTrue(t[":warnings"](row(kind="mate", state=state), False), state)
+        self.assertFalse(t[":errors"](row(kind="mate", state="held"), False) or t[":warnings"](row(kind="mate", state="suppressed"), False))
 
     def test_deep_match_lists_ancestors_open_and_nothing_else(self):
         rows = rows_of(case("filter_deep_collapsed"))
@@ -320,13 +331,18 @@ class VersionTwo(unittest.TestCase):
         rows = rows_of(case("filter_fetched_and_unfetched_features"))
         self.assertEqual([r["key"] for r in rows if r["match"]], ["chassis#feature:g1", "mast/arm/head/lens#feature:f1"])
 
-    def test_folders_and_the_mates_folder_are_not_listed_under_a_filter(self):
-        for c in cases_of("filter", "live_part_filter"):
-            if c["query"].strip():
-                self.assertFalse({"mates_folder", "patterns_folder"} & {r["kind"] for r in rows_of(c)}, c["name"])
+    def test_folders_are_listed_under_a_filter_only_with_a_matching_item(self):
+        """Version 2 cases pass no items, so no Mates or Patterns folder is listed by their filters (section 14)."""
+        for c in cases_of("filter", "live_part_filter", "level_folders_filter"):
+            if not c["query"].strip():
+                continue
+            rows = rows_of(c)
+            for i, r in enumerate(rows):
+                if r["kind"] in ("mates_folder", "patterns_folder"):
+                    self.assertTrue(i + 1 < len(rows) and rows[i + 1]["key"].startswith(r["key"] + "#item:") and rows[i + 1]["match"], f"{c['name']} {r['key']}")
 
     def test_listed_rows_are_open_when_something_below_is_listed(self):
-        for c in cases_of("filter", "live_part_filter"):
+        for c in cases_of("filter", "live_part_filter", "level_folders_filter"):
             rows = rows_of(c)
             if not c["query"].strip():
                 continue
@@ -413,10 +429,10 @@ class VersionTwo(unittest.TestCase):
         keys = [r["key"] for r in rows]
         head = keys.index("mast/arm/head")
         self.assertEqual(
-            keys[head : head + 11],
-            ["mast/arm/head", "mast/arm/head/lens", "mast/arm/head/lens#feature:f1", "mast/arm/head/lens#feature:f2", "mast/arm/head/lens#feature:f3", "mast/arm/head/cable", "mast/arm/head#bodies", "mast/arm/head#planes", "mast/arm/head#surfaces", "mast/arm/head#feature:h1", "mast/arm/head#feature:h2"],
-        )
-        self.assertEqual(rows[head + 9]["depth"], rows[head]["depth"] + 1)  # features at the same depth as the children and folders
+            keys[head : head + 12],
+            ["mast/arm/head", "mast/arm/head/lens", "mast/arm/head/lens#feature:f1", "mast/arm/head/lens#feature:f2", "mast/arm/head/lens#feature:f3", "mast/arm/head/cable", "mast/arm/head#mates", "mast/arm/head#bodies", "mast/arm/head#planes", "mast/arm/head#surfaces", "mast/arm/head#feature:h1", "mast/arm/head#feature:h2"],
+        )  # since version 3 the level's own Mates folder comes between its children and the live part's folders (section 14)
+        self.assertEqual(rows[head + 10]["depth"], rows[head]["depth"] + 1)  # features at the same depth as the children and folders
         self.assertTrue(all(r["type"] is None for r in rows if "lens#feature" in r["key"]))  # read-only names: no type
         self.assertEqual(rows[-2]["key"], "#mates")  # the root's folders come before the root's own live block, which is not here
         root = case("live_part_at_root_of_assembly")["expected"]
@@ -452,15 +468,123 @@ class VersionTwo(unittest.TestCase):
     def test_every_row_kind_and_token_is_in_the_vectors(self):
         kinds = {r["kind"] for c in VECTORS["cases"] if c["kind"] in ("live_part", "live_part_filter") for r in rows_of(c)}
         self.assertEqual(kinds, {"root", "assembly", "part", "missing", "group", "feature", "mates_folder", "patterns_folder", "bodies_folder", "planes_folder", "surfaces_folder", "curves_folder", "body", "surface", "curve", "default_plane"})
-        tokens = {w for c in cases_of("filter", "live_part_filter") for w in c["query"].lower().split() if w.startswith(":")}
+        tokens = {w for c in cases_of("filter", "live_part_filter", "level_folders_filter") for w in c["query"].lower().split() if w.startswith(":")}
         self.assertTrue(set(ref.TOKENS) <= tokens, set(ref.TOKENS) - tokens)
 
     def test_live_rows_carry_type_and_filter_rows_carry_match(self):
         for c in VECTORS["cases"]:
-            rows = rows_of(c) if c["kind"] != "restore" and c["kind"] != "live_part_restore" and c["kind"] != "reveal" else []
+            rows = rows_of(c) if c["kind"] in ("rows", "filter", "live_part", "live_part_filter", "level_folders", "level_folders_filter") else []
             for r in rows:
                 self.assertEqual("type" in r, "live" in c, c["name"])
-                self.assertEqual("match" in r, c["kind"] in ("filter", "live_part_filter"), c["name"])
+                self.assertEqual("match" in r, c["kind"] in ("filter", "live_part_filter", "level_folders_filter"), c["name"])
+
+
+
+class VersionThree(unittest.TestCase):
+    """Spec section 14 (C1): a folder per assembly level, mate and pattern item rows, `:mates`. Hand-written from the spec."""
+
+    def test_earlier_kinds_take_no_items(self):
+        """Version 2's kinds keep their inputs; only `expected` of some of them changed (C1's PR lists which)."""
+        for c in VECTORS["cases"]:
+            if c["kind"] in ("rows", "filter", "live_part", "live_part_filter"):
+                self.assertNotIn("items", c, c["name"])  # earlier kinds take no items: their inputs did not change
+
+    def test_item_state_order(self):
+        self.assertEqual(ref.ITEM_STATES, ["lost", "broken", "near", "held", "suppressed", "none"])
+        item = {"lost": True, "status": "broken", "held": True, "suppressed": True}
+        self.assertEqual(ref.item_state(item), "lost")
+        self.assertEqual(ref.item_state({**item, "lost": False}), "broken")
+        self.assertEqual(ref.item_state({**item, "lost": False, "status": "near"}), "near")
+        self.assertEqual(ref.item_state({**item, "lost": False, "status": "ok"}), "held")
+        self.assertEqual(ref.item_state({"suppressed": True}), "suppressed")
+        self.assertEqual(ref.item_state({}), "none")
+        seen = {r["state"] for c in cases_of("level_folders") for r in c["expected"] if r["kind"] in ("mate", "pattern")}
+        self.assertEqual(seen, set(ref.ITEM_STATES))
+
+    def test_a_folder_under_each_placement_after_its_children(self):
+        rows = case("levels_sub_assembly_placed_twice")["expected"]
+        keys = [r["key"] for r in rows]
+        self.assertEqual(keys[2:6], ["boom_l", "boom_l/arm", "boom_l/pin", "boom_l#mates"])
+        self.assertIn("boom_r#mates", keys)
+        self.assertFalse(any(k.endswith("#patterns") and k != "#patterns" for k in keys))  # the Boom has mates and no patterns
+        by_key = {r["key"]: r for r in rows}
+        self.assertEqual((by_key["boom_l#mates"]["depth"], by_key["boom_l#mates"]["open"], by_key["boom_l#mates"]["count"]), (2, False, 2))
+        self.assertEqual(by_key["boom_l#mates"]["bubble"], {"level": "warning", "count": 2})
+        self.assertIsNone(by_key["boom_l"]["bubble"])  # moved to the folder (rule 5: not twice)
+        collapsed = {r["key"]: r for r in case("levels_collapsed")["expected"]}
+        self.assertEqual(collapsed["boom_l"]["bubble"], {"level": "warning", "count": 2})  # collapsed: its rolled-up problems
+
+    def test_order_under_an_open_level_children_folders_features(self):
+        keys = [r["key"] for r in case("levels_three_down_every_item_state")["expected"]]
+        top = keys.index("tower/mid/top")
+        self.assertEqual(
+            keys[top : top + 13],
+            [
+                "tower/mid/top", "tower/mid/top/hook", "tower/mid/top/pulley",
+                "tower/mid/top#mates", "tower/mid/top#mates#item:m1", "tower/mid/top#mates#item:m2", "tower/mid/top#mates#item:m3", "tower/mid/top#mates#item:m4", "tower/mid/top#mates#item:m5",
+                "tower/mid/top#patterns", "tower/mid/top#patterns#item:p1", "tower/mid/top#patterns#item:p2",
+                "tower/mid/top#feature:t1",
+            ],
+        )
+        rows = {r["key"]: r for r in case("levels_three_down_every_item_state")["expected"]}
+        self.assertEqual([rows[f"tower/mid/top#mates#item:m{i}"]["state"] for i in range(1, 6)], ["none", "lost", "held", "suppressed", "broken"])
+        item = rows["tower/mid/top#mates#item:m2"]
+        self.assertEqual((item["kind"], item["depth"], item["bubble"], item["expandable"], item["open"], item["count"], item["path"]), ("mate", 5, None, False, False, None, None))
+        self.assertEqual(rows["tower/mid/top#patterns"]["bubble"], None)
+        self.assertTrue(rows["tower#patterns"]["open"])
+        self.assertEqual(keys[keys.index("tower#patterns") + 1], "#mates")  # open and unfetched: nothing under it
+
+    def test_an_unfetched_open_folder_lists_nothing(self):
+        keys = [r["key"] for r in case("levels_unfetched_open_folder")["expected"]]
+        self.assertEqual(keys[keys.index("boom_l#mates") + 1], "boom_r")
+
+    def test_live_assembly_order(self):
+        keys = [r["key"] for r in case("live_part_assembly_with_mates")["expected"]]
+        top = keys.index("tower/mid/top")
+        self.assertEqual(keys[top + 3 : top + 7], ["tower/mid/top#mates", "tower/mid/top#patterns", "tower/mid/top#bodies", "tower/mid/top#planes"])
+
+    def test_filter(self):
+        errors = rows_of(case("levels_filter_errors_three_down"))
+        self.assertEqual(
+            [r["key"] for r in errors],
+            ["", "tower", "tower/mid", "tower/mid/top", "tower/mid/top/hook", "tower/mid/top/pulley", "tower/mid/top#mates", "tower/mid/top#mates#item:m2", "tower/mid/top#mates#item:m5"],
+        )
+        folder = errors[6]
+        self.assertEqual((folder["open"], folder["match"]), (True, False))
+        self.assertIsNone(errors[3]["bubble"])  # its folder is listed
+        without = {r["key"]: r for r in rows_of(case("levels_filter_row_without_its_folder"))}
+        self.assertNotIn("tower/mid/top#mates", without)
+        self.assertEqual(without["tower/mid/top"]["bubble"], {"level": "error", "count": 2})  # keeps its level's bubble
+        mates = [r["key"] for r in rows_of(case("levels_filter_mates_token")) if r["match"]]
+        self.assertTrue(mates and all("#mates#item:" in k for k in mates))
+        self.assertFalse(any(k.startswith("boom_r") for k in (r["key"] for r in rows_of(case("levels_filter_mates_token")))))
+        self.assertEqual(keys_of("levels_filter_mates_unfetched"), [""])
+        self.assertEqual([r["key"] for r in rows_of(case("levels_filter_item_label")) if r["match"]], ["#mates#item:r1"])
+        self.assertEqual(keys_of("levels_filter_folder_label"), [""])
+        self.assertEqual([r["key"] for r in rows_of(case("levels_filter_suppressed")) if r["match"]], ["tower/mid/top#mates#item:m4", "tower/mid/top#patterns#item:p2"])
+        warnings = [r["key"] for r in rows_of(case("levels_filter_warnings")) if r["match"] and "#item:" in r["key"]]
+        self.assertEqual(warnings, ["boom_l#mates#item:b1", "boom_l#mates#item:b2", "boom_r#mates#item:b1", "boom_r#mates#item:b2", "tower/mid/top#mates#item:m3", "#mates#item:r3"])
+
+    def test_restore(self):
+        self.assertEqual(case("levels_restore_nested_folders")["expected"], ["boom_l#mates", "boom_r#mates", "tower/mid", "tower/mid/top#mates", "tower/mid/top#patterns", "tower#patterns", "#mates"])
+        self.assertEqual(case("levels_restore_level_lost_its_mates")["expected"], ["boom_l#mates", "boom_r#mates", "tower/mid", "tower/mid/top#patterns", "tower#patterns", "#mates"])
+
+    def test_mate_and_pattern_names(self):
+        def m(type_, *midplanes):
+            return {"type": type_, "references": [{"midplane": {} if mp else None} for mp in midplanes]}
+
+        self.assertEqual(
+            ref.mate_names([m("coincident", 0, 0), m("coincident", 0, 1), m("distance", 1, 0), m("coincident", 0, 0), m("parallel", 1, 1), m("rack_pinion", 0, 0), m("cam", 0, 0)]),
+            ["Coincident 1", "Width 1", "Symmetric 1", "Coincident 2", "Width 2", "Rack and pinion 1", "cam 1"],
+        )
+        self.assertEqual(ref.mate_names([m("coincident", 1, 0, 0)]), ["Width 1"])  # Symmetric needs exactly two references
+        self.assertEqual(case("mate_names")["expected"][:7], ["Coincident 1", "Width 1", "Distance 1", "Symmetric 1", "Coincident 2", "Width 2", "Symmetric 2"])
+        self.assertEqual(ref.pattern_names([{"pattern_type": "linear"}, {"pattern_type": "circular"}, {"pattern_type": "linear"}]), ["Linear 1", "Circular 1", "Linear 2"])
+        self.assertEqual(case("pattern_names")["expected"], ["Linear 1", "Circular 1", "Linear 2", "grid 1"])
+
+    def test_item_and_folder_keys(self):
+        self.assertEqual(ref.item_key(ref.folder_key("mast/arm", "mates"), "m3"), "mast/arm#mates#item:m3")
+        self.assertEqual(ref.item_key(ref.folder_key("", "patterns"), "p1"), "#patterns#item:p1")
 
 
 if __name__ == "__main__":

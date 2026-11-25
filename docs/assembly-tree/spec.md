@@ -5,9 +5,12 @@ a change is made by the manager, in this file, the vectors and both clients at o
 
 Contents: 1. the endpoint; 2. cost and `status`; 3. display names; 4. grouping repeats; 5. the state slot; 6. problem counts;
 7. visible rows; 8. row keys and reveal; 9. the vectors; 10. where the clients differed and what was chosen; 11. the filter;
-12. remembered open rows; 13. the live part (the build tree). Sections 11 to 13 came with Phase B's first chunk (B1) and only
-add: sections 1 to 10 are as they were, except the new row kinds in section 7, the new keys in section 8 and the version
-in section 9.
+12. remembered open rows; 13. the live part (the build tree); 14. a folder per assembly level. Sections 11 to 13 came with Phase
+B's first chunk (B1) and only added: sections 1 to 10 stayed as they were, except the new row kinds in section 7, the new keys in
+section 8 and the version in section 9. Section 14 came with Phase C's first chunk (C1, vectors version 3) and **changes** what
+was there: every open assembly row lists its own Mates and Patterns folders (not only the root), an open assembly row's mates
+bubble moves to its Mates folder, mate and pattern items are rows, the filter lists a folder holding a match, and `:mates` is a
+token. Sections 6, 7, 8, 11, 12 and 13 say so where they are affected. The endpoint (section 1) did not change.
 
 Words used below: a **node** is one placed occurrence in the response; a **row** is one line a client draws; **siblings** are
 the occurrences one Part places, in the Part's order. "Unsaved" is client state: the backend never reports it.
@@ -222,36 +225,44 @@ numbers a row uses:
 | Row | Bubble from |
 |---|---|
 | A collapsed occurrence row that can open | its `problems` + unsaved rows below it |
-| An open occurrence row | its own level's mates only: `error` = `mates.broken`, `warning` = `mates.near` (its children show their own) |
+| An open occurrence row whose Mates folder is listed (section 14) | none: its level's mates are on the folder, not shown twice |
+| An open occurrence row whose Mates folder is not listed (it has no mates, or a filter leaves the folder out) | its own level's mates only: `error` = `mates.broken`, `warning` = `mates.near` (its children show their own; so a broken mate never vanishes under a filter) |
 | A collapsed group | each unsuppressed member: its own row (1 error if its state is `missing`, `cycle` or `over_constrained`; 1 unsaved if unsaved) plus its `problems` and unsaved rows below it |
 | An open group | none |
-| The root's Mates folder | the root's mates: `error` = `mates.broken`, `warning` = `mates.near` |
-| The root, rows that cannot open, features, Patterns folder | none |
+| A Mates folder, of any level (section 14) | that level's mates: `error` = `mates.broken`, `warning` = `mates.near` |
+| The root, rows that cannot open, features, Patterns folders, mate and pattern items | none |
+
+Until version 3 (C1) every open occurrence row showed its own level's mates, and only the root had a Mates folder.
 
 ## 7. Visible rows
 
 The flat list a client draws, top to bottom, for a set of **open keys** (section 8), the grouping switch, the set of unsaved
-Part ids and the features the client has fetched (per row key, `[{id, label}]`, labels named by the client's feature naming).
+Part ids, the features the client has fetched (per row key, `[{id, label}]`, labels named by the client's feature naming) and the
+mate and pattern items it has fetched (per folder key, section 14).
 
 1. **The root row** (key `""`, depth 0, kind `root`): always first and always open; it does not collapse.
 2. **The root's children** at depth 1, as section 4 lists them (occurrence rows and group rows).
-3. Under an **open occurrence row**: its children at depth + 1, then its features (when fetched) at depth + 1.
+3. Under an **open occurrence row**: its children at depth + 1, then (an assembly row) its Mates and Patterns folders at depth + 1
+   (section 14), then its features (when fetched) at depth + 1.
 4. Under an **open group row**: its members at depth + 1, each followed by its own rows when it is open.
 5. After the root's children: the **Mates** folder (if `mates.count > 0`), then **Patterns** (if `patterns.count > 0`), at
-   depth 1; then the root's own features, at depth 1 (a Part opened on its own: the root row and its features).
+   depth 1; then the root's own features, at depth 1 (a Part opened on its own: the root row and its features). This is section
+   14's rule at the root.
 6. A row **can open** (`expandable`) when: an occurrence row is not missing and has children or `feature_count > 0`; a group or
-   folder always. The root, missing rows, features, and cycle / truncated nodes with no children and no features cannot. An
-   open key on a row that cannot open is ignored (`open` is false).
+   folder always. The root, missing rows, features, mate and pattern items, and cycle / truncated nodes with no children and no
+   features cannot. An open key on a row that cannot open is ignored (`open` is false).
 7. An open part row whose features are not fetched yet lists nothing under it (a client may show progress on the row).
-8. A folder's contents are drawn by the client from `/mates` and `/component-patterns`; they are not rows in this model yet
-   (Phase C). Only the root has folders in Phase A.
+8. An open Mates or Patterns folder lists its level's items (kind `mate` / `pattern`) at depth + 1, from what the client fetched
+   (section 14); an open folder whose items are not fetched lists nothing under it. (Before version 3 the folders' contents were
+   not rows of this model, and only the root had folders.)
 
-Each row: `key`, `kind` (`root` / `assembly` / `part` / `missing` / `group` / `feature` / `mates_folder` / `patterns_folder`; and,
-only with a live part (section 13), `bodies_folder` / `planes_folder` / `surfaces_folder` / `curves_folder` / `body` / `surface` /
-`curve` / `default_plane`),
-`depth`, `label`, `state`, `bubble` (`{level, count}` or `null`), `expandable`, `open`, `count` (members of a group, items in
-a folder, else `null`), `path` (the node's `path` for occurrence rows, `[]` for the root, else `null`), `hidden`,
-`suppressed`. A client maps an occurrence row back to its node by `path` for everything else (`dof`, `rigid_set`, `color`,
+Each row: `key`, `kind` (`root` / `assembly` / `part` / `missing` / `group` / `feature` / `mates_folder` / `patterns_folder` /
+`mate` / `pattern` (section 14); and, only with a live part (section 13), `bodies_folder` / `planes_folder` / `surfaces_folder` /
+`curves_folder` / `body` / `surface` / `curve` / `default_plane`),
+`depth`, `label`, `state` (an item row's is section 14's item state), `bubble` (`{level, count}` or `null`), `expandable`, `open`,
+`count` (members of a group, a Mates folder's `mates.count`, a Patterns folder's `patterns.count`, a live folder's items, else
+`null`), `path` (the node's `path` for occurrence rows, `[]` for the root, else `null`), `hidden`, `suppressed` (an item's own
+`suppressed`). A client maps an occurrence row back to its node by `path` for everything else (`dof`, `rigid_set`, `color`,
 `placements`...).
 
 **Default open state:** only the root is open (rows below the first level start collapsed). Remembering open rows per
@@ -265,14 +276,15 @@ document is Phase B.
 | Occurrence | its `path` joined with `/` | `mast/arm/head` |
 | Group | the parent's key, `/` (omitted at the root), `#group:` and the first member's `occurrence_id` | `wheel_l/#group:b1`, `#group:s1` |
 | Feature | the owning row's key, `#feature:` and the feature id | `mast/arm/head/lens#feature:f2`, `#feature:f1` |
-| Folder | the owning row's key and `#mates` / `#patterns` | `#mates` |
+| Folder | the owning row's key and `#mates` / `#patterns` (the root's, or an open assembly occurrence's: section 14) | `#mates`, `mast/arm#mates`, `wheel_l#patterns` |
+| Mate or pattern item (section 14) | the folder's key, `#item:` and the mate's or pattern's id | `mast/arm#mates#item:m3`, `#patterns#item:p1` |
 | Live part's folders and items (section 13) | the live row's key `K` and `#bodies` / `#planes` / `#surfaces` / `#curves`; `K#body:<id>`, `K#surface:<id>`, `K#curve:<id>`; `K#plane:xy` / `xz` / `yz`; `K#plane:feature:<feature id>` | `mast/arm/head#bodies`, `#plane:xy`, `#plane:feature:f3`, `#body:b1` |
 
 The ids the backend and both clients make never contain `#` or `/` (the backend's uuid4, VR's `occ_<hex>`; the contract is only that property, not the format), and pattern copies use `#pattern:`, so keys do not collide.
 The backend does not check an id it is given (`POST /parts/{id}/occurrences`, `POST /parts/{id}/add-component`, whose
 `occurrence_id` is taken as given, and `import_native`, which takes ids as written), so a hand-edited `.didsa` can still carry a `#` or a `/`. Keys can then collide
-(`/` joins path ids: `a/b` at the root and the child `b` of `a` are one key; `#` is the separator of group, feature and folder
-keys), and the rows, filter, reveal and restore results for those rows are undefined. A client must not crash on one: it treats the
+(`/` joins path ids: `a/b` at the root and the child `b` of `a` are one key; `#` is the separator of group, feature, folder and
+item keys), and the rows, filter, reveal and restore results for those rows are undefined. A client must not crash on one: it treats the
 key as it is. Keys use stored ids only
 (occurrence and feature ids are kept in the file), so they survive a refresh and a reopen; `resolved_part_id` is
 session-local and is never part of a key.
@@ -291,8 +303,9 @@ A group key changes when its first member is deleted; the group then starts coll
 what the generator writes; CI: `.github/workflows/assembly-tree-vectors.yml`). Flutter reads it from
 `../docs/assembly-tree/vectors.json`; DIDSA-VR copies it unchanged to `tests/fixtures/assembly_tree_vectors.json`.
 
-- `version`: 2 (version 1 had the `rows` and `reveal` cases only; they are the first 36 cases, unchanged). `states`: the state slot
-  order (section 5).
+- `version`: 3 (version 1 had the `rows` and `reveal` cases only, the first 36 cases; version 2 added sections 11 to 13; version 3
+  adds section 14 and changes the expected rows of the earlier cases whose open rows include an assembly with mates or patterns).
+  `states`: the state slot order (section 5).
 - `trees`: name -> a full response (section 1), every field present. Ids are made up and mean nothing outside the file.
 - `cases`, each with `name`, `why`, `tree`:
   - `kind: "rows"`: inputs `open` (keys), `grouping`, `unsaved_part_ids`, `features` (row key -> `[{id, label}]`);
@@ -303,8 +316,14 @@ what the generator writes; CI: `.github/workflows/assembly-tree-vectors.yml`). F
     `match`); `"restore"` (`stored`, `grouping`, `limit`; `expected`: the kept keys); `"live_part"` (the `rows` inputs plus `live`,
     section 13; every row has `type`); `"live_part_filter"` (`live` and `query`) and `"live_part_restore"` (`live`, `stored`,
     `grouping`, `limit`). A client runs every kind it implements and fails on a kind it does not know.
+  - Version 3 (section 14): `kind: "level_folders"` (the `rows` inputs plus `items`: folder key -> `[{id, label, status, suppressed,
+    held, lost}]` for a Mates folder, `[{id, label, suppressed}]` for a Patterns folder); `"level_folders_filter"` (plus `query`;
+    `expected`: `{rows, unknown}`); `"level_folders_restore"` (as `restore`); `"mate_names"` (`mates`: one level's `/mates` entries;
+    `expected`: their labels, in order); `"pattern_names"` (`patterns`: one level's `/component-patterns` entries; `expected`: their
+    labels). The earlier kinds keep their inputs (no `items`: their folders list nothing when open).
   DIDSA-VR's `tests/occurrence_tree_model.gd` checks `version == 1` and runs every case that is not `rows` as a reveal, so B7 changes
-  it when it copies version 2 (`filter` and `restore` implemented; the three `live_part` kinds skipped by name).
+  it when it copies version 2 (`filter` and `restore` implemented; the three `live_part` kinds skipped by name). VR keeps version 2
+  until the chunk that brings section 14 to VR copies version 3.
 
 A client passes when, for every case, its rows (or keys) equal `expected` exactly.
 
@@ -327,7 +346,7 @@ switch. Chosen here where they differed and section 8 did not say:
 | A broken mate on a row | only as "red, not amber" on an over-constrained row; otherwise on the mate row | not on the row | `broken` state on every row it touches |
 | Fully constrained | lock | lock | kept as `fully_constrained` (lowest but `none`), though 9.2's order does not list it |
 | Root row | a permanent root row (plus the Edit Alone row) | root row | one root row, always open, never collapses |
-| Mates / Patterns | sections under the list | none | root folders after the root's children |
+| Mates / Patterns | sections under the list | none | root folders after the root's children; since version 3, a folder per open assembly level, its items rows (section 14) |
 | Cycles | (not handled) | (not handled) | a `cycle` state after `missing` |
 
 ## 11. Filter
@@ -344,31 +363,35 @@ for the open keys, every `match` is false, `unknown` is empty.
 | Token | A row meets it when |
 |---|---|
 | `:missing` | `state` is `missing` |
-| `:errors` | `state` is `missing`, `cycle`, `broken`, `over_constrained` or (section 13) `lost_reference`: the bubble's `error` set |
-| `:warnings` | `state` is `near` or (section 13) `moved_reference` |
+| `:errors` | `state` is `missing`, `cycle`, `broken`, `over_constrained`, (section 13) `lost_reference`, or (section 14, an item) `lost` or `broken`: the red states |
+| `:warnings` | `state` is `near`, (section 13) `moved_reference`, or (section 14, an item) `near` or `held`: the amber states |
 | `:unsaved` | `state` is `unsaved` |
 | `:fixed` | the occurrence's `fixed` flag is true, whatever its `state` (with `status`, a row whose constraint says `fully_constrained` shows that state, not `fixed`, but still meets `:fixed`) |
 | `:hidden` | the row's `hidden` is true (an occurrence, or a feature, body, surface, curve or default plane; whatever its `state`) |
-| `:suppressed` | the row's `suppressed` is true (its own flag: the rows below a suppressed row are not suppressed) |
+| `:suppressed` | the row's `suppressed` is true (its own flag: the rows below a suppressed row are not suppressed; a suppressed mate or pattern item too) |
 | `:parts` / `:assemblies` | `kind` is `part` / `assembly` (a missing row is neither) |
 | `:features` | `kind` is `feature` (a fetched feature, or any feature row of the live part; a plane feature counts in both places it is listed) |
 | `:sketches` | `type` is `sketch` (only feature rows of a live part have a `type`; section 7's fetched features have none, so they never match) |
+| `:mates` | `kind` is `mate`: a mate item row of any level (section 14; only fetched items exist to match) |
 
-`:mates` waits for Phase C (mates are not rows yet). A word starting with `:` that is not in this table is an **unknown token**: it
+A word starting with `:` that is not in this table is an **unknown token**: it
 is left out of the matching and listed in `unknown` (lower case, once each, in query order), so a client can say "unknown filter
 :foo". A lone `:` is an unknown token.
 
 **Which rows can match.** Every occurrence row at any depth, whatever the open keys; feature rows only where features were
 fetched (a client cannot find features it has not read, and says so in the filter's hint); under a live part, its feature, body,
-surface, curve and plane rows. The root, group rows and folder rows never match themselves.
+surface, curve and plane rows; mate and pattern items only where they were fetched (section 14; the same hint). The root, group
+rows and folder rows never match themselves.
 
 **A row matches** when its `label` contains every name term (a substring; so `<2>` finds instance 2) and it meets every known
 token (AND). With no name term and no known token (the query holds only unknown tokens) nothing matches: the output is the root
 row and `unknown`.
 
 **Listed rows.** The root; every match; every ancestor of a match: occurrence rows, with grouping on the group row a match or an
-ancestor sits in, and the live part's folder a match sits in. Only the matching members of a group are listed under it. Order
-and depth are section 7's (and section 13's). The Mates and Patterns folders are not listed while a filter is on. A listed row's
+ancestor sits in, the live part's folder a match sits in, and the Mates or Patterns folder a matching item sits in (section 14).
+Only the matching members of a group, and the matching items of a folder, are listed under it. Order and depth are section 7's
+(and sections 13's and 14's). A Mates or Patterns folder is listed exactly when an item in it matches (before version 3 they were
+never listed while a filter is on). A listed row's
 `open` is true when some row below it is listed (the root's always); a match with nothing listed below is `open: false`, its
 `expandable` as usual. Bubbles follow section 6 with these `open` values.
 
@@ -385,9 +408,10 @@ the status is still loading.
   (`MAX_STORED_KEYS`); beyond that the first 2,000 in the order below are kept and the rest dropped.
 - **Restore** (when a document opens, and the refresh rule of section 8): keep a stored key when it names a row of the new tree
   that can open, **under either grouping setting** (a group key is checked as if grouping were on, so switching grouping off and
-  on loses nothing); drop the rest. Never kept: the root's `""`, feature, body, surface, curve and plane keys. Folder keys are:
-  `#mates` and `#patterns` when the folder shows, and the live part's folders (section 13) when the folder shows and a live part
-  is given. The result is in **the order of the tree's visible rows with every row open and grouping on**, whatever the current
+  on loses nothing); drop the rest. Never kept: the root's `""`, feature, body, surface, curve, plane and item keys. Folder keys are:
+  the Mates and Patterns folders of any level (`#mates`, `mast/arm#mates`...; section 14) when the folder shows, that is when its
+  row exists and its level has mates / patterns (whether or not that row is open now), and the live part's folders (section 13)
+  when the folder shows and a live part is given. The result is in **the order of the tree's visible rows with every row open and grouping on**, whatever the current
   grouping, so it is deterministic. In the vectors, `grouping` is the client's current setting and does not change the result.
 - **Collapse all** empties the open keys (the root stays open). **Expand to selection** adds section 8's reveal keys for the
   selected path. Both are stored.
@@ -407,7 +431,8 @@ rest are booleans, false when absent); `bodies`, `surfaces`, `curves` (`{id, lab
 null `type`). The live row is always `expandable` (its Planes folder is always there), unless it is missing.
 
 **Rows.** With `live` given every row has `type`: the feature's `type` on a feature row, else null. Under the live row, **after
-anything section 7 lists under it** (its child occurrences; at the root also the Mates and Patterns folders), in this order:
+anything sections 7 and 14 list under it** (its child occurrences, then, when it is an assembly or the root, its own Mates and
+Patterns folders), in this order:
 
 1. The folders `bodies_folder` ("Bodies"), `planes_folder` ("Planes"), `surfaces_folder` ("Surfaces"), `curves_folder` ("Curves"),
    at the live row's depth + 1. Each is shown only when it has something in it; **Planes always**. `count` is its items (Planes:
@@ -450,3 +475,94 @@ a folder are false.
 matches, but a match inside one lists the folder, open, as a group is listed. A plane feature matches in both places it is listed.
 
 **Remembered rows (section 12):** folder keys can be open keys; feature, body, surface, curve and plane keys never are.
+
+## 14. A folder per assembly level
+
+Every assembly level shows its own mates and component patterns where it is, not only the root (scope section 12.2, #7). The
+endpoint does not change: the tree answer already carries each assembly node's `mates` and `patterns` counts (section 1), and a
+client reads a level's items from the existing listings when its folder opens.
+
+**Where.** Under an **open assembly occurrence row** (kind `assembly`), after its children (section 7 item 3) and before its
+features: the **Mates** folder when that node's `mates.count > 0`, then the **Patterns** folder when its `patterns.count > 0`,
+both at the row's depth + 1. The root's folders (section 7 item 5) are the same rule at depth 1. A node whose `mates` / `patterns`
+is `null` (a part, a missing file, a cycle, a node the depth cap stopped) has no folders; group rows have none (their members, when
+open, have their own). Folders are collapsed by default (the open keys decide). Under a **live** assembly row (section 13): its
+children, then its Mates and Patterns folders, then the live part's folders and features.
+
+| Row | kind | label | `count` | `bubble` |
+|---|---|---|---|---|
+| Mates folder | `mates_folder` | `Mates` | the level's `mates.count` | `error` = `mates.broken`, `warning` = `mates.near` (section 6), from the tree answer: it shows before the items are fetched |
+| Patterns folder | `patterns_folder` | `Patterns` | the level's `patterns.count` | none |
+
+A folder's `state` is `none`, its `hidden` and `suppressed` false, its `path` null, `expandable` true.
+
+**Keys.** The owning row's key and `#mates` / `#patterns`: `wheel_l#mates`, `mast/arm#patterns`; the root's stay `#mates` and
+`#patterns` (section 8). A sub-assembly placed twice has two folders with two keys (`wheel_l#mates`, `wheel_r#mates`) over one
+Part's mates. Folder keys can be open keys (section 12).
+
+**The open row's bubble.** An open assembly row shows no bubble of its own while its Mates folder is listed: the folder carries
+the level's mates (rule 5 of the scope: not twice). When the folder is not listed (a filter is on and nothing in it matches) the
+open row keeps its level's bubble (`error` = `mates.broken`, `warning` = `mates.near`), so a broken mate never vanishes from view.
+A collapsed row keeps its rolled-up `problems` bubble (section 6).
+
+**The folder's numbers and its items can differ.** The numbers come from the tree answer: `count` counts every mate,
+`broken` / `near` leave out mates touching a suppressed occurrence of the level, and `held` is not in the bubble. The items show
+each mate as the `/mates` listing gives it. So a folder can say `1` broken and list two red items (one is lost, or touches a
+suppressed occurrence), or show no bubble while an item is amber (held). Neither is wrong.
+
+**Items.** When a folder first opens, the client reads its level's listing: `GET /parts/{owner}/mates` for a Mates folder,
+`GET /parts/{owner}/component-patterns` for a Patterns folder, where `owner` is the node's `resolved_part_id` (the root's
+`part_id`). A Part placed twice can share one read. It passes the items in per folder key, as features are passed:
+
+- a mate: `{id, label, status, suppressed, held, lost}`: `status` is the listing's (`ok` / `near` / `broken`), `held` the
+  listing's, `lost` true when the listing's `lost_references` is not empty, `label` the mate name below;
+- a pattern: `{id, label, suppressed}`, `label` the pattern name below.
+
+An open folder lists its items in the listing's order at the folder's depth + 1: kind `mate` / `pattern`, key the folder's key,
+`#item:` and the id (`mast/arm#mates#item:m3`; the root's `#mates#item:m3`), `label`, `state` below, `suppressed` the item's,
+`hidden` false, `bubble` null, `expandable` and `open` false, `count` and `path` null. Item keys are never open keys. **An open
+folder whose items are not fetched lists nothing under it** (a client may show progress on the folder).
+
+**The item state slot,** one value per item row, the most severe first:
+
+| State | When | Suggested look |
+|---|---|---|
+| `lost` | `lost` (a lost mate is also `broken` in the listing; its state is `lost`) | red |
+| `broken` | `status` is `broken` | red |
+| `near` | `status` is `near` | amber |
+| `held` | `held` | amber |
+| `suppressed` | `suppressed` | dimmed |
+| `none` | none of the above | nothing |
+
+A pattern item's state is `suppressed` or `none`. `suppressed` is also the row's `suppressed` field, whichever state wins.
+
+**Mate names.** A mate has no name of its own; its label is made from one level's `/mates` listing, in the listing's order:
+
+1. A **Symmetric** mate is one with exactly two references where the first is a mid-plane reference (`references[0].midplane`
+   is not null) and the second is not: `Symmetric N`.
+2. Any other mate with a mid-plane reference is a **Width** mate: `Width N`.
+3. Every other mate: its type's label and N. Labels: `coincident` Coincident, `concentric` Concentric, `parallel` Parallel,
+   `distance` Distance, `angle` Angle, `gear` Gear, `rack_pinion` Rack and pinion, `screw` Screw, `limit_distance` Limit distance,
+   `limit_angle` Limit angle; a type not in this list is written as it is.
+4. **N** counts, up to and including this mate, the mates of the level named the same way: Symmetric among Symmetric mates, Width
+   among Width mates, otherwise the mates of the same `type` that are neither Width nor Symmetric. So `Coincident 1`, `Width 1`,
+   `Coincident 2` for a coincident, a coincident with a mid-plane reference and another coincident.
+
+(This is Flutter's `mateDisplayName`, `client/lib/viewport3d/assembly_tree_helpers.dart`. DIDSA-VR's mate type labels
+(`mates_tool.gd` `type_label`) agree word for word; VR shows no number today.)
+
+**Pattern names.** From one level's `/component-patterns` listing, in order: `linear` Linear, `circular` Circular, any other
+`pattern_type` as it is; then N, counting the level's patterns of that type up to and including this one (`Linear 1`, `Circular 1`,
+`Linear 2`). (Flutter's `componentPatternDisplayName`.)
+
+**The filter (section 11).** `:mates` is a known token: any mate item row. `:errors` also matches items in a red state (`lost`,
+`broken`), `:warnings` items in an amber state (`near`, `held`), `:suppressed` suppressed items (mates and patterns). Items match
+by `label` (name terms) like any row. Only fetched items can match (as with features). A match inside a folder lists the folder,
+open, and its ancestors, as a group is listed; only the matching items are listed under it. Folders never match themselves (the
+word `mates` finds no folder). A folder is listed exactly when an item in it matches.
+
+**Remembered rows (section 12).** The folder keys of any level are open keys: restore keeps one when its folder shows in the new
+tree (its row exists and its level still has mates, or patterns), and drops it when the level lost them. Item keys never are.
+
+**Reveal and expand to selection (sections 8 and 12).** Selecting an item and asking to expand to it opens the reveal keys of its
+level's row, that row, and its folder; selecting a folder, the reveal keys of its row and the row.

@@ -7,7 +7,8 @@ is one rule of the spec, named after the spec's section.
 Two halves:
 - `build_tree` turns a small hand-written model into a `GET /parts/{id}/assembly-tree` response, following the
   backend's walk (spec "Response", "Problem counts"), so the vectors' input trees are consistent without typing them out.
-- `visible_rows` and the helpers above it are what a client does with a response (spec "Display names" to "Row keys").
+- `visible_rows` and the helpers above it are what a client does with a response (spec "Display names" to "Row keys", and
+  sections 11 to 14).
 """
 
 from __future__ import annotations
@@ -288,6 +289,84 @@ def plane_feature_key(owner_key: str, feature_id: str) -> str:
     return owner_key + "#plane:feature:" + feature_id
 
 
+# --- A folder per assembly level (spec section 14) ------------------------------------------------------------------------
+
+ITEM_STATES = ["lost", "broken", "near", "held", "suppressed", "none"]
+
+
+def item_state(item: dict[str, Any]) -> str:
+    """The one state a mate or pattern item row shows, most severe first (`ITEM_STATES`). Input as the spec gives it: `status`
+    (`ok` / `near` / `broken`, the `/mates` listing's), `held`, `lost` (`lost_references` not empty), `suppressed`; a pattern has
+    only `suppressed`. A missing field is ok / false."""
+    if item.get("lost"):
+        return "lost"
+    status = item.get("status") or "ok"
+    if status == "broken":
+        return "broken"
+    if status == "near":
+        return "near"
+    if item.get("held"):
+        return "held"
+    if item.get("suppressed"):
+        return "suppressed"
+    return "none"
+
+
+MATE_TYPE_LABELS = {
+    "coincident": "Coincident",
+    "concentric": "Concentric",
+    "parallel": "Parallel",
+    "distance": "Distance",
+    "angle": "Angle",
+    "gear": "Gear",
+    "rack_pinion": "Rack and pinion",
+    "screw": "Screw",
+    "limit_distance": "Limit distance",
+    "limit_angle": "Limit angle",
+}
+PATTERN_TYPE_LABELS = {"linear": "Linear", "circular": "Circular"}
+
+
+def _is_symmetric(mate: dict[str, Any]) -> bool:
+    refs = mate.get("references") or []
+    return len(refs) == 2 and refs[0].get("midplane") is not None and refs[1].get("midplane") is None
+
+
+def _is_width(mate: dict[str, Any]) -> bool:
+    return any(r.get("midplane") is not None for r in mate.get("references") or []) and not _is_symmetric(mate)
+
+
+def mate_names(mates: list[dict[str, Any]]) -> list[str]:
+    """One level's `/mates` entries, in listing order -> their labels. A Symmetric mate (exactly two references, the first a
+    mid-plane, the second not) is `Symmetric N`; any other mate with a mid-plane reference is `Width N`; every other mate is its
+    type's label (`MATE_TYPE_LABELS`, an unknown type as written) and N. N counts, up to and including this one, the mates named
+    the same way: Symmetric among Symmetric, Width among Width, else the same `type` that is neither."""
+    out = []
+    for i, mate in enumerate(mates):
+        before = mates[: i + 1]
+        if _is_symmetric(mate):
+            out.append(f"Symmetric {sum(1 for m in before if _is_symmetric(m))}")
+        elif _is_width(mate):
+            out.append(f"Width {sum(1 for m in before if _is_width(m))}")
+        else:
+            n = sum(1 for m in before if m["type"] == mate["type"] and not _is_width(m) and not _is_symmetric(m))
+            out.append(f"{MATE_TYPE_LABELS.get(mate['type'], mate['type'])} {n}")
+    return out
+
+
+def pattern_names(patterns: list[dict[str, Any]]) -> list[str]:
+    """One level's `/component-patterns` entries -> their labels: the `pattern_type`'s label (`PATTERN_TYPE_LABELS`, an unknown
+    type as written) and N, counting the patterns of that type up to and including this one."""
+    return [
+        f"{PATTERN_TYPE_LABELS.get(p['pattern_type'], p['pattern_type'])} {sum(1 for q in patterns[: i + 1] if q['pattern_type'] == p['pattern_type'])}"
+        for i, p in enumerate(patterns)
+    ]
+
+
+def item_key(folder_key_: str, item_id: str) -> str:
+    return folder_key_ + "#item:" + item_id
+
+
 # --- Visible rows -------------------------------------------------------------------------------------------------------
 
 def _row(key, kind, depth, label, state="none", bubble_=None, expandable=False, is_open=False, count=None, path=None, hidden=False, suppressed=False):
@@ -318,6 +397,7 @@ def visible_rows(
     unsaved_part_ids: set[str] | frozenset[str] = frozenset(),
     features: dict[str, list[dict[str, Any]]] | None = None,
     live: dict[str, Any] | None = None,
+    items: dict[str, list[dict[str, Any]]] | None = None,
     *,
     listed: set[str] | None = None,
     trace: dict[str, dict[str, Any]] | None = None,
@@ -325,11 +405,13 @@ def visible_rows(
 ) -> list[dict[str, Any]]:
     """The flat list of rows to draw, top to bottom (spec "Visible rows").
 
-    `live` (section 13) adds the live part's folders and features, and a `type` to every row. `listed`, `trace` and `open_all`
+    `live` (section 13) adds the live part's folders and features, and a `type` to every row. `items` (section 14) are the mate
+    and pattern items fetched per folder key. `listed`, `trace` and `open_all`
     are for the filter and for restore (sections 11 and 12): with `listed` only those keys are emitted; `open_all` opens
     everything that can open; `trace` receives, per emitted key, its parent's key and its row's `fixed` flag."""
     unsaved = frozenset(unsaved_part_ids)
     features = features or {}
+    items = items or {}
     live_key = live["key"] if live is not None else None
     rows: list[dict[str, Any]] = []
 
@@ -388,6 +470,25 @@ def visible_rows(
         else:
             emit_features(node_key, depth)
 
+    def mates_folder_listed(node: dict[str, Any], node_key: str) -> bool:
+        """Whether an open row's Mates folder is listed: it has mates, and no filter leaves it out (section 14's bubble rule)."""
+        mates = node.get("mates")
+        return bool(mates and mates["count"] > 0) and (listed is None or folder_key(node_key, "mates") in listed)
+
+    def emit_level_folders(node: dict[str, Any], node_key: str, depth: int) -> None:
+        """Section 14: under an open assembly (or the root), after its children: Mates, then Patterns, each with its fetched items."""
+        for name, kind, item_kind, counts in (("mates", "mates_folder", "mate", node.get("mates")), ("patterns", "patterns_folder", "pattern", node.get("patterns"))):
+            if not counts or counts["count"] <= 0:
+                continue
+            fkey = folder_key(node_key, name)
+            opened = is_open_key(fkey)
+            bubble_ = bubble(own_level_counts(node)) if name == "mates" else None
+            label = "Mates" if name == "mates" else "Patterns"
+            if not add(_row(fkey, kind, depth, label, bubble_=bubble_, expandable=True, is_open=opened, count=counts["count"]), node_key) or not opened:
+                continue
+            for item in items.get(fkey, []):
+                add(_row(item_key(fkey, item["id"]), item_kind, depth + 1, item["label"], state=item_state(item), suppressed=bool(item.get("suppressed"))), fkey)
+
     def emit_occurrence(node: dict[str, Any], name: str, depth: int, parent: str) -> None:
         key = occurrence_key(node["path"])
         expandable = _expandable(node) or (live is not None and key == live_key and node["kind"] != "missing")
@@ -395,7 +496,9 @@ def visible_rows(
         if not expandable:
             counts = None
         elif is_open:
-            counts = own_level_counts(node)
+            # Section 14: an open row's own mates are shown on its Mates folder; only when that folder is not listed (a filter) does
+            # the row keep them.
+            counts = None if mates_folder_listed(node, key) else own_level_counts(node)
         else:
             counts = subtree_counts(node, unsaved)
         shown = add(
@@ -417,6 +520,7 @@ def visible_rows(
         )
         if shown and is_open:
             emit_level(node, key, depth + 1)
+            emit_level_folders(node, key, depth + 1)
             emit_tail(key, depth + 1)
 
     def emit_level(node: dict[str, Any], node_key: str, depth: int) -> None:
@@ -451,13 +555,7 @@ def visible_rows(
                     emit_occurrence(children[i], names[i]["name"], depth + 1, key)
 
     emit_level(tree, "", 1)
-    if listed is None:  # the Mates and Patterns folders are never listed while a filter is on
-        mates = tree.get("mates")
-        if mates and mates["count"] > 0:
-            add(_row(folder_key("", "mates"), "mates_folder", 1, "Mates", bubble_=bubble(own_level_counts(tree)), expandable=True, is_open=is_open_key(folder_key("", "mates")), count=mates["count"]), "")
-        patterns = tree.get("patterns")
-        if patterns and patterns["count"] > 0:
-            add(_row(folder_key("", "patterns"), "patterns_folder", 1, "Patterns", expandable=True, is_open=is_open_key(folder_key("", "patterns")), count=patterns["count"]), "")
+    emit_level_folders(tree, "", 1)
     emit_tail("", 1)
     return rows
 
@@ -481,8 +579,8 @@ def reveal(tree: dict[str, Any], path: list[str], grouping: bool = True) -> list
 
 # --- Filter (spec section 11) -------------------------------------------------------------------------------------------
 
-ERROR_STATES = frozenset({"missing", "cycle", "broken", "over_constrained", "lost_reference"})
-WARNING_STATES = frozenset({"near", "moved_reference"})
+ERROR_STATES = frozenset({"missing", "cycle", "broken", "over_constrained", "lost_reference", "lost"})  # item rows: lost, broken (section 14)
+WARNING_STATES = frozenset({"near", "moved_reference", "held"})  # item rows: near, held
 # token -> test(row, fixed flag). Written out one by one so the spec's list and this one can be compared line by line.
 TOKENS = {
     ":missing": lambda r, fixed: r["state"] == "missing",
@@ -496,6 +594,7 @@ TOKENS = {
     ":assemblies": lambda r, fixed: r["kind"] == "assembly",
     ":features": lambda r, fixed: r["kind"] == "feature",
     ":sketches": lambda r, fixed: r.get("type") == "sketch",
+    ":mates": lambda r, fixed: r["kind"] == "mate",
 }
 NON_MATCHING_KINDS = frozenset({"root", "group", "mates_folder", "patterns_folder", "bodies_folder", "planes_folder", "surfaces_folder", "curves_folder"})
 
@@ -521,16 +620,17 @@ def filter_rows(
     unsaved_part_ids: set[str] | frozenset[str] = frozenset(),
     features: dict[str, list[dict[str, Any]]] | None = None,
     live: dict[str, Any] | None = None,
+    items: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     """`{"rows", "unknown"}`: section 7's (or section 13's) rows narrowed to the root, the matches and their ancestors. Every row
     has `match`. An empty query is no filter (the rows for `open_keys`, every `match` false). A query with words but no
     criteria (only unknown tokens) is a filter that matches nothing."""
     terms, tokens, unknown = parse_query(query)
     if not query.split():
-        rows = visible_rows(tree, open_keys, grouping, unsaved_part_ids, features, live)
+        rows = visible_rows(tree, open_keys, grouping, unsaved_part_ids, features, live, items)
         return {"rows": [{**row, "match": False} for row in rows], "unknown": []}
     trace: dict[str, dict[str, Any]] = {}
-    everything = visible_rows(tree, frozenset(), grouping, unsaved_part_ids, features, live, open_all=True, trace=trace)
+    everything = visible_rows(tree, frozenset(), grouping, unsaved_part_ids, features, live, items, open_all=True, trace=trace)
     matches = set()
     if terms or tokens:
         for row in everything:
@@ -544,7 +644,7 @@ def filter_rows(
             listed.add(key)
             key = trace[key]["parent"]
     opened = {trace[key]["parent"] for key in listed if key != ""}  # a listed row is open when something below it is listed
-    rows = visible_rows(tree, opened, grouping, unsaved_part_ids, features, live, listed=listed)
+    rows = visible_rows(tree, opened, grouping, unsaved_part_ids, features, live, items, listed=listed)
     return {"rows": [{**row, "match": row["key"] in matches} for row in rows], "unknown": unknown}
 
 
@@ -557,7 +657,8 @@ OPEN_KINDS = frozenset({"assembly", "part", "group", "mates_folder", "patterns_f
 def restore(tree: dict[str, Any], stored: list[str], live: dict[str, Any] | None = None, limit: int = MAX_STORED_KEYS) -> list[str]:
     """The stored open keys that still name a row that can open, in the visible-row order of the tree with everything open
     (grouping on: group keys are checked under that setting, so switching grouping off and on loses nothing), at most `limit`.
-    Feature, body, surface, curve and plane keys are never open keys; the root's `""` is always open and never stored."""
+    Feature, body, surface, curve, plane and item keys are never open keys; the root's `""` is always open and never stored.
+    A Mates or Patterns folder key of any level is kept when that folder shows (its level has mates / patterns, section 14)."""
     wanted = set(stored)
     rows = visible_rows(tree, frozenset(), True, frozenset(), {}, live, open_all=True)
     kept = [r["key"] for r in rows if r["key"] in wanted and r["kind"] in OPEN_KINDS and r["expandable"]]

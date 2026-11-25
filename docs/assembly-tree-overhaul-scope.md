@@ -1353,7 +1353,7 @@ Frame (answer 8).
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
-| C1 contract + Flutter model | not started | | | Answers 1-3 given (12.8); manager review before merge |
+| C1 contract + Flutter model | PR open, awaiting the manager's review (12.5 step 3) | (this PR) | Opus 5.5 | Spec 14, vectors v3 (124 cases, 13 earlier ones changed: listed in the PR), Flutter model passes v3; own reviews done |
 | C2 Flutter #7 | not started | | | |
 | C3 Flutter #13 | not started | | | |
 | C4 Flutter #12 + #15 | not started | | | |
@@ -1365,7 +1365,7 @@ Frame (answer 8).
 
 ### 12.8 Hand-off
 
-**In flight:** nothing; briefs written 25 Nov 2026.
+**In flight:** C1 (PR open; the owner opens the manager review of 12.5 step 3 before merging).
 
 **Leftovers placed:** 10.8's B5 sheet nits 1-8 and B2.1 -> C0 (item 9 stays with the device check); VR leftovers 1-3 -> C6;
 VR item 4 (the root as the way to a room): kept, answer 10 below.

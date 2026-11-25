@@ -4,7 +4,7 @@ import '../viewport3d/tree_multi_select_controller.dart' show TreeMultiSelectKey
 
 /// The assembly tree's logic: no widgets, no network. It turns an [AssemblyTreeResponseDto]
 /// (`GET /parts/{id}/assembly-tree`) into the flat list of rows a tree draws, following `docs/assembly-tree/spec.md`
-/// (sections 3 to 8) rule for rule; `docs/assembly-tree/vectors.json` pins the results.
+/// (sections 3 to 8, and 11 to 14) rule for rule; `docs/assembly-tree/vectors.json` (version 3) pins the results.
 ///
 /// Everything is linear in the number of nodes: the names, groups and keys are worked out once per load, and
 /// [visibleRows] walks only what is open (the unsaved counts below each node are cached until the unsaved set changes).
@@ -62,8 +62,8 @@ enum AssemblyRowKind {
   matesFolder('mates_folder'),
   patternsFolder('patterns_folder'),
 
-  /// A mate or a pattern listed under its root folder (A4: supplied by the host with [AssemblyTreeModel.setFolderItems]; the spec's
-  /// rows, vectors and keys do not include them).
+  /// A mate or a pattern listed under its level's folder (spec section 14): supplied by the host with [AssemblyTreeModel.setFolderItems]
+  /// once it has read that level's `/mates` or `/component-patterns`. Its state is [AssemblyTreeRow.itemState].
   mate('mate'),
   pattern('pattern'),
 
@@ -138,15 +138,85 @@ class AssemblyFeature {
 /// How a mate / pattern item row reads: the colour of its icon and note.
 enum AssemblyItemTone { error, warning, info }
 
-/// A mate or a pattern under its root folder (A4). The host names it and says how it reads; the model only keeps and lists it. [note] is the
-/// second line (a phone row) or the dimmed text after the label (a desktop row); [tone] colours the row; [suppressed] draws it dimmed.
+/// The state slot of a mate or pattern item row (spec section 14), most severe first: [lost] and [broken] are red, [near] and [held]
+/// amber, [suppressed] dimmed. [wire] is the spelling in the spec and the vectors. Its own enum (not [AssemblyRowState]) so that the
+/// views' switches over the row states stay as they are; an item row's [AssemblyTreeRow.state] is [AssemblyRowState.none].
+enum AssemblyItemState {
+  lost('lost'),
+  broken('broken'),
+  near('near'),
+  held('held'),
+  suppressed('suppressed'),
+  none('none');
+
+  final String wire;
+  const AssemblyItemState(this.wire);
+
+  /// Red: what `:errors` finds.
+  bool get isError => this == lost || this == broken;
+
+  /// Amber: what `:warnings` finds.
+  bool get isWarning => this == near || this == held;
+}
+
+/// A mate or a pattern under its level's Mates or Patterns folder (spec section 14).
+///
+/// Two forms, one class. The spec's input ([AssemblyFolderItem.spec], [AssemblyFolderItem.fromJson]): the label and the `/mates` listing's
+/// `status`, `held`, `lost` and `suppressed` (a pattern: `suppressed`), from which [state] follows. The host-named form (A4, `note` / `tone`,
+/// what `part_screen.dart` and `assembly_tree_helpers.dart` still pass for the root's folders): [note] is the second line (a phone row) or the
+/// dimmed text after the label (a desktop row), [tone] colours the row, [suppressed] draws it dimmed; its [state] is [AssemblyItemState.suppressed]
+/// or [AssemblyItemState.none], since it carries no status. (C2 moves the callers to the spec's form and drops the other.)
 class AssemblyFolderItem {
   final String id;
   final String label;
   final String? note;
   final AssemblyItemTone? tone;
   final bool suppressed;
-  const AssemblyFolderItem(this.id, this.label, {this.note, this.tone, this.suppressed = false});
+
+  /// The `/mates` listing's `status`: `ok`, `near` or `broken` (a pattern: `ok`).
+  final String status;
+
+  /// The mate is held out of every solve until its references are confirmed (the listing's `held`).
+  final bool held;
+
+  /// A reference of the mate is lost (the listing's `lost_references` is not empty).
+  final bool lost;
+
+  const AssemblyFolderItem(this.id, this.label, {this.note, this.tone, this.suppressed = false})
+      : status = 'ok',
+        held = false,
+        lost = false;
+
+  /// The spec's item input (section 14).
+  const AssemblyFolderItem.spec({
+    required this.id,
+    required this.label,
+    this.status = 'ok',
+    this.suppressed = false,
+    this.held = false,
+    this.lost = false,
+  })  : note = null,
+        tone = null;
+
+  /// One entry of the vectors' `items` (`{id, label, status, suppressed, held, lost}`; a pattern `{id, label, suppressed}`).
+  factory AssemblyFolderItem.fromJson(Map<String, dynamic> j) => AssemblyFolderItem.spec(
+        id: j['id'] as String,
+        label: j['label'] as String,
+        status: j['status'] as String? ?? 'ok',
+        suppressed: j['suppressed'] == true,
+        held: j['held'] == true,
+        lost: j['lost'] == true,
+      );
+
+  /// The one state the item row shows, most severe first (spec section 14): lost > broken > near > held > suppressed > none.
+  AssemblyItemState get state {
+    if (lost) return AssemblyItemState.lost;
+    if (status == 'broken') return AssemblyItemState.broken;
+    if (status == 'near') return AssemblyItemState.near;
+    if (held) return AssemblyItemState.held;
+    if (suppressed) return AssemblyItemState.suppressed;
+    return AssemblyItemState.none;
+  }
 }
 
 /// A feature of the live part (spec section 13): what the tree needs to draw its row. [lostReference] is the reason, or null when no reference is
@@ -368,6 +438,9 @@ class AssemblyTreeRow {
   final String? note;
   final AssemblyItemTone? tone;
 
+  /// A mate or pattern item row's state slot (spec section 14); null on every other row. ([state] is [AssemblyRowState.none] on an item row.)
+  final AssemblyItemState? itemState;
+
   /// With a filter on (spec section 11): this row is a match, not just an ancestor listed to show where the match is. Always false
   /// without a filter, and for the root.
   final bool match;
@@ -404,6 +477,7 @@ class AssemblyTreeRow {
     this.itemId,
     this.note,
     this.tone,
+    this.itemState,
     this.match = false,
     this.live = false,
     this.type,
@@ -439,6 +513,7 @@ class AssemblyTreeRow {
         itemId: itemId,
         note: note,
         tone: tone,
+        itemState: itemState,
         match: match,
         live: live,
         type: type,
@@ -519,7 +594,11 @@ class AssemblyFilterResult {
   /// Some part has features that were not read (it was never opened), so the filter could not look at them (spec section 11: say so).
   final bool featuresNotRead;
 
-  const AssemblyFilterResult(this.rows, this.unknown, {required this.active, this.featuresNotRead = false});
+  /// Some level has mates or patterns whose items were not read (its folder was never opened), so `:mates` and the rest could not look at
+  /// them (spec section 14: only fetched items can match).
+  final bool itemsNotRead;
+
+  const AssemblyFilterResult(this.rows, this.unknown, {required this.active, this.featuresNotRead = false, this.itemsNotRead = false});
 }
 
 /// At most this many open keys are remembered per document (spec section 12).
@@ -531,11 +610,11 @@ typedef _TokenTest = bool Function(AssemblyTreeRow row, bool fixed);
 const _errorStates = {AssemblyRowState.missing, AssemblyRowState.cycle, AssemblyRowState.broken, AssemblyRowState.overConstrained};
 
 // Written out one by one, in the spec's order, so the two can be compared line by line. `:sketches` needs a feature's `type`, which rows have
-// only with the live part (spec section 13).
+// only with the live part (spec section 13). Item rows (section 14) carry their state in [AssemblyTreeRow.itemState].
 final Map<String, _TokenTest> _filterTokens = {
   ':missing': (r, f) => r.state == AssemblyRowState.missing,
-  ':errors': (r, f) => _errorStates.contains(r.state) || r.state == AssemblyRowState.lostReference,
-  ':warnings': (r, f) => r.state == AssemblyRowState.near || r.state == AssemblyRowState.movedReference,
+  ':errors': (r, f) => _errorStates.contains(r.state) || r.state == AssemblyRowState.lostReference || (r.itemState?.isError ?? false),
+  ':warnings': (r, f) => r.state == AssemblyRowState.near || r.state == AssemblyRowState.movedReference || (r.itemState?.isWarning ?? false),
   ':unsaved': (r, f) => r.state == AssemblyRowState.unsaved,
   ':fixed': (r, f) => f,
   ':hidden': (r, f) => r.hidden,
@@ -544,17 +623,16 @@ final Map<String, _TokenTest> _filterTokens = {
   ':assemblies': (r, f) => r.kind == AssemblyRowKind.assembly,
   ':features': (r, f) => r.kind == AssemblyRowKind.feature,
   ':sketches': (r, f) => r.type == 'sketch',
+  ':mates': (r, f) => r.kind == AssemblyRowKind.mate,
 };
 
-/// Rows that never match themselves (spec section 11). Mate and pattern item rows are not in the spec's rows; they are never listed
-/// by a filter either (the folders are not listed).
+/// Rows that never match themselves (spec sections 11, 13 and 14). Mate and pattern item rows match (by label and tokens); a folder is
+/// listed only as the parent of a match.
 const _nonMatchingKinds = {
   AssemblyRowKind.root,
   AssemblyRowKind.group,
   AssemblyRowKind.matesFolder,
   AssemblyRowKind.patternsFolder,
-  AssemblyRowKind.mate,
-  AssemblyRowKind.pattern,
   AssemblyRowKind.bodiesFolder,
   AssemblyRowKind.planesFolder,
   AssemblyRowKind.surfacesFolder,
@@ -969,11 +1047,12 @@ class AssemblyTreeModel {
     return why == null ? r : r.withPick(AssemblyPickState.locked, why);
   }
 
-  // ----- Mates and patterns under the root folders (A4) -----
+  // ----- Mates and patterns under each level's folders (spec section 14) -----
 
-  /// Sets what is listed under the root folder [folderKey] (`#mates` or `#patterns`) when it is open. The host reads `/mates` and
-  /// `/component-patterns` (spec section 7, rule 8) and names the rows. Not part of the spec's rows: a model with none set lists
-  /// exactly what the vectors say.
+  /// Sets what is listed under the folder [folderKey] when it is open: a level's Mates or Patterns folder, `<row key>#mates` /
+  /// `<row key>#patterns` (the root's `#mates`, `#patterns`). The host reads the level's `/mates` or `/component-patterns` (the owner is the
+  /// row's `resolved_part_id`) when the folder first opens and names the items (spec section 14). A folder with nothing set lists nothing
+  /// under it, even open; only items set here can match a filter.
   void setFolderItems(String folderKey, List<AssemblyFolderItem> items) {
     _folderItems[folderKey] = List.unmodifiable(items);
     _invalidate();
@@ -1130,6 +1209,11 @@ class AssemblyTreeModel {
 
     final f = key.indexOf('#feature:');
     if (f >= 0) return ownerKeys(key.substring(0, f));
+    // A mate or pattern item (spec section 14): its level's row and its folder; a folder: its level's row.
+    final item = key.indexOf('#item:');
+    final folder = item >= 0 ? key.substring(0, item) : key;
+    final level = _levelFolderOwner(folder);
+    if (level != null) return [...ownerKeys(level), if (item >= 0) folder];
     if (_groupsByKey.containsKey(key)) {
       final slash = key.lastIndexOf('/');
       return ownerKeys(slash < 0 ? '' : key.substring(0, slash));
@@ -1248,7 +1332,21 @@ class AssemblyTreeModel {
       unknown,
       active: true,
       featuresNotRead: _featuresNotRead(),
+      itemsNotRead: _itemsNotRead(),
     );
+  }
+
+  /// Some level (the root, or any assembly in the tree) has mates or patterns and nothing was set for that folder ([setFolderItems]).
+  bool _itemsNotRead() {
+    bool unread(String owner, AssemblyTreeMatesDto? mates, AssemblyTreePatternsDto? patterns) =>
+        ((mates?.count ?? 0) > 0 && !_folderItems.containsKey('$owner#mates')) ||
+        ((patterns?.count ?? 0) > 0 && !_folderItems.containsKey('$owner#patterns'));
+    final t = _tree!;
+    if (unread('', t.mates, t.patterns)) return true;
+    for (final n in _preorder) {
+      if (unread(n.key, n.dto.mates, n.dto.patterns)) return true;
+    }
+    return false;
   }
 
   bool _featuresNotRead() {
@@ -1301,10 +1399,40 @@ class AssemblyTreeModel {
     if (_groupsByKey.containsKey(key)) return true; // whatever the grouping switch says: it may be turned back on
     final t = _tree;
     if (t == null) return false;
-    if (key == '#mates') return (t.mates?.count ?? 0) > 0;
-    if (key == '#patterns') return (t.patterns?.count ?? 0) > 0;
+    if (_levelFolderOwner(key) != null) return true;
     final ref = _liveRefMap[key];
     return ref != null && ref.ms == null && _liveFolderKey(key); // a live folder (the only live rows that can open)
+  }
+
+  /// The owning row's key when [key] is a Mates or Patterns folder that shows (spec section 14): `<row key>#mates` / `#patterns` of the root
+  /// or of an occurrence whose level has mates / patterns; null otherwise.
+  String? _levelFolderOwner(String key) {
+    final t = _tree;
+    if (t == null) return null;
+    final String owner;
+    final bool mates;
+    if (key.endsWith('#mates')) {
+      owner = key.substring(0, key.length - '#mates'.length);
+      mates = true;
+    } else if (key.endsWith('#patterns')) {
+      owner = key.substring(0, key.length - '#patterns'.length);
+      mates = false;
+    } else {
+      return null;
+    }
+    if (owner.contains('#')) return null; // the root's key is '', an occurrence's has no '#'
+    final AssemblyTreeMatesDto? m;
+    final AssemblyTreePatternsDto? p;
+    if (owner.isEmpty) {
+      m = t.mates;
+      p = t.patterns;
+    } else {
+      final n = _byKey[owner];
+      if (n == null) return null;
+      m = n.dto.mates;
+      p = n.dto.patterns;
+    }
+    return ((mates ? m?.count : p?.count) ?? 0) > 0 ? owner : null;
   }
 
   bool _liveFolderKey(String key) {
@@ -1314,9 +1442,12 @@ class AssemblyTreeModel {
 
   bool _selectionExists(String key) {
     if (key.isEmpty || _rowKeyExists(key) || _liveRefMap.containsKey(key)) return true;
-    for (final folder in const ['#mates', '#patterns']) {
-      final prefix = '$folder#item:';
-      if (key.startsWith(prefix)) return _folderItems[folder]?.any((it) => '$prefix${it.id}' == key) ?? false;
+    final item = key.indexOf('#item:');
+    if (item >= 0) {
+      // A mate or pattern item: its folder still shows and still lists it (spec section 14).
+      final folder = key.substring(0, item);
+      final id = key.substring(item + '#item:'.length);
+      return _levelFolderOwner(folder) != null && (_folderItems[folder]?.any((it) => it.id == id) ?? false);
     }
     final i = key.indexOf('#feature:');
     if (i < 0) return false;
@@ -1503,7 +1634,7 @@ class AssemblyTreeModel {
     return List.unmodifiable([for (final r in _walk(_Walk(open: _open, grouping: _grouping))) _withPick(r)]);
   }
 
-  /// Spec section 7 for one [_Walk]: the root, its children, the Mates and Patterns folders (not while a filter lists rows), the root's features.
+  /// Spec section 7 for one [_Walk]: the root, its children, its Mates and Patterns folders (section 14), the root's features.
   List<AssemblyTreeRow> _walk(_Walk w) {
     final t = _tree!;
     w.add(
@@ -1520,46 +1651,7 @@ class AssemblyTreeModel {
       null,
     );
     _emitLevel(w.grouping ? _topLayout : _top, 1, '', w);
-    if (w.listed == null) {
-      final mates = t.mates;
-      if (mates != null && mates.count > 0) {
-        final open = w.isOpen('#mates');
-        w.add(
-          AssemblyTreeRow(
-            key: '#mates',
-            kind: AssemblyRowKind.matesFolder,
-            depth: 1,
-            label: 'Mates',
-            state: AssemblyRowState.none,
-            bubble: _bubbleFrom(mates.broken ?? 0, mates.near ?? 0, 0),
-            expandable: true,
-            open: open,
-            count: mates.count,
-            statusFailed: t.statusFailed,
-          ),
-          '',
-        );
-        if (open && !w.openAll) _emitItems('#mates', AssemblyRowKind.mate, w);
-      }
-      final patterns = t.patterns;
-      if (patterns != null && patterns.count > 0) {
-        final open = w.isOpen('#patterns');
-        w.add(
-          AssemblyTreeRow(
-            key: '#patterns',
-            kind: AssemblyRowKind.patternsFolder,
-            depth: 1,
-            label: 'Patterns',
-            state: AssemblyRowState.none,
-            expandable: true,
-            open: open,
-            count: patterns.count,
-          ),
-          '',
-        );
-        if (open && !w.openAll) _emitItems('#patterns', AssemblyRowKind.pattern, w);
-      }
-    }
+    _emitLevelFolders('', t.mates, t.patterns, t.statusFailed, 1, w);
     _emitTail('', 1, w);
     return w.rows;
   }
@@ -1580,9 +1672,12 @@ class AssemblyTreeModel {
     final open = expandable && w.isOpen(n.key);
     AssemblyBubble? bubble;
     if (expandable) {
-      bubble = open
-          ? _bubbleFrom(d.mates?.broken ?? 0, d.mates?.near ?? 0, 0)
-          : _bubbleFrom(_problemErrors(d.problems), d.problems?.near ?? 0, n.unsavedBelow);
+      if (!open) {
+        bubble = _bubbleFrom(_problemErrors(d.problems), d.problems?.near ?? 0, n.unsavedBelow);
+      } else if (!_matesFolderListed(n.key, d.mates, w)) {
+        // Spec section 14: an open row's own mates show on its Mates folder; only while that folder is not listed (a filter) does the row keep them.
+        bubble = _bubbleFrom(d.mates?.broken ?? 0, d.mates?.near ?? 0, 0);
+      }
     }
     final shown = w.add(
       AssemblyTreeRow(
@@ -1608,7 +1703,55 @@ class AssemblyTreeModel {
     );
     if (!shown || !open) return;
     _emitLevel(w.grouping ? n.layout : n.children, depth + 1, n.key, w);
+    _emitLevelFolders(n.key, d.mates, d.patterns, d.statusFailed, depth + 1, w);
     _emitTail(n.key, depth + 1, w);
+  }
+
+  /// Whether the Mates folder of the open row [ownerKey] is listed by [w]: its level has mates, and no filter leaves the folder out.
+  static bool _matesFolderListed(String ownerKey, AssemblyTreeMatesDto? mates, _Walk w) =>
+      (mates?.count ?? 0) > 0 && (w.listed == null || w.listed!.contains('$ownerKey#mates'));
+
+  /// Spec section 14: under an open assembly row (or the root), after its children, its Mates folder (when it has mates), then its Patterns
+  /// folder (when it has patterns), each at [depth], collapsed unless open, followed when open by the items [setFolderItems] gave it.
+  void _emitLevelFolders(String ownerKey, AssemblyTreeMatesDto? mates, AssemblyTreePatternsDto? patterns, bool statusFailed, int depth, _Walk w) {
+    if (mates != null && mates.count > 0) {
+      final key = '$ownerKey#mates';
+      final open = w.isOpen(key);
+      final shown = w.add(
+        AssemblyTreeRow(
+          key: key,
+          kind: AssemblyRowKind.matesFolder,
+          depth: depth,
+          label: 'Mates',
+          state: AssemblyRowState.none,
+          bubble: _bubbleFrom(mates.broken ?? 0, mates.near ?? 0, 0),
+          expandable: true,
+          open: open,
+          count: mates.count,
+          statusFailed: statusFailed,
+        ),
+        ownerKey,
+      );
+      if (shown && open) _emitItems(key, AssemblyRowKind.mate, depth + 1, w);
+    }
+    if (patterns != null && patterns.count > 0) {
+      final key = '$ownerKey#patterns';
+      final open = w.isOpen(key);
+      final shown = w.add(
+        AssemblyTreeRow(
+          key: key,
+          kind: AssemblyRowKind.patternsFolder,
+          depth: depth,
+          label: 'Patterns',
+          state: AssemblyRowState.none,
+          expandable: true,
+          open: open,
+          count: patterns.count,
+        ),
+        ownerKey,
+      );
+      if (shown && open) _emitItems(key, AssemblyRowKind.pattern, depth + 1, w);
+    }
   }
 
   void _emitGroup(_G g, int depth, String parentKey, _Walk w) {
@@ -1666,7 +1809,7 @@ class AssemblyTreeModel {
     }
   }
 
-  void _emitItems(String folderKey, AssemblyRowKind kind, _Walk w) {
+  void _emitItems(String folderKey, AssemblyRowKind kind, int depth, _Walk w) {
     final items = _folderItems[folderKey];
     if (items == null) return;
     for (final it in items) {
@@ -1674,13 +1817,14 @@ class AssemblyTreeModel {
         AssemblyTreeRow(
           key: '$folderKey#item:${it.id}',
           kind: kind,
-          depth: 2,
+          depth: depth,
           label: it.label,
           state: AssemblyRowState.none,
           suppressed: it.suppressed,
           itemId: it.id,
           note: it.note,
           tone: it.tone,
+          itemState: it.state,
         ),
         folderKey,
       );
