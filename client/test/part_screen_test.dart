@@ -153,6 +153,9 @@ class _FakeDocumentBackend {
   Map<String, List<Map<String, dynamic>>> subPatterns = {};
   final Map<String, int> levelMatesGets = {};
 
+  /// C2 review: Parts whose `GET .../mates` answers 500.
+  final Set<String> failMatesFor = {};
+
   /// Every request that is not a GET, in order (so a test can check that nothing was written).
   final List<String> writes = [];
 
@@ -1058,6 +1061,7 @@ class _FakeDocumentBackend {
     if (matesGetMatch != null && method == 'GET') {
       final listed = matesGetMatch.group(1)!;
       levelMatesGets[listed] = (levelMatesGets[listed] ?? 0) + 1;
+      if (failMatesFor.contains(listed)) return http.Response('boom', 500);
       return _json(listed == 'part-1' ? mates : (subMates[listed] ?? <dynamic>[]), 200);
     }
     if (matesGetMatch != null && method == 'POST') {
@@ -14426,6 +14430,67 @@ void main() {
         expect(items.map((i) => i.id), ['m1', 'm3'], reason: 'the answer read before the edit is dropped');
         expect(items.first.state, AssemblyItemState.none);
         expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('review: a reload that has not landed does not drop a read in flight (the folder still fills)', (tester) async {
+        Completer<void>? holdMates;
+        var holdReload = false;
+        final reloadGate = Completer<void>();
+        final backend = await openWithLevelMates(tester, layout: desktop(), around: (request) async {
+          final h = holdMates;
+          if (h != null && request.url.path == '/document/parts/sub/mates' && request.method == 'GET') {
+            holdMates = null;
+            await h.future;
+          }
+          // The reload's occurrence list never answers (a lost request): its tree is never applied.
+          if (holdReload && request.url.path == '/document/parts/part-1/occurrences' && request.method == 'GET') {
+            await reloadGate.future;
+          }
+        });
+        final held = holdMates = Completer<void>();
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        holdReload = true;
+        await open(tester, ['#mates']);
+        final probe = _TreeProbe(tester);
+        probe.view.onRowLongPress!(probe.model.visibleRows().firstWhere((r) => r.key == '#mates#item:rm1'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.tap(find.text('Delete').last);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.text('Delete').last);
+        await settle(tester);
+        expect(backend.mates, isEmpty, reason: 'the edit is stored; its reload is out');
+        held.complete();
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.folderItems('asm-1#mates').map((i) => i.id), ['m1', 'm2'],
+            reason: 'no newer answer was applied, so the read is not stale');
+        holdReload = false;
+        reloadGate.complete();
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.folderItems('asm-1#mates').map((i) => i.id), ['m1', 'm2']);
+        await tester.pump(const Duration(seconds: 5));
+      });
+
+      testWidgets('review: a level whose mates cannot be read says so once and is not read again on every rebuild', (tester) async {
+        final backend = await openWithLevelMates(tester, layout: desktop());
+        backend.failMatesFor.add('sub');
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        await settle(tester);
+        expect(find.textContaining('could not be read'), findsOneWidget);
+        expect(backend.levelMatesGets['sub'], 1);
+        // Rebuilds of the screen (selections) ask nothing more.
+        await _TreeProbe(tester).tapRow('asm-1/c1');
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('plate');
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('asm-1/c1');
+        await settle(tester);
+        await settle(tester);
+        expect(backend.levelMatesGets['sub'], 1);
+        expect(find.byKey(const ValueKey('component-mates-reading')), findsNothing, reason: 'the drawer does not wait for a failed read');
       });
 
       testWidgets('Focus here to edit from a nested mate focuses its level and selects the mate there', (tester) async {

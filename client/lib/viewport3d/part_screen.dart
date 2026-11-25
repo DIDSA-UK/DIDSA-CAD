@@ -13508,8 +13508,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final focusBelowRoot = focusFull.length > nominalRootPath.length ? focusFull.sublist(nominalRootPath.length) : const <String>[];
     // A4: every load has a token; an answer that is not from the latest load is dropped (see [_treeLoadToken]).
     final token = ++_treeLoadToken;
-    // C2: a level's mates read before this load (a mate edit, a newer tree, another document) are stale: their answers are dropped.
-    _levelItemsGen++;
     // B2: a tree that is new for this document (the first answer, or the document's own tree again after a focus) opens the rows it had
     // when it was last open. Read at the same time as everything else; applied only if this answer is still the latest and nothing changed
     // under it (below).
@@ -13599,8 +13597,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _rootMates = rootMates == null ? null : _mateFollowedNotes.merge(rootMates);
       _rootPatterns = rootPatterns;
       _listsPartId = focusPartId;
-      // C2: every other level's mates are read again for this answer (once per Part), as the parts' features are.
+      // C2: every other level's mates are read again for this answer (once per Part), as the parts' features are. A read started before this
+      // answer (before a mate edit, a newer tree, another document) is stale and its answer dropped. Bumped here, where the answer is applied,
+      // not when the load starts: a load that fails or is dropped leaves the reads in flight valid (review).
+      _levelItemsGen++;
       _levelItems.clear();
+      _levelItemsFailed.clear();
       // The rows claim no state until the status call answers; the screen's own map (the rigid-set grab notice) keeps the previous one until then
       // (for the same Part: another Part's status is not this one's).
       if ((_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) || _statusLevelKey != _focusRelPath.join('/')) {
@@ -29446,6 +29448,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// Parts whose folders the tree has opened: read again with every load, so they do not go stale after an edit.
   final Set<String> _levelItemsWanted = {};
 
+  /// Parts whose read failed for the current tree answer: not asked again until the next answer (review: a failing level was read again on every
+  /// rebuild), and the drawer lists no mates for them.
+  final Set<String> _levelItemsFailed = {};
+
   /// Reads in flight, by Part id, with the generation they were started in.
   final Map<String, (int, Future<void>)> _levelItemsInFlight = {};
 
@@ -29549,6 +29555,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// rule: that load reads the Part again) or the tree model was replaced. A failure forgets the request, so opening the folder asks again.
   Future<void> _fetchLevelItems(String partId) {
     final gen = _levelItemsGen;
+    if (_levelItemsFailed.contains(partId)) return Future<void>.value();
     final running = _levelItemsInFlight[partId];
     if (running != null && running.$1 == gen) return running.$2;
     final read = _readLevelItems(partId, gen);
@@ -29568,29 +29575,32 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       });
       _treeController.refresh();
     } on ApiException {
-      if (mounted && gen == _levelItemsGen) _forgetFolderRequestsOf(partId);
+      // Kept as failed until the next tree answer reads it again (the view keeps the folder asked, so it does not ask in a loop); said once.
+      if (mounted && gen == _levelItemsGen && identical(model, _treeModel)) {
+        setState(() {
+          _levelItemsFailed.add(partId);
+          _errorMessage = 'The mates of ${_partNameInTree(partId)} could not be read';
+        });
+      }
     } finally {
       if (_levelItemsInFlight[partId]?.$1 == gen) _levelItemsInFlight.remove(partId);
     }
   }
 
-  void _forgetFolderRequestsOf(String partId) {
+  /// A Part's name as the tree has it (the root's, or the first node placing it), for a message.
+  String _partNameInTree(String partId) {
     final tree = _treeModel.tree;
-    if (tree == null) return;
-    void forget(String ownerKey) {
-      _treeController.forgetFolderRequest('$ownerKey#mates');
-      _treeController.forgetFolderRequest('$ownerKey#patterns');
-    }
-
-    if (tree.partId == partId) forget('');
-    void walk(List<AssemblyTreeNodeDto> nodes) {
+    if (tree == null || tree.partId == partId) return tree?.partName ?? _treeRootDisplayName;
+    AssemblyTreeNodeDto? find(List<AssemblyTreeNodeDto> nodes) {
       for (final n in nodes) {
-        if (n.resolvedPartId == partId) forget(n.path.join('/'));
-        walk(n.children);
+        if (n.resolvedPartId == partId) return n;
+        final hit = find(n.children);
+        if (hit != null) return hit;
       }
+      return null;
     }
 
-    walk(tree.children);
+    return find(tree.children)?.partName ?? 'a sub-assembly';
   }
 
   /// The owning row's path of a mate or pattern item row (`[]` for the root's folders), from its key (`mast/arm#mates#item:m3`); null for
@@ -29712,6 +29722,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final partId = parent.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(parent)?.resolvedPartId;
     if (partId == null) return const [];
     final lists = _listsFor(partId);
+    // Its read failed (the banner says so): nothing to list until the next tree answer reads it again.
+    if (lists == null && _levelItemsFailed.contains(partId)) return const [];
     if (lists == null) {
       final mates = parent.isEmpty ? _treeModel.tree?.mates : _treeModel.nodeAtPath(parent)?.mates;
       if ((mates?.count ?? 0) == 0) return const [];

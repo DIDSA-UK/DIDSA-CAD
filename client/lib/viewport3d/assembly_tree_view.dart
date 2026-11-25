@@ -490,7 +490,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     widget.model.toggle(row.key);
     setState(() {});
     if (!row.open) _askForFeatures(row.path);
-    if (!row.open && (row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder)) _askForFolder(row.key);
+    // C2 (review): opening a row can list folders that were open already (restored keys under a collapsed row), and opening a folder lists it.
+    if (!row.open) _askForOpenFolders();
   }
 
   /// Whether a multi-select tap on [row] toggles it: an occurrence row, or a feature, body, surface or curve of the live part.
@@ -576,6 +577,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     for (var i = 1; i < path.length; i++) {
       _askForFeatures(path.sublist(0, i));
     }
+    _askForOpenFolders();
     _scheduleScroll(key);
   }
 
@@ -640,6 +642,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       _doReveal(path, select: false);
     } else {
       m.expandToSelection();
+      _askForOpenFolders();
       _scheduleScroll(sel);
     }
     setState(() {});

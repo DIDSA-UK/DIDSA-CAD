@@ -677,6 +677,32 @@ void main() {
       expect(find.byKey(const ValueKey('tree-filter-notes')), findsNothing, reason: 'every folder is read now');
     });
 
+    testWidgets('C2 review: a folder open already under a collapsed row asks for its items when the row is opened', (tester) async {
+      final model = AssemblyTreeModel(
+        tree: AssemblyTreeResponseDto.fromJson({
+          'part_id': 'root',
+          'part_name': 'Root',
+          'kind': 'assembly',
+          'children': [
+            {
+              ..._node('a', ['a'], name: 'Arm'),
+              'kind': 'assembly',
+              'mates': {'count': 2},
+              'children': [_node('x', ['a', 'x'], name: 'X')],
+            },
+          ],
+        }),
+      )..openAll(['a#mates'], remember: false); // restored, under the collapsed Arm
+      final asked = <String>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: model, onFolderItemsRequested: asked.add)));
+      await tester.pump();
+      expect(asked, isEmpty, reason: 'not listed yet');
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:a')));
+      await tester.pump();
+      await tester.pump();
+      expect(asked, ['a#mates']);
+    });
+
     testWidgets("C2: a selected item of another level shows the strip with Focus here to edit; the host's own level shows none",
         (tester) async {
       final model = withFolders()..setOpen('#mates', true);
