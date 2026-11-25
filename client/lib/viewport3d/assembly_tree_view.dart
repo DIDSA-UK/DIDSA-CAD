@@ -1,6 +1,7 @@
 import 'dart:async' show unawaited;
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
 
@@ -19,6 +20,16 @@ import 'view_preferences.dart';
 /// Row height (A3, `docs/assembly-tree-overhaul-scope.md` 9.6): fixed, so the list can scroll to any row without building the ones in between.
 const double kAssemblyTreeRowHeightDesktop = 30;
 const double kAssemblyTreeRowHeightPhone = 48;
+
+/// B4 (`docs/assembly-tree-overhaul-scope.md` 10.6, sections 5 and 8.2): the heights of the phone portrait sheet. **Peek** is the header and the
+/// selected row with its bar; **half** half the space; **full** all of it but a strip of the viewport.
+enum AssemblyTreeSheetHeight { peek, half, full }
+
+/// The sheet's drag handle strip above the header.
+const double kAssemblyTreeSheetHandleHeight = 20;
+
+/// What of the viewport full height leaves showing above the sheet.
+const double kAssemblyTreeSheetTopGap = 24;
 
 /// Scrolls an [AssemblyTreeView] to a row. Create one, pass it to the view, call [reveal] (for example when a 3D pick selects a part).
 /// [refresh] repaints the view after the host changed the model by hand (`setFeatures`, `merge`, `setUnsavedPartIds`...).
@@ -119,7 +130,20 @@ class AssemblyTreeView extends StatefulWidget {
     this.statusUnavailable = false,
     this.flashItemIds = const {},
     this.flashToken = 0,
+    this.sheetHeight,
+    this.onSheetHeightChanged,
+    this.selectionBar = true,
   });
+
+  /// B4: phone portrait. Non-null draws the tree as a bottom sheet across the width at this height (see [AssemblyTreeSheetHeight]); the root
+  /// row is the sheet's title instead of a row. A drag on the handle or the header moves it between the heights ([onSheetHeightChanged]: the
+  /// host keeps the height), and opening the filter asks for full. Null is the side panel ([docked], [width]).
+  final AssemblyTreeSheetHeight? sheetHeight;
+  final ValueChanged<AssemblyTreeSheetHeight>? onSheetHeightChanged;
+
+  /// Whether a phone draws the selection bar (B4: one selection surface per layout). False in phone landscape, where the component drawer is
+  /// the surface and the tree shows no bar; the picker banner and the multi-select header are not the bar and stay.
+  final bool selectionBar;
 
   final AssemblyTreeModel model;
   final AssemblyTreeController? controller;
@@ -269,6 +293,18 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   AssemblyPicker? _seenPicker;
   String? _pickNote;
 
+  /// B4: the sheet's height in pixels while a finger drags it (null otherwise), and the heights it snaps to, as the last build laid them out.
+  double? _dragHeight;
+  double _peekPixels = 0;
+  double _halfPixels = 0;
+  double _fullPixels = 0;
+  final GlobalKey _sheetKey = GlobalKey(debugLabel: 'assembly-tree-sheet');
+
+  bool get _sheet => widget.sheetHeight != null && !LayoutModeScope.isDesktop(context);
+
+  /// The host holds the sheet where it is (a tool panel keeps it at peek): no drag, no handle tap, and no filter, which would want full.
+  bool get _sheetLocked => _sheet && widget.onSheetHeightChanged == null;
+
   @override
   void initState() {
     super.initState();
@@ -290,8 +326,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
     // Multi-select replaces the header (and with it the filter field): a filter that kept narrowing the rows with nothing to show it would
     // be a trap, so it ends there.
-    // It ends on the condition that hides the field: the header being replaced (not only the mode flag).
-    if (old.multiSelectHeader == null && widget.multiSelectHeader != null && (_filtering || _filterOpen)) {
+    // It ends on the condition that hides the field: the header being replaced (not only the mode flag). B4 (review): the same when the host
+    // starts holding the sheet (a tool panel keeps it at peek, with no list under the field and no toggle to close it).
+    final becameLocked = old.sheetHeight != null && old.onSheetHeightChanged != null && widget.sheetHeight != null && widget.onSheetHeightChanged == null;
+    if (((old.multiSelectHeader == null && widget.multiSelectHeader != null) || becameLocked) && (_filtering || _filterOpen)) {
       final wasFiltering = _filtering;
       _filterText.clear();
       _filterOpen = false;
@@ -302,6 +340,11 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       });
     }
     _syncModel();
+    // B4: from peek (no list) to a height with the list: the list starts at the selected row.
+    final sel = widget.model.selectedKey;
+    if (old.sheetHeight == AssemblyTreeSheetHeight.peek && widget.sheetHeight != AssemblyTreeSheetHeight.peek && sel != null && sel.isNotEmpty) {
+      _scheduleScroll(sel);
+    }
     if (widget.flashToken != old.flashToken && widget.flashItemIds.isNotEmpty) {
       // After this frame: the mate rows may only just have arrived with the refresh that brought the first broken mate.
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -542,6 +585,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
 
   void _openFilter() {
     setState(() => _filterOpen = true);
+    // B4: the filter needs the rows; in the sheet it opens at full height.
+    if (_sheet && widget.sheetHeight != AssemblyTreeSheetHeight.full) widget.onSheetHeightChanged?.call(AssemblyTreeSheetHeight.full);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _filterFocus.requestFocus();
     });
@@ -552,8 +597,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   bool get _editAloneStrip => widget.editAlone != null && widget.onEditAloneDone != null;
   bool get _focusStrip => widget.focusCrumbs.length > 1;
 
-  /// The root row is not drawn while a strip stands for it (rule 5: nothing twice). The model's rows are unchanged; the list just starts after it.
-  bool get _rootInStrip => _editAloneStrip || _focusStrip;
+  /// The root row is not drawn while a strip stands for it (rule 5: nothing twice), nor in the phone sheet, whose title it is (B4). The model's
+  /// rows are unchanged; the list just starts after it.
+  bool get _rootInStrip => _editAloneStrip || _focusStrip || _sheet;
 
   /// The rows the list draws, in the filter's order when one is on.
   List<AssemblyTreeRow> _displayRows(AssemblyFilterResult? filter) {
@@ -569,6 +615,90 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   }
 
   double _rowHeight() => LayoutModeScope.isDesktop(context) ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
+
+  // --- The phone sheet (B4) ---------------------------------------------------------------------------------------------------------------
+
+  void _sheetDragStart(DragStartDetails _) {
+    final box = _sheetKey.currentContext?.findRenderObject() as RenderBox?;
+    // The frame's height includes the bottom inset (its SafeArea); the drag and the snap heights are the content's.
+    final inset = MediaQuery.paddingOf(context).bottom;
+    setState(() => _dragHeight = box == null ? _halfPixels : math.max(0.0, box.size.height - inset));
+  }
+
+  void _sheetDragUpdate(DragUpdateDetails details) {
+    final h = _dragHeight;
+    if (h == null) return;
+    setState(() => _dragHeight = (h - details.delta.dy).clamp(_peekPixels, math.max(_peekPixels, _fullPixels)));
+  }
+
+  /// Snaps to a height: a fling goes one height up or down from where the drag let go; a slow release goes to the nearest.
+  void _sheetDragEnd(DragEndDetails details) {
+    final h = _dragHeight;
+    if (h == null) return;
+    setState(() => _dragHeight = null);
+    final heights = <AssemblyTreeSheetHeight, double>{
+      AssemblyTreeSheetHeight.peek: _peekPixels,
+      AssemblyTreeSheetHeight.half: _halfPixels,
+      AssemblyTreeSheetHeight.full: _fullPixels,
+    };
+    final v = details.primaryVelocity ?? 0;
+    AssemblyTreeSheetHeight to;
+    if (v < -700) {
+      to = heights.entries.where((e) => e.value > h + 1).map((e) => e.key).firstOrNull ?? AssemblyTreeSheetHeight.full;
+    } else if (v > 700) {
+      to = heights.entries.where((e) => e.value < h - 1).map((e) => e.key).lastOrNull ?? AssemblyTreeSheetHeight.peek;
+    } else {
+      to = heights.entries.reduce((a, b) => (a.value - h).abs() <= (b.value - h).abs() ? a : b).key;
+    }
+    widget.onSheetHeightChanged?.call(to);
+  }
+
+  /// The root row's label: the sheet's title.
+  String? get _rootLabel {
+    final first = widget.model.visibleRows().firstOrNull;
+    return first != null && first.kind == AssemblyRowKind.root ? first.label : null;
+  }
+
+  /// A tap on the handle: peek opens to half, any other height drops to peek.
+  void _sheetHandleTap() => widget.onSheetHeightChanged
+      ?.call(widget.sheetHeight == AssemblyTreeSheetHeight.peek ? AssemblyTreeSheetHeight.half : AssemblyTreeSheetHeight.peek);
+
+  /// The handle strip and whatever header is on top of the sheet: both take the vertical drag.
+  Widget _sheetDragArea(BuildContext context, Widget header) {
+    final scheme = Theme.of(context).colorScheme;
+    final locked = _sheetLocked;
+    return GestureDetector(
+      key: const ValueKey('tree-sheet-drag'),
+      behavior: HitTestBehavior.translucent,
+      // The sheet follows the finger from where it went down (the slop is not lost).
+      dragStartBehavior: DragStartBehavior.down,
+      onVerticalDragStart: locked ? null : _sheetDragStart,
+      onVerticalDragUpdate: locked ? null : _sheetDragUpdate,
+      onVerticalDragEnd: locked ? null : _sheetDragEnd,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          GestureDetector(
+            key: const ValueKey('tree-sheet-handle'),
+            behavior: HitTestBehavior.opaque,
+            onTap: locked ? null : _sheetHandleTap,
+            child: SizedBox(
+              height: kAssemblyTreeSheetHandleHeight,
+              child: Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(color: scheme.outline.withValues(alpha: 0.5), borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+            ),
+          ),
+          header,
+        ],
+      ),
+    );
+  }
 
   /// One colour per rigid set in the whole tree (sorted by set id, so it does not move as rows open), cached per loaded tree.
   Map<String, Color> _rigidColours() {
@@ -634,7 +764,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       _seenPicker = picker;
       _pickNote = null;
     }
-    final bar = picker != null || widget.isMultiSelectMode || desktop || selectedRow == null ? null : _barButtons(selectedRow);
+    final bar = picker != null || widget.isMultiSelectMode || desktop || !widget.selectionBar || selectedRow == null ? null : _barButtons(selectedRow);
     final showBar = bar != null && bar.isNotEmpty;
     final pinColumn = desktop && _pinColumn && widget.onToggleCoarsePin != null;
     // Multi-select ticks by row key, but a plane feature listed in the Planes folder and in the build order is one feature: both rows tick.
@@ -645,13 +775,82 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           }
         : const <String>{};
 
+    Widget treeRow(AssemblyTreeRow r) {
+      final flashing = r.kind == AssemblyRowKind.mate && r.itemId != null && widget.flashItemIds.contains(r.itemId);
+      Widget rowWidget(double pulse) => _TreeRow(
+            key: ValueKey('tree-row:${r.key}'),
+            pulse: pulse,
+            indentShift: _sheet ? 1 : 0,
+            row: r,
+            height: h,
+            desktop: desktop,
+            selected: widget.isMultiSelectMode
+                ? widget.selectedKeys.contains(r.key) || selectedMs.contains(model.multiSelectKeyOfRow(r.key))
+                : r.key == model.selectedKey,
+            multiSelect: widget.isMultiSelectMode,
+            selectable: _multiSelectable(r),
+            pinState: pinColumn && r.featureId != null && widget.coarseEligibleFeatureIds.contains(r.featureId)
+                ? widget.pinnedCoarseFeatureIds.contains(r.featureId)
+                : null,
+            onPin: () => widget.onToggleCoarsePin?.call(r),
+            pickMulti: picker?.multi ?? false,
+            onDoubleTap: widget.onRowEdit != null &&
+                    r.isLiveFeature &&
+                    featureTypeHasEditPanel(r.type ?? '') &&
+                    picker == null &&
+                    !widget.isMultiSelectMode
+                ? () => _edit(r)
+                : null,
+            bracket: _bracketFor(r, colours),
+            focusRole: model.focusRoleOf(r),
+            canToggle: _canToggle(r),
+            showEye: widget.onVisibilityToggle != null,
+            lockedEye: widget.lockedEyes && widget.onVisibilityToggle != null
+                ? r.live && !r.kind.isLiveFolder && r.key != model.selectedKey
+                : null,
+            onToggle: () => _toggle(r),
+            onTap: () => _tap(r),
+            onLongPress: () => _longPress(r),
+            onContextMenu: widget.isMultiSelectMode || picker != null || widget.onRowContextMenu == null
+                ? null
+                : (at) => widget.onRowContextMenu!(r, at),
+            onEye: () => widget.onVisibilityToggle?.call(r),
+          );
+      // Only a row that is flashing listens to the animation; every other row is built once.
+      return flashing
+          ? AnimatedBuilder(animation: _flash, builder: (context, _) => rowWidget(_flashPulse))
+          : rowWidget(0);
+    }
+
+    final sheet = _sheet;
+    final header = widget.multiSelectHeader ?? _header(context, desktop);
+    // B4: peek is the header and the selected row with its bar (or the picker's banner) and nothing else.
+    final peek = sheet && widget.sheetHeight == AssemblyTreeSheetHeight.peek && _dragHeight == null;
+    if (peek) {
+      return _sheetFrame(
+        context,
+        Column(
+          key: const ValueKey('tree-sheet-peek'),
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _sheetDragArea(context, header),
+            if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
+            if (selectedRow != null && !widget.isMultiSelectMode) SizedBox(height: h, child: treeRow(selectedRow)),
+            if (showBar) _selectionBar(context, selectedRow!, bar),
+          ],
+        ),
+      );
+    }
+
     final body = Material(
       color: scheme.surface,
-      elevation: widget.docked ? 0 : 6,
+      // In the sheet the frame ([_sheetFrame]) carries the elevation and the rounded top.
+      elevation: widget.docked || sheet ? 0 : 6,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          widget.multiSelectHeader ?? _header(context, desktop),
+          if (sheet) _sheetDragArea(context, header) else header,
           // Desktop: the filter box is always there; a phone has the field in the header while it is open.
           if (widget.multiSelectHeader == null && desktop) _desktopFilterRow(context),
           if (filter != null) _filterNotes(context, filter),
@@ -691,52 +890,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                         controller: _scroll,
                         itemExtent: h,
                         itemCount: rows.length,
-                        itemBuilder: (context, i) {
-                          final r = rows[i];
-                          final flashing = r.kind == AssemblyRowKind.mate && r.itemId != null && widget.flashItemIds.contains(r.itemId);
-                          Widget rowWidget(double pulse) => _TreeRow(
-                                key: ValueKey('tree-row:${r.key}'),
-                                pulse: pulse,
-                                row: r,
-                                height: h,
-                                desktop: desktop,
-                                selected: widget.isMultiSelectMode
-                                    ? widget.selectedKeys.contains(r.key) || selectedMs.contains(model.multiSelectKeyOfRow(r.key))
-                                    : r.key == model.selectedKey,
-                                multiSelect: widget.isMultiSelectMode,
-                                selectable: _multiSelectable(r),
-                                pinState: pinColumn && r.featureId != null && widget.coarseEligibleFeatureIds.contains(r.featureId)
-                                    ? widget.pinnedCoarseFeatureIds.contains(r.featureId)
-                                    : null,
-                                onPin: () => widget.onToggleCoarsePin?.call(r),
-                                pickMulti: picker?.multi ?? false,
-                                onDoubleTap: widget.onRowEdit != null &&
-                                        r.isLiveFeature &&
-                                        featureTypeHasEditPanel(r.type ?? '') &&
-                                        picker == null &&
-                                        !widget.isMultiSelectMode
-                                    ? () => _edit(r)
-                                    : null,
-                                bracket: _bracketFor(r, colours),
-                                focusRole: model.focusRoleOf(r),
-                                canToggle: _canToggle(r),
-                                showEye: widget.onVisibilityToggle != null,
-                                lockedEye: widget.lockedEyes && widget.onVisibilityToggle != null
-                                    ? r.live && !r.kind.isLiveFolder && r.key != model.selectedKey
-                                    : null,
-                                onToggle: () => _toggle(r),
-                                onTap: () => _tap(r),
-                                onLongPress: () => _longPress(r),
-                                onContextMenu: widget.isMultiSelectMode || picker != null || widget.onRowContextMenu == null
-                                    ? null
-                                    : (at) => widget.onRowContextMenu!(r, at),
-                                onEye: () => widget.onVisibilityToggle?.call(r),
-                              );
-                          // Only a row that is flashing listens to the animation; every other row is built once.
-                          return flashing
-                              ? AnimatedBuilder(animation: _flash, builder: (context, _) => rowWidget(_flashPulse))
-                              : rowWidget(0);
-                        },
+                        itemBuilder: (context, i) => treeRow(rows[i]),
                       ),
           ),
           if (showBar) _selectionBar(context, selectedRow!, bar),
@@ -744,6 +898,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       ),
     );
 
+    if (sheet) return _sheetFrame(context, body);
     if (widget.docked) {
       return widget.visible ? body : const SizedBox.shrink();
     }
@@ -755,6 +910,49 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         child: SizedBox(width: widget.width, child: body),
       ),
     );
+  }
+
+  /// B4: the sheet across the bottom of the space it is given: [content] at peek (its own height), else at half or full height (or the height a
+  /// drag holds it at). Slid down out of sight while not [AssemblyTreeView.visible]. Records the heights the drag snaps to.
+  Widget _sheetFrame(BuildContext context, Widget content) {
+    final scheme = Theme.of(context).colorScheme;
+    return LayoutBuilder(builder: (context, constraints) {
+      final maxH = constraints.maxHeight.isFinite ? constraints.maxHeight : MediaQuery.sizeOf(context).height;
+      final desktop = LayoutModeScope.isDesktop(context);
+      final rowH = desktop ? kAssemblyTreeRowHeightDesktop : kAssemblyTreeRowHeightPhone;
+      // Peek's height for the drag's snap: the handle, the header and, with a selection, its row and the bar (about 56 dp).
+      final selected = widget.model.selectedKey != null && widget.model.selectedKey!.isNotEmpty;
+      _peekPixels = math.min(maxH, kAssemblyTreeSheetHandleHeight + 48 + (selected ? rowH + 56 : 0));
+      _fullPixels = math.max(_peekPixels, maxH - kAssemblyTreeSheetTopGap);
+      _halfPixels = (maxH * 0.5).clamp(_peekPixels, _fullPixels);
+      final height = _dragHeight ??
+          switch (widget.sheetHeight) {
+            AssemblyTreeSheetHeight.half => _halfPixels,
+            AssemblyTreeSheetHeight.full => _fullPixels,
+            _ => null,
+          };
+      final sheet = Material(
+        key: _sheetKey,
+        color: scheme.surface,
+        elevation: 8,
+        clipBehavior: Clip.antiAlias,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        // The bottom inset (a home indicator, gesture navigation): the last row or the bar is not drawn under it.
+        child: SafeArea(top: false, child: height == null ? content : SizedBox(height: height, child: content)),
+      );
+      return Align(
+        alignment: Alignment.bottomCenter,
+        child: IgnorePointer(
+          ignoring: !widget.visible,
+          child: AnimatedSlide(
+            key: const ValueKey('tree-sheet'),
+            duration: const Duration(milliseconds: 180),
+            offset: widget.visible ? Offset.zero : const Offset(0, 1),
+            child: SizedBox(width: constraints.maxWidth, child: sheet),
+          ),
+        ),
+      );
+    });
   }
 
   Color? _bracketFor(AssemblyTreeRow r, Map<String, Color> colours) {
@@ -800,9 +998,11 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
         child: Row(
           children: [
             Expanded(
-              child: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+              // B4: in the sheet the root row is the title (section 5: one level of indent saved).
+              child: Text(_sheet ? (_rootLabel ?? widget.title) : widget.title,
+                  key: const ValueKey('tree-title'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
             ),
-            if (!desktop)
+            if (!desktop && !_sheetLocked)
               button(
                   key: 'tree-filter-toggle',
                   tooltip: 'Filter',
@@ -1153,7 +1353,11 @@ class _TreeRow extends StatefulWidget {
     required this.onContextMenu,
     required this.onEye,
     this.pulse = 0,
+    this.indentShift = 0,
   });
+
+  /// Levels of indent taken off every row: 1 in the phone sheet, whose title is the root row (B4, section 5: one level saved).
+  final int indentShift;
 
   /// 0..1, the flash of a mate row (see [AssemblyTreeView.flashItemIds]).
   final double pulse;
@@ -1310,7 +1514,7 @@ class _TreeRowState extends State<_TreeRow> {
 
     Widget content = Row(
       children: [
-        SizedBox(width: 6 + r.depth * (desktop ? 14.0 : 16.0)),
+        SizedBox(width: 6 + math.max(0, r.depth - widget.indentShift) * (desktop ? 14.0 : 16.0)),
         chevron,
         Opacity(
           opacity: dim,

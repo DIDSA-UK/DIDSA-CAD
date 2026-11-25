@@ -77,6 +77,10 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
   /// The overlay's width as a fraction of the space it floats in, once the handle was dragged (null: the default width).
   double? _widthFraction;
 
+  /// Whether [SketchFeatureTree.openKeys] were applied: not while the source had another root. B4 (P3's review): when the Part screen's tree
+  /// only later gets this tree's root, its open rows are applied then (once; later changes on either side stay on that side).
+  bool _sourceKeysApplied = false;
+
   @override
   void initState() {
     super.initState();
@@ -94,7 +98,29 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
   }
 
   /// The open rows a new model starts with: [SketchFeatureTree.openKeys], unless they are the keys of a tree with another root.
-  Iterable<String> _startKeys() => widget.fetchedFrom == null || _source != null ? widget.openKeys : const <String>[];
+  Iterable<String> _startKeys() {
+    final usable = widget.fetchedFrom == null || _source != null;
+    _sourceKeysApplied = usable;
+    return usable ? widget.openKeys : const <String>[];
+  }
+
+  /// B4 (P3's review): the rows the person opened in this tree, carried to a tree with another root. Only the live part's own rows (its
+  /// folders, the components under it) name the same rows there, under the live row's new key; the rest are dropped.
+  static List<String> _carriedKeys(Iterable<String> open, String? oldLive, String? newLive) {
+    if (oldLive == null || newLive == null) return const [];
+    String? under(String key) {
+      if (oldLive.isEmpty) return key.isEmpty ? newLive : (newLive.isEmpty || key.startsWith('#') ? '$newLive$key' : '$newLive/$key');
+      if (key == oldLive) return newLive;
+      for (final sep in const ['/', '#']) {
+        if (key.startsWith('$oldLive$sep')) {
+          final rest = key.substring(oldLive.length + 1);
+          return newLive.isEmpty ? (sep == '#' ? '#$rest' : rest) : '$newLive$sep$rest';
+        }
+      }
+      return null;
+    }
+    return [for (final k in open) under(k)].whereType<String>().toList();
+  }
 
   AssemblyTreeModel _newModel(Iterable<String> openKeys) {
     final model = AssemblyTreeModel(tree: widget.tree, grouping: widget.grouping);
@@ -120,9 +146,15 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
         _model.merge(widget.tree);
       } else {
         // Another root (the Part screen's tree arrived for the document, where a seed for the part was): start again from that tree's open
-        // rows (the seed's keys name rows of another root).
+        // rows (the seed's keys name rows of another root), plus the rows opened here under the live part, under its new key.
+        final carried = _carriedKeys(_model.openKeys, old.livePart?.key, widget.livePart?.key);
         _model = _newModel(_startKeys());
+        _model.openAll(carried, remember: false);
       }
+    } else if (!_sourceKeysApplied && _source != null) {
+      // The Part screen's tree has this tree's root now (it had another when this tree started): its open rows apply from here on.
+      _sourceKeysApplied = true;
+      _model.openAll(widget.openKeys, remember: false);
     }
     // The sketch's row moved (another root, or the live row is another row of it): open the way to it again, as when the tree opened.
     if (old.tree.partId != widget.tree.partId || old.livePart?.key != widget.livePart?.key) {

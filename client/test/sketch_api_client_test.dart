@@ -116,11 +116,32 @@ void main() {
       }
     });
 
+    // B4 (B3's review): mapping these three can hide a bug in a `fromJson`; the exception keeps what was raised and where.
+    test('the unreadable answer keeps the error decoding raised and its stack', () {
+      final error = unreadable(() => <Object>[].first)!;
+      expect(error.cause, isA<StateError>());
+      expect(error.causeStackTrace, isNotNull);
+      final format = unreadable(() => throw const FormatException('bad'))!;
+      expect(format.cause, isA<FormatException>());
+    });
+
     test("an ApiException from the callback and an error that is not a decode failure go through (they are not the answer's fault)", () {
       expect(() => decodeOrUnreadable<Object>('{}', (_) => throw ApiException('own', statusCode: 409), name: 't', statusCode: 200),
           throwsA(isA<ApiException>().having((e) => e.message, 'message', 'own')));
       expect(() => decodeOrUnreadable<Object>('{}', (_) => throw UnimplementedError('bug'), name: 't', statusCode: 200),
           throwsA(isA<UnimplementedError>()));
     });
+  });
+
+  // B4 (P3's review): several failures joined into one kept no status code.
+  test('ApiException.joined says each message once and keeps the first status code', () {
+    final joined = ApiException.joined([
+      ApiException('mesh failed'),
+      ApiException('features failed', statusCode: 422),
+      ApiException('mesh failed', statusCode: 500),
+    ]);
+    expect(joined.message, 'mesh failed\nfeatures failed');
+    expect(joined.statusCode, 422);
+    expect(ApiException.joined([ApiException('a'), ApiException('b')]).statusCode, isNull);
   });
 }

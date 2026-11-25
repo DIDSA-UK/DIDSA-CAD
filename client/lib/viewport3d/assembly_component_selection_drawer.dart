@@ -23,6 +23,9 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
   /// cannot start one).
   final VoidCallback? onEditAlone;
 
+  /// Zoom to the component (B4: phone landscape has no selection bar in the tree; the drawer gains its Zoom). Null hides it.
+  final VoidCallback? onZoom;
+
   /// Bug report 2026-10-14, item 6: the only way out used to be tapping empty
   /// space. When non-null, an X ("Clear selection") closes the drawer by
   /// clearing the selection.
@@ -38,6 +41,7 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
     required this.onFixFloat,
     required this.onDelete,
     this.onEditAlone,
+    this.onZoom,
     this.onClose,
   });
 
@@ -155,6 +159,8 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
                                   onPressed: onEditAlone,
                                   child: const Text(kEditAloneLabel),
                                 ),
+                              if (onZoom != null)
+                                FilledButton.tonal(key: const ValueKey('component-zoom'), onPressed: onZoom, child: const Text('Zoom')),
                               FilledButton.tonal(
                                 onPressed: onMove,
                                 child: const Text('Move')),

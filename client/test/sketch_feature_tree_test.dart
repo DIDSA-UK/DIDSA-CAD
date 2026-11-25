@@ -29,6 +29,16 @@ AssemblyTreeResponseDto _partAlone() => AssemblyTreeResponseDto.fromJson({
       'children': <Map<String, dynamic>>[],
     });
 
+/// A part on its own, as the sketcher seeds it for a focused Part.
+AssemblyTreeResponseDto _seed(String partId) => AssemblyTreeResponseDto.fromJson({
+      'part_id': partId,
+      'part_name': 'Plate',
+      'kind': 'part',
+      'feature_count': 4,
+      'status_included': true,
+      'children': <Map<String, dynamic>>[],
+    });
+
 Map<String, dynamic> _node(String id, List<String> path,
         {String kind = 'part', List<Map<String, dynamic>> children = const [], int featureCount = 0}) =>
     {
@@ -371,6 +381,52 @@ void main() {
     await tester.pump();
     expect(_row('a/b/c#feature:current'), findsOneWidget, reason: 'a, a/b and a/b/c opened down to the sketch');
     expect(tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView)).model.selectedKey, 'a/b/c#feature:current');
+  });
+
+  // B4 (P3's review): the rows opened in the sketcher were lost when its tree changed root.
+  testWidgets("the rows opened in the sketcher's tree are carried to the live part's new place when the tree changes root", (tester) async {
+    tester.view.physicalSize = const Size(800, 1600);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    var assembly = false;
+    late StateSetter rebuild;
+    await tester.pumpWidget(_host(StatefulBuilder(builder: (context, setState) {
+      rebuild = setState;
+      // The seed is the focused Part on its own (part-c), then the document's tree with that Part three levels down.
+      return _tree(tree: assembly ? _assembly() : _seed('part-c'), live: _live(key: assembly ? 'a/b/c' : ''));
+    }), desktop: true));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('tree-chevron:#bodies')));
+    await tester.pump();
+    expect(_row('#body:ext'), findsOneWidget);
+    rebuild(() => assembly = true);
+    await tester.pump();
+    await tester.pump();
+    expect(_row('a/b/c#body:ext'), findsOneWidget, reason: 'the Bodies folder opened on the seed is open under the live row');
+  });
+
+  // B4 (P3's review): a seed whose source had another root never got the source's open rows, even once the source had the seed's root.
+  testWidgets("the Part screen's open rows apply once its tree gets the seed's root", (tester) async {
+    final seed = _seed('plate-part');
+    var main = AssemblyTreeModel(tree: _assembly())..openAll(const ['z']);
+    late StateSetter rebuild;
+    await tester.pumpWidget(_host(StatefulBuilder(builder: (context, setState) {
+      rebuild = setState;
+      return SketchFeatureTree(
+        tree: seed,
+        livePart: _live(),
+        openKeys: main.openKeys,
+        fetchedFrom: main,
+        sketchFeatureId: 'current',
+        onClose: () {},
+      );
+    })));
+    await tester.pump();
+    expect(_row('#body:ext'), findsNothing);
+    // The Part screen's tree is now the part's own, with its Bodies folder open.
+    rebuild(() => main = AssemblyTreeModel(tree: seed)..openAll(const ['#bodies']));
+    await tester.pump();
+    expect(_row('#body:ext'), findsOneWidget);
   });
 
   testWidgets("the sketcher's open rows start as the Part screen's and its changes stay its own", (tester) async {

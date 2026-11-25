@@ -12135,6 +12135,89 @@ void main() {
         expect(_TreeProbe(tester).model.selectedKey, 'c1', reason: 'a refresh does not clear a focus child\'s selection');
       });
 
+      // B4 (B3's review, item 1): the remap after a focus change read the selection from the new root, not the one the tree had.
+      testWidgets('leaving a focus-rooted tree keeps the selected child as the same component under the document root', (tester) async {
+        final backend = await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        backend.assemblyTreeMissing = true;
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'rooted at the focused Part');
+        await _TreeProbe(tester).tapRow('c1');
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'c1');
+
+        backend.assemblyTreeMissing = false;
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await settle(tester);
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), isEmpty);
+        expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1', reason: 'the same component, now under the document root');
+      });
+
+      // Review of B4, finding 6: a pick made while the load after a focus change was in flight was read from the next root, then remapped
+      // from the old one: the two roots were joined and the selection dropped.
+      testWidgets('a pick made while the load after a focus change is in flight is kept', (tester) async {
+        Completer<void>? gate;
+        final backend = await openNested(tester, around: (request) async {
+          final g = gate;
+          if (g != null && request.url.path.endsWith('/assembly-tree')) {
+            gate = null;
+            await g.future;
+          }
+        });
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        backend.assemblyTreeMissing = true;
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'rooted at the focused Part');
+
+        backend.assemblyTreeMissing = false;
+        final release = Completer<void>();
+        gate = release;
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await tester.pump();
+        expect(_TreeProbe(tester).model.tree!.partId, 'sub', reason: 'the load is held');
+        tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+          const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c2'),
+        );
+        await tester.pump();
+        // Review of the fix round: the pick is a path in the tree still in the model, and the focus is already the next root's, so it is
+        // not read as a component directly in the focused Part (the drawer would act on the wrong level).
+        expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
+        release.complete();
+        await settle(tester);
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree!.partId, 'part-1');
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c2');
+      });
+
+      // B4 (B3's review, item 2): a crumb tapped during a multi-select left it holding the old level's components.
+      testWidgets('a crumb tapped during a multi-select ends the multi-select', (tester) async {
+        await openNested(tester);
+        _TreeProbe(tester).model.openAll(const ['asm-1']);
+        await openTree(tester);
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await settle(tester);
+        await settle(tester);
+        await tester.longPress(find.byKey(const ValueKey('tree-row:asm-1/c1')));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.isMultiSelectMode, isTrue);
+        await tester.tap(find.byKey(const ValueKey('focus-crumb:0')));
+        await settle(tester);
+        await settle(tester);
+        expect(focusPath(tester), isEmpty);
+        expect(_TreeProbe(tester).view.isMultiSelectMode, isFalse, reason: "the selected components were asm-1's");
+        expect(_TreeProbe(tester).view.selectedKeys, isEmpty);
+      });
+
       // Review of the fix commits: in the focused-Part-rooted fallback, Make Focus and Edit Alone on a child extend the focus.
       testWidgets('with the tree rooted at the focused Part, Make Focus and Edit Alone on a child extend the focus path', (tester) async {
         final backend = await openNested(tester);
@@ -12930,6 +13013,245 @@ void main() {
 
     // P2 (`docs/assembly-tree-overhaul-scope.md` 10.6): the Part lens draws the one tree. A part opened alone is the live root; inside an
     // assembly the focused Part is live; a tap selects (Edit is the bar's, a double-tap's and the menu's).
+    // B4 (`docs/assembly-tree-overhaul-scope.md` 10.6): on a phone held upright the tree is a bottom sheet (peek, half, full), and its peek
+    // with the bar is the one selection surface. The sheet's own heights and drag are tested in `assembly_tree_sheet_test.dart`.
+    group('Phone portrait sheet (B4)', () {
+      void portrait(WidgetTester tester, {bool landscape = false}) {
+        tester.view.physicalSize = landscape ? const Size(844, 390) : const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+      }
+
+      void pick(WidgetTester tester, String path) => tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+            SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: path),
+          );
+
+      testWidgets('a viewport pick shows the peek with the bar, not the component drawer', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        expect(_TreeProbe(tester).view.visible, isFalse, reason: 'the tree starts closed');
+        pick(tester, 'plate');
+        await settle(tester);
+        final view = _TreeProbe(tester).view;
+        expect(view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        expect(view.visible, isTrue);
+        expect(find.byKey(const ValueKey('tree-sheet-peek')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-row:plate')), findsOneWidget, reason: 'the picked row');
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+        expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
+        // A pick under a sub-assembly: the peek shows that row (its ancestors were opened for it).
+        pick(tester, 'asm-2/c1');
+        await settle(tester);
+        expect(find.byKey(const ValueKey('tree-row:asm-2/c1')), findsOneWidget);
+        expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
+      });
+
+      testWidgets("every action of the component drawer is in the peek's bar or its More", (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        // The bar: Hide, Isolate, Zoom, Focus, Alone (the drawer's Edit Alone), More.
+        for (final key in ['hide', 'isolate', 'zoom', 'focus', 'alone', 'more']) {
+          expect(find.byKey(ValueKey('tree-bar-$key')), findsOneWidget, reason: key);
+        }
+        await tester.tap(find.byKey(const ValueKey('tree-bar-more')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        // The drawer's Move, Fix / Float and Delete, and the rest of the brief's More: Colour, Rename, Mate, Pattern.
+        for (final label in ['Move/Rotate', 'Fix', 'Delete', 'Appearance...', 'Rename', 'Mate', 'Pattern']) {
+          expect(find.text(label), findsWidgets, reason: label);
+        }
+        await tester.tap(find.text('Fix').last);
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.nodeAtPath(const ['plate'])!.fixed, isTrue, reason: "More's Fix acts on the selected component");
+      });
+
+      testWidgets('a tool panel drops the sheet to peek, and it comes back to its height when the panel closes', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half);
+        expect(_TreeProbe(tester).view.visible, isTrue);
+        pick(tester, 'plate');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half, reason: 'an open sheet keeps its height on a pick');
+
+        // Mate, from the bar's More.
+        await tester.tap(find.byKey(const ValueKey('tree-bar-more')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.tap(find.text('Mate').last);
+        await settle(tester);
+        expect(find.byType(MatePanel), findsOneWidget);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        expect(_TreeProbe(tester).view.visible, isTrue, reason: 'at peek, not closed');
+
+        tester.widget<MatePanel>(find.byType(MatePanel)).onCancel();
+        await settle(tester);
+        expect(find.byType(MatePanel), findsNothing);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half, reason: 'back at its height');
+        expect(_TreeProbe(tester).view.visible, isTrue);
+      });
+
+      testWidgets('a sheet closed before the tool panel stays closed after it', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('tree-close')));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isFalse);
+        // The selection stays; Mate opens from the long-press menu.
+        await _TreeProbe(tester).menuAction('plate', 'Mate');
+        await settle(tester);
+        expect(find.byType(MatePanel), findsOneWidget);
+        expect(_TreeProbe(tester).view.visible, isFalse);
+        tester.widget<MatePanel>(find.byType(MatePanel)).onCancel();
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isFalse);
+      });
+
+      testWidgets('phone landscape keeps the side panel: the drawer opens (with Zoom) and the tree shows no bar', (tester) async {
+        portrait(tester, landscape: true);
+        await openNested(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('plate');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, isNull, reason: 'the side panel');
+        expect(find.byType(AssemblyComponentSelectionDrawer), findsOneWidget);
+        expect(find.byKey(const ValueKey('component-zoom')), findsOneWidget);
+        expect(find.byKey(const ValueKey('component-edit-alone')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsNothing);
+        // Review: a nested component has no drawer (it is not directly in the focused Part), so its row keeps the bar.
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:asm-1')));
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('tree-row:asm-1/c1')));
+        await tester.pump(kDoubleTapTimeout + const Duration(milliseconds: 20));
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1');
+        expect(find.byType(AssemblyComponentSelectionDrawer), findsNothing);
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-bar-focus')), findsOneWidget);
+      });
+
+      // Review of B4, finding 1: the pick's peek was written into the person's height, so the tree opened at peek from then on.
+      testWidgets("a pick's peek does not change the height the tree opens at afterwards", (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        await tester.tap(find.byKey(const ValueKey('tree-close')));
+        await settle(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half);
+      });
+
+      // Review of B4, finding 2: a sheet a pick opened stayed up as an empty header once the selection was cleared.
+      testWidgets('a sheet a pick opened closes when the selection is cleared; one the person opened stays', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue);
+        // A tap on empty space (the viewport's clear).
+        tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+        await settle(tester);
+        expect(_TreeProbe(tester).model.selectedKey, isNull);
+        expect(_TreeProbe(tester).view.visible, isFalse);
+
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue, reason: 'the person opened it');
+      });
+
+      // Review of B4, finding 4: Pattern Component's source pick needs the rows; a sheet at peek listed none.
+      testWidgets("Pattern Component's source pick raises a sheet at peek to half", (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        await _TreeProbe(tester).tapRow('plate');
+        await settle(tester);
+        _TreeProbe(tester).view.onSheetHeightChanged!(AssemblyTreeSheetHeight.peek);
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        await _TreeProbe(tester).menuAction('plate', 'Pattern');
+        await settle(tester);
+        final panel = tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel));
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek, reason: 'the Direction step: a tool panel');
+        panel.onDirectionChanged(ComponentPatternAxisPreset.z);
+        await settle(tester);
+        expect(tester.widget<ComponentPatternPanel>(find.byType(ComponentPatternPanel)).pickingMoreSources, isTrue);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half);
+      });
+
+      // Review of B4's fix round: a tool panel hid the sheet a pick had opened and cleared its flag, so it came back at the person's height
+      // and stayed up after the selection was cleared.
+      testWidgets('a sheet a pick opened comes back at peek after a tool panel and still closes when the selection is cleared', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        await tester.tap(find.byKey(const ValueKey('tree-bar-more')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 400));
+        await tester.tap(find.text('Mate').last);
+        await settle(tester);
+        expect(find.byType(MatePanel), findsOneWidget);
+        tester.widget<MatePanel>(find.byType(MatePanel)).onCancel();
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        tester.widget<PartViewport>(find.byType(PartViewport)).onClearSelection!();
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isFalse);
+      });
+
+      // Review of B4's fix round: a pick's peek outlived a turn of the phone.
+      testWidgets("turning the phone ends a pick's peek: back upright the tree has the person's height", (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        pick(tester, 'plate');
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.peek);
+        tester.view.physicalSize = const Size(844, 390);
+        await settle(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, isNull, reason: 'the side panel');
+        tester.view.physicalSize = const Size(390, 844);
+        await settle(tester);
+        expect(_TreeProbe(tester).view.visible, isTrue);
+        expect(_TreeProbe(tester).view.sheetHeight, AssemblyTreeSheetHeight.half);
+      });
+
+      // Review of B4, finding 5: under a tool panel the filter opened a field with no list, and a drag snapped back.
+      testWidgets('a sheet held at peek by a tool panel offers no filter and no drag', (tester) async {
+        portrait(tester);
+        await openNested(tester);
+        await tester.tap(find.byTooltip('Feature tree'));
+        await settle(tester);
+        expect(_TreeProbe(tester).view.onSheetHeightChanged, isNotNull);
+        expect(find.byKey(const ValueKey('tree-filter-toggle')), findsOneWidget);
+        await _TreeProbe(tester).menuAction('plate', 'Mate');
+        await settle(tester);
+        expect(find.byType(MatePanel), findsOneWidget);
+        expect(_TreeProbe(tester).view.onSheetHeightChanged, isNull);
+        expect(find.byKey(const ValueKey('tree-filter-toggle')), findsNothing);
+      });
+    });
+
     group('Build tree (P2)', () {
       final partFeatures = <Map<String, dynamic>>[
         {'type': 'sketch', 'id': 'feature-1', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
@@ -13009,6 +13331,40 @@ void main() {
           '#feature:feature-1', '#feature:feature-2', '#feature:feature-3',
         ]);
         expect(find.descendant(of: find.byType(AssemblyTreeView), matching: find.text('Body 1')), findsOneWidget);
+      });
+
+      // Review of B4's fix round: in phone landscape a body picked in the viewport showed the tree's bar and the selection drawer at once.
+      testWidgets('phone landscape: a viewport pick has the selection drawer and no bar; a feature row tapped in the tree has the bar and no drawer',
+          (tester) async {
+        await openPart(tester); // 800 x 600: a phone in landscape
+        expect(_TreeProbe(tester).view.sheetHeight, isNull);
+        viewport(tester).onSelectionToggle!(const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'feature-2'));
+        await settle(tester);
+        expect(find.byType(SelectionListDrawer), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsNothing);
+        await _tapTreeRow(tester, 'Extrude 1');
+        await settle(tester);
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+        expect(find.byType(SelectionListDrawer), findsNothing);
+      });
+
+      // B4 (10.7: P2 saw the Part lens's selection drawer behind the bar on a phone). Held upright, the sheet's bar is the one surface.
+      testWidgets('on a phone held upright a feature row tapped in the sheet shows its bar and not the selection drawer behind it', (tester) async {
+        tester.view.physicalSize = const Size(390, 844);
+        tester.view.devicePixelRatio = 1;
+        addTearDown(tester.view.reset);
+        await openPart(tester);
+        expect(_TreeProbe(tester).view.sheetHeight, isNotNull, reason: 'the sheet');
+        await _tapTreeRow(tester, 'Extrude 1');
+        await settle(tester);
+        expect(viewport(tester).selectedEntities, isNotEmpty, reason: 'the feature highlights what it made');
+        expect(find.byKey(const ValueKey('tree-selection-bar')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-bar-edit')), findsOneWidget);
+        expect(find.byType(SelectionListDrawer), findsNothing);
+        // Closing the sheet gives the selection back to the drawer.
+        await tester.tap(find.byKey(const ValueKey('tree-close')));
+        await settle(tester);
+        expect(find.byType(SelectionListDrawer), findsOneWidget);
       });
 
       testWidgets('a tap selects the feature and highlights what it made; it opens no panel and rolls nothing back', (tester) async {

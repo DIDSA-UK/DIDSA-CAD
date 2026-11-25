@@ -494,7 +494,8 @@ Map<String, dynamic> _decodeNativeFile(List<int> bytes, String relativePath) {
 }
 
 /// Whether [payload] has what composing reads: a `document` with a list of Part objects, and the sketches, if any, a list of objects, and
-/// each Part's occurrences, if any, a list of objects.
+/// each Part's occurrences, if any, a list of objects. Every Part and every sketch has a String `id` (B4, from B3's review: a sketch's id is
+/// read `as String` later, which threw a [TypeError] instead of saying the file is no save).
 bool _hasNativeShape(Map<String, dynamic> payload) {
   bool objects(Object? list) => list is List && list.every((e) => e is Map<String, dynamic>);
   final document = payload['document'];
@@ -503,6 +504,7 @@ bool _hasNativeShape(Map<String, dynamic> payload) {
   if (!objects(parts)) return false;
   final sketches = payload['sketches'];
   if (sketches != null && !objects(sketches)) return false;
+  if (sketches != null && (sketches as List).any((s) => (s as Map<String, dynamic>)['id'] is! String)) return false;
   for (final part in (parts as List).cast<Map<String, dynamic>>()) {
     final occurrences = part['occurrences'];
     if (occurrences != null && !objects(occurrences)) return false;
