@@ -3009,6 +3009,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   bool get _startButtonVisible =>
       !_desktopLayout &&
       !_chromeHidden &&
+      // B4: the tree sheet holds the bottom of the screen (the Start button would sit on its bar).
+      !(_treeSheetMode && _treeSheetShown) &&
       !_extrudeActive &&
       !_surfaceActive &&
       !_createPlaneActive &&
@@ -3428,7 +3430,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _selectedEntities = {entity};
         _selectedMateId = null;
       });
-      if (picked != null && _lens == AssemblyLens.assembly) _treeController.reveal(picked, select: true);
+      if (picked != null && _lens == AssemblyLens.assembly) {
+        _treeController.reveal(picked, select: true);
+        _peekTreeSheetForPick();
+      }
       return;
     }
     // Measure: caps the selection at 2 entities. Toggling an already-
@@ -27150,7 +27155,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Whether a tree panel (the Build Tree or the Assembly Tree, floating on a phone or docked on the desktop) is on screen,
   /// i.e. whether Edit Alone's row is in it rather than in the pill at the top.
-  bool get _editAloneRowInTree => _desktopLayout ? (_desktopPaneVisible && !_desktopToolPanelOpen && !_chromeHidden) : _featureTreePanelVisible;
+  bool get _editAloneRowInTree => _desktopLayout
+      ? (_desktopPaneVisible && !_desktopToolPanelOpen && !_chromeHidden)
+      // B4: the sheet's peek has no room for the strip; the pill says it then.
+      : _featureTreePanelVisible && !(_treeSheetMode && _treeSheetShownHeight == AssemblyTreeSheetHeight.peek);
 
   /// Assembly support Phase 20 (`docs/assembly-scope.md` §6 `[24]`): every
   /// push/pop of [_focusStack] must re-fetch not just the Assembly tree
@@ -28741,6 +28749,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// True while the Part lens's selection drawer (the selected entities and what can be done with them) shows.
   bool get _selectionDrawerShown =>
       !_chromeHidden &&
+      // B4 (P2 saw it behind the bar): on a phone held upright, not while the tree sheet (with its bar) is up.
+      !(_treeSheetMode && _treeSheetShown) &&
       _lens == AssemblyLens.part &&
                     !_extrudeActive &&
                     !_surfaceActive &&
@@ -28807,6 +28817,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// True while the Assembly lens's component drawer (Move / Fix / Delete for the selected component) shows.
   bool get _componentDrawerShown =>
       !_chromeHidden &&
+      // B4: a phone held upright has one selection surface, the tree sheet's peek and bar.
+      !_treeSheetMode &&
       _lens == AssemblyLens.assembly &&
                     _selectedOccurrenceId != null &&
                     !_assemblyMultiSelect.active &&
@@ -28837,6 +28849,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                         onFixFloat: () => unawaited(_setOccurrenceFixed(occurrence, !occurrence.fixed)),
                         onDelete: () => unawaited(_confirmDeleteOccurrence(occurrence)),
                         onEditAlone: _editAlone == null ? () => unawaited(_enterEditAlone(occurrence)) : null,
+                        // B4: phone landscape has no selection bar in the tree, so the drawer gains what only the bar had.
+                        onZoom: _zoomToTreeSelection,
                         onClose: _clearSelectionFromDrawer,
                       );
                     },
@@ -28882,7 +28896,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } else if (_sourceFeaturePickerTarget != null) {
       _cancelSourceFeaturePicker();
     } else {
-      setState(() => _featureTreeVisible = false);
+      setState(() {
+        _featureTreeVisible = false;
+        // B4: closed under a tool panel: it does not come back when the panel closes.
+        _treeSheetResume = false;
+      });
     }
   }
 
@@ -29416,15 +29434,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _treeModel.focusPath = _treeModel.tree?.partId == _treeRootPartIdOrNull ? _focusRelPath : const <String>[];
     final live = _treeModel.liveKey != null;
     final build = _buildMultiSelect;
-    AssemblyTreeView view(bool docked, double width) => AssemblyTreeView(
+    AssemblyTreeView view(bool docked, double width, {AssemblyTreeSheetHeight? sheet, bool? shown}) => AssemblyTreeView(
       model: _treeModel,
       controller: _treeController,
       docked: docked,
       width: width,
       title: _lens == AssemblyLens.assembly ? 'Assembly Tree' : 'Build Tree',
       statusUnavailable: _treeStatusUnavailable,
-      // The docked pane is shown or not by the layout itself.
-      visible: docked || _featureTreePanelVisible,
+      // The docked pane is shown or not by the layout itself; the phone sheet as [_treeSheetShown] says.
+      visible: shown ?? (docked || _featureTreePanelVisible),
+      sheetHeight: sheet,
+      onSheetHeightChanged: sheet == null ? null : _setTreeSheetHeight,
       editAlone: _editAlone == null
           ? null
           : AssemblyEditAloneInfo(label: _editAlone!.label, inLabels: _editAlone!.inLabels, usedCount: _editAlone!.usedCount),
@@ -29513,10 +29533,18 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
               if (f != null) unawaited(_toggleCoarsePin(f));
             }
           : null,
+      // B4: phone landscape keeps the side panel, and the component drawer is its one selection surface: no bar there.
+      selectionBar: _desktopLayout || _treeSheetMode,
     );
     // A GlobalKey keeps the view's state (its scroll position, its flash) where it is when other overlays of the screen's Stack come and go
     // and shift its place among the children, and across a lens switch (both lenses draw this same tree).
     if (docked) return KeyedSubtree(key: _treeDockedKey, child: view(true, 320));
+    // B4: a phone held upright draws the tree as a bottom sheet. Turning the phone rebuilds the view (its scroll and an open filter start
+    // again); the model keeps the open rows and the selection.
+    if (_treeSheetMode) {
+      _noteTreeSheetToolState();
+      return KeyedSubtree(key: _treeOverlayKey, child: view(false, 0, sheet: _treeSheetShownHeight, shown: _treeSheetShown));
+    }
     // Floating over the viewport: the width the old panel had by default (66% of a portrait phone, else 40%), wider or narrower with the
     // handle on its right edge.
     return KeyedSubtree(
@@ -29580,6 +29608,79 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   List<ComponentPatternDto>? _treePatternsSynced;
   final GlobalKey _treeOverlayKey = GlobalKey(debugLabel: 'assembly-tree-overlay');
   final GlobalKey _treeDockedKey = GlobalKey(debugLabel: 'assembly-tree-docked');
+
+  // --- The phone portrait sheet (B4, `docs/assembly-tree-overhaul-scope.md` 10.6) --------------------------------------------------------
+
+  /// A phone held upright: the tree is a bottom sheet (peek, half, full) instead of the side panel, and its peek with the bar is the one
+  /// selection surface (the component drawer does not open). Landscape and tablets keep the side panel and the drawer.
+  bool get _treeSheetMode => !_desktopLayout && isPhonePortrait(MediaQuery.sizeOf(context));
+
+  /// The height the person chose (a drag, the handle, the filter); [_treeSheetShownHeight] is what is drawn.
+  AssemblyTreeSheetHeight _treeSheetHeight = AssemblyTreeSheetHeight.half;
+
+  void _setTreeSheetHeight(AssemblyTreeSheetHeight height) {
+    if (!mounted) return;
+    setState(() {
+      _treeSheetHeight = height;
+      // A drag while a tool panel holds the sheet at peek is the person's: it is what comes back after.
+    });
+  }
+
+  /// A tool panel (bottom-docked, like the sheet) is open: the sheet drops to peek under it, and comes back to its height after. Not a tree
+  /// picker (the sketch picker, a source picker, the component pattern's source pick): those need the rows.
+  bool get _treeSheetToolOpen =>
+      (_anyToolPanelOpen || _mateActive || _componentPatternPanelActive) &&
+      !_treePickerActive &&
+      _sourceFeaturePickerTarget == null &&
+      !(_componentPatternPanelActive && _componentPatternPickingSources);
+
+  /// Whether the sheet was on screen in the last build, and, while a tool panel is open, whether it was when the panel opened (so it comes
+  /// back when the panel closes: the tools hide the floating tree as they open).
+  bool _treeSheetWasShown = false;
+  bool _treeSheetToolSeen = false;
+  bool _treeSheetResume = false;
+
+  /// Notes a tool panel opening or closing (from the build: the tools open and close in many places, each hiding the tree its own way).
+  void _noteTreeSheetToolState() {
+    final toolOpen = _treeSheetToolOpen;
+    if (toolOpen && !_treeSheetToolSeen) {
+      _treeSheetToolSeen = true;
+      _treeSheetResume = _treeSheetWasShown;
+    } else if (!toolOpen && _treeSheetToolSeen) {
+      _treeSheetToolSeen = false;
+      if (_treeSheetResume && !_featureTreeVisible) {
+        // Back at the height it had. This build already read the old flag elsewhere (the corner buttons): one more frame puts them right.
+        _featureTreeVisible = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() {});
+        });
+      }
+      _treeSheetResume = false;
+    }
+    _treeSheetWasShown = _treeSheetShown;
+  }
+
+  /// Whether the sheet is drawn: the tree is open, or a tool panel holds it at peek.
+  bool get _treeSheetShown => _featureTreePanelVisible || (_treeSheetToolOpen && _treeSheetResume);
+
+  /// The height drawn: peek under a tool panel; at least half while a tree picker or a multi-select needs the rows; else the person's.
+  AssemblyTreeSheetHeight get _treeSheetShownHeight {
+    if (_treeSheetToolOpen) return AssemblyTreeSheetHeight.peek;
+    if ((_treePickerActive || _activeMultiSelect != null || _sourceFeaturePickerTarget != null) && _treeSheetHeight == AssemblyTreeSheetHeight.peek) {
+      return AssemblyTreeSheetHeight.half;
+    }
+    return _treeSheetHeight;
+  }
+
+  /// A component picked in the viewport, on a phone held upright: the sheet shows the pick at peek if it was closed (an open sheet keeps its
+  /// height). Nothing while a tool owns the screen.
+  void _peekTreeSheetForPick() {
+    if (!_treeSheetMode || _featureTreePanelVisible || _anyToolSessionActive || _treeSheetToolOpen || _chromeHidden) return;
+    setState(() {
+      _featureTreeVisible = true;
+      _treeSheetHeight = AssemblyTreeSheetHeight.peek;
+    });
+  }
 
   Widget _buildScaffold(BuildContext context) {
     return Scaffold(

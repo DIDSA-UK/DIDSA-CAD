@@ -73,10 +73,11 @@ bool looksGeneratedName(String name) => AssemblyTreeNaming.looksGenerated(name);
 
 /// Default width fraction of the Assembly tree when it floats over the viewport (the old panel's default, kept): 66% on a portrait phone
 /// (shorter side < 600 logical px and taller than wide), 40% everywhere else.
-double assemblyTreeDefaultWidthFraction(Size screenSize) {
-  final isPortraitMobile = screenSize.width < 600 && screenSize.height > screenSize.width;
-  return isPortraitMobile ? 0.66 : 0.4;
-}
+double assemblyTreeDefaultWidthFraction(Size screenSize) => isPhonePortrait(screenSize) ? 0.66 : 0.4;
+
+/// A phone held upright: narrower than 600 logical px and taller than wide. B4: the phone layout draws the tree as a bottom sheet then;
+/// landscape and tablets keep the side panel.
+bool isPhonePortrait(Size screenSize) => screenSize.width < 600 && screenSize.height > screenSize.width;
 
 /// M5: the occurrence ids of every member of rigid set [setId] (`ConstraintStatusDto.rigidSet`), in the order [occurrences] lists them.
 List<String> rigidSetMemberIds(List<OccurrenceDto> occurrences, Map<String, ConstraintStatusDto> status, String setId) =>
