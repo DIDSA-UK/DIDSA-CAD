@@ -82,6 +82,7 @@ import '../vr_pairing/headset_pairing_screen.dart';
 import 'action_sheet.dart';
 import 'assembly_tree_helpers.dart';
 import 'assembly_tree_open_store.dart';
+import 'assembly_hover_link.dart';
 import 'assembly_tree_view.dart';
 import 'assembly_context_strip.dart';
 import 'body_naming.dart';
@@ -13261,6 +13262,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   @override
   void dispose() {
+    _viewportHoverThrottle.dispose();
+    _treeHover.dispose();
+    _viewportHoverPath.dispose();
     _patternScope.dispose();
     _mirrorScope.dispose();
     _glideTicker?.dispose();
@@ -26184,6 +26188,95 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     };
   }
 
+  // --- C4 (#12): hover linking ----------------------------------------------------------------------------------------------------------
+
+  /// What the tree row under the pointer lights in the viewport (a separate input from Select Other's override: it only lights).
+  final ValueNotifier<ViewportTreeHover?> _treeHover = ValueNotifier<ViewportTreeHover?>(null);
+
+  /// The tree path (from the tree's root) of the part under the viewport's pointer, for the tree to mark its row; null for none. Fed through
+  /// [_viewportHoverThrottle] so a moving pointer does not rebuild the tree on every frame.
+  final ValueNotifier<List<String>?> _viewportHoverPath = ValueNotifier<List<String>?>(null);
+  late final HoverThrottle<String?> _viewportHoverThrottle = HoverThrottle<String?>((key) {
+    if (!mounted) return;
+    _viewportHoverPath.value = _treePathOfFullKey(key);
+  });
+
+  /// The tree path of the placed instance [fullKey] (a joined full path), or null for none or one outside the tree's root.
+  List<String>? _treePathOfFullKey(String? fullKey) {
+    if (fullKey == null || fullKey.isEmpty) return null;
+    final full = fullKey.split('/');
+    final root = _appliedTreeRootPath;
+    if (full.length <= root.length || !pathEquals(full.sublist(0, root.length), root)) return null;
+    return full.sublist(root.length);
+  }
+
+  /// Hover is for looking: not while a tool, a picker or the Select Other sheet owns the viewport.
+  bool get _treeHoverAllowed =>
+      !_anyToolSessionActive && !_anyFeatureOrSourcePickerSessionActive && !_selectOtherSheetOpen && _treeModel.picker == null;
+
+  /// The placed instances (joined full paths) at or below any of [paths] (from the tree's root).
+  Set<String> _instanceKeysUnderPaths(Iterable<List<String>> paths) {
+    final mesh = _assemblyMesh;
+    if (mesh == null) return const {};
+    final keys = [for (final p in paths) _fullPath(p).join('/')];
+    if (keys.isEmpty) return const {};
+    return {
+      for (final i in mesh.instances)
+        if (keys.any((k) => instanceKeyIsAtOrBelow(i.occurrencePath.join('/'), k))) i.occurrencePath.join('/'),
+    };
+  }
+
+  /// What hovering [row] lights: an occurrence row its placement (by full path, so a second placement of the same part stays dark), a group
+  /// row its members, a mate row the components it joins, a feature row of the live part what it made, a body, surface or curve row itself.
+  /// Null for a row that stands for nothing in the viewport (the root, a folder, a read-only feature).
+  ViewportTreeHover? _treeHoverOfRow(AssemblyTreeRow row) {
+    if (row.live) {
+      switch (row.kind) {
+        case AssemblyRowKind.feature:
+          final f = _featureOfRow(row);
+          return f == null ? null : ViewportTreeHover(entities: _entitiesMadeBy(f));
+        case AssemblyRowKind.body:
+        case AssemblyRowKind.surface:
+          return row.itemId == null ? null : ViewportTreeHover(entities: {SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: row.itemId!)});
+        case AssemblyRowKind.curve:
+          return row.itemId == null
+              ? null
+              : ViewportTreeHover(entities: {SelectionEntityRef(kind: SelectionEntityKind.curveFeature, bodyId: row.itemId!)});
+        default:
+          return null;
+      }
+    }
+    if (_lens != AssemblyLens.assembly) return null;
+    switch (row.kind) {
+      case AssemblyRowKind.assembly:
+      case AssemblyRowKind.part:
+        final path = row.path;
+        if (path == null || path.isEmpty) return null;
+        return ViewportTreeHover(instanceKeys: _instanceKeysUnderPaths([path]));
+      case AssemblyRowKind.group:
+        return ViewportTreeHover(instanceKeys: _instanceKeysUnderPaths(_treeModel.groupMemberPaths(row.key)));
+      case AssemblyRowKind.mate:
+      case AssemblyRowKind.pattern:
+        final owner = _itemOwnerPath(row);
+        final id = row.itemId;
+        if (owner == null || id == null) return null;
+        final partId = owner.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(owner)?.resolvedPartId;
+        final lists = partId == null ? null : _listsFor(partId);
+        final Iterable<String> components = row.kind == AssemblyRowKind.mate
+            ? (lists?.mates.where((m) => m.id == id).map(mateTopLevelOccurrences).firstOrNull ?? const <String>{})
+            : (lists?.patterns.where((p) => p.id == id).map((p) => p.sourceOccurrenceIds).firstOrNull ?? const <String>[]);
+        return ViewportTreeHover(instanceKeys: _instanceKeysUnderPaths([for (final c in components) [...owner, c]]));
+      default:
+        return null;
+    }
+  }
+
+  /// The tree's pointer moved onto [row] (or off every row: null). Lights what it stands for in the viewport.
+  void _onTreeRowHover(AssemblyTreeRow? row) {
+    final hover = row == null || !_treeHoverAllowed ? null : _treeHoverOfRow(row);
+    _treeHover.value = hover == null || hover.isEmpty ? null : hover;
+  }
+
   /// Zoom to selection: frames the camera on the parts of the selected row (a part, a sub-assembly by its path, the root row for
   /// everything, or several rows in multi-select). False when nothing is selected or the rows have no geometry to frame.
   bool _zoomToTreeSelection() {
@@ -30094,6 +30187,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       itemOtherLevel: _itemOtherLevelLabel,
       onItemFocusToEdit: (row) => unawaited(_focusToEditItem(row)),
       onGroupingChanged: (value) => unawaited(ViewPreferences.setAssemblyTreeGrouping(value)),
+      onRowHover: _onTreeRowHover,
+      viewportHover: _viewportHoverPath,
+      onRowColourTap: (row) => _withTreeTarget(row, (t) => _onOccurrenceColorTap(t.occurrence, path: t.path)),
       flashItemIds: _flashMateIds,
       flashToken: _flashMateToken,
       // The phone selection bar: Hide, Isolate, Focus, Alone as the row menu's own actions, and More as the row menu itself; a live row's
@@ -30563,6 +30659,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                   selectionMode: _selectionMode,
                   selectedEntities: _selectedEntities,
                   highlightedInstanceKeys: _treeHighlightKeys(),
+                  treeHover: _treeHover,
+                  onHoverOccurrenceChanged: _viewportHoverThrottle.push,
                   onSelectionToggle: _toggleSelectedEntity,
                   onSelectionPickPoint: (entity, pick) {
                     if (_mateActive) _matePickPoints[entity] = pick;

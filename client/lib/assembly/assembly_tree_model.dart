@@ -1156,6 +1156,26 @@ class AssemblyTreeModel {
   /// The display name of the node at [path] (spec section 3), or null.
   String? labelAtPath(List<String> path) => _byKey[_keyOf(path)]?.label;
 
+  /// C4 (#12): the paths of the members of the group row [groupKey] (hovering a group lights every member); empty for any other key.
+  List<List<String>> groupMemberPaths(String groupKey) {
+    final g = _groupsByKey[groupKey];
+    return g == null ? const [] : [for (final m in g.members) m.dto.path];
+  }
+
+  /// C4 (#12): the key of the row that stands for the occurrence at [path] in the list now: its own row, else (grouping on) the group row it
+  /// sits in, else the nearest ancestor that is listed (the occurrence is in a collapsed branch). Null when nothing but the root is listed
+  /// or the path names no node. Never opens a row: the hover marks the row, it does not reveal.
+  String? listedRowKeyOfPath(List<String> path) {
+    for (var n = path.length; n >= 1; n--) {
+      final node = _byKey[_keyOf(path.sublist(0, n))];
+      if (node == null) continue;
+      if (indexOf(node.key) >= 0) return node.key;
+      final g = node.group;
+      if (_grouping && g != null && indexOf(g.key) >= 0) return g.key;
+    }
+    return null;
+  }
+
   // ----- Rows -----
 
   /// The flat list of rows for the open keys, the grouping switch, the unsaved set and the fetched features (spec section 7). The list
