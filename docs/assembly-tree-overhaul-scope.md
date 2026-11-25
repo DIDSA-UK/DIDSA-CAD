@@ -1354,22 +1354,28 @@ Frame (answer 8).
 | Chunk | Status | PR | Model used | Notes |
 |---|---|---|---|---|
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
-| C1 contract + Flutter model | manager review done; its fix round (item order, answer (a)) pushed: the owner checks CI, then merges | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
+| C1 contract + Flutter model | merged 25 Nov | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
 | C2 Flutter #7 | not started | | | |
 | C3 Flutter #13 | not started | | | |
 | C4 Flutter #12 + #15 | not started | | | |
 | C5 Flutter #14 | not started | | | |
-| C6 VR one tree component | not started | | | |
+| C6 VR one tree component | PR open: the owner checks CI, then merges | DIDSA-VR #105 | Opus 5.5 | occurrence_tree_view.gd + occurrence_tree_scope.gd (World, Table PARTS); PARTS bar Table / Bring / Fix / Hide / Isolate / Rename / Room / Delete; 10.8 VR leftovers 1-3 done (tests/tree_c6.gd) |
 | C7 VR room tree | not started | | | |
 | C8 VR BUILD tab on spec 13 | not started | | | |
 | C9 VR parts to features | not started | | | |
 
 ### 12.8 Hand-off
 
-**In flight:** C1 (PR open; the owner opens the manager review of 12.5 step 3 before merging).
+**In flight:** C6 (VR #105, PR open). C1 merged (#412).
+
+**For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
+with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
+`room_context` as it needs. A docked tree 0.46 m tall sat in the keyboard's line of sight (`keyboard_dock.gd`); C6 kept
+0.30 x 0.40 m, so check the room tree's height and dock against the keyboard too.
 
 **Leftovers placed:** 10.8's B5 sheet nits 1-8 and B2.1 -> C0 (item 9 stays with the device check); VR leftovers 1-3 -> C6;
-VR item 4 (the root as the way to a room): kept, answer 10 below.
+VR item 4 (the root as the way to a room): kept, answer 10 below. C6: 10.8 VR leftovers 1, 2 and 3 are done, each with its
+test in `tests/tree_c6.gd`.
 
 **Owner's answers (25 Nov 2026):** every recommendation accepted.
 1. *C1.* A level's mates are fetched from `GET /parts/{owner}/mates` when its folder opens; the endpoint does not change, and
@@ -1403,12 +1409,19 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
   red either way).
 - C1-5 (for C2): the view colours item rows from `tone` only; a spec-form item (`AssemblyFolderItem.spec` / `fromJson`) has none, so
   C2 colours item rows from `AssemblyTreeRow.itemState` (red: lost, broken; amber: near, held; dimmed: suppressed).
+- C6-1 (for C7): Table and Bring say "nothing of it is in the arena" in two wrong cases: a closed sub-assembly with a single
+  part, read one level at a time; a nested part before the world has been indexed (before C6, the occurrence id alone found
+  it). Fix: decide "sub-assembly" from the row's kind, and fall back to the occurrence id for nested rows.
+- C6-2 (for C7): the PARTS list is short when the bar shows two lines of buttons and a long hint. If the headset check says
+  so, the options are a shorter hint or a taller docked tree, but a taller tree moves the pop-up keyboard.
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
 Focus here to edit, the drawer's mates); C3 (desktop and phone: edit a feature three levels down from the tree); C4 (desktop:
 hover both ways on a large assembly, each column); C5 (desktop: the flyout with Extrude, Mirror and a mate tool open); C6
-(headset: the World tree as before, the PARTS tab's bar); C7 (headset: a room's tree beside its console, its strip, Fix from
+(headset: the World tree as before; on the PARTS tab, the bar for a part and for a sub-assembly (its greyed reason), Table from the
+bar on a nested part, Room and Delete, Find, and whether the list beside the two-line bar is tall enough (Mesa: 242 px with a part selected, 213 px with a
+sub-assembly); leftover 1 with a real room); C7 (headset: a room's tree beside its console, its strip, Fix from
 it); C8 (headset: the BUILD tab's folders and bar); C9 (headset: a part opened to its features, Table from a feature).
 
 ## Sources
