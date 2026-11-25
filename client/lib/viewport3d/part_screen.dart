@@ -655,8 +655,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// null when the focused Part is the root, whose lists are [_mates] and [_componentPatterns].
   List<MateDto>? _rootMates;
   List<ComponentPatternDto>? _rootPatterns;
-  List<MateDto> get _treeMateList => _rootMates ?? _mates;
-  List<ComponentPatternDto> get _treePatternList => _rootPatterns ?? _componentPatterns;
 
   /// A4: the Assembly tree's rows (`docs/assembly-tree-overhaul-scope.md` 9.6), from `GET /parts/{id}/assembly-tree` for the focused Part. The
   /// model is not a Listenable: every change to it is followed by [_treeController]'s `refresh()`.
@@ -13510,6 +13508,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final focusBelowRoot = focusFull.length > nominalRootPath.length ? focusFull.sublist(nominalRootPath.length) : const <String>[];
     // A4: every load has a token; an answer that is not from the latest load is dropped (see [_treeLoadToken]).
     final token = ++_treeLoadToken;
+    // C2: a level's mates read before this load (a mate edit, a newer tree, another document) are stale: their answers are dropped. A load
+    // that fails or is dropped reads the opened levels again ([_refreshLevelItems]), so no open folder is left empty (review).
+    _levelItemsGen++;
     // B2: a tree that is new for this document (the first answer, or the document's own tree again after a focus) opens the rows it had
     // when it was last open. Read at the same time as everything else; applied only if this answer is still the latest and nothing changed
     // under it (below).
@@ -13533,6 +13534,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } catch (_) {
       await structure; // never left unawaited
       await storedKeys;
+      if (mounted) _refreshLevelItems();
       rethrow;
     }
     final fetched = await structure;
@@ -13550,14 +13552,20 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
     // P2: also not when the focus (or the tree's root: Edit Alone) moved since, even before the load for the new one has started: the
     // flat lists are the old focused Part's, and the tree may be another root's.
-    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+    if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) {
+      if (mounted) _refreshLevelItems();
+      return;
+    }
     // A deeper focus needs a row for it in the tree: without one (the call failed, the answer was cut short or lacks it) the tree is the
     // focused Part's own, rooted there as before B3, with its own lists. The focused Part's lists are never put under another Part's root.
     final needsFocusRoot = focusBelowRoot.isNotEmpty && (fetched == null || !_treeHasFocusRow(fetched, focusBelowRoot, focusPartId));
     AssemblyTreeResponseDto? focusTree;
     if (needsFocusRoot) {
       focusTree = await _fetchTreeStructure(focusPartId);
-      if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) return;
+      if (!mounted || token != _treeLoadToken || focusPartId != (_focusStack?.current ?? _part?.id) || rootPartId != _nominalRootPartId) {
+        if (mounted) _refreshLevelItems();
+        return;
+      }
     }
     final builtFromLists = needsFocusRoot ? focusTree == null : fetched == null;
     final AssemblyTreeResponseDto tree;
@@ -13598,6 +13606,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _componentPatterns = patterns;
       _rootMates = rootMates == null ? null : _mateFollowedNotes.merge(rootMates);
       _rootPatterns = rootPatterns;
+      _listsPartId = focusPartId;
+      // C2: every other level's mates are read again for this answer (once per Part), as the parts' features are.
+      _levelItems.clear();
+      _levelItemsFailed.clear();
       // The rows claim no state until the status call answers; the screen's own map (the rigid-set grab notice) keeps the previous one until then
       // (for the same Part: another Part's status is not this one's).
       if ((_treeModel.tree != null && _treeModel.tree!.partId != tree.partId) || _statusLevelKey != _focusRelPath.join('/')) {
@@ -13617,6 +13629,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       }
     });
     _refreshTreeFeatures();
+    _refreshLevelItems();
     if (!builtFromLists) {
       unawaited(_loadTreeStatus(tree.partId, token));
     } else {
@@ -13704,8 +13717,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// What the model keeps besides the tree: the mates and patterns under the root folders, the unsaved Parts, and the nested rows hidden for
   /// this session (as keys relative to the tree's root).
   void _syncTreeSideData() {
-    _treeModel.setFolderItems('#mates', mateFolderItems(_treeMateList));
-    _treeModel.setFolderItems('#patterns', patternFolderItems(_treePatternList));
+    _syncLevelFolderItems();
     _treeModel.setUnsavedPartIds(_unsavedPartIds);
     final rootPath = _treeRootPath;
     final prefix = rootPath.isEmpty ? '' : '${rootPath.join('/')}/';
@@ -26073,9 +26085,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The path (from the tree's root) of the component [id] directly in the focused Part.
   List<String> _focusChildPath(String id) => [..._focusRelPath, id];
 
-  /// Whether the focused Part is the tree's root Part: the flat lists are then the tree's root level too.
-  bool get _focusIsTreeRoot => _focusRelPath.isEmpty;
-
   /// A pick's full path (from the document root) as a path from the tree's root, or null when it is not below the root. B4 (review): the root
   /// of the tree in the model ([_appliedTreeRootPath]), which is what a path names rows of; between a focus change and the load that follows
   /// it [_treeRootPath] is already the next root, and the load's remap reads the selection from the applied one.
@@ -26204,12 +26213,17 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           }
         }
       case AssemblyRowKind.mate:
-        final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
-        // B3: the folder is the tree root's; while the focus is deeper its mates are not the lists this screen's mate actions work on.
-        if (mate != null && _focusIsTreeRoot) _onMateTap(mate);
       case AssemblyRowKind.pattern:
-        final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
-        if (pattern != null && _focusIsTreeRoot) _openComponentPatternForEdit(pattern);
+        // C2: an item of the focused level acts as before; one of another level is selected and highlighted, not edited (answer 4).
+        if (!_itemOnFocusedLevel(row)) {
+          _selectOtherLevelItem(row);
+        } else if (row.kind == AssemblyRowKind.mate) {
+          final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
+          if (mate != null) _onMateTap(mate);
+        } else {
+          final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
+          if (pattern != null) _openComponentPatternForEdit(pattern);
+        }
       case AssemblyRowKind.root:
         // The root row stands for everything in the tree: it highlights every part (the old panel's root row selected nothing, A4.1 asked for
         // this). Its path is `[]`, so nothing that works on one component (the gizmo, the drawer) sees a selection.
@@ -26271,11 +26285,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           unawaited(_onOccurrenceLongPress(target.occurrence, path: target.path));
         }
       case AssemblyRowKind.mate:
-        final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
-        if (mate != null && _focusIsTreeRoot) unawaited(_onMateLongPress(mate));
       case AssemblyRowKind.pattern:
-        final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
-        if (pattern != null && _focusIsTreeRoot) unawaited(_onPatternContextMenu(pattern, null));
+        unawaited(_onItemRowMenu(row, null));
       case AssemblyRowKind.feature:
         // C3: a feature of a part that is not live: its menu offers Edit in context.
         unawaited(_readOnlyFeatureMenu(row));
@@ -26304,11 +26315,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       case AssemblyRowKind.missing:
         _withTreeTarget(row, (t) => _onOccurrenceLongPress(t.occurrence, at: at, path: t.path));
       case AssemblyRowKind.mate:
-        final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
-        if (mate != null && _focusIsTreeRoot) unawaited(_onMateLongPress(mate, at: at));
       case AssemblyRowKind.pattern:
-        final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
-        if (pattern != null && _focusIsTreeRoot) unawaited(_onPatternContextMenu(pattern, at));
+        unawaited(_onItemRowMenu(row, at));
       case AssemblyRowKind.feature:
         unawaited(_readOnlyFeatureMenu(row, at: at));
       case AssemblyRowKind.root:
@@ -26497,6 +26505,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       showEditAlone: _editAlone == null,
       nested: nested,
       showExpandToSelection: _treeCanBeShown,
+      mateCount: _selectedComponentMates(rowPath)?.length,
     );
     if (mounted) setState(() => _componentContextMenuOpen = false);
     if (!mounted || action == null) return;
@@ -26512,6 +26521,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _zoomToTreeSelection();
       case ComponentContextMenuAction.expandToSelection:
         _expandTreeToSelection();
+      case ComponentContextMenuAction.mates:
+        await _pickComponentMate(rowPath, at: at);
       case ComponentContextMenuAction.hide:
         await _setOccurrenceHidden(occurrence, true, path: rowPath);
       case ComponentContextMenuAction.show:
@@ -28860,7 +28871,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       // B4: a phone held upright has one selection surface, the tree sheet's peek and bar.
       !_treeSheetMode &&
       _lens == AssemblyLens.assembly &&
-                    _selectedOccurrenceId != null &&
+                    // C2: on desktop a nested component too (its mates; it is edited from its own level). A phone keeps the nested row's bar
+                    // (B4 review), whose More lists the mates.
+                    (_selectedOccurrenceId != null || (_desktopLayout && _selectedNestedNode != null)) &&
                     !_assemblyMultiSelect.active &&
                     !_anyToolPanelOpen &&
                     !_anyFeatureOrSourcePickerSessionActive &&
@@ -28869,15 +28882,54 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                     !_selectOtherSheetOpen &&
                     !_componentContextMenuOpen;
 
+  /// C2: the selected component when it sits below the focused level (the drawer lists its mates), else null.
+  AssemblyTreeNodeDto? get _selectedNestedNode {
+    final path = _selectedTreePath;
+    if (path == null || path.isEmpty || _treeRootPending || _isFocusChild(path)) return null;
+    return _treeModel.nodeAtPath(path);
+  }
+
+  /// The drawer's Retry while the component's level could not be read; null otherwise.
+  VoidCallback? _retryMatesCallback(List<String> path) {
+    final failed = _componentMatesFailed(path);
+    return failed == null ? null : () => unawaited(_retryLevelItems(failed));
+  }
+
+  /// The drawer's list of the selected component's mates ([_selectedComponentMates]).
+  List<AssemblyComponentMate>? _drawerMates(List<String> path) => _selectedComponentMates(path)
+      ?.map((m) => AssemblyComponentMate(
+            id: m.item.id,
+            label: m.item.label,
+            state: m.item.state,
+            onTap: () => _selectComponentMate(m.folderKey, m.item.id),
+          ))
+      .toList();
+
   Widget _buildComponentDrawer() {
     return Builder(
                     builder: (context) {
                       final index = _occurrences.indexWhere((o) => o.id == _selectedOccurrenceId);
-                      if (index == -1) return const SizedBox.shrink();
+                      if (index == -1) {
+                        final node = _selectedNestedNode;
+                        final path = _selectedTreePath;
+                        if (node == null || path == null) return const SizedBox.shrink();
+                        final occurrence = _occurrenceFromNode(node);
+                        return AssemblyComponentSelectionDrawer(
+                          key: const ValueKey('nested-component-drawer'),
+                          selectedComponent: occurrence,
+                          displayName: _treeLabel(path, occurrence),
+                          mates: _drawerMates(path),
+                          onRetryMates: _retryMatesCallback(path),
+                          onZoom: _zoomToTreeSelection,
+                          onClose: _clearSelectionFromDrawer,
+                        );
+                      }
                       final occurrence = _occurrences[index];
                       return AssemblyComponentSelectionDrawer(
                         selectedComponent: occurrence,
                         displayName: _treeLabel(_focusChildPath(_occurrences[index].id), _occurrences[index]),
+                        mates: _drawerMates(_focusChildPath(occurrence.id)),
+                        onRetryMates: _retryMatesCallback(_focusChildPath(occurrence.id)),
                         onMove: () {
                           _clearTransientError();
                           setState(() {
@@ -29399,6 +29451,375 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (f != null) unawaited(_onFeatureTap(f));
   }
 
+  // --- C2 (#7): mates per assembly level and the selection's mates ----------------------------------------------------------------------
+
+  /// The Part [_mates] and [_componentPatterns] are the lists of (the focused Part when the last tree load read them); null before one.
+  String? _listsPartId;
+
+  /// Each level's mates and patterns read for the current tree answer, by Part id (a Part placed twice is read once and shared). Cleared by every
+  /// load, which reads again the Parts in [_levelItemsWanted] ([_refreshLevelItems]); the focused Part's and the root's come from their own lists.
+  final Map<String, ({List<MateDto> mates, List<ComponentPatternDto> patterns})> _levelItems = {};
+
+  /// Parts whose folders the tree has opened: read again with every load, so they do not go stale after an edit.
+  final Set<String> _levelItemsWanted = {};
+
+  /// Parts whose read failed for the current tree answer: not asked again until the next answer (review: a failing level was read again on every
+  /// rebuild), and the drawer lists no mates for them.
+  final Set<String> _levelItemsFailed = {};
+
+  /// Reads in flight, by Part id, with the generation they were started in.
+  final Map<String, (int, Future<void>)> _levelItemsInFlight = {};
+
+  /// Bumped when a tree load starts: a read started before it is stale (a mate edit, a newer tree, another document) and its answer is dropped;
+  /// the load reads the opened levels again when it is applied, fails or is dropped.
+  int _levelItemsGen = 0;
+
+  /// What [_syncLevelFolderItems] last gave the model, per folder key: the source list (by identity), so an unchanged level is not set again.
+  AssemblyTreeModel? _levelItemsSentModel;
+  final Map<String, Object> _levelItemsSent = {};
+  final Map<String, (Object, List<AssemblyFolderItem>)> _levelItemsMemo = {};
+
+  /// The mates and patterns of the level whose Part is [partId], when they are known: the focused Part's own lists, the tree root's while the
+  /// focus is deeper, or what [_fetchLevelItems] read.
+  ({List<MateDto> mates, List<ComponentPatternDto> patterns})? _listsFor(String partId) {
+    if (partId == _listsPartId) return (mates: _mates, patterns: _componentPatterns);
+    if (partId == _treeModel.tree?.partId && _rootMates != null) return (mates: _rootMates!, patterns: _rootPatterns ?? const []);
+    return _levelItems[partId];
+  }
+
+  /// Hands the model the items of every level's folders whose Part's lists are known (spec section 14: the root's, and each assembly row's,
+  /// under its own key: `mast/arm#mates`). Two placements of one Part get the same items. A level whose lists are not read yet is left as it is.
+  void _syncLevelFolderItems() {
+    final model = _treeModel;
+    final tree = model.tree;
+    if (tree == null) return;
+    if (!identical(_levelItemsSentModel, model)) {
+      _levelItemsSentModel = model;
+      _levelItemsSent.clear();
+    }
+    void put(String key, Object source, List<AssemblyFolderItem> Function() items) {
+      if (identical(_levelItemsSent[key], source) && model.hasFolderItems(key)) return;
+      final memo = _levelItemsMemo[key];
+      model.setFolderItems(key, memo != null && identical(memo.$1, source) ? memo.$2 : (_levelItemsMemo[key] = (source, items())).$2);
+      _levelItemsSent[key] = source;
+    }
+
+    void level(String ownerKey, String? partId, AssemblyTreeMatesDto? mates, AssemblyTreePatternsDto? patterns) {
+      final hasMates = (mates?.count ?? 0) > 0;
+      final hasPatterns = (patterns?.count ?? 0) > 0;
+      if (partId == null || (!hasMates && !hasPatterns)) return;
+      final lists = _listsFor(partId);
+      if (lists == null) return;
+      if (hasMates) put('$ownerKey#mates', lists.mates, () => mateFolderItems(lists.mates));
+      if (hasPatterns) put('$ownerKey#patterns', lists.patterns, () => patternFolderItems(lists.patterns));
+    }
+
+    void walk(List<AssemblyTreeNodeDto> nodes) {
+      for (final n in nodes) {
+        level(n.path.join('/'), n.resolvedPartId, n.mates, n.patterns);
+        walk(n.children);
+      }
+    }
+
+    level('', tree.partId, tree.mates, tree.patterns);
+    walk(tree.children);
+  }
+
+  /// The Part of the level whose folder is [folderKey] (`<row key>#mates` / `#patterns`), or null when the folder does not show.
+  String? _folderPartId(String folderKey) {
+    final path = _treeModel.levelFolderOwnerPath(folderKey);
+    if (path == null) return null;
+    return path.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(path)?.resolvedPartId;
+  }
+
+  /// The tree opened a level's Mates or Patterns folder that has no items: read that level's lists (once per Part per tree answer).
+  void _onFolderItemsRequested(String folderKey) {
+    final partId = _folderPartId(folderKey);
+    if (partId == null) {
+      _treeController.forgetFolderRequest(folderKey);
+      return;
+    }
+    _levelItemsWanted.add(partId);
+    // The view asks again only when the folder was opened again: a deliberate retry of a failed read.
+    _levelItemsFailed.remove(partId);
+    if (_listsFor(partId) != null) {
+      setState(_syncLevelFolderItems);
+      _treeController.refresh();
+      return;
+    }
+    unawaited(_fetchLevelItems(partId));
+  }
+
+  /// After a load: the Parts whose folders were opened are read again (those no longer in the tree are forgotten).
+  void _refreshLevelItems() {
+    final tree = _treeModel.tree;
+    if (tree == null) return;
+    final inTree = <String>{tree.partId};
+    void walk(List<AssemblyTreeNodeDto> nodes) {
+      for (final n in nodes) {
+        if (n.resolvedPartId != null) inTree.add(n.resolvedPartId!);
+        walk(n.children);
+      }
+    }
+
+    walk(tree.children);
+    _levelItemsWanted.retainAll(inTree);
+    for (final partId in _levelItemsWanted) {
+      if (_listsFor(partId) == null) unawaited(_fetchLevelItems(partId));
+    }
+  }
+
+  /// `GET /parts/{partId}/mates` and `/component-patterns` for a level's folders. Dropped when a load has started since (the stale-answer
+  /// rule: that load reads the Part again) or the tree model was replaced. A failure marks the Part failed until the next tree answer or a
+  /// deliberate retry (the folder opened again, the drawer's Retry, the menu's Mates), with a banner.
+  Future<void> _fetchLevelItems(String partId) {
+    final gen = _levelItemsGen;
+    if (_levelItemsFailed.contains(partId)) return Future<void>.value();
+    final running = _levelItemsInFlight[partId];
+    if (running != null && running.$1 == gen) return running.$2;
+    final read = _readLevelItems(partId, gen);
+    _levelItemsInFlight[partId] = (gen, read);
+    return read;
+  }
+
+  Future<void> _readLevelItems(String partId, int gen) async {
+    final model = _treeModel;
+    try {
+      final mates = await _api.listMates(partId);
+      final patterns = await _api.listComponentPatterns(partId);
+      if (!mounted || gen != _levelItemsGen || !identical(model, _treeModel)) return;
+      setState(() {
+        _levelItems[partId] = (mates: _mateFollowedNotes.merge(mates), patterns: patterns);
+        _syncLevelFolderItems();
+      });
+      _treeController.refresh();
+    } on ApiException {
+      // Kept as failed until the next tree answer reads it again (the view keeps the folder asked, so it does not ask in a loop); said once.
+      if (mounted && gen == _levelItemsGen && identical(model, _treeModel)) {
+        setState(() {
+          _levelItemsFailed.add(partId);
+          _errorMessage ??= 'The mates and patterns of ${_partNameInTree(partId)} could not be read';
+        });
+      }
+    } finally {
+      if (_levelItemsInFlight[partId]?.$1 == gen) _levelItemsInFlight.remove(partId);
+    }
+  }
+
+  /// A Part's name as the tree has it (the root's, or the first node placing it), for a message.
+  String _partNameInTree(String partId) {
+    final tree = _treeModel.tree;
+    if (tree == null || tree.partId == partId) return tree?.partName ?? _treeRootDisplayName;
+    AssemblyTreeNodeDto? find(List<AssemblyTreeNodeDto> nodes) {
+      for (final n in nodes) {
+        if (n.resolvedPartId == partId) return n;
+        final hit = find(n.children);
+        if (hit != null) return hit;
+      }
+      return null;
+    }
+
+    return find(tree.children)?.partName ?? 'a sub-assembly';
+  }
+
+  /// The owning row's path of a mate or pattern item row (`[]` for the root's folders), from its key (`mast/arm#mates#item:m3`); null for
+  /// any other row.
+  static List<String>? _itemOwnerPath(AssemblyTreeRow row) {
+    if (row.itemId == null) return null;
+    final i = row.key.indexOf('#item:');
+    if (i < 0) return null;
+    final folder = row.key.substring(0, i);
+    final hash = folder.lastIndexOf('#');
+    if (hash < 0) return null;
+    final owner = folder.substring(0, hash);
+    return owner.isEmpty ? const <String>[] : owner.split('/');
+  }
+
+  /// Whether an item row is on the focused level, whose lists this screen's mate and pattern actions work on (and those lists are that level's).
+  bool _itemOnFocusedLevel(AssemblyTreeRow row) {
+    final owner = _itemOwnerPath(row);
+    return owner != null && pathEquals(owner, _focusRelPath) && _listsPartId != null && _listsPartId == _focusPartIdOrNull;
+  }
+
+  /// The strip's level name for an item row of another level (the tree's root, or the assembly row's label); null on the focused level.
+  String? _itemOtherLevelLabel(AssemblyTreeRow row) {
+    final owner = _itemOwnerPath(row);
+    if (owner == null || _itemOnFocusedLevel(row)) return null;
+    return owner.isEmpty ? (_focusCrumbLabels().firstOrNull ?? _treeRootDisplayName) : (_treeModel.labelAtPath(owner) ?? 'another level');
+  }
+
+  /// A mate or pattern of another level selected: [_selectedEntities] for its highlight, with the row's key (valid while the selection is
+  /// still those entities: any other selection replaces them).
+  ({String key, Set<SelectionEntityRef> entities})? _otherLevelItem;
+
+  String? get _otherLevelItemKey {
+    final item = _otherLevelItem;
+    return item != null && identical(item.entities, _selectedEntities) ? item.key : null;
+  }
+
+  /// C2: a mate (or pattern) of a level other than the focused one: selects its row and highlights its components (a mate's: the components
+  /// its references sit on; a pattern's: its sources), each by its full path under that placement of the level, so two placements of one
+  /// sub-assembly each highlight their own. Nothing is edited from here (answer 4): the strip offers Focus here to edit.
+  void _selectOtherLevelItem(AssemblyTreeRow row) {
+    final owner = _itemOwnerPath(row);
+    final id = row.itemId;
+    if (owner == null || id == null) return;
+    final partId = owner.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(owner)?.resolvedPartId;
+    final lists = partId == null ? null : _listsFor(partId);
+    final Iterable<String> components = row.kind == AssemblyRowKind.mate
+        ? (lists?.mates.where((m) => m.id == id).map(mateTopLevelOccurrences).firstOrNull ?? const <String>{})
+        : (lists?.patterns.where((p) => p.id == id).map((p) => p.sourceOccurrenceIds).firstOrNull ?? const <String>[]);
+    final entities = {
+      for (final c in components)
+        SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: _fullPath([...owner, c]).join('/')),
+    };
+    setState(() {
+      _selectedTreePath = null;
+      _selectedMateId = null;
+      _selectedEntities = entities;
+      _otherLevelItem = (key: row.key, entities: entities);
+    });
+  }
+
+  /// A mate or pattern row's menu (long-press, right click): the focused level's as before; another level's offers Focus here to edit.
+  Future<void> _onItemRowMenu(AssemblyTreeRow row, Offset? at) async {
+    if (_itemOnFocusedLevel(row)) {
+      if (row.kind == AssemblyRowKind.mate) {
+        final mate = _mates.where((m) => m.id == row.itemId).firstOrNull;
+        if (mate != null) await _onMateLongPress(mate, at: at);
+      } else {
+        final pattern = _componentPatterns.where((p) => p.id == row.itemId).firstOrNull;
+        if (pattern != null) await _onPatternContextMenu(pattern, at);
+      }
+      return;
+    }
+    _selectOtherLevelItem(row);
+    final action = await showContextMenu<bool>(context, at: at, [
+      const ActionSheetEntry<bool>(action: true, label: 'Focus here to edit', icon: Icons.center_focus_strong_outlined),
+    ]);
+    if (action == true && mounted) await _focusToEditItem(row);
+  }
+
+  /// Focus here to edit (C2, answer 4): moves the focus to the item's level (every level down to it, as Make Focus from a nested row; the
+  /// tree's root pops to it), then opens the item as a tap there does (a mate is selected with its bar and menu; a pattern opens its panel).
+  /// A focus change or another document before the level's lists land opens nothing.
+  Future<void> _focusToEditItem(AssemblyTreeRow row) async {
+    final owner = _itemOwnerPath(row);
+    final id = row.itemId;
+    final stack = _focusStack;
+    if (owner == null || id == null || stack == null || _editInContextBlocked) return;
+    _clearTransientError();
+    if (!pathEquals(owner, _focusRelPath) || !_itemOnFocusedLevel(row)) {
+      _exitMultiSelect();
+      if (!_focusToTreePath(owner)) return;
+      final revision = stack.revision;
+      await _refreshFocusTargetContent();
+      if (!mounted || !identical(stack, _focusStack) || stack.revision != revision) return;
+      _revealFocusedRow();
+    }
+    if (!pathEquals(owner, _focusRelPath)) return;
+    final key = '${owner.join('/')}#${row.kind == AssemblyRowKind.mate ? 'mates' : 'patterns'}#item:$id';
+    if (row.kind == AssemblyRowKind.mate) {
+      final mate = _mates.where((m) => m.id == id).firstOrNull;
+      if (mate == null) return;
+      _onMateTap(mate);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _treeModel.selectedKey == key) _treeController.expandToSelection();
+      });
+    } else {
+      final pattern = _componentPatterns.where((p) => p.id == id).firstOrNull;
+      if (pattern != null) _openComponentPatternForEdit(pattern);
+    }
+  }
+
+  /// The selection's mates (C2): the mates on the selected component's parent level whose references' top occurrence is that component,
+  /// each with its folder key and its row as the tree names and states it. Null while that level's mates are not read yet (they are asked
+  /// for); empty when it has none.
+  List<({String folderKey, AssemblyFolderItem item})>? _selectedComponentMates(List<String> path) {
+    if (path.isEmpty) return const [];
+    final parent = path.sublist(0, path.length - 1);
+    final partId = parent.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(parent)?.resolvedPartId;
+    if (partId == null) return const [];
+    final lists = _listsFor(partId);
+    if (lists == null) {
+      final mates = parent.isEmpty ? _treeModel.tree?.mates : _treeModel.nodeAtPath(parent)?.mates;
+      if ((mates?.count ?? 0) == 0) return const [];
+      // Its read failed (the banner says so): not known, and not read again by itself ([_componentMatesFailed]).
+      if (_levelItemsFailed.contains(partId)) return null;
+      _levelItemsWanted.add(partId);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) unawaited(_fetchLevelItems(partId));
+      });
+      return null;
+    }
+    final items = mateFolderItems(lists.mates);
+    final folderKey = '${parent.join('/')}#mates';
+    return [
+      for (var i = 0; i < lists.mates.length; i++)
+        if (mateTopLevelOccurrences(lists.mates[i]).contains(path.last)) (folderKey: folderKey, item: items[i]),
+    ];
+  }
+
+  /// The menu's Mates (the phone sheet's More, the row's menu): the component's mates as a list to pick from; the one picked is selected and
+  /// its row revealed. Waits for the level's mates when they are still being read.
+  Future<void> _pickComponentMate(List<String> path, {Offset? at}) async {
+    var list = _selectedComponentMates(path);
+    if (list == null) {
+      final parent = path.sublist(0, path.length - 1);
+      final partId = parent.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(parent)?.resolvedPartId;
+      if (partId != null) await _retryLevelItems(partId);
+      if (!mounted) return;
+      list = _selectedComponentMates(path);
+    }
+    if (list == null || list.isEmpty) return;
+    final picked = await showContextMenu<String>(context, at: at, [
+      for (final m in list)
+        ActionSheetEntry<String>(
+          action: '${m.folderKey}#item:${m.item.id}',
+          label: switch (assemblyItemStateText(m.item.state)) {
+            final text? => '${m.item.label} - $text',
+            null => m.item.label,
+          },
+          icon: m.item.state.isError || m.item.state.isWarning ? Icons.warning_amber_rounded : Icons.link,
+        ),
+    ]);
+    if (picked == null || !mounted) return;
+    final i = picked.indexOf('#item:');
+    _selectComponentMate(picked.substring(0, i), picked.substring(i + '#item:'.length));
+  }
+
+  /// The Part of the parent level of the component at [path] when its mates could not be read (the drawer offers Retry); null otherwise.
+  String? _componentMatesFailed(List<String> path) {
+    if (path.isEmpty) return null;
+    final parent = path.sublist(0, path.length - 1);
+    final partId = parent.isEmpty ? _treeModel.tree?.partId : _treeModel.nodeAtPath(parent)?.resolvedPartId;
+    return partId != null && _levelItemsFailed.contains(partId) && _listsFor(partId) == null ? partId : null;
+  }
+
+  /// Reads a failed level again (the person asked: the drawer's Retry, the menu's Mates).
+  Future<void> _retryLevelItems(String partId) {
+    setState(() {
+      _levelItemsFailed.remove(partId);
+      _levelItemsWanted.add(partId);
+    });
+    return _fetchLevelItems(partId);
+  }
+
+  /// A mate in the selection's list (the drawer, the phone's More): selects it as a tap on its row does, and reveals the row (its level and
+  /// its folder open, scrolled to).
+  void _selectComponentMate(String folderKey, String mateId) {
+    final row = AssemblyTreeRow(key: '$folderKey#item:$mateId', kind: AssemblyRowKind.mate, depth: 0, label: '', state: AssemblyRowState.none, itemId: mateId);
+    if (_itemOnFocusedLevel(row)) {
+      final mate = _mates.where((m) => m.id == mateId).firstOrNull;
+      if (mate == null) return;
+      _onMateTap(mate);
+    } else {
+      _selectOtherLevelItem(row);
+    }
+    // As Expand to selection: a hidden tree is shown, then opened down to the row and scrolled there.
+    _expandTreeToSelection();
+  }
+
   // --- C3 (#13): Edit in context from a read-only feature row ----------------------------------------------------------------------------
 
   /// The latest Edit in context: an older one still waiting for its part's features opens nothing.
@@ -29581,15 +30002,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (!_treeSheetMode) _treeSheetPickPeek = false;
     // The model keeps this screen's selection and unsaved Parts (cheap: nothing changes when they have not).
     _treeModel.setUnsavedPartIds(_unsavedPartIds);
-    // The mate and pattern rows follow the lists when something other than a load changed them (a "Got it" on a mate).
-    if (!identical(_treeMateList, _treeMatesSynced)) {
-      _treeMatesSynced = _treeMateList;
-      _treeModel.setFolderItems('#mates', mateFolderItems(_treeMateList));
-    }
-    if (!identical(_treePatternList, _treePatternsSynced)) {
-      _treePatternsSynced = _treePatternList;
-      _treeModel.setFolderItems('#patterns', patternFolderItems(_treePatternList));
-    }
+    // The mate and pattern rows follow the lists when something other than a load changed them (a "Got it" on a mate). Cheap when nothing did.
+    _syncLevelFolderItems();
     _syncTreeLivePart();
     // Only when this screen's own selection changed: a tap on a folder, group or feature row marks that row and keeps its mark.
     final hostKey = _treeSelectionHostKey;
@@ -29676,6 +30090,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       onRowContextMenu: (row, at) => row.live ? _onLiveTreeRowContextMenu(row, at) : _onTreeRowContextMenu(row, at),
       onVisibilityToggle: (row) => unawaited(row.live ? _toggleLiveRowVisibility(row) : _onTreeRowVisibilityToggle(row)),
       onFeaturesRequested: (path) => unawaited(_loadTreeFeatures(path)),
+      onFolderItemsRequested: _onFolderItemsRequested,
+      itemOtherLevel: _itemOtherLevelLabel,
+      onItemFocusToEdit: (row) => unawaited(_focusToEditItem(row)),
       onGroupingChanged: (value) => unawaited(ViewPreferences.setAssemblyTreeGrouping(value)),
       flashItemIds: _flashMateIds,
       flashToken: _flashMateToken,
@@ -29757,7 +30174,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The row key this screen's own selection stands for in the tree: a live row (P2: the row tapped, or the feature of a body picked in the
   /// viewport), a mate row, or the selected component's path.
   String? get _treeSelectionHostKey =>
-      _liveSelectionHostKey ?? (_selectedMateId != null ? '#mates#item:$_selectedMateId' : _selectedTreePath?.join('/'));
+      _liveSelectionHostKey ??
+      (_selectedMateId != null ? '${_focusRelPath.join('/')}#mates#item:$_selectedMateId' : _otherLevelItemKey ?? _selectedTreePath?.join('/'));
 
   /// Whether the assembly tree can be shown right now if it is hidden: the Assembly lens, and no tool panel or hidden chrome keeping it out.
   bool get _treeCanBeShown =>
@@ -29784,8 +30202,6 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       if (mounted) _treeController.expandToSelection();
     });
   }
-  List<MateDto>? _treeMatesSynced;
-  List<ComponentPatternDto>? _treePatternsSynced;
   final GlobalKey _treeOverlayKey = GlobalKey(debugLabel: 'assembly-tree-overlay');
   final GlobalKey _treeDockedKey = GlobalKey(debugLabel: 'assembly-tree-docked');
 

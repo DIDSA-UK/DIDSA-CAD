@@ -309,8 +309,11 @@ void main() {
 
     test('the folders list the host\'s items only when open, after the folder row, with the item key', () {
       final model = AssemblyTreeModel(tree: withMates());
-      model.setFolderItems('#mates', const [AssemblyFolderItem('m1', 'Coincident 1'), AssemblyFolderItem('m2', 'Distance 1', tone: AssemblyItemTone.warning)]);
-      model.setFolderItems('#patterns', const [AssemblyFolderItem('p1', 'Linear 1', note: '×3')]);
+      model.setFolderItems('#mates', const [
+        AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1'),
+        AssemblyFolderItem.spec(id: 'm2', label: 'Distance 1', status: 'near'),
+      ]);
+      model.setFolderItems('#patterns', const [AssemblyFolderItem.spec(id: 'p1', label: 'Linear 1', note: '×3')]);
       expect([for (final r in model.visibleRows()) r.key], ['', 'a', 'b', '#mates', '#patterns']);
 
       model.setOpen('#mates', true);
@@ -318,7 +321,7 @@ void main() {
       expect([for (final r in rows) r.key], ['', 'a', 'b', '#mates', '#mates#item:m1', '#mates#item:m2', '#patterns']);
       expect(rows[4].kind, AssemblyRowKind.mate);
       expect(rows[4].itemId, 'm1');
-      expect(rows[5].tone, AssemblyItemTone.warning);
+      expect(rows[5].itemState, AssemblyItemState.near);
 
       model.setOpen('#patterns', true);
       expect(model.visibleRows().last.note, '×3');
@@ -327,7 +330,7 @@ void main() {
 
     test('merge keeps the open folders and a selected item while it still exists, and drops it when it is gone', () {
       final model = AssemblyTreeModel(tree: withMates());
-      model.setFolderItems('#mates', const [AssemblyFolderItem('m1', 'Coincident 1')]);
+      model.setFolderItems('#mates', const [AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1')]);
       model.setOpen('#mates', true);
       model.selectedKey = '#mates#item:m1';
       model.merge(withMates());
@@ -336,6 +339,27 @@ void main() {
       model.setFolderItems('#mates', const []);
       model.merge(withMates());
       expect(model.selectedKey, isNull, reason: 'the mate is gone');
+    });
+
+    test('C1-2: merge drops the items of a folder whose level lost its mates, so they come back only when read again', () {
+      final model = AssemblyTreeModel(tree: withMates());
+      model.setFolderItems('#mates', const [AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1')]);
+      model.setOpen('#mates', true);
+      AssemblyTreeResponseDto without() => AssemblyTreeResponseDto.fromJson({
+            'part_id': 'root',
+            'part_name': 'Root',
+            'kind': 'assembly',
+            'children': [
+              for (final id in ['a', 'b'])
+                {'occurrence_id': id, 'path': [id], 'resolved_part_id': 'p-$id', 'part_name': id, 'kind': 'part', 'children': []},
+            ],
+          });
+      model.merge(without());
+      expect(model.hasFolderItems('#mates'), isFalse, reason: 'the folder is gone, and its items with it');
+      model.merge(withMates());
+      expect(model.hasFolderItems('#mates'), isFalse);
+      expect(model.visibleRows().where((r) => r.kind == AssemblyRowKind.mate), isEmpty, reason: 'the old items are not listed again');
+      expect(model.filteredRows(':mates').itemsNotRead, isTrue);
     });
 
     test('session-hidden keys read as hidden on the row (and on a group when every member is), and clear again', () {
@@ -899,22 +923,23 @@ void main() {
     const top = 'tower/mid/top';
     const topMates = '$top#mates';
 
-    test('the host form of an item (note / tone) still lists, its state read from its tone and suppressed flag', () {
+    test('an item with the app\'s note and followed flag lists them, its state from the spec\'s fields alone', () {
       final model = levels()..openAll(['#mates'], remember: false);
       model.setFolderItems('#mates', const [
-        AssemblyFolderItem('m1', 'Coincident 1', note: "Broken - can't be satisfied", tone: AssemblyItemTone.error),
-        AssemblyFolderItem('m2', 'Distance 1', suppressed: true),
-        AssemblyFolderItem('m3', 'Parallel 1', note: 'Within tolerance', tone: AssemblyItemTone.warning),
-        AssemblyFolderItem('m4', 'Angle 1', note: 'Followed', tone: AssemblyItemTone.info),
+        AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1', status: 'broken', note: "Broken - can't be satisfied"),
+        AssemblyFolderItem.spec(id: 'm2', label: 'Distance 1', suppressed: true),
+        AssemblyFolderItem.spec(id: 'm3', label: 'Parallel 1', status: 'near', note: 'Within tolerance'),
+        AssemblyFolderItem.spec(id: 'm4', label: 'Angle 1', note: 'Followed', followed: true),
       ]);
       final rows = model.visibleRows().where((r) => r.kind == AssemblyRowKind.mate).toList();
       expect([for (final r in rows) r.key], ['#mates#item:m1', '#mates#item:m2', '#mates#item:m3', '#mates#item:m4']);
       expect([for (final r in rows) r.itemState],
           [AssemblyItemState.broken, AssemblyItemState.suppressed, AssemblyItemState.near, AssemblyItemState.none]);
-      // Review (C1, high): the root's items, still built by part_screen with note / tone, must be found by :errors and :warnings.
+      // Review (C1, high): the root's items must be found by :errors and :warnings.
       expect([for (final r in model.filteredRows(':errors').rows) if (r.match && r.kind == AssemblyRowKind.mate) r.key], ['#mates#item:m1']);
       expect([for (final r in model.filteredRows(':warnings').rows) if (r.match && r.kind == AssemblyRowKind.mate) r.key], ['#mates#item:m3']);
-      expect(rows.first.tone, AssemblyItemTone.error);
+      expect(rows.first.note, "Broken - can't be satisfied");
+      expect([for (final r in rows) r.followed], [false, false, false, true]);
       expect(rows.first.state, AssemblyRowState.none, reason: 'item rows keep the row state none; their state is itemState');
       expect(model.visibleRows().firstWhere((r) => r.key == 'base').itemState, isNull);
     });

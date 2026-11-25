@@ -3,8 +3,20 @@ import 'package:material_ui/material_ui.dart';
 import '../layout/layout_mode.dart';
 
 import '../api/document_api_client.dart';
+import '../assembly/assembly_tree_model.dart' show AssemblyItemState;
+import '../ai/ai_theme.dart' show AiPalette;
 import 'assembly_tree_helpers.dart';
 import 'component_context_menu.dart' show kEditAloneLabel;
+
+/// One of the selected component's mates (C2): its row's label and state as the tree shows them, and what a tap does (select the mate and
+/// reveal its row).
+class AssemblyComponentMate {
+  final String id;
+  final String label;
+  final AssemblyItemState state;
+  final VoidCallback onTap;
+  const AssemblyComponentMate({required this.id, required this.label, required this.state, required this.onTap});
+}
 
 /// Assembly lens component selection drawer - the assembly equivalent of
 /// [SelectionListDrawer] for Part lens mesh entity selection. Shows the
@@ -15,9 +27,17 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
 
   /// The human-readable name to show (see `occurrenceDisplayName`); defaults to the one derived from the component alone.
   final String? displayName;
-  final VoidCallback onMove;
-  final VoidCallback onFixFloat;
-  final VoidCallback onDelete;
+  /// Move, Fix / Float and Delete; null leaves the button out (C2: a component nested below the focused level is not edited from here).
+  final VoidCallback? onMove;
+  final VoidCallback? onFixFloat;
+  final VoidCallback? onDelete;
+
+  /// C2 (#7): the component's mates on its parent level (mates whose references' top occurrence is this component), each with its state.
+  /// Empty lists nothing; null says they are being read.
+  final List<AssemblyComponentMate>? mates;
+
+  /// The level's mates could not be read: the list says so and offers this Retry (with [mates] null). Null otherwise.
+  final VoidCallback? onRetryMates;
 
   /// Edit Alone for the selected component (the first button). Null hides it (inside Edit Alone, or when the screen
   /// cannot start one).
@@ -37,9 +57,11 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
     super.key,
     required this.selectedComponent,
     this.displayName,
-    required this.onMove,
-    required this.onFixFloat,
-    required this.onDelete,
+    this.onMove,
+    this.onFixFloat,
+    this.onDelete,
+    this.mates = const [],
+    this.onRetryMates,
     this.onEditAlone,
     this.onZoom,
     this.onClose,
@@ -89,11 +111,13 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
                       onPressed: onEditAlone,
                       child: const Text(kEditAloneLabel),
                     ),
-                  FilledButton.tonal(onPressed: onMove, child: const Text('Move')),
-                  FilledButton.tonal(onPressed: onFixFloat, child: Text(selectedComponent.fixed ? 'Float' : 'Fix')),
-                  FilledButton.tonal(onPressed: onDelete, child: const Text('Delete')),
+                  if (onMove != null) FilledButton.tonal(onPressed: onMove, child: const Text('Move')),
+                  if (onFixFloat != null)
+                    FilledButton.tonal(onPressed: onFixFloat, child: Text(selectedComponent.fixed ? 'Float' : 'Fix')),
+                  if (onDelete != null) FilledButton.tonal(onPressed: onDelete, child: const Text('Delete')),
                 ],
               ),
+              ..._mateList(context, dense: true),
             ],
           ),
         ),
@@ -161,19 +185,20 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
                                 ),
                               if (onZoom != null)
                                 FilledButton.tonal(key: const ValueKey('component-zoom'), onPressed: onZoom, child: const Text('Zoom')),
-                              FilledButton.tonal(
-                                onPressed: onMove,
-                                child: const Text('Move')),
-                              FilledButton.tonal(
-                                onPressed: onFixFloat,
-                                child: Text(selectedComponent.fixed ? 'Float' : 'Fix'),
-                              ),
-                              FilledButton.tonal(
-                                onPressed: onDelete,
-                                child: const Text('Delete'),
-                              ),
+                              if (onMove != null) FilledButton.tonal(onPressed: onMove, child: const Text('Move')),
+                              if (onFixFloat != null)
+                                FilledButton.tonal(
+                                  onPressed: onFixFloat,
+                                  child: Text(selectedComponent.fixed ? 'Float' : 'Fix'),
+                                ),
+                              if (onDelete != null)
+                                FilledButton.tonal(
+                                  onPressed: onDelete,
+                                  child: const Text('Delete'),
+                                ),
                             ],
                           ),
+                          ..._mateList(context, dense: false),
                         ],
                       ),
                     ),
@@ -185,6 +210,83 @@ class AssemblyComponentSelectionDrawer extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+/// A mate's state in words, for the drawer's list (null: nothing to say).
+String? assemblyItemStateText(AssemblyItemState state) => switch (state) {
+      AssemblyItemState.lost => 'Lost a face',
+      AssemblyItemState.held => 'Check this mate',
+      AssemblyItemState.broken => 'Broken',
+      AssemblyItemState.near => 'Within tolerance',
+      AssemblyItemState.suppressed => 'Suppressed',
+      AssemblyItemState.none => null,
+    };
+
+extension on AssemblyComponentSelectionDrawer {
+  /// The selected component's mates: a heading, then one row each (its state's colour and words); a tap selects the mate.
+  List<Widget> _mateList(BuildContext context, {required bool dense}) {
+    final list = mates;
+    final theme = Theme.of(context);
+    if (list != null && list.isEmpty) return const [];
+    final palette = AiPalette.of(context);
+    return [
+      const SizedBox(height: 8),
+      Text(list == null ? 'Mates' : 'Mates (${list.length})',
+          key: const ValueKey('component-mates-heading'), style: theme.textTheme.labelMedium?.copyWith(color: theme.colorScheme.onSurfaceVariant)),
+      if (list == null && onRetryMates != null)
+        Row(
+          children: [
+            Expanded(
+              child: Text('Mates could not be read',
+                  key: const ValueKey('component-mates-failed'), style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.error)),
+            ),
+            TextButton(key: const ValueKey('component-mates-retry'), onPressed: onRetryMates, child: const Text('Retry')),
+          ],
+        )
+      else if (list == null)
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Text('Reading mates...', key: const ValueKey('component-mates-reading'), style: theme.textTheme.bodySmall),
+        )
+      else
+        for (final m in list)
+          InkWell(
+            key: ValueKey('component-mate:${m.id}'),
+            onTap: m.onTap,
+            child: SizedBox(
+              height: dense ? 32 : 44,
+              child: Row(
+                children: [
+                  Icon(
+                    m.state.isError || m.state.isWarning ? Icons.warning_amber_rounded : Icons.link,
+                    size: 18,
+                    color: m.state.isError
+                        ? theme.colorScheme.error
+                        : m.state.isWarning
+                            ? palette.warning
+                            : theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Opacity(
+                      opacity: m.state == AssemblyItemState.suppressed ? 0.45 : 1.0,
+                      child: Text.rich(
+                        TextSpan(children: [
+                          TextSpan(text: m.label),
+                          if (assemblyItemStateText(m.state) case final text?)
+                            TextSpan(text: '  $text', style: TextStyle(fontSize: 12, color: theme.colorScheme.onSurfaceVariant)),
+                        ]),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+    ];
   }
 }
 

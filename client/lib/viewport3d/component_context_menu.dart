@@ -27,6 +27,9 @@ enum ComponentContextMenuAction {
 
   /// B2: opens the tree down to the selected row (a row picked in 3D can sit in a collapsed branch) and scrolls to it.
   expandToSelection,
+
+  /// C2 (#7): the component's mates on its parent level, to pick one (it is selected and its row revealed).
+  mates,
   moveRotate,
   hide,
   show,
@@ -84,6 +87,8 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
   bool nested = false,
   // B2: Expand to selection only where the assembly tree can be shown (the Assembly lens, no tool panel or hidden chrome keeping it out).
   bool showExpandToSelection = true,
+  // C2: the component's mates on its parent level: 0 leaves the entry out, null shows it while they are being read.
+  int? mateCount = 0,
 }) {
   return showContextMenu<ComponentContextMenuAction>(context, at: at, [
     if (showEditAlone)
@@ -109,6 +114,12 @@ Future<ComponentContextMenuAction?> showComponentContextMenu(
         action: ComponentContextMenuAction.expandToSelection,
         label: 'Expand to selection',
         icon: Icons.my_location,
+      ),
+    if (mateCount != 0)
+      ActionSheetEntry(
+        action: ComponentContextMenuAction.mates,
+        label: mateCount == null ? 'Mates...' : 'Mates ($mateCount)...',
+        icon: Icons.link,
       ),
     ActionSheetEntry(
       action: ComponentContextMenuAction.moveRotate,

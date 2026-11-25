@@ -1376,7 +1376,7 @@ whole `flutter test` passes.
 |---|---|---|---|---|
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
 | C1 contract + Flutter model | merged 25 Nov | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
-| C2 Flutter #7 | not started | | | |
+| C2 Flutter #7 | PR open: the owner checks CI, then merges | #416 | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
 | C3 Flutter #13 | PR open: the owner checks CI, then merges | #414 | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
 | C4 Flutter #12 + #15 | not started | | | |
 | C5 Flutter #14 | not started | | | |
@@ -1388,7 +1388,7 @@ whole `flutter test` passes.
 
 ### 12.8 Hand-off
 
-**In flight:** C3 (#414, PR open), C6 (VR #105, PR open). C1 merged (#412).
+**In flight:** C2 (#416, PR open), C6 (VR #105, PR open). C1 merged (#412), C3 merged (#414).
 
 **For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
 with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
@@ -1422,6 +1422,10 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
 "Mates and patterns are searched only in folders you have opened" (spec section 11's hint). C2 adds it with a test.
 
 **Nits carried:** (each chunk adds its own here, with the chunk it is for)
+- **Done in C2** (each with its test): C1-1 (the filter's note, `assembly_tree_view_test` and `part_screen_test` ":mates :errors"); C1-2
+  (`merge` prunes the items of folders that are gone, model test); C1-3 and C1-6 (`generate.py` takes only its three forms, else the usage
+  and exit 2; `test_reference.py` `Arguments`); C1-4 and C1-5 (items in the spec's form, a held mate reads held; rows coloured by
+  `itemState`, view test); C3-3 (a cancelled Edit in context says nothing and keeps the focus and lens: asserted in the two C3 cancel tests).
 - C1-2 (for C2): `merge` drops the features of rows that are gone but keeps `setFolderItems` lists of folders that are gone; when a level
   gets mates again, its folder lists the old items until the host reads it again. C2's "once per Part per tree answer" fetch should
   reset them; or prune them in `merge` as features are.
@@ -1446,12 +1450,23 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
   a live row. A Cancel (or a Confirm) that leaves the feature as it was must not mark the part, or its ancestors, unsaved.
 - C3-3 (for C2): a cancelled Edit in context (a focus change or a tool while the part loaded) leaves the focus and the lens it had already
   moved to, with no message; the person's own change is the reason, so nothing is said.
+- C2-1 (for C10; pre-existing): the broken-mate flash after a pattern edit opens the root's `#mates` folder; with the focus deeper the
+  flashed mates are the focused level's, under `<focus>#mates`, which stays closed. The host should pass the folder key to the view.
+- C2-2 (for C10): Focus here to edit awaits `_refreshFocusTargetContent` unguarded (as `_makeFocusOnPath` does): a failed load moves the
+  focus with no banner and the error escapes the unawaited future.
+- C2-3 (for C10): on desktop the nested component drawer also opens for a row outside the focus (beside B5's "Focus here" strip) and for
+  the focused row itself; limit it to components below the focused level.
+- C2-4 (for C10): the failure banner names "mates and patterns" for either read failing, and keeps an earlier message rather than
+  replacing it; a per-list message would be clearer.
+- C2-5 (for C10): the "Focus here to edit" strip's label is cut short on a narrow desktop pane ("Coincident 1 is in sub ..."), and the
+  sketcher's tree (P3) does not ask for a folder's items (it shows what the main tree has read).
 - C6-2 (for C7): the PARTS list is short when the bar shows two lines of buttons and a long hint. If the headset check says
   so, the options are a shorter hint or a taller docked tree, but a taller tree moves the pop-up keyboard.
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
-Focus here to edit, the drawer's mates); C3 (desktop and phone: edit a feature three levels down from the tree by a double-click, the bar and the menu; the second
+two placements highlighting their own parts, Focus here to edit, the drawer's mates (desktop) and More > Mates (phone), how long a large
+level's mates take to appear); C3 (desktop and phone: edit a feature three levels down from the tree by a double-click, the bar and the menu; the second
 placement of a sub-assembly; from inside Edit Alone; how long the wait feels while a large part loads); C10 (after Edit and
 Cancel, the feature still selected and no unsaved mark); C4 (desktop:
 hover both ways on a large assembly, each column); C5 (desktop: the flyout with Extrude, Mirror and a mate tool open); C6

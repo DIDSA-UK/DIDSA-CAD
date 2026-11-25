@@ -331,17 +331,17 @@ void main() {
     test('a broken mate is red and says why; an ok one is plain; a suppressed one is never drawn as broken', () {
       final items = mateFolderItems([mateWith('bad', status: 'broken'), mateWith('good'), mateWith('s', status: 'broken', suppressed: true)]);
       expect(items.map((i) => i.label), ['Coincident 1', 'Coincident 2', 'Coincident 3']);
-      expect(items[0].tone, AssemblyItemTone.error);
+      expect(items[0].state, AssemblyItemState.broken);
       expect(items[0].note, startsWith(kBrokenMateText));
-      expect(items[1].tone, isNull);
-      expect(items[2].tone, isNull);
+      expect(items[1].state, AssemblyItemState.none);
+      expect(items[2].state, AssemblyItemState.suppressed);
       expect(items[2].suppressed, isTrue);
       expect(items[2].note ?? '', isNot(contains(kBrokenMateText)));
     });
 
     test('a near mate is amber and says how far', () {
       final items = mateFolderItems([mateWith('n', status: 'near', type: 'distance')]);
-      expect(items.single.tone, AssemblyItemTone.warning);
+      expect(items.single.state, AssemblyItemState.near);
       expect(items.single.note, contains('Within tolerance: 0.006 mm / 0.0002°'));
     });
 

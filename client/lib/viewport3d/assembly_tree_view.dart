@@ -69,6 +69,9 @@ class AssemblyTreeController {
   /// opening the row asks again. The view otherwise asks once per path until `setFeatures`, a `merge` or a model swap.
   void forgetFeaturesRequest(List<String> path) => _state?._forgetRequest(path);
 
+  /// C2: an items read asked for through `onFolderItemsRequested` failed or was dropped: forget it, so the open folder asks again.
+  void forgetFolderRequest(String folderKey) => _state?._folderRequested.remove(folderKey);
+
   void _attach(_AssemblyTreeViewState s) {
     _state = s;
     final p = _pendingPath;
@@ -118,6 +121,9 @@ class AssemblyTreeView extends StatefulWidget {
     this.onVisibilityToggle,
     this.lockedEyes = false,
     this.onFeaturesRequested,
+    this.onFolderItemsRequested,
+    this.itemOtherLevel,
+    this.onItemFocusToEdit,
     this.onGroupingChanged,
     this.isMultiSelectMode = false,
     this.selectedKeys = const {},
@@ -216,6 +222,18 @@ class AssemblyTreeView extends StatefulWidget {
   /// [AssemblyTreeController.refresh]). Also asked for the root, once, when it has features.
   final void Function(List<String> path)? onFeaturesRequested;
 
+  /// C2 (spec section 14): a level's Mates or Patterns folder is open (opened, restored, or listed open by a filter) and the model has no items
+  /// for it ([AssemblyTreeModel.hasFolderItems]): read that level's `/mates` and `/component-patterns` and call `model.setFolderItems` (then
+  /// [AssemblyTreeController.refresh]). Asked once per folder key until the model has its items, the tree changes, the folder is closed and
+  /// opened again (the host's retry of a failed read), or [AssemblyTreeController.forgetFolderRequest].
+  final void Function(String folderKey)? onFolderItemsRequested;
+
+  /// C2 (#7, answer 4): a selected mate or pattern row on a level other than the focused one is shown and highlighted, not edited. This names
+  /// that level for the strip ("Coincident 1 is in Arm"), or null when the row's level is the focused one (or the row is not an item row);
+  /// [onItemFocusToEdit] is the strip's "Focus here to edit" (the host moves the focus there and opens the item as a tap there does).
+  final String? Function(AssemblyTreeRow row)? itemOtherLevel;
+  final void Function(AssemblyTreeRow row)? onItemFocusToEdit;
+
   /// The grouping toggle changed. The model is already updated; the host saves the choice.
   final ValueChanged<bool>? onGroupingChanged;
 
@@ -278,6 +296,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
 
   /// Feature fetches asked for and not answered yet (row key -> path), so a reopen or a reveal through an open ancestor does not ask twice.
   final Map<String, List<String>> _requested = {};
+
+  /// C2: Mates / Patterns folders whose items were asked for ([AssemblyTreeView.onFolderItemsRequested]) and are not in the model yet.
+  final Set<String> _folderRequested = {};
 
   /// A [reveal] made before the model had a tree, kept until it has one.
   List<String>? _pendingReveal;
@@ -342,6 +363,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
     if (old.model != widget.model) {
       _requested.clear();
+      _folderRequested.clear();
       _seenTree = widget.model.tree;
     }
     // Multi-select replaces the header (and with it the filter field): a filter that kept narrowing the rows with nothing to show it would
@@ -407,11 +429,14 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (!identical(m.tree, _seenTree)) {
       _seenTree = m.tree;
       _requested.clear();
+      _folderRequested.clear();
     } else {
       _requested.removeWhere((_, path) => m.hasFeatures(path));
+      _folderRequested.removeWhere(m.hasFolderItems);
     }
     final tree = m.tree;
     if (tree != null && tree.featureCount > 0) _askForFeatures(const [], root: true);
+    _askForOpenFolders();
     final pending = _pendingReveal;
     if (pending != null && tree != null) {
       _pendingReveal = null;
@@ -439,6 +464,24 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     });
   }
 
+  /// C2: every Mates / Patterns folder the list shows open without items (opened, restored, revealed) asks for them, once.
+  void _askForOpenFolders() {
+    final cb = widget.onFolderItemsRequested;
+    final m = widget.model;
+    if (cb == null || m.tree == null) return;
+    for (final r in m.visibleRows()) {
+      if (r.open && (r.kind == AssemblyRowKind.matesFolder || r.kind == AssemblyRowKind.patternsFolder)) _askForFolder(r.key);
+    }
+  }
+
+  void _askForFolder(String key) {
+    final cb = widget.onFolderItemsRequested;
+    if (cb == null || widget.model.hasFolderItems(key) || !_folderRequested.add(key)) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _folderRequested.contains(key)) cb(key);
+    });
+  }
+
   // While a filter is on the chevrons are inert (spec section 11): what is open is not changed from a list that shows only the matches.
   bool _canToggle(AssemblyTreeRow r) => r.expandable && r.kind != AssemblyRowKind.root && !_filtering;
 
@@ -447,6 +490,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     widget.model.toggle(row.key);
     setState(() {});
     if (!row.open) _askForFeatures(row.path);
+    // C2: a folder closed forgets that it asked, so opening it again asks again (the host's retry of a failed read).
+    if (row.open && (row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder)) _folderRequested.remove(row.key);
+    // C2 (review): opening a row can list folders that were open already (restored keys under a collapsed row), and opening a folder lists it.
+    if (!row.open) _askForOpenFolders();
   }
 
   /// Whether a multi-select tap on [row] toggles it: an occurrence row, or a feature, body, surface or curve of the live part.
@@ -478,6 +525,9 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (groupLike && !_filtering) {
       widget.model.toggle(row.key);
       if (!row.open) _askForFeatures(row.path);
+      if (!row.open) _askForOpenFolders();
+      // C2: a folder closed forgets that it asked, so opening it again asks again (the host's retry of a failed read).
+      if (row.open && (row.kind == AssemblyRowKind.matesFolder || row.kind == AssemblyRowKind.patternsFolder)) _folderRequested.remove(row.key);
     }
     setState(() {});
     if (!picking) widget.onRowTap?.call(row);
@@ -532,6 +582,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     for (var i = 1; i < path.length; i++) {
       _askForFeatures(path.sublist(0, i));
     }
+    _askForOpenFolders();
     _scheduleScroll(key);
   }
 
@@ -596,6 +647,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       _doReveal(path, select: false);
     } else {
       m.expandToSelection();
+      _askForOpenFolders();
       _scheduleScroll(sel);
     }
     setState(() {});
@@ -989,6 +1041,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
             if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
             // B5: under Focus a selected row outside it (a viewport pick) offers to move the focus there at peek too.
             if (_focusHereRow(selectedRow) case final outside?) _focusHereBar(context, outside),
+            if (_otherLevelOf(selectedRow) case final level?) _focusToEditBar(context, selectedRow!, level),
             if (selectedRow != null && !widget.isMultiSelectMode) SizedBox(height: h, child: treeRow(selectedRow)),
             if (showBar) _selectionBar(context, selectedRow!, bar),
           ],
@@ -1010,6 +1063,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
           ),
         if (_focusStrip) FocusBreadcrumbStrip(labels: widget.focusCrumbs, onCrumb: (i) => widget.onFocusCrumb?.call(i)),
         if (_focusHereRow(selectedRow) case final outside?) _focusHereBar(context, outside),
+        if (_otherLevelOf(selectedRow) case final level?) _focusToEditBar(context, selectedRow!, level),
         if (picker != null && !widget.isMultiSelectMode) _pickerBanner(context, picker),
         if (widget.statusLine != null && widget.statusLine!.isNotEmpty)
           Padding(
@@ -1230,7 +1284,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     );
   }
 
-  static const String _filterHint = 'Name, or :errors :missing :hidden ...';
+  static const String _filterHint = 'Name, or :errors :missing :mates ...';
 
   TextField _filterField({required bool desktop, Widget? prefix}) {
     final scheme = Theme.of(context).colorScheme;
@@ -1327,6 +1381,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
             ? 'Status unavailable: :errors and :warnings find only missing files and cycles'
             : 'Status is still loading: :errors and :warnings find only missing files and cycles for now',
       if (filter.featuresNotRead) 'Features are searched only in parts you have opened',
+      // C1-1: only folders whose items were read are searched (spec section 11's hint).
+      if (filter.itemsNotRead) 'Mates and patterns are searched only in folders you have opened',
     ];
     if (notes.isEmpty) return const SizedBox.shrink();
     return Padding(
@@ -1344,6 +1400,34 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (selected == null || widget.onFocusHere == null || widget.isMultiSelectMode || widget.model.picker != null) return null;
     if (selected.path == null || selected.path!.isEmpty) return null;
     return widget.model.focusRoleOf(selected) == AssemblyFocusRole.outside ? selected : null;
+  }
+
+  /// C2: a selected mate or pattern row on another level than the focused one: the level's name for [_focusToEditBar], else null.
+  String? _otherLevelOf(AssemblyTreeRow? selected) {
+    if (selected == null || selected.itemId == null || widget.onItemFocusToEdit == null || widget.isMultiSelectMode) return null;
+    if (widget.model.picker != null) return null;
+    return widget.itemOtherLevel?.call(selected);
+  }
+
+  Widget _focusToEditBar(BuildContext context, AssemblyTreeRow row, String level) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      key: const ValueKey('tree-focus-to-edit-bar'),
+      color: scheme.tertiaryContainer.withValues(alpha: 0.4),
+      child: Padding(
+        padding: const EdgeInsets.only(left: 16, right: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text('${row.label} is in $level',
+                  key: const ValueKey('tree-focus-to-edit-note'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+            ),
+            TextButton(
+                key: const ValueKey('tree-focus-to-edit'), onPressed: () => widget.onItemFocusToEdit!(row), child: const Text('Focus here to edit')),
+          ],
+        ),
+      ),
+    );
   }
 
   Widget _focusHereBar(BuildContext context, AssemblyTreeRow row) {
@@ -1682,12 +1766,20 @@ class _TreeRowState extends State<_TreeRow> {
         : (r.hidden ? 0.65 : 1.0);
     final isItem = r.itemId != null && (r.kind == AssemblyRowKind.mate || r.kind == AssemblyRowKind.pattern);
     final palette = AiPalette.of(context);
-    final Color? toneColour = switch (r.tone) {
-      AssemblyItemTone.error => scheme.error,
-      AssemblyItemTone.warning => palette.warning,
-      AssemblyItemTone.info => scheme.primary,
-      null => null,
-    };
+    // C2: an item row's colour is its state (spec section 14): red lost / broken, amber held / near; a followed reference's info line is the
+    // primary colour on its icon and note only.
+    final itemState = isItem ? r.itemState : null;
+    final bool itemProblem = itemState != null && (itemState.isError || itemState.isWarning);
+    final bool itemInfo = isItem && !itemProblem && r.followed;
+    final Color? toneColour = itemState == null
+        ? null
+        : itemState.isError
+            ? scheme.error
+            : itemState.isWarning
+                ? palette.warning
+                : itemInfo
+                    ? scheme.primary
+                    : null;
     final labelStyle = TextStyle(
       fontSize: desktop ? 13 : 15,
       fontWeight: r.kind == AssemblyRowKind.root || r.match ? FontWeight.w600 : FontWeight.normal,
@@ -1695,15 +1787,14 @@ class _TreeRowState extends State<_TreeRow> {
       fontStyle: r.suppressed && !isItem ? FontStyle.italic : FontStyle.normal,
       decoration: r.suppressed && !isItem ? TextDecoration.lineThrough : null,
       // Only a problem colours the label (an info line colours its icon and note, not the name).
-      color: r.state == AssemblyRowState.missing ? palette.danger : (r.tone == AssemblyItemTone.info ? null : toneColour),
+      color: r.state == AssemblyRowState.missing ? palette.danger : (itemInfo ? null : toneColour),
     );
     final noteStyle = TextStyle(fontSize: desktop ? 11 : 12, color: toneColour ?? scheme.onSurfaceVariant);
-    final IconData kindIcon =
-        isItem && r.kind == AssemblyRowKind.mate && (r.tone == AssemblyItemTone.error || r.tone == AssemblyItemTone.warning)
-            ? Icons.warning_amber_rounded
-            : isItem && r.tone == AssemblyItemTone.info
-                ? Icons.info_outline
-                : _kindIcon(r.kind);
+    final IconData kindIcon = isItem && r.kind == AssemblyRowKind.mate && itemProblem
+        ? Icons.warning_amber_rounded
+        : itemInfo
+            ? Icons.info_outline
+            : _kindIcon(r.kind);
 
     Widget content = Row(
       children: [

@@ -1,7 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 
 import '../api/document_api_client.dart';
-import '../assembly/assembly_tree_model.dart' show AssemblyFolderItem, AssemblyItemTone, AssemblyTreeModel, AssemblyTreeNaming;
+import '../assembly/assembly_tree_model.dart' show AssemblyFolderItem, AssemblyTreeModel, AssemblyTreeNaming;
 import '../assembly/occurrence_visibility.dart' show topLevelOccurrenceId;
 import 'mate_panel.dart' show mateValueSummary;
 import 'mate_reference_state.dart';
@@ -385,8 +385,9 @@ Map<String, ConstraintStatusDto> constraintStatusOfChildren(Iterable<AssemblyTre
         if (n.constraint != null) n.occurrenceId: ConstraintStatusDto(state: n.constraint!.status, dof: n.constraint!.dof, rigidSet: n.constraint!.rigidSet),
     };
 
-/// The rows under the tree's Mates folder: what the old panel's mate tiles said, as one row each (a title and a note). A broken mate is
-/// red, a `near` one amber, a lost face red, a held one amber (check this mate), a followed reference an info line; a suppressed one is dimmed.
+/// The rows under a level's Mates folder (spec section 14, C2): each mate as the spec's item (its label by the naming rule, the listing's
+/// `status`, `held`, `lost` and `suppressed`, from which the row's state and colour follow: lost red > held amber > broken red > near amber >
+/// suppressed dimmed), with what the old panel's mate tiles said as the row's note, and a followed reference as an info line.
 List<AssemblyFolderItem> mateFolderItems(List<MateDto> mates) {
   final items = <AssemblyFolderItem>[];
   for (var i = 0; i < mates.length; i++) {
@@ -399,19 +400,6 @@ List<AssemblyFolderItem> mateFolderItems(List<MateDto> mates) {
     final lost = refNote.kind == MateReferenceKind.lost;
     final held = refNote.kind == MateReferenceKind.held;
     final followed = refNote.kind == MateReferenceKind.followed;
-    // A held mate reads amber even when the backend also reports it `broken` (the part still sits on the old face): that is the very
-    // state "check this mate" is about, and Confirm is its way out. Only a lost face is red.
-    final AssemblyItemTone? tone = lost
-        ? AssemblyItemTone.error
-        : held
-            ? AssemblyItemTone.warning
-            : broken
-                ? AssemblyItemTone.error
-                : near
-                    ? AssemblyItemTone.warning
-                    : followed
-                        ? AssemblyItemTone.info
-                        : null;
     String? join(String text) => summary == null ? text : '$text · $summary';
     final String? note = lost || held
         ? join(refNote.text)
@@ -422,7 +410,18 @@ List<AssemblyFolderItem> mateFolderItems(List<MateDto> mates) {
                 : followed
                     ? join(refNote.text)
                     : summary;
-    items.add(AssemblyFolderItem(mate.id, mateDisplayName(mates, i), note: note, tone: tone, suppressed: mate.suppressed));
+    // The state is the spec's ([AssemblyFolderItem.state]): a held mate reads amber even when the backend also reports it `broken` (the part
+    // still sits on the old face), the very state "check this mate" is about; only a lost face is red.
+    items.add(AssemblyFolderItem.spec(
+      id: mate.id,
+      label: mateDisplayName(mates, i),
+      status: mate.suppressed ? 'ok' : mate.status,
+      suppressed: mate.suppressed,
+      held: held,
+      lost: lost,
+      note: note,
+      followed: followed && !lost && !held && !broken && !near,
+    ));
   }
   return items;
 }
@@ -430,8 +429,11 @@ List<AssemblyFolderItem> mateFolderItems(List<MateDto> mates) {
 /// The rows under the tree's Patterns folder.
 List<AssemblyFolderItem> patternFolderItems(List<ComponentPatternDto> patterns) => [
       for (var i = 0; i < patterns.length; i++)
-        AssemblyFolderItem(patterns[i].id, componentPatternDisplayName(patterns, i),
-            note: componentPatternSummary(patterns[i]), suppressed: patterns[i].suppressed),
+        AssemblyFolderItem.spec(
+            id: patterns[i].id,
+            label: componentPatternDisplayName(patterns, i),
+            suppressed: patterns[i].suppressed,
+            note: componentPatternSummary(patterns[i])),
     ];
 
 /// What the seeded tree of a part opened alone (its root only, P2) does with the rows [stored] for its document: whether there is anything to
