@@ -28358,8 +28358,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Wraps the viewport stack: on the desktop layout the tree is docked to its left.
   Widget _desktopFrame(Widget viewportStack) {
-    if (!_desktopLayout) return viewportStack;
     if (!_treeFlyoutAvailable) _treeFlyoutOpen = false;
+    if (!_desktopLayout) return viewportStack;
     return Row(
       children: [
         if ((_desktopPaneVisible || _treePickerActive) && !_desktopToolPanelOpen && !_chromeHidden)
@@ -29478,6 +29478,22 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
+  /// C5: a click in the flyout tree. It picks; it does not start edits over the running tool. A pattern row (which would open the pattern's
+  /// editor, a tool of its own) and a missing file (the locate flow) only mark the row; a mate row selects and highlights as ever.
+  void _onFlyoutRowTap(AssemblyTreeRow row) {
+    switch (row.kind) {
+      case AssemblyRowKind.pattern:
+      case AssemblyRowKind.missing:
+        setState(() {});
+      default:
+        if (row.live) {
+          _onLiveTreeRowTap(row);
+        } else {
+          _onTreeRowTap(row);
+        }
+    }
+  }
+
   /// Long-press on a live row: a feature, body, surface or curve starts the build multi-select (as the old panel's rows did); a default
   /// plane offers Hide / Show.
   void _onLiveTreeRowLongPress(AssemblyTreeRow row) {
@@ -30137,8 +30153,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final build = _buildMultiSelect;
     AssemblyTreeView view(bool docked, double width, {AssemblyTreeSheetHeight? sheet, bool? shown}) => AssemblyTreeView(
       model: _treeModel,
-      // The docked pane's view owns the controller; the flyout is a second, short-lived view of the same model.
-      controller: flyout ? null : _treeController,
+      // The flyout and the docked pane never show together (a tool panel replaces the pane), so the one controller serves whichever is up:
+      // a pick in the viewport opens and scrolls the flyout to its row too.
+      controller: _treeController,
       flyout: flyout,
       docked: docked,
       width: width,
@@ -30188,7 +30205,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         final path = row.path;
         if (path != null && _isFocusChild(path)) _toggleMultiSelectMember(_assemblyMultiSelect, path.last);
       },
-      onRowTap: (row) => row.live ? _onLiveTreeRowTap(row) : _onTreeRowTap(row),
+      onRowTap: flyout ? _onFlyoutRowTap : (row) => row.live ? _onLiveTreeRowTap(row) : _onTreeRowTap(row),
       onRowLongPress: flyout ? null : (row) {
         if (row.live) return _onLiveTreeRowLongPress(row);
         // In the Part lens the build session is the one multi-select: a component's long-press opens its menu.

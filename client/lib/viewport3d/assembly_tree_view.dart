@@ -1304,8 +1304,6 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     return set == null ? null : colours[set];
   }
 
-  /// One line, on a phone too: the title and four small icons (filter, grouping, expand to selection, collapse all) and Close. While the
-  /// phone's filter is open the line is the field instead.
   /// C5: the flyout's header: the title and the way to close it.
   Widget _flyoutHeader(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -1335,6 +1333,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     );
   }
 
+  /// One line, on a phone too: the title and four small icons (filter, grouping, expand to selection, collapse all) and Close. While the
+  /// phone's filter is open the line is the field instead.
   Widget _header(BuildContext context, bool desktop) {
     final scheme = Theme.of(context).colorScheme;
     if (!desktop && _filterOpen) return _phoneFilterHeader(context);

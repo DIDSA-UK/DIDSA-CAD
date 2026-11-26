@@ -9,6 +9,9 @@ class PromptCardBottom extends ValueNotifier<double> {
 
   bool _disposed = false;
 
+  /// How many cards are drawn (one card leaving as another arrives in the same frame must not reset the edge the new one reported).
+  int cards = 0;
+
   /// Sets the edge unless the screen that owns this is gone (a card's last report can come a frame after it).
   void report(double bottom) {
     if (!_disposed && (value - bottom).abs() > 0.5) value = bottom;
@@ -54,16 +57,22 @@ class _PromptCardReporterState extends State<_PromptCardReporter> {
     super.didChangeDependencies();
     final next = PickerPromptCardScope.maybeOf(context);
     if (!identical(next, _bottom)) {
-      _bottom?.report(0);
+      _bottom?.cards -= 1;
       _bottom = next;
+      next?.cards += 1;
     }
   }
 
   @override
   void dispose() {
     final bottom = _bottom;
-    // After this frame: a notifier's listener must not rebuild a tree that is being torn down.
-    if (bottom != null) WidgetsBinding.instance.addPostFrameCallback((_) => bottom.report(0));
+    bottom?.cards -= 1;
+    // After this frame (a notifier's listener must not rebuild a tree that is being torn down), and only when no other card took over.
+    if (bottom != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (bottom.cards <= 0) bottom.report(0);
+      });
+    }
     super.dispose();
   }
 

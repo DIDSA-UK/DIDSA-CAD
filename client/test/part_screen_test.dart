@@ -6108,7 +6108,7 @@ void main() {
       await pumpPartScreen(tester);
       await tapAddFeatureDirectEdit(tester, 'Delete Body');
 
-      expect(find.text('Select bodies to merge (2 needed)'), findsOneWidget);
+      expect(find.text('Select body/bodies to delete'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -10161,6 +10161,82 @@ void main() {
         await tester.pump(const Duration(milliseconds: 300));
         expect(flyout, findsNothing);
         expect(tab, findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('a pattern row in the flyout only marks the row: it does not open the pattern editor over the tool', (tester) async {
+        bigWindow(tester);
+        Map<String, dynamic> occurrence(String id) => {
+              'id': id,
+              'external_ref': 'parts/$id.didsa',
+              'resolved_part_id': '$id-part',
+              'name_override': null,
+              'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+              'suppressed': false,
+              'hidden': false,
+              'fixed': false,
+            };
+        final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1')], seedComponentPatterns: [
+          {
+            'id': 'pattern-1',
+            'source_occurrence_ids': ['occ-1'],
+            'pattern_type': 'linear',
+            'direction': [1.0, 0.0, 0.0],
+            'count': 3,
+            'spacing': 10.0,
+            'reverse': false,
+            'direction_2': [0.0, 1.0, 0.0],
+            'count_2': 1,
+            'spacing_2': 0.0,
+            'reverse_2': false,
+            'axis': null,
+            'count_angular': 1,
+            'angle_total': 360.0,
+            'reverse_angular': false,
+            'skip_indices': <dynamic>[],
+            'orient_with_rotation': true,
+            'suppressed': false,
+          }
+        ]);
+        final sketchBackend = _FakeSketchBackend();
+        await tester.pumpWidget(MaterialApp(
+          home: LayoutModeScope(
+            controller: desktop(),
+            child: PartScreen(
+              documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+              sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: _FakeStorageService(),
+            ),
+          ),
+        ));
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+        await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:#patterns')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byKey(const ValueKey('tree-row:#patterns#item:pattern-1')), findsOneWidget);
+        // The docked tree opens the pattern for editing (the control)...
+        await tester.tap(find.byKey(const ValueKey('tree-row:#patterns#item:pattern-1')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(ComponentPatternPanel), findsOneWidget, reason: 'control: a docked tree tap edits the pattern');
+        // ...and with it closed and Measure open, the flyout's tap only marks the row.
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(ComponentPatternPanel), findsNothing);
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.tap(find.byKey(const ValueKey('tree-row:#patterns#item:pattern-1')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(ComponentPatternPanel), findsNothing);
+        expect(_TreeProbe(tester).model.selectedKey, '#patterns#item:pattern-1', reason: 'the row is marked');
+        expect(find.byKey(const ValueKey('docked-tool-panel')), findsOneWidget, reason: 'the running tool is still there');
         expect(tester.takeException(), isNull);
       });
 
