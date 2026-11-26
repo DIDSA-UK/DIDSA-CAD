@@ -4174,6 +4174,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } else {
       _dirtyPartIds.clear();
       _neverWrittenPartIds.clear();
+      // C10: a save of the session is a write of every Part ([_settleFeatureEditMark]).
+      _partWriteCount++;
     }
   }
 
@@ -17986,19 +17988,33 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Takes the edit's record before its panel opens. When the Part has no unsaved changes, what Save would write for it ([_readSavedForm]) is
   /// read first and kept, unless anything marked a Part unsaved while that read was out (its answer may then hold that change).
-  Future<void> _beginFeatureEdit(FeatureDto feature) async {
+  ///
+  /// False when the edit is not to open after all: while that read was out the focus or the document changed, the feature went, a newer edit
+  /// began or a tool started (the stale-answer rule, as Edit in context's).
+  Future<bool> _beginFeatureEdit(FeatureDto feature) async {
     final partId = _focusedPartId;
+    final stack = _focusStack;
+    final revision = stack?.revision;
     final gen = ++_featureEditGen;
     _featureEdit = null;
-    if (partId == null) return;
+    if (partId == null) return true;
     final partWasUnsaved = _unsavedPartIds.contains(partId);
     String? before;
     if (!partWasUnsaved && !_editWritesElsewhere(feature)) {
       final marks = _dirtyMarkCount;
+      final toolBefore = _anyToolSessionActive || _mateActive || _componentPatternPanelActive || _moveRotateComponentActive;
       before = await _readSavedForm(partId);
+      if (!mounted ||
+          gen != _featureEditGen ||
+          !identical(stack, _focusStack) ||
+          stack?.revision != revision ||
+          partId != _focusedPartId ||
+          _featureById(feature.id) == null ||
+          (!toolBefore && (_anyToolSessionActive || _mateActive || _componentPatternPanelActive || _moveRotateComponentActive))) {
+        return false;
+      }
       if (marks != _dirtyMarkCount) before = null;
     }
-    if (!mounted || gen != _featureEditGen) return;
     _featureEdit = _FeatureEdit(
       featureId: feature.id,
       partId: partId,
@@ -18007,6 +18023,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       savedFormBefore: before,
       writesBefore: _partWriteCount,
     );
+    return true;
   }
 
   /// What Save writes for [partId] (the backend's native export of that Part: its features, its own occurrences, mates and patterns, its
@@ -18054,8 +18071,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   Future<void> _openFeatureForEdit(FeatureDto feature) async {
-    await _beginFeatureEdit(feature);
-    if (!mounted) return;
+    if (!await _beginFeatureEdit(feature) || !mounted) return;
     setState(() => _selectedFeatureId = feature.id);
     final rollbackIds = featureIdsAfter(_features, feature.id);
     if (rollbackIds.isNotEmpty) await _beginRollback(rollbackIds);

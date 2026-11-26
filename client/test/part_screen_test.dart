@@ -37,6 +37,7 @@ import 'package:didsa_cad_client/viewport3d/assembly_tree_view.dart';
 import 'package:didsa_cad_client/viewport3d/selection_list_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_context_strip.dart';
+import 'package:didsa_cad_client/viewport3d/create_plane_panel.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
 import 'package:didsa_cad_client/viewport3d/keyboard_shortcuts.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_feature_tree.dart';
@@ -9696,6 +9697,51 @@ void main() {
       expect(storage.files, hasLength(1));
     });
 
+    testWidgets('C10 review: a Save All while an edit panel is open keeps the unsaved mark after a Cancel (the file holds the preview)', (
+      tester,
+    ) async {
+      final storage = _FakeStorageService();
+      final backend = _FakeDocumentBackend();
+      backend.features.addAll([
+        {'type': 'sketch', 'id': 'r-sketch', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+        {
+          'type': 'extrude', 'id': 'r-extrude', 'sketch_feature_id': 'r-sketch', 'extrude_type': 'boss', 'start_distance': 0.0,
+          'end_distance': 10.0, 'locked': true, 'produces': 'body',
+        },
+      ]);
+      final toolbar = await pumpFresh(tester, storage, backend: backend);
+      toolbar().onSaveNative!();
+      await settle(tester);
+      await answerNamePrompt(tester, 'Plate');
+      expect(toolbar().hasUnsavedChanges, isFalse);
+
+      await tester.tap(find.byTooltip('Feature tree'));
+      await settle(tester);
+      final probe = _TreeProbe(tester);
+      probe.view.onRowEdit!(probe.model.visibleRows().firstWhere((r) => r.key == '#feature:r-extrude'));
+      await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+      await settle(tester);
+      tester.widget<ExtrudePanel>(find.byType(ExtrudePanel)).onChanged(
+          ExtrudeType.boss, 0.0, 25.0, null, ThicknessDirection.outward, null, true);
+      await tester.pump(const Duration(milliseconds: 600));
+      await settle(tester);
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      // Save All (it clears every mark at once, `_isDirty = false`).
+      toolbar().onSaveAll!();
+      await settle(tester);
+      await settle(tester);
+      expect(storage.writeCounts['Plate.didsa'], 2, reason: 'the file now holds the preview');
+      expect(toolbar().hasUnsavedChanges, isFalse);
+      tester.widget<ExtrudePanel>(find.byType(ExtrudePanel)).onCancel();
+      for (var i = 0; i < 6; i++) {
+        await settle(tester);
+      }
+      expect(backend.features.firstWhere((f) => f['id'] == 'r-extrude')['end_distance'], 10.0);
+      expect(toolbar().hasUnsavedChanges, isTrue, reason: 'the restore is not in the file');
+    });
+
     testWidgets('a remembered folder skips the picker and only asks for the name', (tester) async {
       final storage = _FakeStorageService();
       storage.presetLastUsedRoot = storage.root;
@@ -14857,6 +14903,33 @@ void main() {
             await settle(tester);
             await closePanel(tester, 'Cancel');
             expect(unsaved(tester), contains('d1-part'), reason: 'the read may hold the Hide: nothing is taken back');
+          });
+
+          testWidgets('review: a focus change while the opening read is out opens nothing (stale)', (tester) async {
+            Completer<void>? hold;
+            await openDeep(tester, layout: desktop(), before: (request) async {
+              final h = hold;
+              if (h != null && request.url.path == '/document/export/native') {
+                hold = null;
+                await h.future;
+              }
+            });
+            await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+            final held = hold = Completer<void>();
+            await doubleClick(tester, featureRow('asm-1/c1/d1#feature:d1-plane'));
+            await _pumpUntil(tester, () => hold == null);
+            await settle(tester);
+            expect(find.byType(CreatePlanePanel), findsNothing);
+            await _TreeProbe(tester).exitFocus();
+            await settle(tester);
+            held.complete();
+            for (var i = 0; i < 6; i++) {
+              await settle(tester);
+            }
+            expect(find.byType(CreatePlanePanel), findsNothing, reason: "the edit was for the part the focus left");
+            expect(find.byType(ExtrudePanel), findsNothing);
+            expect(focused(tester), ['asm-1', 'c1']);
+            expect(tester.takeException(), isNull);
           });
 
           testWidgets('review: a Hide made while the panel is open keeps the unsaved mark after a Cancel', (tester) async {
