@@ -1351,7 +1351,8 @@ Frame (answer 8).
 
 #### C10. Flutter: end-of-Phase-C follow-up (DIDSA-CAD `client/`)
 
-**Suggested model:** mid-tier. **Size:** S. **Depends on:** C5 (the last Flutter chunk; one at a time).
+**Suggested model:** strongest (many small fixes across `part_screen.dart` and `part_viewport.dart`). **Size:** M (grew from S
+with C2's, C4's and C5's nits). **Depends on:** C5 (merged).
 
 **Build:**
 - **C3-1** (12.8; owner, 25 Nov: answer 11): the edited feature's row stays selected after its edit panel closes, confirmed or
@@ -1359,7 +1360,12 @@ Frame (answer 8).
   panel's own selection change clears it today).
 - **C3-2** (12.8; owner, 25 Nov: answer 12): a Cancel, or a Confirm that leaves the feature as it was, does not mark the part
   or its ancestors unsaved (today Cancel restores the feature with a PATCH, which does). A real edit still marks them.
-- Every 12.8 nit a later chunk (C2, C4, C5) addresses to C10, by number.
+- The 12.8 nits addressed to C10: **C2-1 to C2-5** (C2-2 first: Focus here to edit moves the focus with no banner when the
+  level's load fails, and the error escapes), **C4-1 to C4-6** (C4-6: fix 12.6's wording, the Colour column opens the
+  Appearance tool; draw the resolved colour only if it is cheap, else say so), **C5-3**. Each done with a test where it is a
+  bug, or carried with the reason.
+- **Not in C10** (they wait for the owner's Phase C device check, or are features): C4-7 (light a mate's faces), C5-1 (close
+  the flyout when the tool changes), C5-2 (restrict flyout clicks by tool).
 
 **Done when:** `part_screen_test` adds: after Edit in context and Cancel the feature's live row is still selected (desktop and
 390 x 844); the same after Confirm and after Edit on a live row; Cancel leaves no unsaved mark on the part or the assembly;
@@ -1368,7 +1374,8 @@ whole `flutter test` passes.
 
 **Don't touch:** the contract, the model, VR.
 
-**Left for later:** what the owner's Phase C device checks find (a follow-up after them, as C0 was for Phase B).
+**Left for later:** what the owner's Phase C device checks find, with C4-7, C5-1 and C5-2 (a follow-up after them, as C0 was
+for Phase B).
 
 ### 12.7 Progress
 
@@ -1378,17 +1385,20 @@ whole `flutter test` passes.
 | C1 contract + Flutter model | merged 25 Nov | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
 | C2 Flutter #7 | merged | #416 | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
 | C3 Flutter #13 | merged | #414 | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
-| C4 Flutter #12 + #15 | PR open: the owner checks CI, then merges | #417 | Sonnet 5.5 | Hover both ways (desktop): a row lights its part through a separate light-only input (`ViewportTreeHover`: a placement by full path, a group its members, a mate its components, a live feature what it made), the part under the pointer marks its row or the nearest listed ancestor, 60 ms throttle; a Columns menu (Eye, Colour, DOF, and P1's pin moved in; every column off by default, saved); grouping keeps its header icon |
-| C5 Flutter #14 | PR open: the owner checks CI, then merges | #418 | Sonnet 5.5 | A Tree tab over the viewport's top left while a docked tool panel holds the left pane; it opens a translucent pick-only flyout (same model, so the same open rows and selection; header with a close only: no filter, columns, menu, eye, hover linking, bar or strips), closed by default, closed by Esc (first) and by the tool closing; it sits right of the docked panel, or below the prompt card, which reports its bottom edge (`PickerPromptCardScope`) |
-| C6 VR one tree component | PR open: the owner checks CI, then merges | DIDSA-VR #105 | Opus 5.5 | occurrence_tree_view.gd + occurrence_tree_scope.gd (World, Table PARTS); PARTS bar Table / Bring / Fix / Hide / Isolate / Rename / Room / Delete; 10.8 VR leftovers 1-3 done (tests/tree_c6.gd) |
+| C4 Flutter #12 + #15 | merged | #417 | Sonnet 5.5 | Hover both ways (desktop): a row lights its part through a separate light-only input (`ViewportTreeHover`: a placement by full path, a group its members, a mate its components, a live feature what it made), the part under the pointer marks its row or the nearest listed ancestor, 60 ms throttle; a Columns menu (Eye, Colour, DOF, and P1's pin moved in; every column off by default, saved); grouping keeps its header icon |
+| C5 Flutter #14 | merged | #418 | Sonnet 5.5 | A Tree tab over the viewport's top left while a docked tool panel holds the left pane; it opens a translucent pick-only flyout (same model, so the same open rows and selection; header with a close only: no filter, columns, menu, eye, hover linking, bar or strips), closed by default, closed by Esc (first) and by the tool closing; it sits right of the docked panel, or below the prompt card, which reports its bottom edge (`PickerPromptCardScope`) |
+| C6 VR one tree component | merged 25 Nov | DIDSA-VR #105 | Opus 5.5 | occurrence_tree_view.gd + occurrence_tree_scope.gd (World, Table PARTS); PARTS bar Table / Bring / Fix / Hide / Isolate / Rename / Room / Delete; 10.8 VR leftovers 1-3 done (tests/tree_c6.gd) |
 | C7 VR room tree | not started | | | |
 | C8 VR BUILD tab on spec 13 | not started | | | |
 | C9 VR parts to features | not started | | | |
-| C10 Flutter end-of-phase follow-up | not started | | | C3-1, C3-2 (answers 11, 12) and nits addressed to C10 |
+| C10 Flutter end-of-phase follow-up | not started | | | C3-1, C3-2 (answers 11, 12); nits C2-1 to C2-5, C4-1 to C4-6, C5-3 |
 
 ### 12.8 Hand-off
 
-**In flight:** C5 (PR open), C6 (VR #105, PR open). C1 merged (#412), C2 merged (#416), C3 merged (#414), C4 merged (#417).
+**In flight:** nothing (26 Nov). Merged: C1 #412, C2 #416, C3 #414, C4 #417, C5 #418, C6 VR #105.
+
+**Next:** C10 (Flutter) and C7 (VR), alongside each other. C0 still waits for the owner's Phase B device checks; after
+C10 the Flutter chain has only C0 and the follow-up after the Phase C device checks left.
 
 **For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
 with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
@@ -1416,28 +1426,11 @@ test in `tests/tree_c6.gd`.
 12. *C3, its review (C3-2).* A part is not flagged unsaved when nothing changed (a Cancel, or a Confirm with nothing edited). Fixed at
     the end of Phase C, not in C3.
 
-**Carried from C1's review (for C2; C1 may not touch the view):** C1-1, **important**: `:mates` is now a known token, so the app no
-longer says "unknown filter :mates", but only folders whose items were set are searched (in the app, only the root's until C2 fetches
-the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_tree_view.dart`'s `_filterNotes` must show it, e.g.
-"Mates and patterns are searched only in folders you have opened" (spec section 11's hint). C2 adds it with a test.
-
 **Nits carried:** (each chunk adds its own here, with the chunk it is for)
 - **Done in C2** (each with its test): C1-1 (the filter's note, `assembly_tree_view_test` and `part_screen_test` ":mates :errors"); C1-2
   (`merge` prunes the items of folders that are gone, model test); C1-3 and C1-6 (`generate.py` takes only its three forms, else the usage
   and exit 2; `test_reference.py` `Arguments`); C1-4 and C1-5 (items in the spec's form, a held mate reads held; rows coloured by
   `itemState`, view test); C3-3 (a cancelled Edit in context says nothing and keeps the focus and lens: asserted in the two C3 cancel tests).
-- C1-2 (for C2): `merge` drops the features of rows that are gone but keeps `setFolderItems` lists of folders that are gone; when a level
-  gets mates again, its folder lists the old items until the host reads it again. C2's "once per Part per tree answer" fetch should
-  reset them; or prune them in `merge` as features are.
-- C1-3 (for C2): `generate.py --changed` with no file after it ends in an `IndexError`, not a usage line.
-- C1-6 (for C2), the manager review's N1: `generate.py` ignores flags it does not know, so `generate.py --help` (or a mistyped
-  `--chek`) rewrites the vector files instead of stopping. With C1-3: accept only `--check` and `--changed <file>`, else print the
-  usage and exit 2.
-- C1-4 (for C2), the manager review's N2: the host form cannot tell held from near, so until C2 moves `mateFolderItems` to the spec's
-  form a held root mate is classed `near` (amber either way; `:warnings` finds it, as the spec now says; a lost one reads `broken`,
-  red either way).
-- C1-5 (for C2): the view colours item rows from `tone` only; a spec-form item (`AssemblyFolderItem.spec` / `fromJson`) has none, so
-  C2 colours item rows from `AssemblyTreeRow.itemState` (red: lost, broken; amber: near, held; dimmed: suppressed).
 - C6-1 (for C7): Table and Bring say "nothing of it is in the arena" in two wrong cases: a closed sub-assembly with a single
   part, read one level at a time; a nested part before the world has been indexed (before C6, the occurrence id alone found
   it). Fix: decide "sub-assembly" from the row's kind, and fall back to the occurrence id for nested rows.
@@ -1448,8 +1441,6 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
 - C3-2 (**end of Phase C**; owner, 25 Nov: answer 12): nothing changed, nothing flagged. Cancel on an edit panel restores the feature
   with a PATCH, which marks the part unsaved (the C3 screenshot after Cancel shows "Unsaved: 1 other part"); the same happens from Edit on
   a live row. A Cancel (or a Confirm) that leaves the feature as it was must not mark the part, or its ancestors, unsaved.
-- C3-3 (for C2): a cancelled Edit in context (a focus change or a tool while the part loaded) leaves the focus and the lens it had already
-  moved to, with no message; the person's own change is the reason, so nothing is said.
 - C2-1 (for C10; pre-existing): the broken-mate flash after a pattern edit opens the root's `#mates` folder; with the focus deeper the
   flashed mates are the focused level's, under `<focus>#mates`, which stays closed. The host should pass the folder key to the view.
 - C2-2 (for C10): Focus here to edit awaits `_refreshFocusTargetContent` unguarded (as `_makeFocusOnPath` does): a failed load moves the
@@ -1462,15 +1453,15 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
   sketcher's tree (P3) does not ask for a folder's items (it shows what the main tree has read).
 - C6-2 (for C7): the PARTS list is short when the bar shows two lines of buttons and a long hint. If the headset check says
   so, the options are a shorter hint or a taller docked tree, but a taller tree moves the pop-up keyboard.
-- C4-1 (for C5 or C10; from the high review, nit): `_TreeRow` exit then re-enter of the *same* row inside one frame (a remount) reports "none" and the row's light is lost until the pointer leaves and re-enters; give the microtask a token that an enter cancels.
+- C4-1 (for C10; C5 did not take it; from the high review, nit): `_TreeRow` exit then re-enter of the *same* row inside one frame (a remount) reports "none" and the row's light is lost until the pointer leaves and re-enters; give the microtask a token that an enter cancels.
 - C4-2 (for C10; nit): the hover light is only gated when a row is entered. A tool, picker or Select Other that starts while a row is already lit (a shortcut, the pointer not moving) leaves the light until the pointer moves; clear `_treeHover` when `_treeHoverAllowed` flips, or give the viewport an `enabled` input. `_treePathOfFullKey` is likewise worked out when the throttle fires, so a tree-root change inside the window can leave a stale path.
 - C4-3 (for C10; nit): `PartViewport.didUpdateWidget` rebuilds the hover nodes when `widget.bodies` is a new list; `PartScreen` hands over fresh lists on a rebuild, so a hovered 200-bolt group re-extracts its triangles on each. Compare what the lit entities use, as is done for instance transforms.
 - C4-4 (for C10; nit): `_syncTreeHoverNodes` returns before clearing `_treeHoverNodes` when `_scene` is null, and a hover set before the scene exists is not applied once it does. Clear the list first and sync once after the scene is created.
 - C4-5 (for C10; nit): the viewport's `onExit` reports "none" but keeps `_hoverHit`, so re-entering on the same pixel reports nothing until the hit changes (the viewport's own hover node also stays drawn after the pointer leaves, as before C4). `onEnter` should report too, or `onExit` should clear the hit. The report also depends on `onEnter` having been seen: a stylus that hovers without a MouseRegion enter never marks a row.
 - C4-6 (for C10; nit): the Colour column's click opens the Appearance tool (`_onOccurrenceColorTap`), not `occurrence_colour_sheet.dart` as 12.6 says: that sheet has had no caller since the Appearance tool (V3). The disc shows the occurrence's own `color`; a colour the Appearance tool resolves from a set or rule is not drawn.
-- C4-7 (for C10; nit): hover lights a mate's *components*, not its two referenced faces; the references carry sub-shapes, so a later chunk can light the faces.
-- C5-1 (for C10; nit): the flyout closes only when no docked tool panel is open (`_desktopFrame` clears it), so switching straight from one docked tool to another (Measure to Section) keeps it open over the new tool. Clear it when the tool changes, if the device check wants that.
-- C5-2 (for C10; nit): a click in the flyout still goes to the host's tap handler, as the docked tree's does, except that a pattern row only marks the row (it would open the pattern editor over the running tool) and a missing file selects without the locate flow. A default-plane row still goes to `_onPlaneTap` and a mate row selects and highlights; that is what a plane-picking or component-picking tool wants, but over Measure it changes the selection. Restrict by tool if the device check finds it wrong.
+- C4-7 (after Phase C: a feature; nit): hover lights a mate's *components*, not its two referenced faces; the references carry sub-shapes, so a later chunk can light the faces.
+- C5-1 (after the Phase C device check; nit): the flyout closes only when no docked tool panel is open (`_desktopFrame` clears it), so switching straight from one docked tool to another (Measure to Section) keeps it open over the new tool. Clear it when the tool changes, if the device check wants that.
+- C5-2 (after the Phase C device check; nit): a click in the flyout still goes to the host's tap handler, as the docked tree's does, except that a pattern row only marks the row (it would open the pattern editor over the running tool) and a missing file selects without the locate flow. A default-plane row still goes to `_onPlaneTap` and a mate row selects and highlights; that is what a plane-picking or component-picking tool wants, but over Measure it changes the selection. Restrict by tool if the device check finds it wrong.
 - C5-3 (for C10; nit): the flyout is a fixed 300 dp wide (up to 440 dp tall) and does not resize; it sits at `kDesktopToolPanelWidth + 12` from the left whenever no prompt card shows, so a docked panel of another width would be covered or leave a gap. It has no filter (the docked tree has it) and no hover linking (C4's hover is the docked tree's). Esc closes it before the tool (the shortcut sheet's "Cancel the tool, or clear the selection" does not say so). `_desktopFrame` clears its flag in the build, as `_treeSheetPickPeek` is.
 
 
