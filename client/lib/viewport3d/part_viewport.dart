@@ -2451,8 +2451,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
           widget.bodiesHidden != oldWidget.bodiesHidden ||
           // The lit bodies are drawn where the focused component sits ([_bodyAndTransformFor]).
           (hover.entities.isNotEmpty && widget.focusWorldTransformMatrix != oldWidget.focusWorldTransformMatrix) ||
-          // An entity of a placed instance (by its occurrence) follows the instances.
-          (hover.entities.any((e) => e.occurrenceId.isNotEmpty) && !identical(widget.assemblyInstances, oldWidget.assemblyInstances))) {
+          // An entity of a placed instance (by its occurrence) follows that instance's transform (the host hands over a new list often).
+          occurrenceInstanceTransformsDiffer(
+              {for (final e in hover.entities) if (e.occurrenceId.isNotEmpty) e.occurrenceId}, oldWidget.assemblyInstances, widget.assemblyInstances)) {
         setState(_syncTreeHoverNodes);
       }
     }

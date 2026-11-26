@@ -472,15 +472,19 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         // The folder and the rows down to it (each ancestor and any group row on the way, as a reveal opens them; and the owner itself), so
-        // the pulse is seen. The root's folder keeps the old behaviour: the person's own open, as before C10.
+        // the pulse is seen. Opened for the flash, not as the person's choice (not stored), and only what is not open already (a row open
+        // because it is live stays that way).
         final folder = widget.flashFolderKey;
         final owner = folder.substring(0, folder.lastIndexOf('#'));
-        if (owner.isEmpty) {
-          widget.model.setOpen(folder, true);
-        } else {
-          final path = owner.split('/');
-          widget.model.openAll([...widget.model.reveal(path), owner, folder], remember: false);
-        }
+        final path = owner.isEmpty ? const <String>[] : owner.split('/');
+        final revealed = widget.model.reveal(path);
+        final keys = [
+          // A level the model cannot place yet (reveal knows none): every prefix of its path, as before.
+          if (revealed.isEmpty) for (var i = 1; i < path.length; i++) path.sublist(0, i).join('/') else ...revealed,
+          if (owner.isNotEmpty) owner,
+          folder,
+        ];
+        widget.model.openAll(keys.where((k) => !widget.model.isOpen(k)), remember: false);
         setState(() {});
         _flash.forward(from: 0);
       });

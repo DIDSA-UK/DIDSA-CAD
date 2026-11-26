@@ -4193,7 +4193,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _markPartWritten(String partId) {
     _dirtyPartIds.remove(partId);
     _neverWrittenPartIds.remove(partId);
+    _partWriteCount++;
   }
+
+  /// C10: how many times a Part has been written (saved), or every Part was marked to be written to a new place; an edit's settle keeps the
+  /// unsaved mark when this changed while it was open.
+  int _partWriteCount = 0;
 
   /// Every Part with changes or no file yet - what Save writes, and what the
   /// Assembly Tree marks.
@@ -6407,8 +6412,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final hasSecondDirection = _componentPatternHasSecondDirection;
     final direction2 =
         resolveComponentPatternVector(_componentPatternDirection2, _componentPatternCustomDirection2);
-    // C10 (C2-1): the Mates folder of this level, for the flash of mates the edit breaks (the focus may move while it saves).
-    final flashFolderKey = '${_focusRelPath.join('/')}#mates';
+    // C10 (C2-1): this level, by its full path, for the flash of mates the edit breaks (the focus, and with it the tree's root, may move while
+    // it saves).
+    final flashLevel = _fullPath(_focusRelPath);
     try {
       final editingId = _componentPatternEditingId;
       ComponentPatternDto? edited;
@@ -6461,7 +6467,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       });
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
-      if (edited != null) _announceBrokenMates(edited.brokenMateIds, folderKey: flashFolderKey);
+      if (edited != null) _announceBrokenMates(edited.brokenMateIds, level: flashLevel);
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -6473,14 +6479,18 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Mates a pattern edit left broken (the edit is always stored): their rows flash in the Assembly tree (which opens its Mates
   /// section) and a SnackBar says how many could not be kept. Called after the tree refresh, so the rows already carry `status`.
-  /// [folderKey]: the Mates folder of the level the edit was on (C10, C2-1), taken before the refreshes the edit waited for (the focus may have
-  /// moved meanwhile).
-  void _announceBrokenMates(List<String> brokenMateIds, {required String folderKey}) {
+  /// [level]: the full path of the level the edit was on (C10, C2-1), taken before the refreshes the edit waited for (the focus, and the
+  /// tree's root, may have moved meanwhile). Its Mates folder is named against the tree's root now; a level outside it flashes no folder.
+  void _announceBrokenMates(List<String> brokenMateIds, {required List<String> level}) {
     if (!mounted || brokenMateIds.isEmpty) return;
+    final root = _appliedTreeRootPath;
+    final inTree = level.length >= root.length && pathEquals(level.sublist(0, root.length), root);
     setState(() {
-      _flashMateIds = {...brokenMateIds};
-      _flashMateFolderKey = folderKey;
-      _flashMateToken++;
+      if (inTree) {
+        _flashMateIds = {...brokenMateIds};
+        _flashMateFolderKey = '${level.sublist(root.length).join('/')}#mates';
+        _flashMateToken++;
+      }
     });
     final n = brokenMateIds.length;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('Pattern updated - $n mate${n == 1 ? '' : 's'} could not be kept')));
@@ -12632,6 +12642,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _dirtyPartIds.addAll(_relativePathByPartId.keys);
         final rootPartId = _part?.id;
         if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+        // Every Part is to be written to a new place: an open edit's settle must not take a mark back ([_settleFeatureEditMark]).
+        _dirtyMarkCount++;
+        _partWriteCount++;
       });
       await _saveFocusedPart();
     }
@@ -16961,6 +16974,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _dirtyPartIds.addAll(_relativePathByPartId.keys);
         final rootPartId = _part?.id;
         if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+        // Every Part is to be written to a new place: an open edit's settle must not take a mark back ([_settleFeatureEditMark]).
+        _dirtyMarkCount++;
+        _partWriteCount++;
       }
     });
     _watchServerProject();
@@ -17958,70 +17974,54 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// C10 (C3-1, C3-2; owner, 25 Nov: answers 11 and 12): the edit open now, taken as its panel opens and settled once it closes
   /// ([_finishFeatureEdit], from [_endRollback], which every edit's Confirm and Cancel end with).
-  ({
-    String featureId,
-    String partId,
-    AssemblyFocusStack? stack,
-    bool partWasUnsaved,
-    String? featuresBefore,
-    Future<String?>? partBefore,
-    int gen,
-  })? _featureEdit;
+  _FeatureEdit? _featureEdit;
 
   /// Counts the edits begun ([_beginFeatureEdit]): a late settle of an older one changes nothing once a newer one has begun.
   int _featureEditGen = 0;
 
-  /// Every feature of the focused Part as the backend last answered, or null when one was built in code (then nothing can be told).
-  String? _featuresSignature() {
-    final list = <Object?>[];
-    for (final f in _features) {
-      final json = f.json;
-      if (json == null) return null;
-      list.add(json);
-    }
-    return jsonEncode(list);
-  }
-
-  /// Feature types edited on a screen or a sheet of their own (a sketch's entities, a gear's design) that writes what [_features] does not
-  /// show: whether they changed cannot be told, so closing them keeps the unsaved mark.
+  /// Feature types edited on a screen or a sheet of their own (a sketch's entities, a gear's design): their own flows, left as they were (the
+  /// unsaved mark stays after them).
   bool _editWritesElsewhere(FeatureDto f) =>
       f.type == 'sketch' || f.type == 'spring' || f.type == 'curve' || _gearFamilyFeatureTypes.contains(f.type);
 
-  void _beginFeatureEdit(FeatureDto feature) {
+  /// Takes the edit's record before its panel opens. When the Part has no unsaved changes, what Save would write for it ([_readSavedForm]) is
+  /// read first and kept, unless anything marked a Part unsaved while that read was out (its answer may then hold that change).
+  Future<void> _beginFeatureEdit(FeatureDto feature) async {
     final partId = _focusedPartId;
     final gen = ++_featureEditGen;
-    if (partId == null) {
-      _featureEdit = null;
-      return;
+    _featureEdit = null;
+    if (partId == null) return;
+    final partWasUnsaved = _unsavedPartIds.contains(partId);
+    String? before;
+    if (!partWasUnsaved && !_editWritesElsewhere(feature)) {
+      final marks = _dirtyMarkCount;
+      before = await _readSavedForm(partId);
+      if (marks != _dirtyMarkCount) before = null;
     }
-    final partWasUnsaved = _dirtyPartIds.contains(partId);
-    final featuresBefore = _editWritesElsewhere(feature) || partWasUnsaved ? null : _featuresSignature();
-    _featureEdit = (
+    if (!mounted || gen != _featureEditGen) return;
+    _featureEdit = _FeatureEdit(
       featureId: feature.id,
       partId: partId,
       stack: _focusStack,
-      partWasUnsaved: partWasUnsaved,
-      featuresBefore: featuresBefore,
-      // The Part's own stored state as the edit opens (its visibility, properties, materials, its lists), read now: an edit's previews never
-      // change it, so whatever else changes it while the panel is open (a Hide from the tree, say) shows at the close ([_settleFeatureEditMark]).
-      partBefore: featuresBefore == null ? null : _readPartSignature(partId),
       gen: gen,
+      savedFormBefore: before,
+      writesBefore: _partWriteCount,
     );
   }
 
-  /// The Part as the backend answers now, as text to compare; null when it cannot be read (then nothing is taken back).
-  Future<String?> _readPartSignature(String partId) async {
+  /// What Save writes for [partId] (the backend's native export of that Part: its features, its own occurrences, mates and patterns, its
+  /// visibility and properties), as text to compare; null when it cannot be read (then nothing is taken back).
+  Future<String?> _readSavedForm(String partId) async {
     try {
-      final json = (await _api.getPart(partId)).json;
-      return json == null ? null : jsonEncode(json);
-    } on ApiException {
+      return jsonEncode(await _api.exportNative(partId: partId));
+    } catch (_) {
       return null;
     }
   }
 
   /// The edit's panel has closed (confirmed or cancelled). C3-1: the edited feature's live row is the selection again (a panel may have
-  /// changed the selection while it was open). C3-2: when every feature of the Part is as it was (a Cancel restores it; a Confirm may change
-  /// nothing), the Part is not marked unsaved by the edit (the coarse mark [_runGuarded] put on it), unless it was before.
+  /// changed the selection while it was open). C3-2: the unsaved mark is settled after this returns ([_settleFeatureEditMark]), so the close
+  /// does not wait for the backend.
   Future<void> _finishFeatureEdit() async {
     final edit = _featureEdit;
     _featureEdit = null;
@@ -18034,48 +18034,28 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _selectLiveKey(liveKey, _entitiesMadeBy(feature), featureId: feature.id);
       _treeModel.selectedKey = liveKey;
     }
-    await _settleFeatureEditMark(edit);
+    unawaited(_settleFeatureEditMark(edit));
   }
 
-  /// C3-2: takes back the unsaved mark the edit's own guarded calls put on the Part, only when the Part is as it was: its features (read again
-  /// now, not the list in memory, which a failed close or a preview may have left behind) and its own stored state (read again, against the
-  /// read made as the edit opened). Not when it was unsaved before, when either read fails, when anything marked it while these reads were
-  /// out, or when a newer edit has begun.
-  Future<void> _settleFeatureEditMark(
-      ({
-        String featureId,
-        String partId,
-        AssemblyFocusStack? stack,
-        bool partWasUnsaved,
-        String? featuresBefore,
-        Future<String?>? partBefore,
-        int gen,
-      }) edit) async {
-    final featuresBefore = edit.featuresBefore;
-    final partBefore = edit.partBefore;
-    if (edit.partWasUnsaved || featuresBefore == null || partBefore == null) return;
-    // What is in memory already says it changed: no need to ask.
-    if (featuresBefore != _featuresSignature()) return;
+  /// C3-2: takes back the unsaved mark the edit's own guarded calls put on the Part, only when what Save would write for it is now what it was
+  /// before the edit (a Cancel restored it; a Confirm changed nothing), read again from the backend. Not when there was no before (the Part
+  /// was unsaved already, or that read failed or raced a change), when the Part was written meanwhile (a Save while the panel was open: the
+  /// file holds what was then on the backend), when anything marked a Part unsaved while the read was out, or when a newer edit has begun.
+  Future<void> _settleFeatureEditMark(_FeatureEdit edit) async {
+    final before = edit.savedFormBefore;
+    if (before == null || edit.writesBefore != _partWriteCount) return;
     final marks = _dirtyMarkCount;
-    final String? partThen;
-    final String featuresNow;
-    final String? partNow;
-    try {
-      partThen = await partBefore;
-      final features = await _api.listFeatures(edit.partId);
-      if (features.any((f) => f.json == null)) return;
-      featuresNow = jsonEncode([for (final f in features) f.json]);
-      partNow = await _readPartSignature(edit.partId);
-    } on ApiException {
+    final now = await _readSavedForm(edit.partId);
+    if (!mounted || now == null || now != before) return;
+    if (marks != _dirtyMarkCount || edit.writesBefore != _partWriteCount || edit.gen != _featureEditGen || !identical(edit.stack, _focusStack)) {
       return;
     }
-    if (!mounted || marks != _dirtyMarkCount || edit.gen != _featureEditGen || !identical(edit.stack, _focusStack)) return;
-    if (partThen == null || partNow == null || partNow != partThen || featuresNow != featuresBefore) return;
     setState(() => _dirtyPartIds.remove(edit.partId));
   }
 
   Future<void> _openFeatureForEdit(FeatureDto feature) async {
-    _beginFeatureEdit(feature);
+    await _beginFeatureEdit(feature);
+    if (!mounted) return;
     setState(() => _selectedFeatureId = feature.id);
     final rollbackIds = featureIdsAfter(_features, feature.id);
     if (rollbackIds.isNotEmpty) await _beginRollback(rollbackIds);
@@ -32963,4 +32943,28 @@ class _EditAloneSession {
     required this.inLabels,
     this.usedCount,
   });
+}
+
+/// C10 (C3-1, C3-2): a feature edit open now ([_PartScreenState._featureEdit]).
+class _FeatureEdit {
+  _FeatureEdit({
+    required this.featureId,
+    required this.partId,
+    required this.stack,
+    required this.gen,
+    required this.savedFormBefore,
+    required this.writesBefore,
+  });
+
+  final String featureId;
+  final String partId;
+  final AssemblyFocusStack? stack;
+  final int gen;
+
+  /// What Save would have written for the Part as the edit opened; null when its unsaved mark is not to be taken back (it had one already,
+  /// the feature is edited elsewhere, or the read failed or raced a change).
+  final String? savedFormBefore;
+
+  /// The Parts written so far, as the edit opened.
+  final int writesBefore;
 }

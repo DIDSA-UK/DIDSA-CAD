@@ -867,6 +867,18 @@ void main() {
       expect(model.openKeysTouched, isFalse, reason: 'opened for the flash, not as the person chose (nothing stored)');
     });
 
+    testWidgets('C2-1 medium review: a level the model cannot place yet still has the rows of its path opened', (tester) async {
+      final model = withFolders();
+      Widget view(int token) =>
+          _host(AssemblyTreeView(model: model, flashItemIds: const {'m1'}, flashToken: token, flashFolderKey: 'p/q#mates'));
+      await tester.pumpWidget(view(0));
+      await tester.pumpWidget(view(1));
+      await tester.pump();
+      expect(model.isOpen('p'), isTrue, reason: "reveal knows no 'p/q' yet: every prefix, as before");
+      expect(model.isOpen('p/q'), isTrue);
+      expect(model.isOpen('p/q#mates'), isTrue);
+    });
+
     testWidgets('a status line shows under the header, and nothing when empty', (tester) async {
       final model = withFolders();
       await tester.pumpWidget(_host(AssemblyTreeView(model: model, statusLine: 'Group: 5 DOF')));

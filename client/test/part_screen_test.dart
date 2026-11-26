@@ -473,16 +473,6 @@ class _FakeDocumentBackend {
         }, 200);
       }
       final extra = extraParts[id];
-      // C10: a nested Part this fake holds features for (an Edit in context reads it before and after the edit).
-      if (extra == null && extraPartFeatures.containsKey(id)) {
-        return _json({
-          'id': id,
-          'name': id,
-          'feature_ids': [for (final f in extraPartFeatures[id]!) f['id']],
-          'occurrence_ids': <String>[],
-          ..._visibilityFields(id!),
-        }, 200);
-      }
       if (extra == null) return http.Response('not found: part', 404);
       return _json({
         'id': extra['id'],
@@ -569,18 +559,29 @@ class _FakeDocumentBackend {
               'mates': <dynamic>[],
               'component_patterns': <dynamic>[],
             }
-          : {
-              'id': id,
-              'name': extraParts[id]!['name'],
-              'features': <dynamic>[],
-              'occurrences': extraParts[id]!['occurrences'],
-              'mates': <dynamic>[],
-              'component_patterns': <dynamic>[],
-            };
+          : !extraParts.containsKey(id) && extraPartFeatures.containsKey(id)
+              // C10: a nested Part this fake holds features for (an edit's settle reads what Save would write for it), with its visibility.
+              ? {
+                  'id': id,
+                  'name': id,
+                  'features': extraPartFeatures[id],
+                  'occurrences': <dynamic>[],
+                  'mates': <dynamic>[],
+                  'component_patterns': <dynamic>[],
+                  ..._visibilityFields(id),
+                }
+              : {
+                  'id': id,
+                  'name': extraParts[id]!['name'],
+                  'features': <dynamic>[],
+                  'occurrences': extraParts[id]!['occurrences'],
+                  'mates': <dynamic>[],
+                  'component_patterns': <dynamic>[],
+                };
       final requestedPartId = request.url.queryParameters['part_id'];
       final parts = requestedPartId == null
           ? [partDict('part-1'), for (final id in extraParts.keys) partDict(id)]
-          : (requestedPartId == 'part-1' || extraParts.containsKey(requestedPartId))
+          : (requestedPartId == 'part-1' || extraParts.containsKey(requestedPartId) || extraPartFeatures.containsKey(requestedPartId))
               ? [partDict(requestedPartId)]
               : null;
       if (parts == null) return http.Response('not found: part', 404);
@@ -7912,6 +7913,47 @@ void main() {
       await tester.pump(const Duration(seconds: 3));
     });
 
+    testWidgets("C2-1 medium review: a level the tree no longer holds (Edit Alone re-rooted it while the edit saved) flashes no folder", (tester) async {
+      Completer<void>? hold;
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
+        seedMates: [mateReferencing('mate-1', 'occ-2')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+        around: (request) async {
+          final h = hold;
+          if (h != null && request.url.path.endsWith('/occurrences') && request.method == 'GET') {
+            hold = null;
+            await h.future;
+          }
+        },
+      );
+      backend.brokenMateIdsOnPatternEdit = ['mate-1'];
+      final panel = _TreeProbe(tester);
+      await panel.onPatternTap!(panel.patterns.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // The save's tree refresh is held: the focus moves to occ-1 meanwhile.
+      final held = hold = Completer<void>();
+      tester
+          .widget<ButtonStyleButton>(find.ancestor(of: find.text('Save'), matching: find.byWidgetPredicate((w) => w is ButtonStyleButton)))
+          .onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(hold, isNull, reason: "the save's refresh is the one held");
+      await _TreeProbe(tester).menuAction('occ-1', 'Edit Alone');
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(_TreeProbe(tester).model.tree?.partId, isNot('part-1'), reason: 'the tree is rooted at occ-1 now');
+      held.complete();
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(_TreeProbe(tester).flashToken, 0, reason: "the root's Mates folder is not in this tree: nothing named after another row flashes");
+      await tester.pump(const Duration(seconds: 3));
+    });
+
     testWidgets('a pattern edit that breaks nothing shows no flash and no SnackBar', (tester) async {
       final backend = await openInAssemblyLens(
         tester,
@@ -11823,6 +11865,7 @@ void main() {
     /// may hold it, to make an answer arrive late.
     Future<_FakeDocumentBackend> openNested(WidgetTester tester,
         {Future<void> Function(http.Request request)? around,
+        Future<void> Function(http.Request request)? before,
         void Function(_FakeDocumentBackend backend)? configure,
         String? filePath,
         String? fileName,
@@ -11846,6 +11889,8 @@ void main() {
       if (configure != null) configure(backend);
       final documentApi = DocumentApiClient(
         httpClient: MockClient((request) async {
+          // [before] may hold a request before the fake answers it (its answer then holds what changed meanwhile).
+          if (before != null) await before(request);
           final response = backend.handle(request);
           if (around != null) await around(request);
           return response;
@@ -14357,8 +14402,10 @@ void main() {
         /// The nested document with one level more: `sub` (placed twice, asm-1 and asm-2) holds c1, itself the assembly `deep` holding the
         /// part d1. d1 is three levels down; its features are [deepFeatures].
         Future<_FakeDocumentBackend> openDeep(WidgetTester tester,
-            {LayoutModeController? layout, Future<void> Function(http.Request request)? around}) {
-          return openNested(tester, layout: layout, around: around, configure: (b) {
+            {LayoutModeController? layout,
+            Future<void> Function(http.Request request)? around,
+            Future<void> Function(http.Request request)? before}) {
+          return openNested(tester, layout: layout, around: around, before: before, configure: (b) {
             b.subOccurrences = {
               'sub': [occ('c1', part: 'deep', ref: 'parts/deep.didsa'), occ('c2')],
               'deep': [occ('d1')],
@@ -14742,6 +14789,74 @@ void main() {
             backend.failExtrudePatch = true;
             await closePanel(tester, 'Cancel');
             expect(unsaved(tester), contains('d1-part'), reason: 'the restore failed: the Part differs from its file');
+          });
+
+          testWidgets('medium review: a Save while the panel is open keeps the unsaved mark after a Cancel (the file holds the preview)',
+              (tester) async {
+            phone(tester);
+            final storage = _FakeStorageService();
+            final backend = await openNested(tester,
+                projectRoot: storage.root, relativePaths: const {'part-1': 'top.DIDSAprt'}, storage: storage, configure: (b) {
+              b.features.addAll([
+                {'type': 'sketch', 'id': 'r-sketch', 'sketch_id': 'sketch-1', 'locked': true, 'produces': 'sketch'},
+                {
+                  'type': 'extrude', 'id': 'r-extrude', 'sketch_feature_id': 'r-sketch', 'extrude_type': 'boss', 'start_distance': 0.0,
+                  'end_distance': 10.0, 'locked': true, 'produces': 'body',
+                },
+              ]);
+            });
+            await switchLens(tester, 'Part');
+            await settle(tester);
+            final probe = _TreeProbe(tester);
+            final row = probe.model.visibleRows().firstWhere((r) => r.key == '#feature:r-extrude');
+            expect(row.live, isTrue);
+            probe.view.onRowEdit!(row);
+            await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+            await settle(tester);
+            tester.widget<ExtrudePanel>(find.byType(ExtrudePanel)).onChanged(
+                ExtrudeType.boss, 0.0, 25.0, null, ThicknessDirection.outward, null, true);
+            await tester.pump(const Duration(milliseconds: 600));
+            await settle(tester);
+            expect(backend.features.firstWhere((f) => f['id'] == 'r-extrude')['end_distance'], 25.0);
+            // Save with the panel open: the file holds 25.
+            tester.widget<PartToolbar>(find.byType(PartToolbar)).onSaveNative!();
+            await settle(tester);
+            await settle(tester);
+            expect(storage.files.keys, contains('top.DIDSAprt'));
+            await closePanel(tester, 'Cancel');
+            expect(backend.features.firstWhere((f) => f['id'] == 'r-extrude')['end_distance'], 10.0, reason: 'restored on the backend');
+            expect(unsaved(tester), contains('part-1'), reason: 'the file still holds the preview: the restore is unsaved');
+          });
+
+          testWidgets('medium review: a Hide made while the edit is still opening (its first read out) keeps the mark after a Cancel', (tester) async {
+            phone(tester);
+            Completer<void>? hold;
+            await openDeep(tester, before: (request) async {
+              final h = hold;
+              if (h != null && request.url.path == '/document/export/native') {
+                hold = null;
+                await h.future;
+              }
+            });
+            tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+                  const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c1/d1'),
+                );
+            await settle(tester);
+            await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+            final held = hold = Completer<void>();
+            await _TreeProbe(tester).menuFeature(tester, 'asm-1/c1/d1#feature:d1-extrude');
+            await _pumpUntil(tester, () => hold == null);
+            await settle(tester);
+            expect(find.byType(ExtrudePanel), findsNothing, reason: 'the first read is out: the panel waits for it');
+            // The person hides the plane meanwhile (the part is live: its row is there).
+            final probe = _TreeProbe(tester);
+            probe.view.onVisibilityToggle!(probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1/d1#feature:d1-plane'));
+            await settle(tester);
+            held.complete();
+            await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+            await settle(tester);
+            await closePanel(tester, 'Cancel');
+            expect(unsaved(tester), contains('d1-part'), reason: 'the read may hold the Hide: nothing is taken back');
           });
 
           testWidgets('review: a Hide made while the panel is open keeps the unsaved mark after a Cancel', (tester) async {
