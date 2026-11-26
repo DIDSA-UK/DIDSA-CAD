@@ -291,7 +291,7 @@ void main() {
     expect(find.descendant(of: _row('#feature:s1'), matching: find.byIcon(Icons.check_circle)), findsNothing);
   });
 
-  testWidgets('the desktop pin column is off by default, an icon turns it on (and saves it), and a pin reports its row', (tester) async {
+  testWidgets('the desktop pin column is off by default, the Columns menu turns it on (and saves it), and a pin reports its row', (tester) async {
     final model = _model();
     final pinned = <String>[];
     await tester.pumpWidget(_host(
@@ -305,22 +305,26 @@ void main() {
       layout: LayoutPreference.desktop,
     ));
     expect(find.byKey(const ValueKey('tree-pin:#feature:g1')), findsNothing);
-    await tester.tap(find.byKey(const ValueKey('tree-pin-column-toggle')));
-    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('tree-columns-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('tree-column-pin')));
+    await tester.pumpAndSettle();
     expect(ViewPreferences.assemblyTreePinColumn, isTrue);
     expect(find.byKey(const ValueKey('tree-pin:#feature:g1')), findsOneWidget);
     expect(find.byKey(const ValueKey('tree-pin:#feature:s1')), findsNothing); // not eligible
     await tester.tap(find.byKey(const ValueKey('tree-pin:#feature:g1')));
     expect(pinned, ['#feature:g1']);
-    await tester.tap(find.byKey(const ValueKey('tree-pin-column-toggle')));
-    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('tree-columns-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('tree-column-pin')));
+    await tester.pumpAndSettle();
     expect(find.byKey(const ValueKey('tree-pin:#feature:g1')), findsNothing);
     await ViewPreferences.setAssemblyTreePinColumn(false);
   });
 
-  testWidgets('a phone has no pin column and no toggle', (tester) async {
+  testWidgets('a phone has no pin column and no Columns menu', (tester) async {
     await tester.pumpWidget(_host(AssemblyTreeView(model: _model(), coarseEligibleFeatureIds: const {'g1'}, onToggleCoarsePin: (_) {})));
-    expect(find.byKey(const ValueKey('tree-pin-column-toggle')), findsNothing);
+    expect(find.byKey(const ValueKey('tree-columns-menu')), findsNothing);
     expect(find.byKey(const ValueKey('tree-pin:#feature:g1')), findsNothing);
   });
 

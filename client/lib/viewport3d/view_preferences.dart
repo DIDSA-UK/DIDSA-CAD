@@ -40,9 +40,13 @@ class ViewPreferences {
   // The Assembly tree's "Group repeated parts" switch (A4, `docs/assembly-tree-overhaul-scope.md` section 8, answer 6): on by default.
   static const String assemblyTreeGroupingPrefKey = 'view_assembly_tree_grouping';
   static const bool defaultAssemblyTreeGrouping = true;
-  // The tree's desktop "pin to coarse" column (P1): off by default. An icon toggle in the tree header; it moves into the Columns menu in Phase C.
+  // The tree's desktop "pin to coarse" column (P1): off by default. An icon toggle in the tree header; C4 moved its toggle into the Columns menu; the key and the saved value are unchanged.
   static const String assemblyTreePinColumnPrefKey = 'view_assembly_tree_pin_column';
   static const bool defaultAssemblyTreePinColumn = false;
+  // C4 (#15): the tree's other optional columns, in the desktop header's Columns menu; every one off by default.
+  static const String assemblyTreeEyeColumnPrefKey = 'view_assembly_tree_eye_column';
+  static const String assemblyTreeColourColumnPrefKey = 'view_assembly_tree_colour_column';
+  static const String assemblyTreeDofColumnPrefKey = 'view_assembly_tree_dof_column';
 
   /// Was `#1E1E2E` (Studio Dark) through Stage 18, then `#F5F5F0`
   /// (Off-white) through Stage 19a - now Charcoal (matches
@@ -103,6 +107,9 @@ class ViewPreferences {
   static bool _darkenSeeThroughInterior = defaultDarkenSeeThroughInterior;
   static bool _assemblyTreeGrouping = defaultAssemblyTreeGrouping;
   static bool _assemblyTreePinColumn = defaultAssemblyTreePinColumn;
+  static bool _assemblyTreeEyeColumn = false;
+  static bool _assemblyTreeColourColumn = false;
+  static bool _assemblyTreeDofColumn = false;
 
   static String get bgColourHex => _bgColourHex;
   static String get bodyColourHex => _bodyColourHex;
@@ -118,6 +125,9 @@ class ViewPreferences {
   static bool get darkenSeeThroughInterior => _darkenSeeThroughInterior;
   static bool get assemblyTreeGrouping => _assemblyTreeGrouping;
   static bool get assemblyTreePinColumn => _assemblyTreePinColumn;
+  static bool get assemblyTreeEyeColumn => _assemblyTreeEyeColumn;
+  static bool get assemblyTreeColourColumn => _assemblyTreeColourColumn;
+  static bool get assemblyTreeDofColumn => _assemblyTreeDofColumn;
 
   /// Populates the in-memory cache from `shared_preferences`, falling back to
   /// the defaults above for any key never [save]d. [renderModePrefKey] is
@@ -146,6 +156,9 @@ class ViewPreferences {
         prefs.getBool(darkenSeeThroughInteriorPrefKey) ?? defaultDarkenSeeThroughInterior;
     _assemblyTreeGrouping = prefs.getBool(assemblyTreeGroupingPrefKey) ?? defaultAssemblyTreeGrouping;
     _assemblyTreePinColumn = prefs.getBool(assemblyTreePinColumnPrefKey) ?? defaultAssemblyTreePinColumn;
+    _assemblyTreeEyeColumn = prefs.getBool(assemblyTreeEyeColumnPrefKey) ?? false;
+    _assemblyTreeColourColumn = prefs.getBool(assemblyTreeColourColumnPrefKey) ?? false;
+    _assemblyTreeDofColumn = prefs.getBool(assemblyTreeDofColumnPrefKey) ?? false;
   }
 
   static Future<void> setBgColourHex(String hex) async {
@@ -224,6 +237,24 @@ class ViewPreferences {
     _assemblyTreePinColumn = value;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(assemblyTreePinColumnPrefKey, value);
+  }
+
+  static Future<void> setAssemblyTreeEyeColumn(bool value) async {
+    _assemblyTreeEyeColumn = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(assemblyTreeEyeColumnPrefKey, value);
+  }
+
+  static Future<void> setAssemblyTreeColourColumn(bool value) async {
+    _assemblyTreeColourColumn = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(assemblyTreeColourColumnPrefKey, value);
+  }
+
+  static Future<void> setAssemblyTreeDofColumn(bool value) async {
+    _assemblyTreeDofColumn = value;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(assemblyTreeDofColumnPrefKey, value);
   }
 
   static Future<void> setSketchLineOutline(bool value) async {

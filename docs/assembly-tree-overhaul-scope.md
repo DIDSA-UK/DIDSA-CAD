@@ -1376,9 +1376,9 @@ whole `flutter test` passes.
 |---|---|---|---|---|
 | C0 Flutter Phase B follow-up | not started | | | Waits for the owner's Phase B device checks; replaces B2.1 |
 | C1 contract + Flutter model | merged 25 Nov | #412 | Opus 5.5 | Spec 14, vectors v3 (125 cases, 13 version 2 ones changed: listed in the PR), Flutter model passes v3; item order lost > held > broken > near |
-| C2 Flutter #7 | PR open: the owner checks CI, then merges | #416 | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
-| C3 Flutter #13 | PR open: the owner checks CI, then merges | #414 | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
-| C4 Flutter #12 + #15 | not started | | | |
+| C2 Flutter #7 | merged | #416 | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
+| C3 Flutter #13 | merged | #414 | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
+| C4 Flutter #12 + #15 | PR open: the owner checks CI, then merges | #417 | Sonnet 5.5 | Hover both ways (desktop): a row lights its part through a separate light-only input (`ViewportTreeHover`: a placement by full path, a group its members, a mate its components, a live feature what it made), the part under the pointer marks its row or the nearest listed ancestor, 60 ms throttle; a Columns menu (Eye, Colour, DOF, and P1's pin moved in; every column off by default, saved); grouping keeps its header icon |
 | C5 Flutter #14 | not started | | | |
 | C6 VR one tree component | PR open: the owner checks CI, then merges | DIDSA-VR #105 | Opus 5.5 | occurrence_tree_view.gd + occurrence_tree_scope.gd (World, Table PARTS); PARTS bar Table / Bring / Fix / Hide / Isolate / Rename / Room / Delete; 10.8 VR leftovers 1-3 done (tests/tree_c6.gd) |
 | C7 VR room tree | not started | | | |
@@ -1388,7 +1388,7 @@ whole `flutter test` passes.
 
 ### 12.8 Hand-off
 
-**In flight:** C2 (#416, PR open), C6 (VR #105, PR open). C1 merged (#412), C3 merged (#414).
+**In flight:** C4 (#417, PR open), C6 (VR #105, PR open). C1 merged (#412), C2 merged (#416), C3 merged (#414).
 
 **For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
 with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
@@ -1462,6 +1462,13 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
   sketcher's tree (P3) does not ask for a folder's items (it shows what the main tree has read).
 - C6-2 (for C7): the PARTS list is short when the bar shows two lines of buttons and a long hint. If the headset check says
   so, the options are a shorter hint or a taller docked tree, but a taller tree moves the pop-up keyboard.
+- C4-1 (for C5 or C10; from the high review, nit): `_TreeRow` exit then re-enter of the *same* row inside one frame (a remount) reports "none" and the row's light is lost until the pointer leaves and re-enters; give the microtask a token that an enter cancels.
+- C4-2 (for C10; nit): the hover light is only gated when a row is entered. A tool, picker or Select Other that starts while a row is already lit (a shortcut, the pointer not moving) leaves the light until the pointer moves; clear `_treeHover` when `_treeHoverAllowed` flips, or give the viewport an `enabled` input. `_treePathOfFullKey` is likewise worked out when the throttle fires, so a tree-root change inside the window can leave a stale path.
+- C4-3 (for C10; nit): `PartViewport.didUpdateWidget` rebuilds the hover nodes when `widget.bodies` is a new list; `PartScreen` hands over fresh lists on a rebuild, so a hovered 200-bolt group re-extracts its triangles on each. Compare what the lit entities use, as is done for instance transforms.
+- C4-4 (for C10; nit): `_syncTreeHoverNodes` returns before clearing `_treeHoverNodes` when `_scene` is null, and a hover set before the scene exists is not applied once it does. Clear the list first and sync once after the scene is created.
+- C4-5 (for C10; nit): the viewport's `onExit` reports "none" but keeps `_hoverHit`, so re-entering on the same pixel reports nothing until the hit changes (the viewport's own hover node also stays drawn after the pointer leaves, as before C4). `onEnter` should report too, or `onExit` should clear the hit. The report also depends on `onEnter` having been seen: a stylus that hovers without a MouseRegion enter never marks a row.
+- C4-6 (for C10; nit): the Colour column's click opens the Appearance tool (`_onOccurrenceColorTap`), not `occurrence_colour_sheet.dart` as 12.6 says: that sheet has had no caller since the Appearance tool (V3). The disc shows the occurrence's own `color`; a colour the Appearance tool resolves from a set or rule is not drawn.
+- C4-7 (for C10; nit): hover lights a mate's *components*, not its two referenced faces; the references carry sub-shapes, so a later chunk can light the faces.
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,
@@ -1469,7 +1476,7 @@ two placements highlighting their own parts, Focus here to edit, the drawer's ma
 level's mates take to appear); C3 (desktop and phone: edit a feature three levels down from the tree by a double-click, the bar and the menu; the second
 placement of a sub-assembly; from inside Edit Alone; how long the wait feels while a large part loads); C10 (after Edit and
 Cancel, the feature still selected and no unsaved mark); C4 (desktop:
-hover both ways on a large assembly, each column); C5 (desktop: the flyout with Extrude, Mirror and a mate tool open); C6
+hover both ways on a large assembly (how it feels, and whether 60 ms keeps the pointer smooth with the tree open), each column, the Columns menu, the viewport hover on a hidden part and a part in a collapsed branch); C5 (desktop: the flyout with Extrude, Mirror and a mate tool open); C6
 (headset: the World tree as before; on the PARTS tab, the bar for a part and for a sub-assembly (its greyed reason), Table from the
 bar on a nested part, Room and Delete, Find, and whether the list beside the two-line bar is tall enough (Mesa: 242 px with a part selected, 213 px with a
 sub-assembly); leftover 1 with a real room); C7 (headset: a room's tree beside its console, its strip, Fix from

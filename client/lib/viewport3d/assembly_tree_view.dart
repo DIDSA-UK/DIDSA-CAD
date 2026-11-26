@@ -1,6 +1,7 @@
-import 'dart:async' show unawaited;
+import 'dart:async' show scheduleMicrotask, unawaited;
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/gestures.dart' show DragStartBehavior;
 import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:material_ui/material_ui.dart';
@@ -125,6 +126,9 @@ class AssemblyTreeView extends StatefulWidget {
     this.itemOtherLevel,
     this.onItemFocusToEdit,
     this.onGroupingChanged,
+    this.onRowHover,
+    this.viewportHover,
+    this.onRowColourTap,
     this.isMultiSelectMode = false,
     this.selectedKeys = const {},
     this.onMultiSelectToggle,
@@ -237,6 +241,17 @@ class AssemblyTreeView extends StatefulWidget {
   /// The grouping toggle changed. The model is already updated; the host saves the choice.
   final ValueChanged<bool>? onGroupingChanged;
 
+  /// C4 (#12, desktop only): the pointer is over [row], or over no row (null). Called once per change, so moving along one row reports it
+  /// once. The host lights what the row stands for in the viewport.
+  final ValueChanged<AssemblyTreeRow?>? onRowHover;
+
+  /// C4 (#12, desktop only): the tree path of the part under the viewport's pointer, or null. The tree marks that row, or the nearest listed
+  /// ancestor when its own row is in a collapsed branch (or, with grouping on, the group it sits in). It never opens, scrolls or selects.
+  final ValueListenable<List<String>?>? viewportHover;
+
+  /// C4 (#15): a click on a row's colour disc (the Colour column). Null leaves the column's discs read-only.
+  final void Function(AssemblyTreeRow row)? onRowColourTap;
+
   /// Multi-select (today's behaviour): while on, a tap or long-press on an occurrence row calls [onMultiSelectToggle] and nothing else;
   /// [selectedKeys] are the rows drawn as picked. [multiSelectHeader] replaces the title row while set.
   final bool isMultiSelectMode;
@@ -316,8 +331,16 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
 
   bool get _filtering => _query.trim().isNotEmpty;
 
-  /// The desktop pin column (P1): saved in `ViewPreferences`, off by default.
+  /// The desktop optional columns (P1's pin column, C4's Eye, Colour and DOF): each saved in `ViewPreferences`, off by default, switched
+  /// from the header's Columns menu.
   late bool _pinColumn = ViewPreferences.assemblyTreePinColumn;
+  late bool _eyeColumn = ViewPreferences.assemblyTreeEyeColumn;
+  late bool _colourColumn = ViewPreferences.assemblyTreeColourColumn;
+  late bool _dofColumn = ViewPreferences.assemblyTreeDofColumn;
+
+  /// C4: the key of the row the pointer is over (reported to [AssemblyTreeView.onRowHover] once), and the row key the viewport's hover marks.
+  String? _pointerRowKey;
+  String? _viewportHoverKey;
 
   /// P2: the scroll offset of each lens (whether the model shows its live part): a lens switch lists other rows (the Assembly lens has no
   /// live rows, so its list can be much shorter and clamps the offset), and switching back puts the list where it was in that lens.
@@ -351,7 +374,36 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     super.initState();
     _seenTree = widget.model.tree;
     widget.controller?._attach(this);
+    widget.viewportHover?.addListener(_onViewportHoverChanged);
     _syncModel();
+  }
+
+  /// The row the viewport's hover marks now (its own row, its group, or the nearest listed ancestor), or null.
+  String? _hoverKeyNow() {
+    final path = widget.viewportHover?.value;
+    return path == null || path.isEmpty ? null : widget.model.listedRowKeyOfPath(path);
+  }
+
+  void _onViewportHoverChanged() {
+    if (!mounted) return;
+    final key = _hoverKeyNow();
+    if (key != _viewportHoverKey) setState(() => _viewportHoverKey = key);
+  }
+
+  /// The pointer entered or left [row]'s line: reports it to the host once per change.
+  void _rowHover(AssemblyTreeRow row, bool inside) {
+    if (inside) {
+      if (_pointerRowKey == row.key) return;
+      _pointerRowKey = row.key;
+      widget.onRowHover?.call(row);
+    } else if (_pointerRowKey == row.key) {
+      // Moving from one row to the next exits the first before it enters the second: the "none" waits a microtask, so the host sees one change.
+      scheduleMicrotask(() {
+        if (!mounted || _pointerRowKey != row.key) return;
+        _pointerRowKey = null;
+        widget.onRowHover?.call(null);
+      });
+    }
   }
 
   @override
@@ -360,6 +412,11 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (old.controller != widget.controller) {
       old.controller?._detach(this);
       widget.controller?._attach(this);
+    }
+    if (old.viewportHover != widget.viewportHover) {
+      old.viewportHover?.removeListener(_onViewportHoverChanged);
+      widget.viewportHover?.addListener(_onViewportHoverChanged);
+      _viewportHoverKey = _hoverKeyNow();
     }
     if (old.model != widget.model) {
       _requested.clear();
@@ -408,6 +465,11 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   @override
   void dispose() {
     widget.controller?._detach(this);
+    widget.viewportHover?.removeListener(_onViewportHoverChanged);
+    // The host lit what the pointer was over: a tree that goes away takes that back.
+    // After the frame: the host's notifier reaches the viewport, and the widget tree is locked while a tree is torn down.
+    final onHover = widget.onRowHover;
+    if (_pointerRowKey != null && onHover != null) WidgetsBinding.instance.addPostFrameCallback((_) => onHover(null));
     _flash.dispose();
     _scroll.dispose();
     _pinTick.dispose();
@@ -967,6 +1029,18 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final bar = picker != null || widget.isMultiSelectMode || desktop || !widget.selectionBar || selectedRow == null ? null : _barButtons(selectedRow);
     final showBar = bar != null && bar.isNotEmpty;
     final pinColumn = desktop && _pinColumn && widget.onToggleCoarsePin != null;
+    final eyeColumn = desktop && _eyeColumn && widget.onVisibilityToggle != null;
+    final colourColumn = desktop && _colourColumn;
+    final dofColumn = desktop && _dofColumn;
+    // C4: the row the viewport's pointer marks (derived each build, so a row that opens or closes takes the mark with it).
+    _viewportHoverKey = desktop ? _hoverKeyNow() : null;
+    // The row the pointer is over left the list (a filter, a collapse, a refresh): the host takes its light back.
+    if (_pointerRowKey != null && widget.onRowHover != null && !rows.any((r) => r.key == _pointerRowKey)) {
+      _pointerRowKey = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _pointerRowKey == null) widget.onRowHover?.call(null);
+      });
+    }
     // Multi-select ticks by row key, but a plane feature listed in the Planes folder and in the build order is one feature: both rows tick.
     final Set<String?> selectedMs = widget.isMultiSelectMode
         ? {
@@ -998,6 +1072,13 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                 ? widget.pinnedCoarseFeatureIds.contains(r.featureId)
                 : null,
             onPin: () => widget.onToggleCoarsePin?.call(r),
+            eyeColumn: eyeColumn,
+            alignColumns: eyeColumn || colourColumn || dofColumn || pinColumn,
+            colourDisc: colourColumn ? _colourOf(r) : null,
+            onColour: widget.onRowColourTap == null ? null : () => widget.onRowColourTap!(r),
+            dof: dofColumn ? _dofOf(r) : null,
+            viewportHover: r.key == _viewportHoverKey,
+            onHover: widget.onRowHover == null || !desktop ? null : (inside) => _rowHover(r, inside),
             pickMulti: picker?.multi ?? false,
             onDoubleTap: picker == null &&
                     !widget.isMultiSelectMode &&
@@ -1185,6 +1266,23 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     });
   }
 
+  /// C4 (#15, Colour column): the placement's colour, or null (the default look) for a row that has none or is not a component.
+  ({Color? colour, bool applies}) _colourOf(AssemblyTreeRow r) {
+    final p = r.path;
+    if (p == null || p.isEmpty || (r.kind != AssemblyRowKind.part && r.kind != AssemblyRowKind.assembly)) return (colour: null, applies: false);
+    final hex = widget.model.nodeAtPath(p)?.color;
+    Color? colour;
+    if (hex != null && RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(hex)) colour = colorFromHex(hex);
+    return (colour: colour, applies: true);
+  }
+
+  /// C4 (#15, DOF column): the placement's degrees of freedom; null while the status loads or failed, and for rows without one.
+  ({int? dof, bool applies}) _dofOf(AssemblyTreeRow r) {
+    final p = r.path;
+    if (p == null || p.isEmpty || (r.kind != AssemblyRowKind.part && r.kind != AssemblyRowKind.assembly)) return (dof: null, applies: false);
+    return (dof: r.statusFailed ? null : widget.model.nodeAtPath(p)?.constraint?.dof, applies: true);
+  }
+
   Color? _bracketFor(AssemblyTreeRow r, Map<String, Color> colours) {
     final p = r.path;
     if (p == null || p.isEmpty) return null;
@@ -1254,21 +1352,8 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
                 widget.onGroupingChanged?.call(v);
               },
             ),
-            // The pin-to-coarse column (desktop, off by default).
-            if (desktop && widget.onToggleCoarsePin != null)
-              button(
-                key: 'tree-pin-column-toggle',
-                tooltip: _pinColumn ? 'Pin column: on' : 'Pin column: off',
-                icon: Icons.blur_off,
-                colour: scheme.onSurfaceVariant,
-                selectedIcon: Icons.blur_on,
-                selected: _pinColumn,
-                onPressed: () {
-                  final v = !_pinColumn;
-                  setState(() => _pinColumn = v);
-                  unawaited(ViewPreferences.setAssemblyTreePinColumn(v));
-                },
-              ),
+            // The optional columns (desktop; C4 #15): Eye, Colour, DOF and, with a live part, the pin-to-coarse column. All off by default.
+            if (desktop) _columnsMenu(context),
             button(
               key: 'tree-expand-to-selection',
               tooltip: 'Expand to selection',
@@ -1280,6 +1365,52 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
             if (widget.onClose != null) button(key: 'tree-close', tooltip: 'Close', icon: Icons.close, onPressed: widget.onClose),
           ],
         ),
+      ),
+    );
+  }
+
+  /// The Columns menu (C4, #15): a check per optional column, saved in `ViewPreferences`. The pin column is offered only where a pin toggle
+  /// exists (a live part). A tinted icon says a column is on.
+  Widget _columnsMenu(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final canPin = widget.onToggleCoarsePin != null;
+    final any = _eyeColumn || _colourColumn || _dofColumn || (canPin && _pinColumn);
+    void flip(String which) {
+      setState(() {
+        switch (which) {
+          case 'eye':
+            _eyeColumn = !_eyeColumn;
+            unawaited(ViewPreferences.setAssemblyTreeEyeColumn(_eyeColumn));
+          case 'colour':
+            _colourColumn = !_colourColumn;
+            unawaited(ViewPreferences.setAssemblyTreeColourColumn(_colourColumn));
+          case 'dof':
+            _dofColumn = !_dofColumn;
+            unawaited(ViewPreferences.setAssemblyTreeDofColumn(_dofColumn));
+          case 'pin':
+            _pinColumn = !_pinColumn;
+            unawaited(ViewPreferences.setAssemblyTreePinColumn(_pinColumn));
+        }
+      });
+    }
+
+    CheckedPopupMenuItem<String> item(String value, String label, bool on) =>
+        CheckedPopupMenuItem<String>(key: ValueKey('tree-column-$value'), value: value, checked: on, child: Text(label));
+    return PopupMenuButton<String>(
+      key: const ValueKey('tree-columns-menu'),
+      tooltip: 'Columns',
+      padding: EdgeInsets.zero,
+      onSelected: flip,
+      itemBuilder: (_) => [
+        item('eye', 'Eye', _eyeColumn),
+        item('colour', 'Colour', _colourColumn),
+        item('dof', 'DOF', _dofColumn),
+        if (canPin) item('pin', 'Pin to simplified', _pinColumn),
+      ],
+      child: SizedBox(
+        width: 36,
+        height: 36,
+        child: Icon(any ? Icons.view_column : Icons.view_column_outlined, size: 20, color: any ? scheme.primary : scheme.onSurfaceVariant),
       ),
     );
   }
@@ -1604,6 +1735,13 @@ class _TreeRow extends StatefulWidget {
     required this.selectable,
     required this.pinState,
     required this.onPin,
+    this.eyeColumn = false,
+    this.alignColumns = false,
+    this.colourDisc,
+    this.onColour,
+    this.dof,
+    this.viewportHover = false,
+    this.onHover,
     required this.onDoubleTap,
     required this.pickMulti,
     required this.bracket,
@@ -1643,6 +1781,26 @@ class _TreeRow extends StatefulWidget {
   /// The desktop pin column: null draws nothing, else whether this feature is pinned to coarse.
   final bool? pinState;
   final VoidCallback onPin;
+
+  /// C4 (#15): the Eye column is on: every row that can hide draws its eye (open or crossed) all the time, instead of on hover.
+  final bool eyeColumn;
+
+  /// C4 (#15): some optional column is on, so the state slot keeps one width (a row with no state icon would otherwise pull its columns right).
+  final bool alignColumns;
+
+  /// C4 (#15): non-null when the Colour column is on: the placement's colour (null: the default look) and whether this row has a disc at all.
+  /// [onColour] is a click on the disc.
+  final ({Color? colour, bool applies})? colourDisc;
+  final VoidCallback? onColour;
+
+  /// C4 (#15): non-null when the DOF column is on: the degrees of freedom (null: still loading, or none) and whether this row has any.
+  final ({int? dof, bool applies})? dof;
+
+  /// C4 (#12): the viewport's pointer is over this row's part (or, for a collapsed row, something inside it): the row is marked.
+  final bool viewportHover;
+
+  /// C4 (#12): the pointer entered (true) or left (false) the row. Null: this layout does not report it.
+  final ValueChanged<bool>? onHover;
 
   /// Edit (double-tap, double-click); null leaves the gesture out.
   final VoidCallback? onDoubleTap;
@@ -1732,7 +1890,7 @@ class _TreeRowState extends State<_TreeRow> {
     final lockedEye = widget.lockedEye;
     final canEye = lockedEye ?? (widget.showEye && (isOccurrence || (r.live && !r.kind.isLiveFolder)));
     // A group row never shows one: it has nothing to toggle (its members show their own).
-    final eyeSlot = lockedEye == true
+    Widget? eyeSlot = lockedEye == true
         ? Tooltip(
             message: r.hidden ? 'Show' : 'Hide',
             child: Icon(r.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
@@ -1743,6 +1901,15 @@ class _TreeRowState extends State<_TreeRow> {
         : (desktop && _hover && canEye && !widget.multiSelect)
             ? Icon(Icons.visibility_outlined, key: ValueKey('tree-eye:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
             : null;
+    // C4 (#15): with the Eye column on the eye is always there (a cell of its own, blank on a row with nothing to hide, so the column lines up).
+    final eyeColumn = widget.eyeColumn && lockedEye == null;
+    if (eyeColumn) {
+      final eyeable = canEye && r.kind != AssemblyRowKind.group && !r.kind.isLiveFolder;
+      eyeSlot = eyeable
+          ? Icon(r.hidden ? Icons.visibility_off_outlined : Icons.visibility_outlined,
+              key: ValueKey(r.hidden ? 'tree-eye-off:${r.key}' : 'tree-eye:${r.key}'), size: iconSize, color: scheme.onSurfaceVariant)
+          : const SizedBox.shrink();
+    }
 
     final chevronWidth = desktop ? 22.0 : 36.0;
     Widget chevron;
@@ -1853,11 +2020,53 @@ class _TreeRowState extends State<_TreeRow> {
             child: Text('${r.count}', style: TextStyle(fontSize: desktop ? 12 : 13, color: scheme.onSurfaceVariant)),
           ),
         if (r.bubble != null && !r.open) _bubble(context, r.bubble!),
+        if (widget.dof != null)
+          SizedBox(
+            width: 34,
+            height: widget.height,
+            child: Center(
+              child: !widget.dof!.applies
+                  ? null
+                  : Tooltip(
+                      message: widget.dof!.dof == null
+                          ? 'Degrees of freedom: loading'
+                          : '${widget.dof!.dof} degree${widget.dof!.dof == 1 ? '' : 's'} of freedom',
+                      child: Text(widget.dof!.dof == null ? '' : '${widget.dof!.dof}',
+                          key: ValueKey('tree-dof:${r.key}'), style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+                    ),
+            ),
+          ),
+        if (widget.colourDisc != null)
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.colourDisc!.applies ? widget.onColour : null,
+            child: SizedBox(
+              width: 26,
+              height: widget.height,
+              child: Center(
+                child: !widget.colourDisc!.applies
+                    ? null
+                    : Tooltip(
+                        message: widget.colourDisc!.colour == null ? 'Default colour' : 'Colour',
+                        child: Container(
+                          key: ValueKey('tree-colour:${r.key}'),
+                          width: 14,
+                          height: 14,
+                          decoration: BoxDecoration(
+                            color: widget.colourDisc!.colour,
+                            shape: BoxShape.circle,
+                            border: Border.all(color: scheme.outline, width: widget.colourDisc!.colour == null ? 1.5 : 1),
+                          ),
+                        ),
+                      ),
+              ),
+            ),
+          ),
         if (eyeSlot != null)
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             // Desktop: the hover eye and the eye-off toggle. Phone: only the eye-off of a hidden row (it is state, not a button). Never in multi-select.
-            onTap: canEye && !widget.multiSelect && (desktop || r.hidden || lockedEye == true) ? widget.onEye : null,
+            onTap: canEye && !widget.multiSelect && (desktop || r.hidden || lockedEye == true) && (!eyeColumn || eyeSlot is Icon) ? widget.onEye : null,
             child: SizedBox(width: desktop ? 26 : 40, height: widget.height, child: Center(child: eyeSlot)),
           ),
         if (widget.pinState != null)
@@ -1876,7 +2085,10 @@ class _TreeRowState extends State<_TreeRow> {
               ),
             ),
           ),
-        Padding(padding: const EdgeInsets.only(left: 6, right: 8), child: _stateSlot(context, r, iconSize)),
+        Padding(
+          padding: const EdgeInsets.only(left: 6, right: 8),
+          child: widget.alignColumns ? SizedBox(width: iconSize, child: Center(child: _stateSlot(context, r, iconSize))) : _stateSlot(context, r, iconSize),
+        ),
       ],
     );
 
@@ -1895,6 +2107,20 @@ class _TreeRowState extends State<_TreeRow> {
             bottom: 0,
             width: 3,
             child: ColoredBox(key: ValueKey('tree-focus-rail:${r.key}'), color: assemblyLensAccentColor(scheme, AssemblyLens.assembly)),
+          ),
+        ],
+      );
+    }
+    if (widget.viewportHover) {
+      content = Stack(
+        children: [
+          Positioned.fill(child: content),
+          Positioned(
+            right: 0,
+            top: 0,
+            bottom: 0,
+            width: 3,
+            child: ColoredBox(key: ValueKey('tree-viewport-hover:${r.key}'), color: scheme.primary),
           ),
         ],
       );
@@ -1919,9 +2145,11 @@ class _TreeRowState extends State<_TreeRow> {
           ? scheme.error.withValues(alpha: 0.35 * widget.pulse)
           : widget.selected
               ? scheme.secondaryContainer.withValues(alpha: 0.7)
-              : r.match
-                  ? scheme.tertiaryContainer.withValues(alpha: 0.5)
-                  : Colors.transparent,
+              : widget.viewportHover
+                  ? scheme.primary.withValues(alpha: 0.12)
+                  : r.match
+                      ? scheme.tertiaryContainer.withValues(alpha: 0.5)
+                      : Colors.transparent,
       child: InkWell(
         onTap: widget.onTap,
         onDoubleTap: widget.onDoubleTap,
@@ -1934,8 +2162,14 @@ class _TreeRowState extends State<_TreeRow> {
     tile = MouseContextMenuRegion(onOpen: widget.onContextMenu, child: tile);
     if (desktop) {
       tile = MouseRegion(
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
+        onEnter: (_) {
+          if (mounted) setState(() => _hover = true);
+          widget.onHover?.call(true);
+        },
+        onExit: (_) {
+          if (mounted) setState(() => _hover = false);
+          widget.onHover?.call(false);
+        },
         child: tile,
       );
     }

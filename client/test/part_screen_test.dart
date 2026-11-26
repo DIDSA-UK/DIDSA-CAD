@@ -14619,6 +14619,148 @@ void main() {
         expect(_TreeProbe(tester).model.isOpen('asm-1#mates'), isTrue);
       });
     });
+
+    // C4 (#12, `docs/assembly-tree-overhaul-scope.md` 12.6): a tree row lights its part in the viewport, and the part under the pointer
+    // marks its row. Desktop only; never through the Select Other override, and nothing while a picker is open.
+    group('Hover linking (C4)', () {
+      LayoutModeController desktop() =>
+          LayoutModeController(preference: LayoutPreference.desktop, windowSize: const Size(1280, 800), mouseActive: true);
+
+      Map<String, dynamic> hoverMate(String id, List<String> occurrences) => {
+            'id': id,
+            'type': 'coincident',
+            'references': [
+              for (final o in occurrences)
+                {
+                  'occurrence_id': o,
+                  'subshape_ref': null,
+                  'plane_ref': {'face_ref': null, 'fixed_plane': 'XY', 'plane_feature_id': null},
+                  'point_ref': null,
+                },
+            ],
+            'value': null,
+            'flipped': false,
+            'suppressed': false,
+            'allow_rotation': true,
+            'status': 'ok',
+          };
+
+      PartViewport viewport(WidgetTester tester) => tester.widget<PartViewport>(find.byType(PartViewport));
+      Set<String>? lit(WidgetTester tester) => viewport(tester).treeHover?.value?.instanceKeys;
+      AssemblyTreeRow rowOf(WidgetTester tester, String key) => _TreeProbe(tester).model.visibleRows().firstWhere((r) => r.key == key);
+
+      /// Opens [keys] in order the way the chevrons do (the view asks for a folder's items when it opens).
+      Future<void> openKeys(WidgetTester tester, List<String> keys) async {
+        for (final k in keys) {
+          if (!_TreeProbe(tester).model.isOpen(k)) {
+            await tester.tap(find.byKey(ValueKey('tree-chevron:$k')));
+            await settle(tester);
+          }
+        }
+        await settle(tester);
+      }
+
+      Future<void> openBoth(WidgetTester tester) async {
+        await openNested(tester, layout: desktop(), configure: (b) {
+          b.subMates = {
+            'sub': [hoverMate('m1', ['c1', 'c2'])],
+          };
+        });
+        await openKeys(tester, const ['asm-1', 'asm-2']);
+      }
+
+      testWidgets('the mouse over a row lights that placement only, and dims and selects nothing', (tester) async {
+        await openBoth(tester);
+        final selectedBefore = viewport(tester).selectedEntities;
+        final highlightedBefore = viewport(tester).highlightedInstanceKeys;
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: Offset.zero);
+        addTearDown(mouse.removePointer);
+
+        await mouse.moveTo(tester.getCenter(find.byKey(const ValueKey('tree-row:asm-2/c1'))));
+        await tester.pump();
+        expect(lit(tester), {'asm-2/c1'}, reason: 'the second placement lights, the first stays dark');
+        expect(viewport(tester).highlightOverride, isNull, reason: 'a separate input: nothing else is dimmed');
+        expect(viewport(tester).selectedEntities, selectedBefore);
+        expect(viewport(tester).highlightedInstanceKeys, highlightedBefore);
+        expect(_TreeProbe(tester).model.selectedKey, isNull, reason: 'hovering selects nothing');
+
+        await mouse.moveTo(Offset.zero);
+        await tester.pump();
+        expect(viewport(tester).treeHover?.value, isNull, reason: 'cleared on exit');
+      });
+
+      testWidgets('a sub-assembly row lights every part in it, a mate row the components it joins, a root or folder row nothing', (tester) async {
+        await openBoth(tester);
+        final probe = _TreeProbe(tester);
+        probe.view.onRowHover!(rowOf(tester, 'asm-2'));
+        expect(lit(tester), {'asm-2', 'asm-2/c1', 'asm-2/c2'});
+        probe.view.onRowHover!(rowOf(tester, 'plate'));
+        expect(lit(tester), {'plate'});
+        probe.view.onRowHover!(rowOf(tester, ''));
+        expect(viewport(tester).treeHover?.value, isNull, reason: 'the root row stands for no one placement');
+
+        await openKeys(tester, const ['asm-1#mates']);
+        probe.view.onRowHover!(rowOf(tester, 'asm-1#mates#item:m1'));
+        expect(lit(tester), {'asm-1/c1', 'asm-1/c2'}, reason: "a mate's two components, under its own placement");
+        probe.view.onRowHover!(rowOf(tester, 'asm-1#mates'));
+        expect(viewport(tester).treeHover?.value, isNull, reason: 'a folder lights nothing');
+        probe.view.onRowHover!(null);
+        expect(viewport(tester).treeHover?.value, isNull);
+      });
+
+      testWidgets('nothing lights while a picker is open', (tester) async {
+        await openBoth(tester);
+        final probe = _TreeProbe(tester);
+        probe.model.setPicker(const AssemblyPicker(banner: 'Pick a sketch'));
+        await settle(tester);
+        probe.view.onRowHover!(rowOf(tester, 'asm-2/c1'));
+        expect(viewport(tester).treeHover?.value, isNull);
+        probe.model.setPicker(null);
+        await settle(tester);
+        probe.view.onRowHover!(rowOf(tester, 'asm-2/c1'));
+        expect(lit(tester), {'asm-2/c1'});
+      });
+
+      testWidgets('a screen closed while the mouse rests on a row takes its light back without an error', (tester) async {
+        await openBoth(tester);
+        final mouse = await tester.createGesture(kind: PointerDeviceKind.mouse);
+        await mouse.addPointer(location: Offset.zero);
+        addTearDown(mouse.removePointer);
+        await mouse.moveTo(tester.getCenter(find.byKey(const ValueKey('tree-row:asm-2/c1'))));
+        await tester.pump();
+        expect(lit(tester), {'asm-2/c1'});
+        // The screen goes away (back, or another document): the tree's "none" arrives after its notifiers are disposed.
+        await tester.pumpWidget(const SizedBox.shrink());
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('the part under the viewport pointer marks its row, or the nearest listed ancestor, and never opens, scrolls or selects', (tester) async {
+        await openBoth(tester);
+        final probe = _TreeProbe(tester);
+        final onHover = viewport(tester).onHoverOccurrenceChanged!;
+
+        onHover('asm-2/c1');
+        await tester.pump();
+        expect(find.byKey(const ValueKey('tree-viewport-hover:asm-2/c1')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tree-viewport-hover:asm-1/c1')), findsNothing, reason: 'the first placement is not the one hovered');
+
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:asm-2')));
+        await settle(tester);
+        onHover('asm-2/c1');
+        await tester.pump(const Duration(milliseconds: 100));
+        // asm-2 is closed now: its row takes the mark.
+        expect(find.byKey(const ValueKey('tree-viewport-hover:asm-2')), findsOneWidget);
+        expect(probe.model.isOpen('asm-2'), isFalse, reason: 'hover never opens');
+        expect(probe.model.selectedKey, isNull, reason: 'hover never selects');
+
+        onHover(null);
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tree-viewport-hover:asm-2')), findsNothing);
+      });
+    });
   });
 
 }

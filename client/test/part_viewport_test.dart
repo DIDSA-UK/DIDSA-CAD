@@ -4,6 +4,7 @@ import 'package:vector_math/vector_math.dart' as vm;
 
 import 'package:didsa_cad_client/api/document_api_client.dart';
 import 'gpu_ready.dart';
+import 'package:didsa_cad_client/viewport3d/assembly_hover_link.dart';
 import 'package:didsa_cad_client/viewport3d/part_viewport.dart';
 import 'package:didsa_cad_client/viewport3d/render_mode.dart';
 import 'package:didsa_cad_client/viewport3d/selection_hit_test.dart';
@@ -667,6 +668,57 @@ void main() {
 
       expect(key.currentState!.debugAssemblyInstanceNodeKeys, {'occ-2/child-body'});
       expect(key.currentState!.debugAssemblyInstanceEdgesNodeKeys, {'occ-2/child-body'});
+      expect(tester.takeException(), isNull);
+    });
+
+    // C4 (#12): the tree row under the pointer lights its part. GPU-backed like the node-graph tests around it (skipped without one).
+    testWidgets('the tree hover lights a shown component and nothing for a hidden one', (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final hover = ValueNotifier<ViewportTreeHover?>(null);
+      Future<bool> pump({required bool hidden}) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 400,
+                height: 400,
+                child: PartViewport(
+                  key: key,
+                  bodies: const [],
+                  selectedPlane: null,
+                  onPlaneTap: (_) {},
+                  onBackgroundTap: () {},
+                  renderMode: ViewportRenderMode.shaded,
+                  assemblyGeometry: [childGeometry],
+                  assemblyInstances: [
+                    AssemblyOccurrenceInstanceDto(occurrencePath: const ['occ-1'], partId: 'child', worldTransform: at(0), hidden: hidden),
+                  ],
+                  treeHover: hover,
+                ),
+              ),
+            ),
+          ),
+        );
+        final ready = await _pumpUntil(tester, () => gpuSpinnerGone(), maxPumps: 300);
+        await tester.pump();
+        return ready;
+      }
+
+      if (!await pump(hidden: false)) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      hover.value = const ViewportTreeHover(instanceKeys: {'occ-1'});
+      await tester.pump();
+      expect(key.currentState!.debugTreeHoverNodeCount, 1);
+      hover.value = null;
+      await tester.pump();
+      expect(key.currentState!.debugTreeHoverNodeCount, 0, reason: 'cleared');
+
+      await pump(hidden: true);
+      hover.value = const ViewportTreeHover(instanceKeys: {'occ-1'});
+      await tester.pump();
+      expect(key.currentState!.debugTreeHoverNodeCount, 0, reason: 'hidden: not drawn, so not lit');
       expect(tester.takeException(), isNull);
     });
 

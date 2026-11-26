@@ -2,8 +2,9 @@ import 'dart:async';
 import 'dart:math' as math;
 import 'dart:typed_data' show Float32List;
 
-import 'package:flutter/foundation.dart' show setEquals;
+import 'package:flutter/foundation.dart' show ValueListenable, setEquals;
 import 'package:flutter/gestures.dart';
+import 'package:flutter/scheduler.dart' show SchedulerBinding, SchedulerPhase;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_gpu/gpu.dart' as gpu;
 import 'package:flutter_scene/scene.dart' hide OrthographicCamera, OrthographicProjection;
@@ -30,6 +31,7 @@ import 'reference_planes.dart';
 import 'presentation_mode.dart' show Turntable;
 import 'input_debug.dart';
 import 'touch_pivot.dart';
+import 'assembly_hover_link.dart';
 import 'assembly_instance_render.dart';
 import 'render_mode.dart';
 import 'scene_preferences.dart';
@@ -838,6 +840,14 @@ class PartViewport extends StatefulWidget {
   /// screen works with; an instance already in it is not drawn twice.
   final Set<String> highlightedInstanceKeys;
 
+  /// C4 (#12): what the tree row under the pointer lights. A separate input from [highlightOverride] (Select Other): it dims nothing and
+  /// changes no selection. Not drawn while Select Other is open or a component gizmo is being dragged.
+  final ValueListenable<ViewportTreeHover?>? treeHover;
+
+  /// C4 (#12): the placed instance (a joined `occurrencePath`) under the pointer changed, or null when none is. Called outside the build, so
+  /// the host may set a notifier from it.
+  final ValueChanged<String?>? onHoverOccurrenceChanged;
+
   /// Fired when a tap (Fix 4) commits a non-empty hover hit - the caller
   /// (see [PartScreen]) decides whether this adds or removes the entity
   /// from [selectedEntities] (Item 4's toggle rule).
@@ -1148,6 +1158,8 @@ class PartViewport extends StatefulWidget {
     this.selectionMode = false,
     this.selectedEntities = const {},
     this.highlightedInstanceKeys = const {},
+    this.treeHover,
+    this.onHoverOccurrenceChanged,
     this.onSelectionToggle,
     this.onSelectionPickPoint,
     this.onSelectClick,
@@ -1279,6 +1291,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   Set<String> get debugAssemblyInstanceEdgesNodeKeys => _assemblyInstanceEdgesNodes.keys.toSet();
   @visibleForTesting
   Object? get debugSelectedFacesNode => _selectedFacesNode;
+
+  /// C4: how many nodes light [PartViewport.treeHover] now.
+  int get debugTreeHoverNodeCount => _treeHoverNodes.length;
   @visibleForTesting
   Set<String> get debugTransientMeshNodeBodyIds => _transientMeshNodes.keys.toSet();
 
@@ -1907,6 +1922,14 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   static const double _cursorDragSensitivity = 0.6;
 
   Node? _hoverNode;
+
+  /// C4: the nodes lighting [PartViewport.treeHover], and the hover [PartViewport.onHoverOccurrenceChanged] last reported.
+  final List<Node> _treeHoverNodes = [];
+  String? _reportedHoverOccurrence;
+
+  /// C4: whether a mouse is over the viewport. A hover hit outlives the pointer (it is only cleared by moving over empty space), so the
+  /// tree's row marking follows this too: leaving the viewport reports no hover.
+  bool _pointerOverViewport = false;
   Node? _selectedFacesNode;
   Node? _selectedEdgesNode;
   Node? _selectedVerticesNode;
@@ -1965,6 +1988,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   @override
   void initState() {
     super.initState();
+    widget.treeHover?.addListener(_onTreeHoverChanged);
     // A4: set initial projection mode from widget.
     _camera.isPerspective = widget.isPerspective;
     // A3: apply any initial far clip override; if null, setZoomBoundsForRadius
@@ -2084,6 +2108,7 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   @override
   void dispose() {
+    widget.treeHover?.removeListener(_onTreeHoverChanged);
     _turntableTimer?.cancel();
     _viewMovingTimer?.cancel();
     // P25: an already-scheduled (but not yet fired) long-press timer must
@@ -2410,8 +2435,22 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncHoverNode();
       });
     }
+    if (widget.treeHover != oldWidget.treeHover) {
+      oldWidget.treeHover?.removeListener(_onTreeHoverChanged);
+      widget.treeHover?.addListener(_onTreeHoverChanged);
+      setState(_syncTreeHoverNodes);
+    } else if (widget.treeHover?.value case final hover? when !hover.isEmpty) {
+      // A lit component that moved, or geometry that changed under it: the lit triangles are baked in world space.
+      if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
+          (hover.instanceKeys.isNotEmpty &&
+              occurrenceInstanceTransformsDiffer(hover.instanceKeys, oldWidget.assemblyInstances, widget.assemblyInstances)) ||
+          widget.bodies != oldWidget.bodies) {
+        setState(_syncTreeHoverNodes);
+      }
+    }
     if (widget.highlightOverride != oldWidget.highlightOverride ||
         widget.suppressHoverFallback != oldWidget.suppressHoverFallback) {
+      setState(_syncTreeHoverNodes);
       // Bug report ("Select Other"): re-syncs the forced highlight as the
       // user hovers/focuses a different row in the list, and also the
       // instant the sheet opens/closes (so the stale [_hoverHit] highlight
@@ -6791,6 +6830,69 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// that entity's own screen position (which, for a candidate the list
   /// exists to reach in the first place, there usually isn't one).
   void _syncHoverNode() {
+    _syncHoverNodeCore();
+    _reportHoverOccurrence();
+  }
+
+  /// C4: tells the host which placed instance is under the pointer, once per change and never inside a build.
+  void _reportHoverOccurrence() {
+    final callback = widget.onHoverOccurrenceChanged;
+    if (callback == null) return;
+    // Nothing is hovered while Select Other shows its own candidate or a Select Other sheet is open (its hover is the override's).
+    final hit = widget.highlightOverride != null || widget.suppressHoverFallback || !_pointerOverViewport ? null : _hoverHit;
+    final id = hit == null || hit.entity.occurrenceId.isEmpty ? null : hit.entity.occurrenceId;
+    if (id == _reportedHoverOccurrence) return;
+    _reportedHoverOccurrence = id;
+    final binding = SchedulerBinding.instance;
+    if (binding.schedulerPhase == SchedulerPhase.idle) {
+      callback(id);
+    } else {
+      binding.addPostFrameCallback((_) {
+        if (mounted && _reportedHoverOccurrence == id) callback(id);
+      });
+    }
+  }
+
+  void _onTreeHoverChanged() {
+    if (!mounted) return;
+    setState(_syncTreeHoverNodes);
+  }
+
+  /// C4 (#12): rebuilds the nodes that light [PartViewport.treeHover]: the whole component for each instance key, each entity as the pointer
+  /// hover draws it. Only lights: no dimming, no selection, no always-on-top (a lit part behind another stays behind it).
+  void _syncTreeHoverNodes() {
+    final scene = _scene;
+    if (scene == null) return;
+    for (final n in _treeHoverNodes) {
+      scene.remove(n);
+    }
+    _treeHoverNodes.clear();
+    final hover = widget.treeHover?.value;
+    if (hover == null || hover.isEmpty) return;
+    if (_componentGizmoDragHandle != null || widget.highlightOverride != null) return;
+    if (hover.instanceKeys.isNotEmpty) {
+      final triangles = <(vm.Vector3, vm.Vector3, vm.Vector3)>[];
+      // A hidden part is not drawn, so it is not lit either (its row is still listed, struck through).
+      for (final key in shownInstanceKeys(hover.instanceKeys, widget.assemblyInstances)) {
+        triangles.addAll(_worldTrianglesForOccurrence(key));
+      }
+      if (triangles.isNotEmpty) {
+        final node = buildHighlightFacesNode(biasTrianglesAlongNormal(triangles, kEdgeDepthBias), color: _hoverColor);
+        scene.add(node);
+        _treeHoverNodes.add(node);
+      }
+    }
+    for (final entity in hover.entities) {
+      // What a live feature made, unless it is not drawn (a hidden feature's body, or every body hidden).
+      if (widget.bodiesHidden || (entity.bodyId.isNotEmpty && _bodyFor(entity.bodyId)?.hidden == true)) continue;
+      final node = _buildEntityHighlightNode(entity, _hoverColor);
+      if (node == null) continue;
+      scene.add(node);
+      _treeHoverNodes.add(node);
+    }
+  }
+
+  void _syncHoverNodeCore() {
     final scene = _scene;
     if (scene == null) return;
     if (_hoverNode != null) {
@@ -7613,6 +7715,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             MouseRegion(
               cursor: _viewportMouseCursor,
+              onEnter: (_) => _pointerOverViewport = true,
+              onExit: (_) {
+                _pointerOverViewport = false;
+                // Also fired as the region is torn down with the viewport: nothing to tell then.
+                if (mounted) _reportHoverOccurrence();
+              },
               child: Listener(
                 onPointerDown: _onPointerDown,
                 onPointerMove: _onPointerMove,
