@@ -788,6 +788,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Mates a pattern edit left broken ([_announceBrokenMates]): the Assembly tree flashes these rows whenever [_flashMateToken] changes.
   Set<String> _flashMateIds = const {};
+
+  /// The Mates folder [_flashMateIds] are in (C10, C2-1): the level the pattern edit was on.
+  String _flashMateFolderKey = '#mates';
   int _flashMateToken = 0;
   /// A4: the selected component as a path of occurrence ids from the tree's root (B3: the document's root while a level is focused, the
   /// Edit Alone target in Edit Alone), null when none. A component directly in the focused Part has the focus path plus its id.
@@ -4171,6 +4174,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     } else {
       _dirtyPartIds.clear();
       _neverWrittenPartIds.clear();
+      // C10: a save of the session is a write of every Part ([_settleFeatureEditMark]).
+      _partWriteCount++;
     }
   }
 
@@ -4181,12 +4186,21 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   void _markPartDirty([String? partId]) {
     final id = partId ?? _focusedPartId;
     if (id != null) _dirtyPartIds.add(id);
+    _dirtyMarkCount++;
   }
+
+  /// C10: how many times a Part has been marked unsaved; a check that reads the backend sees whether something marked one meanwhile.
+  int _dirtyMarkCount = 0;
 
   void _markPartWritten(String partId) {
     _dirtyPartIds.remove(partId);
     _neverWrittenPartIds.remove(partId);
+    _partWriteCount++;
   }
+
+  /// C10: how many times a Part has been written (saved), or every Part was marked to be written to a new place; an edit's settle keeps the
+  /// unsaved mark when this changed while it was open.
+  int _partWriteCount = 0;
 
   /// Every Part with changes or no file yet - what Save writes, and what the
   /// Assembly Tree marks.
@@ -5160,6 +5174,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     return {
       for (final i in mesh.instances) i.occurrencePath.join('/'): _appearance.lookOf(i.occurrencePath, facesOf[i.partId] ?? const []),
     };
+  }
+
+  /// C10 (C4-6): the colour the placed instance at [path] (from the tree's root) shows, from [_instanceLooks] (a map lookup: the looks are
+  /// worked out once for the viewport). Null for a row with no instance of its own (a sub-assembly) or no colour set anywhere.
+  String? _resolvedTreeColour(List<String> path) {
+    final colour = _instanceLooks[_fullPath(path).join('/')]?.whole['colour'];
+    return colour is String ? colour : null;
   }
 
   /// The primary content's look (the root's own bodies, or the focused Part's): [PartViewport.primaryLook].
@@ -6393,6 +6414,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final hasSecondDirection = _componentPatternHasSecondDirection;
     final direction2 =
         resolveComponentPatternVector(_componentPatternDirection2, _componentPatternCustomDirection2);
+    // C10 (C2-1): this level, by its full path, for the flash of mates the edit breaks (the focus, and with it the tree's root, may move while
+    // it saves).
+    final flashLevel = _fullPath(_focusRelPath);
     try {
       final editingId = _componentPatternEditingId;
       ComponentPatternDto? edited;
@@ -6445,7 +6469,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       });
       await _refreshAssemblyTree();
       await _refreshAssemblyMesh();
-      if (edited != null) _announceBrokenMates(edited.brokenMateIds);
+      if (edited != null) _announceBrokenMates(edited.brokenMateIds, level: flashLevel);
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -6457,11 +6481,18 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Mates a pattern edit left broken (the edit is always stored): their rows flash in the Assembly tree (which opens its Mates
   /// section) and a SnackBar says how many could not be kept. Called after the tree refresh, so the rows already carry `status`.
-  void _announceBrokenMates(List<String> brokenMateIds) {
+  /// [level]: the full path of the level the edit was on (C10, C2-1), taken before the refreshes the edit waited for (the focus, and the
+  /// tree's root, may have moved meanwhile). Its Mates folder is named against the tree's root now; a level outside it flashes no folder.
+  void _announceBrokenMates(List<String> brokenMateIds, {required List<String> level}) {
     if (!mounted || brokenMateIds.isEmpty) return;
+    final root = _appliedTreeRootPath;
+    final inTree = level.length >= root.length && pathEquals(level.sublist(0, root.length), root);
     setState(() {
-      _flashMateIds = {...brokenMateIds};
-      _flashMateToken++;
+      if (inTree) {
+        _flashMateIds = {...brokenMateIds};
+        _flashMateFolderKey = '${level.sublist(root.length).join('/')}#mates';
+        _flashMateToken++;
+      }
     });
     final n = brokenMateIds.length;
     ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('Pattern updated - $n mate${n == 1 ? '' : 's'} could not be kept')));
@@ -12613,6 +12644,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _dirtyPartIds.addAll(_relativePathByPartId.keys);
         final rootPartId = _part?.id;
         if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+        // Every Part is to be written to a new place: an open edit's settle must not take a mark back ([_settleFeatureEditMark]).
+        _dirtyMarkCount++;
+        _partWriteCount++;
       });
       await _saveFocusedPart();
     }
@@ -16942,6 +16976,9 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         _dirtyPartIds.addAll(_relativePathByPartId.keys);
         final rootPartId = _part?.id;
         if (rootPartId != null) _dirtyPartIds.add(rootPartId);
+        // Every Part is to be written to a new place: an open edit's settle must not take a mark back ([_settleFeatureEditMark]).
+        _dirtyMarkCount++;
+        _partWriteCount++;
       }
     });
     _watchServerProject();
@@ -17937,7 +17974,107 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   bool _featureTapOpening = false;
 
+  /// C10 (C3-1, C3-2; owner, 25 Nov: answers 11 and 12): the edit open now, taken as its panel opens and settled once it closes
+  /// ([_finishFeatureEdit], from [_endRollback], which every edit's Confirm and Cancel end with).
+  _FeatureEdit? _featureEdit;
+
+  /// Counts the edits begun ([_beginFeatureEdit]): a late settle of an older one changes nothing once a newer one has begun.
+  int _featureEditGen = 0;
+
+  /// Feature types edited on a screen or a sheet of their own (a sketch's entities, a gear's design): their own flows, left as they were (the
+  /// unsaved mark stays after them).
+  bool _editWritesElsewhere(FeatureDto f) =>
+      f.type == 'sketch' || f.type == 'spring' || f.type == 'curve' || _gearFamilyFeatureTypes.contains(f.type);
+
+  /// Takes the edit's record before its panel opens. When the Part has no unsaved changes, what Save would write for it ([_readSavedForm]) is
+  /// read first and kept, unless anything marked a Part unsaved while that read was out (its answer may then hold that change).
+  ///
+  /// False when the edit is not to open after all: while that read was out the focus or the document changed, the feature went, a newer edit
+  /// began or a tool started (the stale-answer rule, as Edit in context's).
+  Future<bool> _beginFeatureEdit(FeatureDto feature) async {
+    final partId = _focusedPartId;
+    final stack = _focusStack;
+    final revision = stack?.revision;
+    final gen = ++_featureEditGen;
+    _featureEdit = null;
+    if (partId == null) return true;
+    final partWasUnsaved = _unsavedPartIds.contains(partId);
+    String? before;
+    if (!partWasUnsaved && !_editWritesElsewhere(feature)) {
+      final marks = _dirtyMarkCount;
+      final toolBefore = _anyToolSessionActive || _mateActive || _componentPatternPanelActive || _moveRotateComponentActive;
+      before = await _readSavedForm(partId);
+      if (!mounted ||
+          gen != _featureEditGen ||
+          !identical(stack, _focusStack) ||
+          stack?.revision != revision ||
+          partId != _focusedPartId ||
+          _featureById(feature.id) == null ||
+          (!toolBefore && (_anyToolSessionActive || _mateActive || _componentPatternPanelActive || _moveRotateComponentActive))) {
+        return false;
+      }
+      if (marks != _dirtyMarkCount) before = null;
+    }
+    _featureEdit = _FeatureEdit(
+      featureId: feature.id,
+      partId: partId,
+      stack: _focusStack,
+      gen: gen,
+      savedFormBefore: before,
+      writesBefore: _partWriteCount,
+    );
+    return true;
+  }
+
+  /// What Save writes for [partId] (the backend's native export of that Part: its features, its own occurrences, mates and patterns, its
+  /// visibility and properties; and, for the root Part, the client-only extras that ride along, its section planes), as text to compare; null
+  /// when it cannot be read (then nothing is taken back).
+  Future<String?> _readSavedForm(String partId) async {
+    try {
+      final exported = await _api.exportNative(partId: partId);
+      if (!mounted) return null;
+      return jsonEncode({...exported, ...?_extrasFor(partId)});
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// The edit's panel has closed (confirmed or cancelled). C3-1: the edited feature's live row is the selection again (a panel may have
+  /// changed the selection while it was open). C3-2: the unsaved mark is settled after this returns ([_settleFeatureEditMark]), so the close
+  /// does not wait for the backend.
+  Future<void> _finishFeatureEdit() async {
+    final edit = _featureEdit;
+    _featureEdit = null;
+    if (edit == null || !mounted || !identical(edit.stack, _focusStack) || edit.partId != _focusedPartId) return;
+    final feature = _featureById(edit.featureId);
+    final liveKey = feature == null ? null : _treeModel.liveFeatureKey(feature.id);
+    if (feature != null && liveKey != null) {
+      // The host's selection and the tree's: [_selectLiveKey] marks the host's as handed over, so the tree's is set here too (the panel may
+      // have cleared it while it was open, as the phone's tree did).
+      _selectLiveKey(liveKey, _entitiesMadeBy(feature), featureId: feature.id);
+      _treeModel.selectedKey = liveKey;
+    }
+    unawaited(_settleFeatureEditMark(edit));
+  }
+
+  /// C3-2: takes back the unsaved mark the edit's own guarded calls put on the Part, only when what Save would write for it is now what it was
+  /// before the edit (a Cancel restored it; a Confirm changed nothing), read again from the backend. Not when there was no before (the Part
+  /// was unsaved already, or that read failed or raced a change), when the Part was written meanwhile (a Save while the panel was open: the
+  /// file holds what was then on the backend), when anything marked a Part unsaved while the read was out, or when a newer edit has begun.
+  Future<void> _settleFeatureEditMark(_FeatureEdit edit) async {
+    final before = edit.savedFormBefore;
+    if (before == null || edit.writesBefore != _partWriteCount) return;
+    final marks = _dirtyMarkCount;
+    final now = await _readSavedForm(edit.partId);
+    if (!mounted || now == null || now != before) return;
+    if (marks != _dirtyMarkCount || edit.writesBefore != _partWriteCount || edit.gen != _featureEditGen || !identical(edit.stack, _focusStack)) {
+      return;
+    }
+    setState(() => _dirtyPartIds.remove(edit.partId));
+  }
+
   Future<void> _openFeatureForEdit(FeatureDto feature) async {
+    if (!await _beginFeatureEdit(feature) || !mounted) return;
     setState(() => _selectedFeatureId = feature.id);
     final rollbackIds = featureIdsAfter(_features, feature.id);
     if (rollbackIds.isNotEmpty) await _beginRollback(rollbackIds);
@@ -18230,8 +18367,14 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// entirely (it only ever holds rollback-only ids, nothing to preserve).
   /// A safe no-op if rollback was never engaged for this edit (editing the
   /// last Feature).
+  ///
+  /// C10: every edit's Confirm and Cancel end here, so this also settles the edit ([_finishFeatureEdit]), after the mesh refresh (a guarded
+  /// action, which marks the Part unsaved).
   Future<void> _endRollback() async {
-    if (_rollbackExcludedFeatureIds.isEmpty) return;
+    if (_rollbackExcludedFeatureIds.isEmpty) {
+      await _finishFeatureEdit();
+      return;
+    }
     setState(() {
       _rollbackExcludedFeatureIds.clear();
       // Without this, [_visibleSketchGeometries]/[_createPlaneGeometries]
@@ -18241,6 +18384,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _recomputeCreatePlaneGeometries();
     });
     await _runGuarded(_refreshMesh);
+    await _finishFeatureEdit();
   }
 
 
@@ -26200,8 +26344,32 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   final ValueNotifier<List<String>?> _viewportHoverPath = ValueNotifier<List<String>?>(null);
   late final HoverThrottle<String?> _viewportHoverThrottle = HoverThrottle<String?>((key) {
     if (!mounted) return;
+    _viewportHoverFullKey = key;
     _viewportHoverPath.value = _treePathOfFullKey(key);
   });
+
+  /// The placed instance the throttle last passed on (a joined full path), kept so the tree path follows a tree-root change (C10, C4-2).
+  String? _viewportHoverFullKey;
+
+  /// C10 (C4-2): what the hover inputs held when the gate last changed under them, put right after the frame: a tree row's light while a tool,
+  /// a picker or Select Other has started since (the pointer resting, so no new enter came to gate it), and the viewport hover's tree path
+  /// after the tree's root changed (it is relative to the root). Called from [build]; cheap when nothing is out of date.
+  void _syncHoverInputs() {
+    final lightStale = _treeHover.value != null && !_treeHoverAllowed;
+    final path = _treePathOfFullKey(_viewportHoverFullKey);
+    final pathStale = !listEquals(path, _viewportHoverPath.value);
+    if ((!lightStale && !pathStale) || _hoverSyncPending) return;
+    _hoverSyncPending = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _hoverSyncPending = false;
+      if (!mounted) return;
+      if (_treeHover.value != null && !_treeHoverAllowed) _treeHover.value = null;
+      final now = _treePathOfFullKey(_viewportHoverFullKey);
+      if (!listEquals(now, _viewportHoverPath.value)) _viewportHoverPath.value = now;
+    });
+  }
+
+  bool _hoverSyncPending = false;
 
   /// The tree path of the placed instance [fullKey] (a joined full path), or null for none or one outside the tree's root.
   List<String>? _treePathOfFullKey(String? fullKey) {
@@ -27930,6 +28098,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       },
       // A component row never opened in this screen's own tree: its features are read into this screen's model, which the sketcher's copies.
       onFeaturesRequested: _loadTreeFeatures,
+      // C10 (C2-5): a level's Mates or Patterns folder opened there is read the same way.
+      onFolderItemsRequested: _onFolderItemsRequested,
     );
   }
 
@@ -27976,6 +28146,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     // session ends (a plain field reset: nothing below reads it before this).
     if (!_startButtonVisible) _quickColumnOpen = false;
     _pingSketchSource();
+    _syncHoverInputs();
     // What a flow forces visible changes the sketch outlines and planes drawn: refresh them when it does.
     final forcedSignature = _forcedVisibleCategories.toList()..sort();
     if (forcedSignature.join(',') != _lastForcedSignature) {
@@ -28994,10 +29165,16 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                     !_selectOtherSheetOpen &&
                     !_componentContextMenuOpen;
 
-  /// C2: the selected component when it sits below the focused level (the drawer lists its mates), else null.
+  /// C2: the selected component when it sits below the focused level (the drawer lists its mates), else null. C10 (C2-3): only below it:
+  /// not a row outside the focus (it has B5's "Focus here" strip), nor the focused row itself, nor the focused level's own components (the
+  /// drawer's first form).
   AssemblyTreeNodeDto? get _selectedNestedNode {
     final path = _selectedTreePath;
-    if (path == null || path.isEmpty || _treeRootPending || _isFocusChild(path)) return null;
+    final focus = _focusRelPath;
+    if (path == null || path.length <= focus.length + 1 || _treeRootPending) return null;
+    for (var i = 0; i < focus.length; i++) {
+      if (path[i] != focus[i]) return null;
+    }
     return _treeModel.nodeAtPath(path);
   }
 
@@ -29664,11 +29841,12 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   /// The tree opened a level's Mates or Patterns folder that has no items: read that level's lists (once per Part per tree answer).
-  void _onFolderItemsRequested(String folderKey) {
+  /// False when the folder is not this screen's tree's (nothing was asked for). C10 (C2-5): the sketcher's tree asks through here too.
+  bool _onFolderItemsRequested(String folderKey) {
     final partId = _folderPartId(folderKey);
     if (partId == null) {
       _treeController.forgetFolderRequest(folderKey);
-      return;
+      return false;
     }
     _levelItemsWanted.add(partId);
     // The view asks again only when the folder was opened again: a deliberate retry of a failed read.
@@ -29676,9 +29854,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     if (_listsFor(partId) != null) {
       setState(_syncLevelFolderItems);
       _treeController.refresh();
-      return;
+      return true;
     }
     unawaited(_fetchLevelItems(partId));
+    return true;
   }
 
   /// After a load: the Parts whose folders were opened are read again (those no longer in the tree are forgotten).
@@ -29716,22 +29895,41 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   Future<void> _readLevelItems(String partId, int gen) async {
     final model = _treeModel;
     try {
-      final mates = await _api.listMates(partId);
-      final patterns = await _api.listComponentPatterns(partId);
+      // C10 (C2-4): each list read on its own, so the message names the one that failed.
+      List<MateDto>? mates;
+      List<ComponentPatternDto>? patterns;
+      try {
+        mates = await _api.listMates(partId);
+      } on ApiException {
+        mates = null;
+      }
+      try {
+        patterns = await _api.listComponentPatterns(partId);
+      } on ApiException {
+        patterns = null;
+      }
       if (!mounted || gen != _levelItemsGen || !identical(model, _treeModel)) return;
+      if (mates == null || patterns == null) {
+        // Kept as failed until the next tree answer reads it again (the view keeps the folder asked, so it does not ask in a loop); said
+        // once, beside what the banner already says (not instead of it, nor dropped for it).
+        final lists = mates == null && patterns == null ? 'mates and patterns' : (mates == null ? 'mates' : 'patterns');
+        final line = 'The $lists of ${_partNameInTree(partId)} could not be read';
+        setState(() {
+          _levelItemsFailed.add(partId);
+          final current = _errorMessage;
+          if (current == null || current.isEmpty) {
+            _errorMessage = line;
+          } else if (!current.split('\n').contains(line)) {
+            _errorMessage = '$current\n$line';
+          }
+        });
+        return;
+      }
       setState(() {
-        _levelItems[partId] = (mates: _mateFollowedNotes.merge(mates), patterns: patterns);
+        _levelItems[partId] = (mates: _mateFollowedNotes.merge(mates!), patterns: patterns!);
         _syncLevelFolderItems();
       });
       _treeController.refresh();
-    } on ApiException {
-      // Kept as failed until the next tree answer reads it again (the view keeps the folder asked, so it does not ask in a loop); said once.
-      if (mounted && gen == _levelItemsGen && identical(model, _treeModel)) {
-        setState(() {
-          _levelItemsFailed.add(partId);
-          _errorMessage ??= 'The mates and patterns of ${_partNameInTree(partId)} could not be read';
-        });
-      }
     } finally {
       if (_levelItemsInFlight[partId]?.$1 == gen) _levelItemsInFlight.remove(partId);
     }
@@ -29844,8 +30042,21 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       _exitMultiSelect();
       if (!_focusToTreePath(owner)) return;
       final revision = stack.revision;
-      await _refreshFocusTargetContent();
-      if (!mounted || !identical(stack, _focusStack) || stack.revision != revision) return;
+      bool stale() => !mounted || !identical(stack, _focusStack) || stack.revision != revision;
+      // C10 (C2-2): as Edit in context, a level that fails to load says so in the banner (while the focus is still there); nothing escapes
+      // this unawaited call.
+      try {
+        await _refreshFocusTargetContent();
+      } catch (e, st) {
+        final text = _bannerTextOf(e);
+        if (text == null) {
+          _reportRefreshBug(e, st, 'reading the level for Focus here to edit');
+        } else if (!stale()) {
+          setState(() => _errorMessage = text);
+        }
+        return;
+      }
+      if (stale()) return;
       _revealFocusedRow();
     }
     if (!pathEquals(owner, _focusRelPath)) return;
@@ -30231,8 +30442,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       onRowHover: flyout ? null : _onTreeRowHover,
       viewportHover: flyout ? null : _viewportHoverPath,
       onRowColourTap: flyout ? null : (row) => _withTreeTarget(row, (t) => _onOccurrenceColorTap(t.occurrence, path: t.path)),
+      // C10 (C4-6): the colour the viewport draws (a set or rule the Appearance tool resolved included), from the looks it already has.
+      resolvedColour: flyout ? null : _resolvedTreeColour,
       flashItemIds: _flashMateIds,
       flashToken: _flashMateToken,
+      flashFolderKey: _flashMateFolderKey,
       // The phone selection bar: Hide, Isolate, Focus, Alone as the row menu's own actions, and More as the row menu itself; a live row's
       // bar (Edit, Hide / Show, Zoom, More) acts on the feature, body or plane.
       onHideSelected: (row) => unawaited(row.live ? _toggleLiveRowVisibility(row) : _onTreeRowVisibilityToggle(row)),
@@ -32748,4 +32962,28 @@ class _EditAloneSession {
     required this.inLabels,
     this.usedCount,
   });
+}
+
+/// C10 (C3-1, C3-2): a feature edit open now ([_PartScreenState._featureEdit]).
+class _FeatureEdit {
+  _FeatureEdit({
+    required this.featureId,
+    required this.partId,
+    required this.stack,
+    required this.gen,
+    required this.savedFormBefore,
+    required this.writesBefore,
+  });
+
+  final String featureId;
+  final String partId;
+  final AssemblyFocusStack? stack;
+  final int gen;
+
+  /// What Save would have written for the Part as the edit opened; null when its unsaved mark is not to be taken back (it had one already,
+  /// the feature is edited elsewhere, or the read failed or raced a change).
+  final String? savedFormBefore;
+
+  /// The Parts written so far, as the edit opened.
+  final int writesBefore;
 }

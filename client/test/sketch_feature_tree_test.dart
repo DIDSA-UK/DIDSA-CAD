@@ -541,6 +541,40 @@ void main() {
       expect(asked.where((p) => p.join('/') == 'z'), hasLength(2));
     });
 
+    testWidgets("C2-5: a level's Mates folder opened here asks the Part screen for its items, and lists them once it has them", (tester) async {
+      final main = AssemblyTreeModel(tree: _assembly());
+      final asked = <String>[];
+      late StateSetter rebuild;
+      await tester.pumpWidget(StatefulBuilder(builder: (context, setState) {
+        rebuild = setState;
+        return _host(
+          SketchFeatureTree(
+            tree: _assembly(),
+            livePart: _live(key: 'a/b/c'),
+            fetchedFrom: main,
+            sketchFeatureId: 'current',
+            onFolderItemsRequested: (key) {
+              asked.add(key);
+              return true;
+            },
+            onClose: () {},
+          ),
+          desktop: true,
+        );
+      }));
+      await tester.pump();
+      await tester.pump();
+      // The root's Mates folder (the tree is opened down to the live part, so the root is open).
+      await tester.tap(find.byKey(const ValueKey('tree-chevron:#mates')));
+      await tester.pump();
+      await tester.pump();
+      expect(asked, ['#mates']);
+      main.setFolderItems('#mates', const [AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1')]);
+      rebuild(() {});
+      await tester.pump();
+      expect(_row('#mates#item:m1'), findsOneWidget);
+    });
+
     testWidgets('a tree whose source has another root asks for nothing (its paths name other rows)', (tester) async {
       final other = AssemblyTreeModel(
         tree: AssemblyTreeResponseDto.fromJson({
