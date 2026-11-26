@@ -18027,10 +18027,13 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   /// What Save writes for [partId] (the backend's native export of that Part: its features, its own occurrences, mates and patterns, its
-  /// visibility and properties), as text to compare; null when it cannot be read (then nothing is taken back).
+  /// visibility and properties; and, for the root Part, the client-only extras that ride along, its section planes), as text to compare; null
+  /// when it cannot be read (then nothing is taken back).
   Future<String?> _readSavedForm(String partId) async {
     try {
-      return jsonEncode(await _api.exportNative(partId: partId));
+      final exported = await _api.exportNative(partId: partId);
+      if (!mounted) return null;
+      return jsonEncode({...exported, ...?_extrasFor(partId)});
     } catch (_) {
       return null;
     }
