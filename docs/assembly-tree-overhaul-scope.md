@@ -1391,11 +1391,11 @@ for Phase B).
 | C7 VR room tree | not started | | | |
 | C8 VR BUILD tab on spec 13 | not started | | | |
 | C9 VR parts to features | not started | | | |
-| C10 Flutter end-of-phase follow-up | PR open | | Opus 5.5 | C3-1 (the edited feature's row selected again when its panel closes), C3-2 (a Cancel, or a Confirm that changed nothing, takes back the unsaved mark: what Save writes for the Part is read before the panel opens and after it closes); C2-1 to C2-5, C4-1 to C4-6 done; C5-3 partly (the rest carried, 12.8) |
+| C10 Flutter end-of-phase follow-up | PR open | #420 | Opus 5.5 | C3-1 (the edited feature's row selected again when its panel closes), C3-2 (a Cancel, or a Confirm that changed nothing, takes back the unsaved mark: what Save writes for the Part is read before the panel opens and after it closes); C2-1 to C2-5, C4-1 to C4-6 done; C5-3 partly (the rest carried, 12.8) |
 
 ### 12.8 Hand-off
 
-**In flight:** C10 (PR open, 26 Nov). Merged: C1 #412, C2 #416, C3 #414, C4 #417, C5 #418, C6 VR #105.
+**In flight:** C10 (#420, open, 26 Nov). Merged: C1 #412, C2 #416, C3 #414, C4 #417, C5 #418, C6 VR #105.
 
 **Next:** C7 (VR), and C10's merge. C0 still waits for the owner's Phase B device checks; after C10 the Flutter chain has
 only C0 and the follow-up after the Phase C device checks left (with C4-7, C5-1, C5-2 and the C10-n nits below).
