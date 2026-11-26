@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import '../api/document_api_client.dart' show AssemblyOccurrenceInstanceDto;
+import '../api/document_api_client.dart' show AssemblyOccurrenceInstanceDto, BodyMeshDto;
 import 'selection_hit_test.dart' show SelectionEntityRef;
 
 /// C4 (#12): what hovering a tree row lights in the viewport, separate from the Select Other override ([PartViewport.highlightOverride] dims
@@ -33,6 +33,25 @@ Set<String> shownInstanceKeys(Set<String> keys, List<AssemblyOccurrenceInstanceD
       if (i.hidden) i.occurrencePath.join('/'),
   };
   return hidden.isEmpty ? keys : keys.difference(hidden);
+}
+
+/// C10 (C4-3): whether the bodies a tree hover lights changed between two lists of the viewport's bodies. The host hands over a fresh list
+/// on every rebuild, holding the same body objects: only a body the hover's entities name that is another object (or is gone, or came) counts.
+/// A hover of placed instances alone lights no body of this list.
+bool treeHoverBodiesChanged(ViewportTreeHover hover, List<BodyMeshDto> before, List<BodyMeshDto> after) {
+  if (identical(before, after) || hover.entities.isEmpty) return false;
+  BodyMeshDto? find(List<BodyMeshDto> list, String id) {
+    for (final b in list) {
+      if (b.bodyId == id) return b;
+    }
+    return null;
+  }
+
+  for (final e in hover.entities) {
+    if (e.bodyId.isEmpty) continue;
+    if (!identical(find(before, e.bodyId), find(after, e.bodyId))) return true;
+  }
+  return false;
 }
 
 /// C4 (#12): passes a value on at most once per [window], the newest one last, so a pointer moving over the viewport does not rebuild the

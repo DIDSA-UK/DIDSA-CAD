@@ -1,4 +1,5 @@
 import 'package:flutter/gestures.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_ui/material_ui.dart';
@@ -736,6 +737,36 @@ void main() {
       expect(find.byKey(const ValueKey('tree-focus-to-edit')), findsNothing);
     });
 
+    testWidgets('C2-5: on a narrow pane the strip puts its button under the note, which is not cut short', (tester) async {
+      final model = withFolders()..setOpen('#mates', true);
+      Widget view(double width) => _host(
+          Align(
+            alignment: Alignment.topLeft,
+            child: SizedBox(
+              width: width,
+              child: AssemblyTreeView(
+                model: model,
+                docked: true,
+                itemOtherLevel: (r) => r.itemId == null ? null : 'Sub-assembly',
+                onItemFocusToEdit: (_) {},
+              ),
+            ),
+          ),
+          layout: LayoutPreference.desktop);
+      await tester.pumpWidget(view(300));
+      await tester.tap(_row('#mates#item:m1'));
+      await tester.pump();
+      final note = find.byKey(const ValueKey('tree-focus-to-edit-note'));
+      expect(tester.renderObject<RenderParagraph>(note).didExceedMaxLines, isFalse, reason: 'the whole note shows');
+      expect(tester.getTopLeft(find.byKey(const ValueKey('tree-focus-to-edit'))).dy, greaterThan(tester.getTopLeft(note).dy),
+          reason: 'the button is under the note');
+      // A wide pane keeps one line, the button beside it.
+      await tester.pumpWidget(view(800));
+      await tester.pump();
+      expect(tester.getCenter(find.byKey(const ValueKey('tree-focus-to-edit'))).dy, closeTo(tester.getCenter(note).dy, 4));
+      expect(tester.renderObject<RenderParagraph>(note).didExceedMaxLines, isFalse);
+    });
+
     testWidgets('a desktop row has the note after the label, on one line', (tester) async {
       final model = withFolders()..setOpen('#mates', true);
       await tester.pumpWidget(_host(AssemblyTreeView(model: model), layout: LayoutPreference.desktop));
@@ -767,6 +798,49 @@ void main() {
       expect(fill(), Colors.transparent);
       // The other mate never pulses.
       expect(tester.widget<Material>(find.descendant(of: _row('#mates#item:m2'), matching: find.byType(Material)).first).color, Colors.transparent);
+    });
+
+    testWidgets("C2-1: a flash in a nested level's Mates folder opens that folder and the rows down to it; only its rows pulse", (tester) async {
+      final model = AssemblyTreeModel(
+        tree: AssemblyTreeResponseDto.fromJson({
+          'part_id': 'root',
+          'part_name': 'Root',
+          'kind': 'assembly',
+          'mates': {'count': 1, 'broken': 1},
+          'children': [
+            {
+              ..._node('a', ['a'], name: 'Arm'),
+              'kind': 'assembly',
+              'mates': {'count': 1, 'broken': 1},
+              'children': [_node('x', ['a', 'x'], name: 'X')],
+            },
+          ],
+        }),
+      );
+      // The same mate id at the root and in Arm (ids are a level's own): only Arm's pulses.
+      model.setFolderItems('#mates', const [AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1', status: 'broken')]);
+      model.setFolderItems('a#mates', const [AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1', status: 'broken')]);
+      model.setOpen('#mates', true);
+      Widget view(int token) =>
+          _host(AssemblyTreeView(model: model, flashItemIds: const {'m1'}, flashToken: token, flashFolderKey: 'a#mates'));
+      await tester.pumpWidget(view(0));
+      expect(model.isOpen('a'), isFalse);
+      await tester.pumpWidget(view(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(model.isOpen('a'), isTrue, reason: 'the level above the folder opens');
+      expect(model.isOpen('a#mates'), isTrue, reason: "the level's own folder opens, not the root's");
+      expect(_row('a#mates#item:m1'), findsOneWidget);
+      Color? fill(String key) => tester.widget<Material>(find.descendant(of: _row(key), matching: find.byType(Material)).first).color;
+      var nestedTinted = false;
+      var rootTinted = false;
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+        if ((fill('a#mates#item:m1')?.a ?? 0) > 0) nestedTinted = true;
+        if ((fill('#mates#item:m1')?.a ?? 0) > 0) rootTinted = true;
+      }
+      expect(nestedTinted, isTrue);
+      expect(rootTinted, isFalse, reason: "the root's mate of the same id is not the one the edit broke");
     });
 
     testWidgets('a status line shows under the header, and nothing when empty', (tester) async {

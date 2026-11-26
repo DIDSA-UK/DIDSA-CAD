@@ -722,6 +722,47 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
+    testWidgets('C4-4: a tree hover set before the scene exists lights once the scene is made', (tester) async {
+      final key = GlobalKey<PartViewportState>();
+      final hover = ValueNotifier<ViewportTreeHover?>(const ViewportTreeHover(instanceKeys: {'occ-1'}));
+      Future<bool> pump({required bool hidden}) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: SizedBox(
+                width: 400,
+                height: 400,
+                child: PartViewport(
+                  key: key,
+                  bodies: const [],
+                  selectedPlane: null,
+                  onPlaneTap: (_) {},
+                  onBackgroundTap: () {},
+                  renderMode: ViewportRenderMode.shaded,
+                  assemblyGeometry: [childGeometry],
+                  assemblyInstances: [
+                    AssemblyOccurrenceInstanceDto(occurrencePath: const ['occ-1'], partId: 'child', worldTransform: at(0), hidden: hidden),
+                  ],
+                  treeHover: hover,
+                ),
+              ),
+            ),
+          ),
+        );
+        final ready = await _pumpUntil(tester, () => gpuSpinnerGone(), maxPumps: 300);
+        await tester.pump();
+        return ready;
+      }
+
+      if (!await pump(hidden: false)) {
+        markTestSkipped('PartViewport GPU/Impeller setup did not complete - no real GPU backend in this sandbox');
+        return;
+      }
+      // The hover was there before the scene: no new value came, the scene's creation applied it.
+      expect(key.currentState!.debugTreeHoverNodeCount, 1);
+      expect(tester.takeException(), isNull);
+    });
+
     group('selected component highlight follows the component', () {
       final selection = {const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'occ-1')};
 

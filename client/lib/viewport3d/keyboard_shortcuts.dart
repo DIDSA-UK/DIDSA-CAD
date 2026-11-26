@@ -94,7 +94,8 @@ SingleActivator _key(LogicalKeyboardKey key, {bool control = false, bool shift =
 
 final Map<CadShortcut, CadShortcutInfo> kCadShortcuts = {
   CadShortcut.cancel: CadShortcutInfo(
-    label: 'Cancel the tool, or clear the selection',
+    // C10 (C5-3): with the tree flyout open over a tool, the first Esc closes the flyout, the next cancels the tool.
+    label: 'Cancel the tool (an open tree flyout closes first), or clear the selection',
     keys: 'Esc',
     group: _general,
     activators: [_key(LogicalKeyboardKey.escape)],

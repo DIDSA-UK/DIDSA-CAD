@@ -29,6 +29,7 @@ class SketchFeatureTree extends StatefulWidget {
     this.lockedReason = 'Exit the sketch first',
     this.onToggleVisibility,
     this.onFeaturesRequested,
+    this.onFolderItemsRequested,
     this.docked = false,
   });
 
@@ -61,6 +62,10 @@ class SketchFeatureTree extends StatefulWidget {
   /// takes them from there (B3). Returns whether they were read; when not, the row asks again the next time it is opened. Asked only while
   /// [fetchedFrom] has this tree's root (its paths name the same rows then). Null leaves such a row without its features.
   final Future<bool> Function(List<String> path)? onFeaturesRequested;
+
+  /// C10 (C2-5): a Mates or Patterns folder opened here asks the Part screen to read that level's items (into its own model, which this tree
+  /// copies, as [onFeaturesRequested]); false when that model has no such folder (then the folder asks again when it is opened again).
+  final bool Function(String folderKey)? onFolderItemsRequested;
 
   /// The desktop left pane (it fills it); otherwise the tree floats over the viewport with a resize handle on its right edge.
   final bool docked;
@@ -190,6 +195,12 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
   }
 
   /// The picker the rows follow: the lock, or Convert Entities' picks (spec section 13's convert pick).
+  void _onFolderItemsRequested(String folderKey) {
+    final ask = widget.onFolderItemsRequested;
+    // Only for a source of this tree's root: another root's folder keys name other rows.
+    if (ask == null || _source == null || !ask(folderKey)) _controller.forgetFolderRequest(folderKey);
+  }
+
   void _syncPicker(TreeConvertPick? convert) {
     String sorted(Iterable<String> ids) => (ids.toList()..sort()).join(',');
     final signature = convert == null
@@ -228,6 +239,7 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
           title: 'Build Tree',
           onClose: widget.onClose,
           onFeaturesRequested: _onFeaturesRequested,
+          onFolderItemsRequested: _onFolderItemsRequested,
           onRowPick: (row) => _onPick(row, convert),
           onVisibilityToggle: toggle == null
               ? null

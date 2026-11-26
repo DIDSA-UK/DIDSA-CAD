@@ -38,6 +38,7 @@ import 'package:didsa_cad_client/viewport3d/selection_list_drawer.dart';
 import 'package:didsa_cad_client/viewport3d/view_preferences.dart';
 import 'package:didsa_cad_client/viewport3d/assembly_context_strip.dart';
 import 'package:didsa_cad_client/viewport3d/extrude_panel.dart';
+import 'package:didsa_cad_client/viewport3d/keyboard_shortcuts.dart';
 import 'package:didsa_cad_client/viewport3d/sketch_feature_tree.dart';
 import 'package:didsa_cad_client/viewport3d/feature_picker_sheet.dart' show kFeatureGroups;
 import 'package:didsa_cad_client/viewport3d/controls_preferences.dart';
@@ -155,6 +156,9 @@ class _FakeDocumentBackend {
 
   /// C2 review: Parts whose `GET .../mates` answers 500, and how many of `part-1`'s next occurrence lists answer 500.
   final Set<String> failMatesFor = {};
+
+  /// C10 (C2-4): Parts whose `GET .../component-patterns` answers 500.
+  final Set<String> failPatternsFor = {};
   int failOccurrencesGets = 0;
 
   /// Every request that is not a GET, in order (so a test can check that nothing was written).
@@ -195,6 +199,9 @@ class _FakeDocumentBackend {
 
   /// Parts whose `GET .../features` answers 200 with a body that is not JSON.
   final Set<String> badFeaturesFor = {};
+
+  /// C10 (C2-2): Parts whose `GET .../occurrences` answers 500 (a level's load that fails).
+  final Set<String> failOccurrencesFor = {};
 
   Map<String, dynamic> _visibilityFields(String partId) => {
         'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
@@ -635,6 +642,10 @@ class _FakeDocumentBackend {
         request.url.queryParameters['tier'] != 'coarse') {
       return http.Response('<html>proxy error</html>', 200);
     }
+    final failOccurrencesMatch = RegExp(r'^/document/parts/([^/]+)/occurrences$').firstMatch(path);
+    if (failOccurrencesMatch != null && method == 'GET' && failOccurrencesFor.contains(failOccurrencesMatch.group(1))) {
+      return _json({'detail': 'The components could not be read'}, 500);
+    }
     final failFeaturesMatch = RegExp(r'^/document/parts/([^/]+)/features$').firstMatch(path);
     if (failFeaturesMatch != null && method == 'GET' && badFeaturesFor.contains(failFeaturesMatch.group(1))) {
       return http.Response('<html>proxy error</html>', 200);
@@ -882,10 +893,12 @@ class _FakeDocumentBackend {
     }
 
     final extrudePatchMatch =
-        RegExp(r'^/document/parts/part-1/extrude-features/([^/]+)$').firstMatch(path);
+        RegExp(r'^/document/parts/([^/]+)/extrude-features/([^/]+)$').firstMatch(path);
     if (extrudePatchMatch != null && method == 'PATCH') {
-      final featureId = extrudePatchMatch.group(1);
-      final feature = features.firstWhere((f) => f['id'] == featureId, orElse: () => {});
+      // C10: any Part's extrude (an Edit in context PATCHes a nested Part's).
+      final partFeatures = extrudePatchMatch.group(1) == 'part-1' ? features : extraPartFeatures[extrudePatchMatch.group(1)] ?? [];
+      final featureId = extrudePatchMatch.group(2);
+      final feature = partFeatures.firstWhere((f) => f['id'] == featureId, orElse: () => {});
       if (feature.isEmpty) return http.Response('not found: feature', 404);
       if (body.containsKey('extrude_type')) feature['extrude_type'] = body['extrude_type'];
       if (body.containsKey('start_distance')) feature['start_distance'] = body['start_distance'];
@@ -1100,6 +1113,7 @@ class _FakeDocumentBackend {
     final patternsGetMatch = RegExp(r'^/document/parts/([^/]+)/component-patterns$').firstMatch(path);
     if (patternsGetMatch != null && method == 'GET') {
       final listed = patternsGetMatch.group(1)!;
+      if (failPatternsFor.contains(listed)) return http.Response('boom', 500);
       return _json(listed == 'part-1' ? componentPatterns : (subPatterns[listed] ?? <dynamic>[]), 200);
     }
     if (patternsGetMatch != null && method == 'POST') {
@@ -10113,6 +10127,18 @@ void main() {
         expect(tester.takeException(), isNull);
       });
 
+      testWidgets("C5-3: the open flyout sits just right of the docked panel, whose width it assumes; the shortcut sheet's Esc says so",
+          (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        // The flyout's left edge follows kDesktopToolPanelWidth: every docked frame (ResizableToolPanel, BottomToolPanelFrame) is that wide.
+        expect(tester.getTopLeft(flyout).dx, tester.getTopRight(find.byKey(const ValueKey('docked-tool-panel'))).dx + 12);
+        expect(kCadShortcuts[CadShortcut.cancel]!.label, contains('tree flyout closes first'));
+      });
+
       testWidgets('Esc closes the flyout and keeps the tool; a second Esc cancels the tool', (tester) async {
         bigWindow(tester);
         await pumpScreen(tester, layout: desktop());
@@ -14516,6 +14542,146 @@ void main() {
           expect(find.byKey(const ValueKey('edit-alone-pill')), findsOneWidget, reason: 'still in Edit Alone');
           expect(backend.meshRequestsByPartId['d1-part']!.map((r) => r['rollback_excluded_feature_ids']), contains('d1-plane'));
         });
+
+        // C10 (C3-1, C3-2; owner, 25 Nov: answers 11 and 12): after an edit panel closes the edited feature's row is still selected, and a
+        // Cancel or a Confirm that changed nothing leaves no unsaved mark.
+        group('after the panel closes (C10: C3-1, C3-2)', () {
+          void phone(WidgetTester tester) {
+            tester.view.physicalSize = const Size(390, 844);
+            tester.view.devicePixelRatio = 1;
+            addTearDown(tester.view.reset);
+          }
+
+          /// Edit in context on d1's extrude: from a double-click on desktop, from the selected row's bar on a phone.
+          Future<_FakeDocumentBackend> editInContext(WidgetTester tester, {required bool desktopLayout, bool viaMenu = false}) async {
+            final backend = await openDeep(tester, layout: desktopLayout ? desktop() : null);
+            const key = 'asm-1/c1/d1#feature:d1-extrude';
+            if (desktopLayout) {
+              await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+              await doubleClick(tester, featureRow(key));
+            } else {
+              tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+                const SelectionEntityRef(kind: SelectionEntityKind.component, occurrenceId: 'asm-1/c1/d1'),
+              );
+              await settle(tester);
+              await openDownTo(tester, ['asm-1', 'c1', 'd1']);
+              final probe = _TreeProbe(tester);
+              if (viaMenu) {
+                // The row's menu (the overlay tree of a phone on its side is slid away while closed: called, not tapped).
+                await probe.menuFeature(tester, key);
+              } else {
+                probe.model.selectedKey = key;
+                await probe.tapRow(key);
+                probe.view.controller!.refresh();
+                await settle(tester);
+                await tester.tap(find.byKey(const ValueKey('tree-bar-edit-in-context')));
+              }
+            }
+            await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+            await settle(tester);
+            return backend;
+          }
+
+          Future<void> closePanel(WidgetTester tester, String button) async {
+            // The panel's own buttons, called (a tap on the phone's Cancel misses in this test's layout).
+            final panel = tester.widget<ExtrudePanel>(find.byType(ExtrudePanel));
+            (button == 'Cancel' ? panel.onCancel : panel.onConfirm)();
+            for (var i = 0; i < 4; i++) {
+              await settle(tester);
+            }
+            expect(find.byType(ExtrudePanel), findsNothing);
+          }
+
+          Set<String> unsaved(WidgetTester tester) => _TreeProbe(tester).model.unsavedPartIds;
+
+          /// The toolbar's unsaved indicator (the phone's toolbar; the desktop layout has its own menu bar), else the model's dots.
+          bool toolbarUnsaved(WidgetTester tester) {
+            final bars = find.byType(PartToolbar);
+            if (bars.evaluate().isEmpty) return _TreeProbe(tester).model.unsavedPartIds.isNotEmpty;
+            return tester.widget<PartToolbar>(bars).hasUnsavedChanges;
+          }
+
+          for (final desktopLayout in [true, false]) {
+            final where = desktopLayout ? 'desktop' : '390 x 844';
+            for (final button in ['Cancel', 'Confirm']) {
+              testWidgets('$where: Edit in context, then $button: the feature is still selected, and nothing is marked unsaved', (tester) async {
+                if (!desktopLayout) phone(tester);
+                await editInContext(tester, desktopLayout: desktopLayout);
+                await closePanel(tester, button);
+                expect(_TreeProbe(tester).model.liveKey, 'asm-1/c1/d1');
+                expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude', reason: 'C3-1: the edited feature stays selected');
+                expect(unsaved(tester), isEmpty, reason: 'C3-2: nothing changed, nothing flagged (the part nor its ancestors)');
+                expect(toolbarUnsaved(tester), isFalse);
+                expect(tester.takeException(), isNull);
+              });
+            }
+
+            testWidgets('$where: Edit on a live row, then Cancel: the feature is still selected, nothing marked unsaved', (tester) async {
+              if (!desktopLayout) phone(tester);
+              await editInContext(tester, desktopLayout: desktopLayout);
+              await closePanel(tester, 'Cancel');
+              // The part is live now: its feature row's own Edit (the live way in).
+              const key = 'asm-1/c1/d1#feature:d1-extrude';
+              final probe = _TreeProbe(tester);
+              final row = probe.model.visibleRows().firstWhere((r) => r.key == key);
+              expect(row.live, isTrue);
+              probe.view.onRowEdit!(row);
+              await _pumpUntil(tester, () => find.byType(ExtrudePanel).evaluate().isNotEmpty);
+              await settle(tester);
+              await closePanel(tester, 'Cancel');
+              expect(_TreeProbe(tester).model.selectedKey, key);
+              expect(unsaved(tester), isEmpty);
+              expect(tester.takeException(), isNull);
+            });
+          }
+
+          for (final size in [const Size(390, 844), const Size(844, 390)]) {
+            testWidgets(
+                '${size.width.toInt()} x ${size.height.toInt()}: a pick made while the panel is open does not take the selection away once it closes',
+                (tester) async {
+              tester.view.physicalSize = size;
+              tester.view.devicePixelRatio = 1;
+              addTearDown(tester.view.reset);
+              await editInContext(tester, desktopLayout: false, viaMenu: size.width > size.height);
+              expect(find.byType(ExtrudePanel), findsOneWidget);
+              // A body picked in the viewport while the panel is open (a panel that collects picks changes the host's selection).
+              tester.widget<PartViewport>(find.byType(PartViewport)).onSelectionToggle!(
+                const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'placeholder-d1-part'),
+              );
+              await settle(tester);
+              await closePanel(tester, 'Cancel');
+              expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude');
+            });
+          }
+
+          testWidgets('a real edit, confirmed, still marks the part and its ancestors unsaved', (tester) async {
+            phone(tester);
+            final backend = await editInContext(tester, desktopLayout: false);
+            tester
+                .widget<ExtrudePanel>(find.byType(ExtrudePanel))
+                .onChanged(ExtrudeType.boss, 0.0, 25.0, null, ThicknessDirection.outward, null, true);
+            await tester.pump(const Duration(milliseconds: 600));
+            await settle(tester);
+            await closePanel(tester, 'Confirm');
+            expect(backend.extraPartFeatures['d1-part']!.firstWhere((f) => f['id'] == 'd1-extrude')['end_distance'], 25.0);
+            expect(unsaved(tester), contains('d1-part'));
+            expect(toolbarUnsaved(tester), isTrue);
+            expect(_TreeProbe(tester).unsavedRowKeys, contains('asm-1/c1/d1'), reason: "the part's row has the unsaved dot");
+            expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude');
+          });
+
+          testWidgets('a real edit, then Cancel: nothing is marked unsaved (the feature is back as it was)', (tester) async {
+            final backend = await editInContext(tester, desktopLayout: true);
+            tester
+                .widget<ExtrudePanel>(find.byType(ExtrudePanel))
+                .onChanged(ExtrudeType.boss, 0.0, 25.0, null, ThicknessDirection.outward, null, true);
+            await tester.pump(const Duration(milliseconds: 600));
+            await settle(tester);
+            await closePanel(tester, 'Cancel');
+            expect(backend.extraPartFeatures['d1-part']!.firstWhere((f) => f['id'] == 'd1-extrude')['end_distance'], 10.0);
+            expect(unsaved(tester), isEmpty);
+          });
+        });
       });
     });
 
@@ -14544,12 +14710,15 @@ void main() {
       /// The nested document with mates in `sub` (placed twice, asm-1 and asm-2): m1 (broken) between c1 and c2, m2 (ok) on c2 alone; and one
       /// root mate, rm1, on the plate.
       Future<_FakeDocumentBackend> openWithLevelMates(WidgetTester tester,
-          {LayoutModeController? layout, Future<void> Function(http.Request request)? around}) {
+          {LayoutModeController? layout,
+          Future<void> Function(http.Request request)? around,
+          void Function(_FakeDocumentBackend backend)? configure}) {
         return openNested(tester, layout: layout, around: around, configure: (b) {
           b.subMates = {
             'sub': [levelMate('m1', ['c1', 'c2'], status: 'broken'), levelMate('m2', ['c2'])],
           };
           b.mates.add(levelMate('rm1', ['plate']));
+          configure?.call(b);
         });
       }
 
@@ -14684,6 +14853,44 @@ void main() {
         expect(_TreeProbe(tester).model.folderItems('asm-1#mates').map((i) => i.id), ['m1', 'm2'], reason: 'the folder is not left empty');
       });
 
+      testWidgets('C2-4: the banner names the list that failed, beside what it already said', (tester) async {
+        final backend = await openWithLevelMates(tester, layout: desktop());
+        backend.failPatternsFor.add('sub');
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        await settle(tester);
+        expect(find.textContaining('The patterns of '), findsOneWidget, reason: 'only the patterns failed');
+        expect(find.textContaining('The mates and patterns'), findsNothing);
+        expect(find.textContaining('The mates of '), findsNothing);
+      });
+
+      testWidgets('C2-4: a second level failing is added to the banner, not dropped', (tester) async {
+        final backend = await openWithLevelMates(tester, layout: desktop(), configure: (b) {
+          b.subOccurrences = {
+            'sub': [occ('c1', part: 'deep', ref: 'parts/deep.didsa'), occ('c2')],
+            'deep': [occ('d1'), occ('d2')],
+          };
+          b.extraAssemblyInstances = [
+            for (final a in ['asm-1', 'asm-2']) ...[
+              instance([a, 'c1', 'd1']),
+              instance([a, 'c1', 'd2']),
+              instance([a, 'c2'])
+            ],
+          ];
+          b.subMates['deep'] = [
+            levelMate('dm1', ['d1', 'd2'])
+          ];
+        });
+        backend.failMatesFor.add('sub');
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        await settle(tester);
+        backend.failMatesFor.add('deep');
+        await open(tester, ['asm-1/c1', 'asm-1/c1#mates']);
+        await settle(tester);
+        expect(find.textContaining('The mates of '), findsOneWidget);
+        final banner = tester.widget<Text>(find.textContaining('The mates of ')).data!;
+        expect(banner.split('\n'), hasLength(2), reason: 'both levels named, the earlier one kept: $banner');
+      });
+
       testWidgets('review: a level whose mates cannot be read says so once and is not read again on every rebuild', (tester) async {
         final backend = await openWithLevelMates(tester, layout: desktop());
         backend.failMatesFor.add('sub');
@@ -14745,6 +14952,43 @@ void main() {
         await tester.pump(const Duration(milliseconds: 400));
         expect(find.text('Delete'), findsWidgets);
         expect(find.text('Focus here to edit'), findsNothing);
+      });
+
+      testWidgets('C2-2: Focus here to edit whose level fails to load says so in the banner, and nothing escapes', (tester) async {
+        final backend = await openWithLevelMates(tester, layout: desktop());
+        await open(tester, ['asm-1', 'asm-1#mates']);
+        await _TreeProbe(tester).tapRow('asm-1#mates#item:m1');
+        await settle(tester);
+        backend.failOccurrencesFor.add('sub');
+        await tester.tap(find.byKey(const ValueKey('tree-focus-to-edit')));
+        await _pumpUntil(tester, () => focused(tester).join('/') == 'asm-1');
+        await settle(tester);
+        await settle(tester);
+        expect(tester.takeException(), isNull, reason: 'the failure does not escape the unawaited call');
+        expect(find.textContaining('The components could not be read'), findsOneWidget, reason: 'the banner says why the level is not shown');
+      });
+
+      testWidgets('C2-3: with a focus, the nested drawer is only for components below the focused level', (tester) async {
+        await openWithLevelMates(tester, layout: desktop());
+        await _TreeProbe(tester).menuAction('asm-1', 'Make Focus');
+        await _pumpUntil(tester, () => focused(tester).join('/') == 'asm-1');
+        await settle(tester);
+        await open(tester, ['asm-2']);
+        final drawer = find.byKey(const ValueKey('nested-component-drawer'));
+        // A row outside the focus: B5's Focus here strip, no drawer.
+        await _TreeProbe(tester).tapRow('asm-2/c1');
+        await settle(tester);
+        expect(drawer, findsNothing, reason: 'outside the focus');
+        // The focused row itself.
+        await _TreeProbe(tester).tapRow('asm-1');
+        await settle(tester);
+        expect(drawer, findsNothing, reason: 'the focused row is the level, not a component below it');
+        // A component of the focused level: the drawer's own (first) form, not the nested one.
+        await open(tester, ['asm-1']);
+        await _TreeProbe(tester).tapRow('asm-1/c1');
+        await settle(tester);
+        expect(drawer, findsNothing);
+        expect(find.byType(AssemblyComponentSelectionDrawer), findsOneWidget, reason: "the focused level's component has its own drawer");
       });
 
       testWidgets("the drawer lists the selected nested component's mates; a tap selects one and reveals its row", (tester) async {
@@ -14935,6 +15179,53 @@ void main() {
         await settle(tester);
         probe.view.onRowHover!(rowOf(tester, 'asm-2/c1'));
         expect(lit(tester), {'asm-2/c1'});
+      });
+
+      testWidgets("C4-6: the Colour column draws the colour the viewport shows, an appearance resolved from a rule included", (tester) async {
+        await ViewPreferences.setAssemblyTreeColourColumn(true);
+        await openNested(tester, layout: desktop(), configure: (b) {
+          b.extraAssemblyInstances = [
+            for (final a in ['asm-1', 'asm-2'])
+              for (final c in ['c1', 'c2'])
+                {
+                  ...instance([a, c]),
+                  // A set or rule painted asm-2's c1 (the occurrence itself has no colour of its own).
+                  if (a == 'asm-2' && c == 'c1') 'appearance': {'colour': '#00FF00'},
+                },
+          ];
+        });
+        await openKeys(tester, const ['asm-1', 'asm-2']);
+        BoxDecoration deco(String key) => tester.widget<Container>(find.byKey(ValueKey('tree-colour:$key'))).decoration! as BoxDecoration;
+        expect(deco('asm-2/c1').color, const Color(0xFF00FF00));
+        expect(deco('asm-1/c1').color, isNull, reason: 'the same part in the other placement is not painted');
+        await ViewPreferences.setAssemblyTreeColourColumn(false);
+      });
+
+      testWidgets('C4-2: a tool that starts while a row is lit (the pointer resting) takes the light back', (tester) async {
+        await openBoth(tester);
+        final probe = _TreeProbe(tester);
+        probe.view.onRowHover!(rowOf(tester, 'asm-2/c1'));
+        expect(lit(tester), {'asm-2/c1'});
+        // Measure starts from the ribbon (as from a shortcut, the tree's pointer has not moved): no enter comes to gate the light.
+        // (Called, not tapped: a tap on the tab misses in this test's window, the hit test warns.)
+        (tester.widget(find.byKey(const ValueKey('ribbon-tab-evaluate'))) as dynamic).onTap();
+        await settle(tester);
+        tester.widget<InkWell>(find.byKey(const ValueKey('ribbon-Measure'))).onTap!();
+        await settle(tester);
+        expect(viewport(tester).treeHover?.value, isNull);
+      });
+
+      testWidgets("C4-2: the viewport hover's row follows a change of the tree's root (Edit Alone) with the pointer resting", (tester) async {
+        await openBoth(tester);
+        viewport(tester).onHoverOccurrenceChanged!('asm-1/c1');
+        await tester.pump();
+        expect(find.byKey(const ValueKey('tree-viewport-hover:asm-1/c1')), findsOneWidget);
+        await _TreeProbe(tester).menuAction('asm-1', 'Edit Alone');
+        await settle(tester);
+        await settle(tester);
+        expect(_TreeProbe(tester).model.tree?.partId, 'sub');
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(find.byKey(const ValueKey('tree-viewport-hover:c1')), findsOneWidget, reason: "the same part, at its path under the new root");
       });
 
       testWidgets('a screen closed while the mouse rests on a row takes its light back without an error', (tester) async {

@@ -169,6 +169,19 @@ void main() {
       expect(tapped, ['a']);
     });
 
+    testWidgets("C4-6: the disc draws the colour the host resolves (a set or rule), else the placement's own", (tester) async {
+      await ViewPreferences.setAssemblyTreeColourColumn(true);
+      await tester.pumpWidget(_host(AssemblyTreeView(
+        model: _model(),
+        docked: true,
+        onRowColourTap: (_) {},
+        resolvedColour: (path) => path.join('/') == 'b' ? '#00FF00' : null,
+      )));
+      BoxDecoration deco(String key) => tester.widget<Container>(_key('tree-colour:$key')).decoration! as BoxDecoration;
+      expect(deco('b').color, const Color(0xFF00FF00), reason: 'resolved by the host (b has no colour of its own)');
+      expect(deco('a').color, const Color(0xFFFF0000), reason: 'nothing resolved: its own colour');
+    });
+
     testWidgets('DOF: the number from the constraint, empty while the status loads', (tester) async {
       await ViewPreferences.setAssemblyTreeDofColumn(true);
       await tester.pumpWidget(_host(AssemblyTreeView(model: _model(), docked: true)));
@@ -197,6 +210,22 @@ void main() {
       await mouse.moveTo(Offset.zero);
       await tester.pump();
       expect(reported, ['a', 'b', null]);
+    });
+
+    testWidgets('C4-1: the same row left and entered again within a frame (rebuilt under the pointer) keeps its light', (tester) async {
+      final reported = <String?>[];
+      await tester.pumpWidget(_host(AssemblyTreeView(model: _model(), docked: true, onRowHover: (r) => reported.add(r?.key))));
+      // The row's own hover callback, as a remount calls it: an exit, then an enter of the same row before the microtask runs.
+      dynamic rowWidget() => tester.widget(_row('a'));
+      rowWidget().onHover(true);
+      expect(reported, ['a']);
+      rowWidget().onHover(false);
+      rowWidget().onHover(true);
+      await tester.pump();
+      expect(reported, ['a'], reason: 'no "none" in between, nothing reported again');
+      rowWidget().onHover(false);
+      await tester.pump();
+      expect(reported, ['a', null], reason: 'a real exit still reports');
     });
 
     testWidgets('a row that leaves the list under the pointer takes its light back', (tester) async {
@@ -337,6 +366,34 @@ void main() {
       expect(shownInstanceKeys({'a', 's/c', 's/d'}, instances), {'a', 's/d'});
       final same = {'a'};
       expect(identical(shownInstanceKeys(same, [at(['a'])]), same), isTrue, reason: 'nothing hidden: no copy');
+    });
+
+    test('C4-3: treeHoverBodiesChanged counts only the bodies the hover lights, not a new list of the same bodies', () {
+      BodyMeshDto body(String id) => BodyMeshDto(
+            bodyId: id,
+            source: 'computed',
+            mesh: MeshDto(vertices: const [
+              [0, 0, 0],
+              [1, 0, 0],
+              [0, 1, 0],
+            ], normals: const [
+              [0, 0, 1],
+              [0, 0, 1],
+              [0, 0, 1],
+            ], triangleIndices: const [
+              [0, 1, 2],
+            ]),
+          );
+      final x = body('x');
+      final y = body('y');
+      final lightsX = ViewportTreeHover(entities: {const SelectionEntityRef(kind: SelectionEntityKind.body, bodyId: 'x')});
+      final before = [x, y];
+      expect(treeHoverBodiesChanged(lightsX, before, [x, y]), isFalse, reason: 'a fresh list of the same bodies');
+      expect(treeHoverBodiesChanged(lightsX, before, [x, body('y')]), isFalse, reason: 'a body it does not light changed');
+      expect(treeHoverBodiesChanged(lightsX, before, [body('x'), y]), isTrue, reason: 'the lit body is a new one (rebuilt)');
+      expect(treeHoverBodiesChanged(lightsX, before, [y]), isTrue, reason: 'the lit body is gone');
+      expect(treeHoverBodiesChanged(const ViewportTreeHover(instanceKeys: {'bolt/1', 'bolt/2'}), before, [body('x')]), isFalse,
+          reason: 'placed instances light the assembly geometry, not these bodies');
     });
 
     test('ViewportTreeHover compares by what it lights', () {

@@ -2094,6 +2094,8 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
         _syncDrawIndicatorsNode();
         _syncProfileFillNode();
         _syncProfileBranchMarkersNode();
+        // C10 (C4-4): a tree row hovered while the scene was being made.
+        _syncTreeHoverNodes();
       });
     }, onError: (Object error) {
       debugPrint('[PartViewport] Scene.initializeStaticResources() failed: $error');
@@ -2444,7 +2446,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
       if (widget.assemblyGeometry != oldWidget.assemblyGeometry ||
           (hover.instanceKeys.isNotEmpty &&
               occurrenceInstanceTransformsDiffer(hover.instanceKeys, oldWidget.assemblyInstances, widget.assemblyInstances)) ||
-          widget.bodies != oldWidget.bodies) {
+          // C10 (C4-3): only the bodies the hover lights, not a new list of the same bodies (the host builds one on every rebuild).
+          treeHoverBodiesChanged(hover, oldWidget.bodies, widget.bodies) ||
+          widget.bodiesHidden != oldWidget.bodiesHidden) {
         setState(_syncTreeHoverNodes);
       }
     }
@@ -5552,6 +5556,9 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _onPointerHover(PointerHoverEvent event) {
     InputDebug.note('hover', event, navPointer: _mouseNavPointer);
+    // C10 (C4-5): a hover event here means the pointer is over the viewport, whether or not the MouseRegion saw it enter (a stylus can hover
+    // without one), so the part under it is reported.
+    _pointerOverViewport = true;
     _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
     if (widget.selectionMode) {
@@ -6862,7 +6869,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
   /// hover draws it. Only lights: no dimming, no selection, no always-on-top (a lit part behind another stays behind it).
   void _syncTreeHoverNodes() {
     final scene = _scene;
-    if (scene == null) return;
+    // C10 (C4-4): the list is cleared even with no scene (its nodes belong to none); a hover set before the scene exists is applied once it
+    // does (the scene's creation syncs this).
+    if (scene == null) {
+      _treeHoverNodes.clear();
+      return;
+    }
     for (final n in _treeHoverNodes) {
       scene.remove(n);
     }
@@ -7715,7 +7727,12 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               ),
             MouseRegion(
               cursor: _viewportMouseCursor,
-              onEnter: (_) => _pointerOverViewport = true,
+              onEnter: (_) {
+                _pointerOverViewport = true;
+                // C10 (C4-5): back over the viewport (a menu that covered it closed, the pointer came back on the same pixel): the part under
+                // it is reported again, as the exit reported none; the next move recomputes the hit as usual.
+                _reportHoverOccurrence();
+              },
               onExit: (_) {
                 _pointerOverViewport = false;
                 // Also fired as the region is torn down with the viewport: nothing to tell then.

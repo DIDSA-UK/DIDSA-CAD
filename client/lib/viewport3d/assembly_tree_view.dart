@@ -129,6 +129,7 @@ class AssemblyTreeView extends StatefulWidget {
     this.onRowHover,
     this.viewportHover,
     this.onRowColourTap,
+    this.resolvedColour,
     this.isMultiSelectMode = false,
     this.selectedKeys = const {},
     this.onMultiSelectToggle,
@@ -148,6 +149,7 @@ class AssemblyTreeView extends StatefulWidget {
     this.statusUnavailable = false,
     this.flashItemIds = const {},
     this.flashToken = 0,
+    this.flashFolderKey = '#mates',
     this.sheetHeight,
     this.onSheetHeightChanged,
     this.selectionBar = true,
@@ -259,6 +261,10 @@ class AssemblyTreeView extends StatefulWidget {
   /// C4 (#15): a click on a row's colour disc (the Colour column). Null leaves the column's discs read-only.
   final void Function(AssemblyTreeRow row)? onRowColourTap;
 
+  /// C10 (C4-6): the colour the placement at a path (from the tree's root) shows, as the Appearance tool resolves it (`#rrggbb`), or null where
+  /// the host knows none; the Colour column then draws the placement's own colour.
+  final String? Function(List<String> path)? resolvedColour;
+
   /// Multi-select (today's behaviour): while on, a tap or long-press on an occurrence row calls [onMultiSelectToggle] and nothing else;
   /// [selectedKeys] are the rows drawn as picked. [multiSelectHeader] replaces the title row while set.
   final bool isMultiSelectMode;
@@ -300,6 +306,10 @@ class AssemblyTreeView extends StatefulWidget {
   /// [flashToken] changes, and the Mates folder opens if it was closed so the pulse is seen. [flashItemIds] are mate ids (`row.itemId`).
   final Set<String> flashItemIds;
   final int flashToken;
+
+  /// C10 (C2-1): the Mates folder [flashItemIds] are in (the level the pattern edit was on: `#mates` for the tree's root, `mast/arm#mates`
+  /// deeper). It opens, with the rows above it, and only its rows pulse.
+  final String flashFolderKey;
 
   @override
   State<AssemblyTreeView> createState() => _AssemblyTreeViewState();
@@ -400,18 +410,24 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   /// The pointer entered or left [row]'s line: reports it to the host once per change.
   void _rowHover(AssemblyTreeRow row, bool inside) {
     if (inside) {
+      // C10 (C4-1): an enter cancels an exit still waiting, the same row's too (a row rebuilt under the pointer exits and enters it again).
+      _hoverExitToken++;
       if (_pointerRowKey == row.key) return;
       _pointerRowKey = row.key;
       widget.onRowHover?.call(row);
     } else if (_pointerRowKey == row.key) {
       // Moving from one row to the next exits the first before it enters the second: the "none" waits a microtask, so the host sees one change.
+      final token = ++_hoverExitToken;
       scheduleMicrotask(() {
-        if (!mounted || _pointerRowKey != row.key) return;
+        if (!mounted || token != _hoverExitToken || _pointerRowKey != row.key) return;
         _pointerRowKey = null;
         widget.onRowHover?.call(null);
       });
     }
   }
+
+  /// The latest row exit waiting to report "none" ([_rowHover]); an enter moves it on, so that exit reports nothing.
+  int _hoverExitToken = 0;
 
   @override
   void didUpdateWidget(AssemblyTreeView old) {
@@ -455,7 +471,16 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       // After this frame: the mate rows may only just have arrived with the refresh that brought the first broken mate.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        widget.model.setOpen('#mates', true);
+        // The folder and the rows down to it (its owner's ancestors and the owner itself), so the pulse is seen.
+        final folder = widget.flashFolderKey;
+        final owner = folder.substring(0, folder.lastIndexOf('#'));
+        if (owner.isNotEmpty) {
+          final parts = owner.split('/');
+          for (var i = 1; i <= parts.length; i++) {
+            widget.model.setOpen(parts.sublist(0, i).join('/'), true);
+          }
+        }
+        widget.model.setOpen(folder, true);
         setState(() {});
         _flash.forward(from: 0);
       });
@@ -1061,7 +1086,10 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     final pin = _sheet && !(widget.sheetHeight == AssemblyTreeSheetHeight.peek && _dragHeight == null) ? _pinIndexFor(rows) : null;
 
     Widget treeRow(AssemblyTreeRow r, {bool pinned = false}) {
-      final flashing = r.kind == AssemblyRowKind.mate && r.itemId != null && widget.flashItemIds.contains(r.itemId);
+      final flashing = r.kind == AssemblyRowKind.mate &&
+          r.itemId != null &&
+          widget.flashItemIds.contains(r.itemId) &&
+          r.key.startsWith('${widget.flashFolderKey}#item:');
       Widget rowWidget(double pulse) => _TreeRow(
             key: ValueKey('tree-row:${r.key}'),
             pulse: pulse,
@@ -1284,7 +1312,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
   ({Color? colour, bool applies}) _colourOf(AssemblyTreeRow r) {
     final p = r.path;
     if (p == null || p.isEmpty || (r.kind != AssemblyRowKind.part && r.kind != AssemblyRowKind.assembly)) return (colour: null, applies: false);
-    final hex = widget.model.nodeAtPath(p)?.color;
+    final hex = widget.resolvedColour?.call(p) ?? widget.model.nodeAtPath(p)?.color;
     Color? colour;
     if (hex != null && RegExp(r'^#[0-9a-fA-F]{6}$').hasMatch(hex)) colour = colorFromHex(hex);
     return (colour: colour, applies: true);
@@ -1590,16 +1618,27 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       color: scheme.tertiaryContainer.withValues(alpha: 0.4),
       child: Padding(
         padding: const EdgeInsets.only(left: 16, right: 4),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text('${row.label} is in $level',
-                  key: const ValueKey('tree-focus-to-edit-note'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13)),
+        // C10 (C2-5): a narrow pane (a desktop pane dragged narrow) puts the button under the note, which then has the whole width and two
+        // lines, so "Coincident 1 is in Sub-assembly" is not cut short beside the button.
+        child: LayoutBuilder(builder: (context, constraints) {
+          final narrow = constraints.maxWidth < 360;
+          final note = Text('${row.label} is in $level',
+              key: const ValueKey('tree-focus-to-edit-note'),
+              maxLines: narrow ? 2 : 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13));
+          final button = TextButton(
+              key: const ValueKey('tree-focus-to-edit'), onPressed: () => widget.onItemFocusToEdit!(row), child: const Text('Focus here to edit'));
+          if (!narrow) return Row(children: [Expanded(child: note), button]);
+          return Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [note, Align(alignment: Alignment.centerRight, child: button)],
             ),
-            TextButton(
-                key: const ValueKey('tree-focus-to-edit'), onPressed: () => widget.onItemFocusToEdit!(row), child: const Text('Focus here to edit')),
-          ],
-        ),
+          );
+        }),
       ),
     );
   }

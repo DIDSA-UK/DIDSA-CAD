@@ -853,6 +853,10 @@ enum BooleanOperation {
 enum PatternMirrorSeedKind { body, feature }
 
 class FeatureDto {
+  /// C10: the backend's answer this was read from (null when built in code), kept whole so a client can tell whether a feature changed
+  /// (every stored value, including those this class does not name).
+  final Map<String, dynamic>? json;
+
   final String type;
   final String id;
   final bool locked;
@@ -1378,6 +1382,7 @@ class FeatureDto {
   final OffsetSourceRefDto? offsetSource;
 
   FeatureDto({
+    this.json,
     required this.type,
     required this.id,
     required this.locked,
@@ -1492,6 +1497,7 @@ class FeatureDto {
   });
 
   factory FeatureDto.fromJson(Map<String, dynamic> json) => FeatureDto(
+        json: json,
         type: json['type'] as String,
         id: json['id'] as String,
         locked: json['locked'] as bool,
