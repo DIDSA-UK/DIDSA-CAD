@@ -2448,7 +2448,11 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
               occurrenceInstanceTransformsDiffer(hover.instanceKeys, oldWidget.assemblyInstances, widget.assemblyInstances)) ||
           // C10 (C4-3): only the bodies the hover lights, not a new list of the same bodies (the host builds one on every rebuild).
           treeHoverBodiesChanged(hover, oldWidget.bodies, widget.bodies) ||
-          widget.bodiesHidden != oldWidget.bodiesHidden) {
+          widget.bodiesHidden != oldWidget.bodiesHidden ||
+          // The lit bodies are drawn where the focused component sits ([_bodyAndTransformFor]).
+          (hover.entities.isNotEmpty && widget.focusWorldTransformMatrix != oldWidget.focusWorldTransformMatrix) ||
+          // An entity of a placed instance (by its occurrence) follows the instances.
+          (hover.entities.any((e) => e.occurrenceId.isNotEmpty) && !identical(widget.assemblyInstances, oldWidget.assemblyInstances))) {
         setState(_syncTreeHoverNodes);
       }
     }
@@ -5556,9 +5560,6 @@ class PartViewportState extends State<PartViewport> with TickerProviderStateMixi
 
   void _onPointerHover(PointerHoverEvent event) {
     InputDebug.note('hover', event, navPointer: _mouseNavPointer);
-    // C10 (C4-5): a hover event here means the pointer is over the viewport, whether or not the MouseRegion saw it enter (a stylus can hover
-    // without one), so the part under it is reported.
-    _pointerOverViewport = true;
     _lastPointerLocal = event.localPosition;
     _noteDeviceKind(event.kind);
     if (widget.selectionMode) {

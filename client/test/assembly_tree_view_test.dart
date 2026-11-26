@@ -843,6 +843,30 @@ void main() {
       expect(rootTinted, isFalse, reason: "the root's mate of the same id is not the one the edit broke");
     });
 
+    testWidgets('C2-1 review: a level inside a group row (grouping on) has its group opened too, so the flash is seen', (tester) async {
+      // Four placements of one sub-assembly group; the second holds the broken mate.
+      final model = AssemblyTreeModel(
+        tree: _tree([
+          for (var i = 1; i <= 4; i++)
+            {
+              ..._node('s$i', ['s$i'], name: 'Arm', kind: 'assembly', children: [_node('x', ['s$i', 'x'])]),
+              'resolved_part_id': 'part-arm',
+              'mates': {'count': 1, 'broken': 1},
+            },
+        ]),
+      );
+      model.setFolderItems('s2#mates', const [AssemblyFolderItem.spec(id: 'm1', label: 'Coincident 1', status: 'broken')]);
+      Widget view(int token) =>
+          _host(AssemblyTreeView(model: model, flashItemIds: const {'m1'}, flashToken: token, flashFolderKey: 's2#mates'));
+      await tester.pumpWidget(view(0));
+      expect(model.visibleRows().any((r) => r.key == 's2'), isFalse, reason: 'inside the closed group row');
+      await tester.pumpWidget(view(1));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(_row('s2#mates#item:m1'), findsOneWidget, reason: 'the group, the level and its folder opened');
+      expect(model.openKeysTouched, isFalse, reason: 'opened for the flash, not as the person chose (nothing stored)');
+    });
+
     testWidgets('a status line shows under the header, and nothing when empty', (tester) async {
       final model = withFolders();
       await tester.pumpWidget(_host(AssemblyTreeView(model: model, statusLine: 'Group: 5 DOF')));

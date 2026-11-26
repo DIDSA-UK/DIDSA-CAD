@@ -471,16 +471,16 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
       // After this frame: the mate rows may only just have arrived with the refresh that brought the first broken mate.
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        // The folder and the rows down to it (its owner's ancestors and the owner itself), so the pulse is seen.
+        // The folder and the rows down to it (each ancestor and any group row on the way, as a reveal opens them; and the owner itself), so
+        // the pulse is seen. The root's folder keeps the old behaviour: the person's own open, as before C10.
         final folder = widget.flashFolderKey;
         final owner = folder.substring(0, folder.lastIndexOf('#'));
-        if (owner.isNotEmpty) {
-          final parts = owner.split('/');
-          for (var i = 1; i <= parts.length; i++) {
-            widget.model.setOpen(parts.sublist(0, i).join('/'), true);
-          }
+        if (owner.isEmpty) {
+          widget.model.setOpen(folder, true);
+        } else {
+          final path = owner.split('/');
+          widget.model.openAll([...widget.model.reveal(path), owner, folder], remember: false);
         }
-        widget.model.setOpen(folder, true);
         setState(() {});
         _flash.forward(from: 0);
       });

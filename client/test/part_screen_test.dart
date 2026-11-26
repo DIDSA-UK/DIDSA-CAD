@@ -203,6 +203,9 @@ class _FakeDocumentBackend {
   /// C10 (C2-2): Parts whose `GET .../occurrences` answers 500 (a level's load that fails).
   final Set<String> failOccurrencesFor = {};
 
+  /// C10 (C3-2): every extrude PATCH answers 500 while set (an edit's Cancel whose restore fails).
+  bool failExtrudePatch = false;
+
   Map<String, dynamic> _visibilityFields(String partId) => {
         'hidden_feature_ids': (hiddenByPart[partId] ?? <String>{}).toList()..sort(),
         'hidden_reference_planes': _hiddenPlanes(partId).toList()..sort(),
@@ -470,6 +473,16 @@ class _FakeDocumentBackend {
         }, 200);
       }
       final extra = extraParts[id];
+      // C10: a nested Part this fake holds features for (an Edit in context reads it before and after the edit).
+      if (extra == null && extraPartFeatures.containsKey(id)) {
+        return _json({
+          'id': id,
+          'name': id,
+          'feature_ids': [for (final f in extraPartFeatures[id]!) f['id']],
+          'occurrence_ids': <String>[],
+          ..._visibilityFields(id!),
+        }, 200);
+      }
       if (extra == null) return http.Response('not found: part', 404);
       return _json({
         'id': extra['id'],
@@ -894,6 +907,7 @@ class _FakeDocumentBackend {
 
     final extrudePatchMatch =
         RegExp(r'^/document/parts/([^/]+)/extrude-features/([^/]+)$').firstMatch(path);
+    if (extrudePatchMatch != null && method == 'PATCH' && failExtrudePatch) return _json({'detail': 'The extrude could not be updated'}, 500);
     if (extrudePatchMatch != null && method == 'PATCH') {
       // C10: any Part's extrude (an Edit in context PATCHes a nested Part's).
       final partFeatures = extrudePatchMatch.group(1) == 'part-1' ? features : extraPartFeatures[extrudePatchMatch.group(1)] ?? [];
@@ -7742,6 +7756,7 @@ void main() {
       required List<Map<String, dynamic>> seedOccurrences,
       List<Map<String, dynamic>>? seedMates,
       List<Map<String, dynamic>>? seedComponentPatterns,
+      Future<void> Function(http.Request request)? around,
     }) async {
       // The component menu has grown (Zoom to selection): its last rows need a taller window than 800 x 600.
       tester.view.physicalSize = const Size(800, 1000);
@@ -7754,7 +7769,11 @@ void main() {
         seedComponentPatterns: seedComponentPatterns,
       );
       final documentApi = DocumentApiClient(
-        httpClient: MockClient((request) async => backend.handle(request)),
+        httpClient: MockClient((request) async {
+          final response = backend.handle(request);
+          if (around != null) await around(request);
+          return response;
+        }),
       );
       final sketchBackend = _FakeSketchBackend();
 
@@ -7849,6 +7868,48 @@ void main() {
       await tester.pump(const Duration(milliseconds: 200));
       expect(find.textContaining("Broken - can't be satisfied"), findsOneWidget);
       await tester.pump(const Duration(seconds: 3)); // let the pulse and the SnackBar finish
+    });
+
+    testWidgets("C2-1 review: the flash is in the Mates folder of the level the edit was on, though the focus moved while it saved", (tester) async {
+      Completer<void>? hold;
+      final backend = await openInAssemblyLens(
+        tester,
+        seedOccurrences: [occurrence('occ-1'), occurrence('occ-2')],
+        seedMates: [mateReferencing('mate-1', 'occ-2')],
+        seedComponentPatterns: [patternSourcedFrom('pattern-1', ['occ-1'])],
+        around: (request) async {
+          final h = hold;
+          if (h != null && request.url.path.endsWith('/occurrences') && request.method == 'GET') {
+            hold = null;
+            await h.future;
+          }
+        },
+      );
+      backend.brokenMateIdsOnPatternEdit = ['mate-1'];
+      final panel = _TreeProbe(tester);
+      await panel.onPatternTap!(panel.patterns.single);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 250));
+      // The save's tree refresh is held: the focus moves to occ-1 meanwhile.
+      final held = hold = Completer<void>();
+      tester
+          .widget<ButtonStyleButton>(find.ancestor(of: find.text('Save'), matching: find.byWidgetPredicate((w) => w is ButtonStyleButton)))
+          .onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 50));
+      expect(hold, isNull, reason: "the save's refresh is the one held");
+      await _TreeProbe(tester).menuAction('occ-1', 'Make Focus');
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(tester.widget<PartViewport>(find.byType(PartViewport)).focusedOccurrencePath, ['occ-1']);
+      held.complete();
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(_TreeProbe(tester).flashMateIds, {'mate-1'});
+      expect(_TreeProbe(tester).view.flashFolderKey, '#mates', reason: "the root's folder, where the pattern and its mates are");
+      await tester.pump(const Duration(seconds: 3));
     });
 
     testWidgets('a pattern edit that breaks nothing shows no flash and no SnackBar', (tester) async {
@@ -14668,6 +14729,31 @@ void main() {
             expect(toolbarUnsaved(tester), isTrue);
             expect(_TreeProbe(tester).unsavedRowKeys, contains('asm-1/c1/d1'), reason: "the part's row has the unsaved dot");
             expect(_TreeProbe(tester).model.selectedKey, 'asm-1/c1/d1#feature:d1-extrude');
+          });
+
+          testWidgets('review: a Cancel whose restore fails keeps the unsaved mark (the backend holds the preview)', (tester) async {
+            final backend = await editInContext(tester, desktopLayout: true);
+            tester.widget<ExtrudePanel>(find.byType(ExtrudePanel)).onChanged(
+                ExtrudeType.boss, 0.0, 25.0, null, ThicknessDirection.outward, null, true);
+            await tester.pump(const Duration(milliseconds: 600));
+            await settle(tester);
+            expect(backend.extraPartFeatures['d1-part']!.firstWhere((f) => f['id'] == 'd1-extrude')['end_distance'], 25.0,
+                reason: 'the preview is on the backend');
+            backend.failExtrudePatch = true;
+            await closePanel(tester, 'Cancel');
+            expect(unsaved(tester), contains('d1-part'), reason: 'the restore failed: the Part differs from its file');
+          });
+
+          testWidgets('review: a Hide made while the panel is open keeps the unsaved mark after a Cancel', (tester) async {
+            phone(tester);
+            await editInContext(tester, desktopLayout: false);
+            final probe = _TreeProbe(tester);
+            final plane = probe.model.visibleRows().firstWhere((r) => r.key == 'asm-1/c1/d1#feature:d1-plane');
+            probe.view.onVisibilityToggle!(plane);
+            await settle(tester);
+            await settle(tester);
+            await closePanel(tester, 'Cancel');
+            expect(unsaved(tester), contains('d1-part'), reason: "the Hide is a change of the Part's own, not the edit's");
           });
 
           testWidgets('a real edit, then Cancel: nothing is marked unsaved (the feature is back as it was)', (tester) async {

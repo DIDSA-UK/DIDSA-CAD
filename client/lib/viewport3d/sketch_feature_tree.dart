@@ -194,13 +194,15 @@ class _SketchFeatureTreeState extends State<SketchFeatureTree> {
     }));
   }
 
-  /// The picker the rows follow: the lock, or Convert Entities' picks (spec section 13's convert pick).
+  /// C10 (C2-5): a folder opened here asks the Part screen for its items ([SketchFeatureTree.onFolderItemsRequested]); when it cannot, the
+  /// request is forgotten so the folder asks again when it is opened again.
   void _onFolderItemsRequested(String folderKey) {
     final ask = widget.onFolderItemsRequested;
     // Only for a source of this tree's root: another root's folder keys name other rows.
     if (ask == null || _source == null || !ask(folderKey)) _controller.forgetFolderRequest(folderKey);
   }
 
+  /// The picker the rows follow: the lock, or Convert Entities' picks (spec section 13's convert pick).
   void _syncPicker(TreeConvertPick? convert) {
     String sorted(Iterable<String> ids) => (ids.toList()..sort()).join(',');
     final signature = convert == null

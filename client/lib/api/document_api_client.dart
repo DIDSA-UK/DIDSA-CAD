@@ -34,6 +34,10 @@ class MaterialAssignmentDto {
 /// `PartResponse`/`Part` for the STEP-portable-vs-DIDSA-CAD-only field
 /// split ([remarks]/[supplier]/[supplierPartNumber] never reach STEP).
 class PartDto {
+  /// C10: the backend's answer this was read from (null when built in code), kept whole so a client can tell whether the Part's stored state
+  /// changed (visibility, properties, materials, its lists of ids).
+  final Map<String, dynamic>? json;
+
   final String id;
   final String name;
   final List<String> featureIds;
@@ -71,6 +75,7 @@ class PartDto {
   bool get referencePlanesHidden => hiddenReferencePlanes.length >= kReferencePlaneApiValues.length;
 
   PartDto({
+    this.json,
     required this.id,
     required this.name,
     required this.featureIds,
@@ -90,6 +95,7 @@ class PartDto {
   });
 
   factory PartDto.fromJson(Map<String, dynamic> json) => PartDto(
+        json: json,
         id: json['id'] as String,
         name: json['name'] as String,
         featureIds: (json['feature_ids'] as List).cast<String>(),
