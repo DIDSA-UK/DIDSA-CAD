@@ -29479,12 +29479,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
 
   /// C5: a click in the flyout tree. It picks; it does not start edits over the running tool. A pattern row (which would open the pattern's
-  /// editor, a tool of its own) and a missing file (the locate flow) only mark the row; a mate row selects and highlights as ever.
+  /// editor, a tool of its own) only marks the row, and a missing file selects without the locate flow; a mate row selects and highlights as ever.
   void _onFlyoutRowTap(AssemblyTreeRow row) {
     switch (row.kind) {
       case AssemblyRowKind.pattern:
-      case AssemblyRowKind.missing:
         setState(() {});
+      case AssemblyRowKind.missing:
+        // Selects the occurrence as a docked click does, without the locate flow.
+        final target = _treeTargetOfPath(row.path ?? const []);
+        if (target != null) _onTreeOccurrenceTap(target);
       default:
         if (row.live) {
           _onLiveTreeRowTap(row);

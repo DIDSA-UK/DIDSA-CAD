@@ -1379,7 +1379,7 @@ whole `flutter test` passes.
 | C2 Flutter #7 | merged | #416 | Opus 5.5 | A folder per level reads its Part's mates / patterns when it opens (once per Part per tree answer, stale answers dropped); spec-form items (tone form removed); another level's mate selects and highlights, Focus here to edit; the drawer (desktop) and the menu's Mates list the selection's mates; 12.8 C1-1 to C1-6 and C3-3 done |
 | C3 Flutter #13 | merged | #414 | Opus 5.5 | Edit in context on a read-only feature row (double-click / double-tap, phone bar, menu): focus down to its part, Part lens, panel at its rollback point; cancelled by a focus, lens or document change, a newer request or a tool started meanwhile |
 | C4 Flutter #12 + #15 | PR open: the owner checks CI, then merges | #417 | Sonnet 5.5 | Hover both ways (desktop): a row lights its part through a separate light-only input (`ViewportTreeHover`: a placement by full path, a group its members, a mate its components, a live feature what it made), the part under the pointer marks its row or the nearest listed ancestor, 60 ms throttle; a Columns menu (Eye, Colour, DOF, and P1's pin moved in; every column off by default, saved); grouping keeps its header icon |
-| C5 Flutter #14 | not started | | | |
+| C5 Flutter #14 | PR open: the owner checks CI, then merges | #PR | Sonnet 5.5 | A Tree tab over the viewport's top left while a docked tool panel holds the left pane; it opens a translucent pick-only flyout (same model, so the same open rows and selection; header with a close only: no filter, columns, menu, eye, hover linking, bar or strips), closed by default, closed by Esc (first) and by the tool closing; it sits right of the docked panel, or below the prompt card, which reports its bottom edge (`PickerPromptCardScope`) |
 | C6 VR one tree component | PR open: the owner checks CI, then merges | DIDSA-VR #105 | Opus 5.5 | occurrence_tree_view.gd + occurrence_tree_scope.gd (World, Table PARTS); PARTS bar Table / Bring / Fix / Hide / Isolate / Rename / Room / Delete; 10.8 VR leftovers 1-3 done (tests/tree_c6.gd) |
 | C7 VR room tree | not started | | | |
 | C8 VR BUILD tab on spec 13 | not started | | | |
@@ -1388,7 +1388,7 @@ whole `flutter test` passes.
 
 ### 12.8 Hand-off
 
-**In flight:** C4 (#417, PR open), C6 (VR #105, PR open). C1 merged (#412), C2 merged (#416), C3 merged (#414).
+**In flight:** C5 (PR open), C6 (VR #105, PR open). C1 merged (#412), C2 merged (#416), C3 merged (#414), C4 merged (#417).
 
 **For C7, from C6:** the tree is a panel base class (`scripts/tree/occurrence_tree_view.gd`) that each window extends, set up
 with a scope object (`scripts/tree/occurrence_tree_scope.gd`); the Room scope sets `remembers_rows` (per room's Part, 12.6) and
@@ -1469,6 +1469,10 @@ the levels). The model says so (`AssemblyFilterResult.itemsNotRead`); `assembly_
 - C4-5 (for C10; nit): the viewport's `onExit` reports "none" but keeps `_hoverHit`, so re-entering on the same pixel reports nothing until the hit changes (the viewport's own hover node also stays drawn after the pointer leaves, as before C4). `onEnter` should report too, or `onExit` should clear the hit. The report also depends on `onEnter` having been seen: a stylus that hovers without a MouseRegion enter never marks a row.
 - C4-6 (for C10; nit): the Colour column's click opens the Appearance tool (`_onOccurrenceColorTap`), not `occurrence_colour_sheet.dart` as 12.6 says: that sheet has had no caller since the Appearance tool (V3). The disc shows the occurrence's own `color`; a colour the Appearance tool resolves from a set or rule is not drawn.
 - C4-7 (for C10; nit): hover lights a mate's *components*, not its two referenced faces; the references carry sub-shapes, so a later chunk can light the faces.
+- C5-1 (for C10; nit): the flyout closes only when no docked tool panel is open (`_desktopFrame` clears it), so switching straight from one docked tool to another (Measure to Section) keeps it open over the new tool. Clear it when the tool changes, if the device check wants that.
+- C5-2 (for C10; nit): a click in the flyout still goes to the host's tap handler, as the docked tree's does, except that a pattern row only marks the row (it would open the pattern editor over the running tool) and a missing file selects without the locate flow. A default-plane row still goes to `_onPlaneTap` and a mate row selects and highlights; that is what a plane-picking or component-picking tool wants, but over Measure it changes the selection. Restrict by tool if the device check finds it wrong.
+- C5-3 (for C10; nit): the flyout is a fixed 300 dp wide (up to 440 dp tall) and does not resize; it sits at `kDesktopToolPanelWidth + 12` from the left whenever no prompt card shows, so a docked panel of another width would be covered or leave a gap. It has no filter (the docked tree has it) and no hover linking (C4's hover is the docked tree's). Esc closes it before the tool (the shortcut sheet's "Cancel the tool, or clear the selection" does not say so). `_desktopFrame` clears its flag in the build, as `_treeSheetPickPeek` is.
+
 
 **Owner device checks owed:** Phase B's list in 10.8 (still owed as of 25 Nov), then Phase C's, added by each chunk:
 C0 (whatever it fixed from the Phase B checks); C2 (desktop and phone: a sub-assembly's Mates folder, a broken mate in it,

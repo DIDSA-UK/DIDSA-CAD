@@ -57,7 +57,13 @@ class _PromptCardReporterState extends State<_PromptCardReporter> {
     super.didChangeDependencies();
     final next = PickerPromptCardScope.maybeOf(context);
     if (!identical(next, _bottom)) {
-      _bottom?.cards -= 1;
+      final old = _bottom;
+      if (old != null) {
+        old.cards -= 1;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (old.cards <= 0) old.report(0);
+        });
+      }
       _bottom = next;
       next?.cards += 1;
     }
