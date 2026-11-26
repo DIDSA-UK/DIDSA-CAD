@@ -143,6 +143,7 @@ import 'pattern_mirror_seed.dart';
 import 'seed_scope.dart';
 import 'pending_job_store.dart';
 import 'picker_ribbon.dart';
+import 'resizable_tool_panel.dart' show kDesktopToolPanelWidth;
 import 'planar_surface_panel.dart';
 import 'plane_context_sheet.dart';
 import 'solid_from_surfaces_panel.dart';
@@ -13265,6 +13266,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     _viewportHoverThrottle.dispose();
     _treeHover.dispose();
     _viewportHoverPath.dispose();
+    _promptCardBottom.dispose();
     _patternScope.dispose();
     _mirrorScope.dispose();
     _glideTicker?.dispose();
@@ -28167,6 +28169,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// ([_cancelActiveMode]); else the File/View toolbar; else the selection.
   /// Never leaves the Part (Back still asks to).
   void _onEscapeKey() {
+    // C5: the flyout tree closes first; a second Esc cancels the tool.
+    if (_treeFlyoutOpen) {
+      setState(() => _treeFlyoutOpen = false);
+      return;
+    }
     final cancelPanel = _toolPanelKeys.cancel;
     if (cancelPanel != null) {
       cancelPanel();
@@ -28303,6 +28310,15 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The left pane (the tree) can be folded away to give the viewport the room.
   bool _desktopPaneVisible = true;
 
+  /// C5: the flyout tree over the viewport's top left, open. Only while a docked tool panel holds the left pane ([_treeFlyoutAvailable]); closed
+  /// by default, and closed again whenever the tool goes ([_desktopFrame] clears it).
+  bool _treeFlyoutOpen = false;
+
+  /// Where the desktop prompt card ends (0: none), reported by [PickerRibbon]; the flyout's tab and the flyout sit below it.
+  final PromptCardBottom _promptCardBottom = PromptCardBottom();
+
+  bool get _treeFlyoutAvailable => _desktopLayout && _desktopToolPanelOpen && !_chromeHidden;
+
   String get _ribbonTabId => _ribbonTabChoice ?? (_lens == AssemblyLens.assembly ? 'assembly' : 'features');
 
   double _desktopPaneWidth = DesktopLeftPane.defaultWidth;
@@ -28342,6 +28358,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   /// Wraps the viewport stack: on the desktop layout the tree is docked to its left.
   Widget _desktopFrame(Widget viewportStack) {
+    if (!_treeFlyoutAvailable) _treeFlyoutOpen = false;
     if (!_desktopLayout) return viewportStack;
     return Row(
       children: [
@@ -28361,7 +28378,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
               ],
             ),
           ),
-        Expanded(child: viewportStack),
+        Expanded(child: PickerPromptCardScope(bottom: _promptCardBottom, child: viewportStack)),
       ],
     );
   }
@@ -29461,6 +29478,25 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     }
   }
 
+  /// C5: a click in the flyout tree. It picks; it does not start edits over the running tool. A pattern row (which would open the pattern's
+  /// editor, a tool of its own) only marks the row, and a missing file selects without the locate flow; a mate row selects and highlights as ever.
+  void _onFlyoutRowTap(AssemblyTreeRow row) {
+    switch (row.kind) {
+      case AssemblyRowKind.pattern:
+        setState(() {});
+      case AssemblyRowKind.missing:
+        // Selects the occurrence as a docked click does, without the locate flow.
+        final target = _treeTargetOfPath(row.path ?? const []);
+        if (target != null) _onTreeOccurrenceTap(target);
+      default:
+        if (row.live) {
+          _onLiveTreeRowTap(row);
+        } else {
+          _onTreeRowTap(row);
+        }
+    }
+  }
+
   /// Long-press on a live row: a feature, body, surface or curve starts the build multi-select (as the old panel's rows did); a default
   /// plane offers Hide / Show.
   void _onLiveTreeRowLongPress(AssemblyTreeRow row) {
@@ -30092,7 +30128,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   /// The one tree (A4, P2 of `docs/assembly-tree-overhaul-scope.md`): [AssemblyTreeView] over [_treeModel] in both lenses. The lens changes
   /// the toolbars and which row is live (the Part lens makes the focused Part live: its folders and features, editable and pickable); the tree,
   /// its open rows, its scroll and its selection stay. [docked] puts it in the desktop layout's left pane; otherwise it floats over the viewport.
-  Widget _buildTreePanel({required bool docked}) {
+  Widget _buildTreePanel({required bool docked, bool flyout = false}) {
     // B4: a pick's peek belongs to the sheet; turning the phone (or the desktop layout) ends it.
     if (!_treeSheetMode) _treeSheetPickPeek = false;
     // The model keeps this screen's selection and unsaved Parts (cheap: nothing changes when they have not).
@@ -30120,7 +30156,10 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     final build = _buildMultiSelect;
     AssemblyTreeView view(bool docked, double width, {AssemblyTreeSheetHeight? sheet, bool? shown}) => AssemblyTreeView(
       model: _treeModel,
+      // The flyout and the docked pane never show together (a tool panel replaces the pane), so the one controller serves whichever is up:
+      // a pick in the viewport opens and scrolls the flyout to its row too.
       controller: _treeController,
+      flyout: flyout,
       docked: docked,
       width: width,
       title: _lens == AssemblyLens.assembly ? 'Assembly Tree' : 'Build Tree',
@@ -30138,11 +30177,11 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
       onEditAloneCrumb: _editAlone == null ? null : (i) => unawaited(_exitEditAlone(upTo: i)),
       focusCrumbs: _focusCrumbLabels(),
       onFocusCrumb: (depth) => unawaited(_focusCrumb(depth)),
-      onFocusHere: (row) => unawaited(_focusHere(row)),
+      onFocusHere: flyout ? null : (row) => unawaited(_focusHere(row)),
       statusLine: _lens == AssemblyLens.assembly ? _motionStatusText : null,
       // The docked pane has no close.
-      onClose: docked ? null : _onTreeClose,
-      multiSelectHeader: _activeMultiSelect == null
+      onClose: flyout ? () => setState(() => _treeFlyoutOpen = false) : (docked ? null : _onTreeClose),
+      multiSelectHeader: _activeMultiSelect == null || flyout
           ? null
           : MultiSelectActionBar(
               count: _activeMultiSelect!.count,
@@ -30169,8 +30208,8 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         final path = row.path;
         if (path != null && _isFocusChild(path)) _toggleMultiSelectMember(_assemblyMultiSelect, path.last);
       },
-      onRowTap: (row) => row.live ? _onLiveTreeRowTap(row) : _onTreeRowTap(row),
-      onRowLongPress: (row) {
+      onRowTap: flyout ? _onFlyoutRowTap : (row) => row.live ? _onLiveTreeRowTap(row) : _onTreeRowTap(row),
+      onRowLongPress: flyout ? null : (row) {
         if (row.live) return _onLiveTreeRowLongPress(row);
         // In the Part lens the build session is the one multi-select: a component's long-press opens its menu.
         if (_lens == AssemblyLens.part && row.path != null && row.path!.isNotEmpty) {
@@ -30178,20 +30217,20 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
         }
         _onTreeRowLongPress(row);
       },
-      onRowEdit: live ? _editLiveRow : null,
-      onRowEditInContext: (row) => unawaited(_editFeatureInContext(row)),
-      canEditInContext: _canEditFeatureInContext,
+      onRowEdit: live && !flyout ? _editLiveRow : null,
+      onRowEditInContext: flyout ? null : (row) => unawaited(_editFeatureInContext(row)),
+      canEditInContext: flyout ? null : _canEditFeatureInContext,
       onRowPick: _onLiveTreeRowPick,
-      onRowContextMenu: (row, at) => row.live ? _onLiveTreeRowContextMenu(row, at) : _onTreeRowContextMenu(row, at),
-      onVisibilityToggle: (row) => unawaited(row.live ? _toggleLiveRowVisibility(row) : _onTreeRowVisibilityToggle(row)),
+      onRowContextMenu: flyout ? null : (row, at) => row.live ? _onLiveTreeRowContextMenu(row, at) : _onTreeRowContextMenu(row, at),
+      onVisibilityToggle: flyout ? null : (row) => unawaited(row.live ? _toggleLiveRowVisibility(row) : _onTreeRowVisibilityToggle(row)),
       onFeaturesRequested: (path) => unawaited(_loadTreeFeatures(path)),
       onFolderItemsRequested: _onFolderItemsRequested,
       itemOtherLevel: _itemOtherLevelLabel,
-      onItemFocusToEdit: (row) => unawaited(_focusToEditItem(row)),
+      onItemFocusToEdit: flyout ? null : (row) => unawaited(_focusToEditItem(row)),
       onGroupingChanged: (value) => unawaited(ViewPreferences.setAssemblyTreeGrouping(value)),
-      onRowHover: _onTreeRowHover,
-      viewportHover: _viewportHoverPath,
-      onRowColourTap: (row) => _withTreeTarget(row, (t) => _onOccurrenceColorTap(t.occurrence, path: t.path)),
+      onRowHover: flyout ? null : _onTreeRowHover,
+      viewportHover: flyout ? null : _viewportHoverPath,
+      onRowColourTap: flyout ? null : (row) => _withTreeTarget(row, (t) => _onOccurrenceColorTap(t.occurrence, path: t.path)),
       flashItemIds: _flashMateIds,
       flashToken: _flashMateToken,
       // The phone selection bar: Hide, Isolate, Focus, Alone as the row menu's own actions, and More as the row menu itself; a live row's
@@ -30220,7 +30259,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
           if (kCoarseEligibleFeatureTypes.contains(f.type)) f.id
       },
       pinnedCoarseFeatureIds: _pinnedCoarseFeatureIds,
-      onToggleCoarsePin: live
+      onToggleCoarsePin: live && !flyout
           ? (row) {
               final f = _featureOfRow(row);
               if (f != null) unawaited(_toggleCoarsePin(f));
@@ -30233,6 +30272,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
     );
     // A GlobalKey keeps the view's state (its scroll position, its flash) where it is when other overlays of the screen's Stack come and go
     // and shift its place among the children, and across a lens switch (both lenses draw this same tree).
+    if (flyout) return KeyedSubtree(key: _treeFlyoutKey, child: view(true, 320));
     if (docked) return KeyedSubtree(key: _treeDockedKey, child: view(true, 320));
     // B4: a phone held upright draws the tree as a bottom sheet. Turning the phone rebuilds the view (its scroll and an open filter start
     // again); the model keeps the open rows and the selection.
@@ -30269,6 +30309,61 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
 
   String? _treeHostSelection;
 
+  /// C5: the flyout tree (`docs/assembly-tree-overhaul-scope.md` 12.6): while a docked tool panel holds the left pane, a small Tree tab over the
+  /// viewport's top left opens a translucent, pick-only copy of the tree (same model, so the same open rows and selection). It sits right of
+  /// the docked panel, or below the prompt card when there is one (a pick-only mode has a card and no docked panel).
+  Widget _buildTreeFlyoutOverlay() {
+    return Positioned.fill(
+      child: ValueListenableBuilder<double>(
+        valueListenable: _promptCardBottom,
+        builder: (context, cardBottom, _) {
+          final scheme = Theme.of(context).colorScheme;
+          final left = cardBottom > 0 ? 12.0 : kDesktopToolPanelWidth + 12;
+          final top = cardBottom > 0 ? cardBottom + 4 : 12.0;
+          return Padding(
+            padding: EdgeInsets.fromLTRB(left, top, 12, 12),
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: _treeFlyoutOpen
+                  ? LayoutBuilder(
+                      builder: (context, constraints) => SizedBox(
+                        key: const ValueKey('tree-flyout'),
+                        width: 300,
+                        height: math.min(440.0, constraints.maxHeight),
+                        child: _buildTreePanel(docked: true, flyout: true),
+                      ),
+                    )
+                  : Tooltip(
+                      message: 'Open the tree to pick from',
+                      child: Material(
+                        key: const ValueKey('tree-flyout-tab'),
+                        elevation: 2,
+                        color: scheme.surface.withValues(alpha: 0.88),
+                        borderRadius: BorderRadius.circular(8),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: () => setState(() => _treeFlyoutOpen = true),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.account_tree_outlined, size: 18, color: scheme.onSurfaceVariant),
+                                const SizedBox(width: 6),
+                                const Text('Tree'),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   /// The row key this screen's own selection stands for in the tree: a live row (P2: the row tapped, or the feature of a body picked in the
   /// viewport), a mate row, or the selected component's path.
   String? get _treeSelectionHostKey =>
@@ -30302,6 +30397,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
   }
   final GlobalKey _treeOverlayKey = GlobalKey(debugLabel: 'assembly-tree-overlay');
   final GlobalKey _treeDockedKey = GlobalKey(debugLabel: 'assembly-tree-docked');
+  final GlobalKey _treeFlyoutKey = GlobalKey(debugLabel: 'assembly-tree-flyout');
 
   // --- The phone portrait sheet (B4, `docs/assembly-tree-overhaul-scope.md` 10.6) --------------------------------------------------------
 
@@ -31866,6 +31962,7 @@ class _PartScreenState extends State<PartScreen> with SingleTickerProviderStateM
                       onConfirm: _busy ? null : _confirmProfilePicker,
                     ),
                   ),
+                if (_treeFlyoutAvailable) _buildTreeFlyoutOverlay(),
                 // Always on top (last in the Stack) so it stays tappable
                 // regardless of whether the toolbar underneath is open -
                 // but hidden while the Feature tree is open since it sits

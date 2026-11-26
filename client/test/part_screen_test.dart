@@ -10047,6 +10047,221 @@ void main() {
       expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
     });
 
+    // C5 (`docs/assembly-tree-overhaul-scope.md` 12.6): the flyout tree, a pick-only copy of the tree over the viewport while a docked tool panel
+    // holds the left pane.
+    group('flyout tree (C5)', () {
+      Future<void> openMeasure(WidgetTester tester) async {
+        await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+        await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      final tab = find.byKey(const ValueKey('tree-flyout-tab'));
+      final flyout = find.byKey(const ValueKey('tree-flyout'));
+
+      testWidgets('a tool panel hides the pane and shows the Tree tab; no flyout until it is opened', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        expect(tab, findsNothing, reason: 'the docked tree is on screen: no tab');
+        await openMeasure(tester);
+        expect(find.byKey(const ValueKey('desktop-left-pane')), findsNothing);
+        expect(tab, findsOneWidget);
+        expect(flyout, findsNothing);
+        expect(find.byType(AssemblyTreeView), findsNothing);
+        // Right of the docked panel, near the top of the viewport.
+        final at = tester.getTopLeft(tab);
+        expect(at.dx, greaterThanOrEqualTo(kDesktopToolPanelWidth));
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('it opens with the docked tree\'s open rows; a click selects; no menu, no filter, no columns', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        // The docked tree's open rows: the Features folder opens (it is closed or open as the model has it); remember the row keys on screen.
+        final model = _TreeProbe(tester).model;
+        final dockedRows = [for (final r in model.visibleRows()) r.key];
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(tab, findsNothing);
+        expect(flyout, findsOneWidget);
+        final view = tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView));
+        expect(identical(view.model, model), isTrue, reason: 'the same model as the docked tree: its open rows and its selection');
+        expect(view.flyout, isTrue);
+        expect([for (final r in view.model.visibleRows()) r.key], dockedRows);
+        // Pick-only: no filter box, no columns menu, no grouping toggle, no eye on a row.
+        expect(find.byKey(const ValueKey('tree-filter-field')), findsNothing);
+        expect(find.byKey(const ValueKey('tree-columns-menu')), findsNothing);
+        expect(find.byKey(const ValueKey('tree-grouping-toggle')), findsNothing);
+        expect(find.byTooltip('Show'), findsNothing);
+        expect(find.byTooltip('Hide'), findsNothing);
+        // A row click selects through the host, as the docked tree's does.
+        final rowKey = dockedRows.firstWhere((k) => k.isNotEmpty);
+        await tester.tap(find.byKey(ValueKey('tree-row:$rowKey')));
+        await tester.pump();
+        expect(model.selectedKey, rowKey);
+        // A right click opens no menu.
+        await tester.tap(find.byKey(ValueKey('tree-row:$rowKey')), buttons: kSecondaryMouseButton);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(PopupMenuItem<dynamic>), findsNothing);
+        expect(find.byType(MenuItemButton), findsNothing);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Esc closes the flyout and keeps the tool; a second Esc cancels the tool', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        expect(flyout, findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        expect(flyout, findsNothing);
+        expect(tab, findsOneWidget);
+        expect(find.byKey(const ValueKey('docked-tool-panel')), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byKey(const ValueKey('docked-tool-panel')), findsNothing);
+        expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+        expect(tab, findsNothing);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('closing the tool closes the flyout, and the next tool starts with it closed; the docked tree shows the same open rows', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        final model = _TreeProbe(tester).model;
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        expect(flyout, findsOneWidget);
+        // Open a row in the flyout (the root, which has children when there are any), then close the tool.
+        final closeable = [for (final r in model.visibleRows()) if (r.expandable && !r.open) r];
+        if (closeable.isNotEmpty) {
+          await tester.tap(find.byKey(ValueKey('tree-row:${closeable.first.key}')));
+          await tester.pump();
+        }
+        final openAfter = [for (final r in model.visibleRows()) r.key];
+        await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(flyout, findsNothing);
+        expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+        expect([for (final r in _TreeProbe(tester).model.visibleRows()) r.key], openAfter);
+        // The tool again: closed by default.
+        await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(flyout, findsNothing);
+        expect(tab, findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('a pattern row in the flyout only marks the row: it does not open the pattern editor over the tool', (tester) async {
+        bigWindow(tester);
+        Map<String, dynamic> occurrence(String id) => {
+              'id': id,
+              'external_ref': 'parts/$id.didsa',
+              'resolved_part_id': '$id-part',
+              'name_override': null,
+              'transform': {'translation': [0.0, 0.0, 0.0], 'rotation_axis': [0.0, 0.0, 1.0], 'rotation_angle_degrees': 0.0},
+              'suppressed': false,
+              'hidden': false,
+              'fixed': false,
+            };
+        final backend = _FakeDocumentBackend(seedOccurrences: [occurrence('occ-1')], seedComponentPatterns: [
+          {
+            'id': 'pattern-1',
+            'source_occurrence_ids': ['occ-1'],
+            'pattern_type': 'linear',
+            'direction': [1.0, 0.0, 0.0],
+            'count': 3,
+            'spacing': 10.0,
+            'reverse': false,
+            'direction_2': [0.0, 1.0, 0.0],
+            'count_2': 1,
+            'spacing_2': 0.0,
+            'reverse_2': false,
+            'axis': null,
+            'count_angular': 1,
+            'angle_total': 360.0,
+            'reverse_angular': false,
+            'skip_indices': <dynamic>[],
+            'orient_with_rotation': true,
+            'suppressed': false,
+          }
+        ]);
+        final sketchBackend = _FakeSketchBackend();
+        await tester.pumpWidget(MaterialApp(
+          home: LayoutModeScope(
+            controller: desktop(),
+            child: PartScreen(
+              documentApi: DocumentApiClient(httpClient: MockClient((request) async => backend.handle(request))),
+              sketchApiFactory: () => SketchApiClient(httpClient: MockClient((r) async => sketchBackend.handle(r))),
+              storageService: _FakeStorageService(),
+            ),
+          ),
+        ));
+        await _pumpUntil(tester, () => find.text('Part 1').evaluate().isNotEmpty);
+        await tester.tap(find.descendant(of: find.byKey(const ValueKey('ribbon-lens')), matching: find.text('Assembly')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.tap(find.byKey(const ValueKey('tree-chevron:#patterns')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byKey(const ValueKey('tree-row:#patterns#item:pattern-1')), findsOneWidget);
+        // The docked tree opens the pattern for editing (the control)...
+        await tester.tap(find.byKey(const ValueKey('tree-row:#patterns#item:pattern-1')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(ComponentPatternPanel), findsOneWidget, reason: 'control: a docked tree tap edits the pattern');
+        // ...and with it closed and Measure open, the flyout's tap only marks the row.
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(ComponentPatternPanel), findsNothing);
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        await tester.tap(find.byKey(const ValueKey('tree-row:#patterns#item:pattern-1')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(ComponentPatternPanel), findsNothing);
+        expect(_TreeProbe(tester).model.selectedKey, '#patterns#item:pattern-1', reason: 'the row is marked');
+        expect(find.byKey(const ValueKey('docked-tool-panel')), findsOneWidget, reason: 'the running tool is still there');
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('it does not overlap the picker prompt card: the tab sits below it', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        await tester.tap(find.byKey(const ValueKey('ribbon-Merge')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        final card = find.text('Select bodies to merge (2 needed)');
+        expect(card, findsOneWidget);
+        expect(tab, findsOneWidget);
+        final cardRect = tester.getRect(find.ancestor(of: card, matching: find.byType(Material)).first);
+        final tabRect = tester.getRect(tab);
+        expect(tabRect.top, greaterThanOrEqualTo(cardRect.bottom), reason: 'below the card');
+        await tester.tap(tab);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final flyRect = tester.getRect(flyout);
+        expect(flyRect.top, greaterThanOrEqualTo(cardRect.bottom));
+        expect(cardRect.overlaps(flyRect), isFalse);
+        expect(tester.takeException(), isNull);
+      });
+    });
+
     testWidgets('the Options menu holds the settings, and View is only the ribbon tab', (tester) async {
       bigWindow(tester);
       await pumpScreen(tester, layout: desktop());

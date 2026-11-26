@@ -151,7 +151,14 @@ class AssemblyTreeView extends StatefulWidget {
     this.sheetHeight,
     this.onSheetHeightChanged,
     this.selectionBar = true,
+    this.flyout = false,
   });
+
+  /// C5: the flyout (desktop, while a docked tool panel holds the left pane): a translucent, pick-only tree. Its header is a title and a close;
+  /// no filter (the docked tree has it), no columns, no bar or strips; the host also leaves out the menu, the eye and the hover linking by not
+  /// passing those callbacks. A row click still goes to [onRowTap] and [onRowPick], so the open tool takes it as it takes a docked tree's.
+  /// Fills what it is given, like [docked].
+  final bool flyout;
 
   /// B4: phone portrait. Non-null draws the tree as a bottom sheet across the width at this height (see [AssemblyTreeSheetHeight]); the root
   /// row is the sheet's title instead of a row. A drag on the handle or the header moves it between the heights ([onSheetHeightChanged]: the
@@ -1028,10 +1035,11 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
     final bar = picker != null || widget.isMultiSelectMode || desktop || !widget.selectionBar || selectedRow == null ? null : _barButtons(selectedRow);
     final showBar = bar != null && bar.isNotEmpty;
-    final pinColumn = desktop && _pinColumn && widget.onToggleCoarsePin != null;
-    final eyeColumn = desktop && _eyeColumn && widget.onVisibilityToggle != null;
-    final colourColumn = desktop && _colourColumn;
-    final dofColumn = desktop && _dofColumn;
+    final columns = desktop && !widget.flyout;
+    final pinColumn = columns && _pinColumn && widget.onToggleCoarsePin != null;
+    final eyeColumn = columns && _eyeColumn && widget.onVisibilityToggle != null;
+    final colourColumn = columns && _colourColumn;
+    final dofColumn = columns && _dofColumn;
     // C4: the row the viewport's pointer marks (derived each build, so a row that opens or closes takes the mark with it).
     _viewportHoverKey = desktop ? _hoverKeyNow() : null;
     // The row the pointer is over left the list (a filter, a collapse, a refresh): the host takes its light back.
@@ -1107,7 +1115,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
 
     final sheet = _sheet;
-    final header = widget.multiSelectHeader ?? _header(context, desktop);
+    final header = widget.multiSelectHeader ?? (widget.flyout ? _flyoutHeader(context) : _header(context, desktop));
     // B4: peek is the header and the selected row with its bar (or the picker's banner) and nothing else.
     final peek = sheet && widget.sheetHeight == AssemblyTreeSheetHeight.peek && _dragHeight == null;
     if (peek) {
@@ -1131,7 +1139,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     }
 
     // The notes, strips and banners between the header and the rows.
-    final List<Widget> chrome = <Widget>[
+    final List<Widget> chrome = widget.flyout ? const <Widget>[] : <Widget>[
         if (filter != null) _filterNotes(context, filter),
         // Not while the floating tree is closed: the pill at the top of the viewport is the way out then.
         if (_editAloneStrip && (widget.visible || widget.docked))
@@ -1161,15 +1169,21 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     ];
 
     final body = Material(
-      color: scheme.surface,
-      // In the sheet the frame ([_sheetFrame]) carries the elevation and the rounded top.
-      elevation: widget.docked || sheet ? 0 : 6,
+      // The flyout lets the viewport show through (a little), as a card over it.
+      color: widget.flyout ? scheme.surface.withValues(alpha: 0.9) : scheme.surface,
+      // In the sheet the frame ([_sheetFrame]) carries the elevation and the rounded top. No shadow on the flyout: a Material draws it under
+      // the whole shape, so it would show through the translucency; a hairline outlines the card instead.
+      elevation: widget.flyout ? 0 : (widget.docked || sheet ? 0 : 6),
+      shape: widget.flyout
+          ? RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: scheme.outlineVariant))
+          : null,
+      clipBehavior: widget.flyout ? Clip.antiAlias : Clip.none,
       child: LayoutBuilder(builder: (context, bodyConstraints) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (sheet) _sheetDragArea(context, header) else header,
           // Desktop: the filter box is always there; a phone has the field in the header while it is open.
-          if (widget.multiSelectHeader == null && desktop) _desktopFilterRow(context),
+          if (widget.multiSelectHeader == null && desktop && !widget.flyout) _desktopFilterRow(context),
           if (sheet)
             // B5 (B4's review): the strips and banners are the part of the column that can be taller than the sheet is while a drag from peek
             // has hardly begun. In the sheet they get what is left over (a bar's worth kept back), clipped, so nothing overflows.
@@ -1210,7 +1224,7 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     );
 
     if (sheet) return _sheetFrame(context, body);
-    if (widget.docked) {
+    if (widget.docked || widget.flyout) {
       return widget.visible ? body : const SizedBox.shrink();
     }
     return IgnorePointer(
@@ -1288,6 +1302,35 @@ class _AssemblyTreeViewState extends State<AssemblyTreeView> with SingleTickerPr
     if (p == null || p.isEmpty) return null;
     final set = widget.model.nodeAtPath(p)?.constraint?.rigidSet;
     return set == null ? null : colours[set];
+  }
+
+  /// C5: the flyout's header: the title and the way to close it.
+  Widget _flyoutHeader(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(left: 12, right: 4),
+      child: SizedBox(
+        height: 36,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(widget.title,
+                  key: const ValueKey('tree-title'), maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontWeight: FontWeight.w600)),
+            ),
+            if (widget.onClose != null)
+              IconButton(
+                key: const ValueKey('tree-close'),
+                tooltip: 'Close',
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints.tightFor(width: 36, height: 36),
+                icon: Icon(Icons.close, size: 20, color: scheme.onSurfaceVariant),
+                onPressed: widget.onClose,
+              ),
+          ],
+        ),
+      ),
+    );
   }
 
   /// One line, on a phone too: the title and four small icons (filter, grouping, expand to selection, collapse all) and Close. While the

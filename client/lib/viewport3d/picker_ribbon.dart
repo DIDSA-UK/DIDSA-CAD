@@ -3,6 +3,100 @@ import 'package:material_ui/material_ui.dart';
 import '../layout/layout_mode.dart';
 import 'keyboard_shortcuts.dart';
 
+/// C5: where the desktop layout's prompt card ends (0: no card), a notifier the screen owns.
+class PromptCardBottom extends ValueNotifier<double> {
+  PromptCardBottom() : super(0);
+
+  bool _disposed = false;
+
+  /// How many cards are drawn (one card leaving as another arrives in the same frame must not reset the edge the new one reported).
+  int cards = 0;
+
+  /// Sets the edge unless the screen that owns this is gone (a card's last report can come a frame after it).
+  void report(double bottom) {
+    if (!_disposed && (value - bottom).abs() > 0.5) value = bottom;
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+}
+
+/// C5: the card sits at the top left of the viewport and the flyout tree opens below it, so neither covers the other. The screen provides the
+/// notifier; a [PickerRibbon] drawn as the card reports its bottom edge (its height plus the gap above it) and resets it to 0 when it goes.
+/// Without a scope the ribbon reports nothing.
+class PickerPromptCardScope extends InheritedWidget {
+  const PickerPromptCardScope({super.key, required this.bottom, required super.child});
+
+  /// The card's bottom edge, in the viewport's own coordinates; 0 while there is no card.
+  final PromptCardBottom bottom;
+
+  static PromptCardBottom? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<PickerPromptCardScope>()?.bottom;
+
+  @override
+  bool updateShouldNotify(PickerPromptCardScope old) => !identical(bottom, old.bottom);
+}
+
+/// Reports its child's bottom edge to the [PickerPromptCardScope] after each layout, and 0 when it leaves the tree.
+class _PromptCardReporter extends StatefulWidget {
+  const _PromptCardReporter({required this.child});
+  final Widget child;
+
+  @override
+  State<_PromptCardReporter> createState() => _PromptCardReporterState();
+}
+
+class _PromptCardReporterState extends State<_PromptCardReporter> {
+  PromptCardBottom? _bottom;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = PickerPromptCardScope.maybeOf(context);
+    if (!identical(next, _bottom)) {
+      final old = _bottom;
+      if (old != null) {
+        old.cards -= 1;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (old.cards <= 0) old.report(0);
+        });
+      }
+      _bottom = next;
+      next?.cards += 1;
+    }
+  }
+
+  @override
+  void dispose() {
+    final bottom = _bottom;
+    bottom?.cards -= 1;
+    // After this frame (a notifier's listener must not rebuild a tree that is being torn down), and only when no other card took over.
+    if (bottom != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (bottom.cards <= 0) bottom.report(0);
+      });
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final bottom = _bottom;
+      if (!mounted || bottom == null) return;
+      final size = context.size;
+      if (size == null) return;
+      // The card's own height and the 12 dp the ribbon leaves around it (the prompt card's padding).
+      final value = size.height + 12;
+      bottom.report(value);
+    });
+    return widget.child;
+  }
+}
+
 /// [ResizableToolPanel]'s sibling for a pure viewport-picking mode that has
 /// no fields/form of its own yet (picking a Sweep path, a Profile, a plane
 /// for a new Sketch, or the seed Body/Bodies for Mirror/Pattern) - on-
@@ -85,7 +179,7 @@ class PickerRibbon extends StatelessWidget {
           padding: desktop ? const EdgeInsets.all(12) : EdgeInsets.zero,
           child: SizedBox(
           width: desktop ? 360 : null,
-          child: Material(
+          child: _PromptCardReporterIf(desktop: desktop, child: Material(
           elevation: 4,
           borderRadius: desktop
               ? BorderRadius.circular(12)
@@ -165,11 +259,21 @@ class PickerRibbon extends StatelessWidget {
             ),
           ),
         ),
-        ),
+        )),
         ),
       ),
     );
   }
+}
+
+/// [_PromptCardReporter] for the desktop prompt card; the phone's bottom ribbon is not one.
+class _PromptCardReporterIf extends StatelessWidget {
+  const _PromptCardReporterIf({required this.desktop, required this.child});
+  final bool desktop;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => desktop ? _PromptCardReporter(child: child) : child;
 }
 
 /// One extra text button on a [PickerRibbon] (see [PickerRibbon.extraActions]).
