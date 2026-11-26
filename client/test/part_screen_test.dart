@@ -6108,7 +6108,7 @@ void main() {
       await pumpPartScreen(tester);
       await tapAddFeatureDirectEdit(tester, 'Delete Body');
 
-      expect(find.text('Select body/bodies to delete'), findsOneWidget);
+      expect(find.text('Select bodies to merge (2 needed)'), findsOneWidget);
       expect(tester.takeException(), isNull);
     });
 
@@ -10045,6 +10045,145 @@ void main() {
       await tester.pump(const Duration(milliseconds: 300));
       expect(find.byKey(const ValueKey('docked-tool-panel')), findsNothing);
       expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+    });
+
+    // C5 (`docs/assembly-tree-overhaul-scope.md` 12.6): the flyout tree, a pick-only copy of the tree over the viewport while a docked tool panel
+    // holds the left pane.
+    group('flyout tree (C5)', () {
+      Future<void> openMeasure(WidgetTester tester) async {
+        await tester.ensureVisible(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+        await tester.tap(find.byKey(const ValueKey('ribbon-tab-evaluate')));
+        await tester.pump();
+        await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+      }
+
+      final tab = find.byKey(const ValueKey('tree-flyout-tab'));
+      final flyout = find.byKey(const ValueKey('tree-flyout'));
+
+      testWidgets('a tool panel hides the pane and shows the Tree tab; no flyout until it is opened', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        expect(tab, findsNothing, reason: 'the docked tree is on screen: no tab');
+        await openMeasure(tester);
+        expect(find.byKey(const ValueKey('desktop-left-pane')), findsNothing);
+        expect(tab, findsOneWidget);
+        expect(flyout, findsNothing);
+        expect(find.byType(AssemblyTreeView), findsNothing);
+        // Right of the docked panel, near the top of the viewport.
+        final at = tester.getTopLeft(tab);
+        expect(at.dx, greaterThanOrEqualTo(kDesktopToolPanelWidth));
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('it opens with the docked tree\'s open rows; a click selects; no menu, no filter, no columns', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        // The docked tree's open rows: the Features folder opens (it is closed or open as the model has it); remember the row keys on screen.
+        final model = _TreeProbe(tester).model;
+        final dockedRows = [for (final r in model.visibleRows()) r.key];
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        expect(tab, findsNothing);
+        expect(flyout, findsOneWidget);
+        final view = tester.widget<AssemblyTreeView>(find.byType(AssemblyTreeView));
+        expect(identical(view.model, model), isTrue, reason: 'the same model as the docked tree: its open rows and its selection');
+        expect(view.flyout, isTrue);
+        expect([for (final r in view.model.visibleRows()) r.key], dockedRows);
+        // Pick-only: no filter box, no columns menu, no grouping toggle, no eye on a row.
+        expect(find.byKey(const ValueKey('tree-filter-field')), findsNothing);
+        expect(find.byKey(const ValueKey('tree-columns-menu')), findsNothing);
+        expect(find.byKey(const ValueKey('tree-grouping-toggle')), findsNothing);
+        expect(find.byTooltip('Show'), findsNothing);
+        expect(find.byTooltip('Hide'), findsNothing);
+        // A row click selects through the host, as the docked tree's does.
+        final rowKey = dockedRows.firstWhere((k) => k.isNotEmpty);
+        await tester.tap(find.byKey(ValueKey('tree-row:$rowKey')));
+        await tester.pump();
+        expect(model.selectedKey, rowKey);
+        // A right click opens no menu.
+        await tester.tap(find.byKey(ValueKey('tree-row:$rowKey')), buttons: kSecondaryMouseButton);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byType(PopupMenuItem<dynamic>), findsNothing);
+        expect(find.byType(MenuItemButton), findsNothing);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('Esc closes the flyout and keeps the tool; a second Esc cancels the tool', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        expect(flyout, findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        expect(flyout, findsNothing);
+        expect(tab, findsOneWidget);
+        expect(find.byKey(const ValueKey('docked-tool-panel')), findsOneWidget);
+        await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.byKey(const ValueKey('docked-tool-panel')), findsNothing);
+        expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+        expect(tab, findsNothing);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('closing the tool closes the flyout, and the next tool starts with it closed; the docked tree shows the same open rows', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        final model = _TreeProbe(tester).model;
+        await openMeasure(tester);
+        await tester.tap(tab);
+        await tester.pump();
+        expect(flyout, findsOneWidget);
+        // Open a row in the flyout (the root, which has children when there are any), then close the tool.
+        final closeable = [for (final r in model.visibleRows()) if (r.expandable && !r.open) r];
+        if (closeable.isNotEmpty) {
+          await tester.tap(find.byKey(ValueKey('tree-row:${closeable.first.key}')));
+          await tester.pump();
+        }
+        final openAfter = [for (final r in model.visibleRows()) r.key];
+        await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(flyout, findsNothing);
+        expect(find.byKey(const ValueKey('desktop-left-pane')), findsOneWidget);
+        expect([for (final r in _TreeProbe(tester).model.visibleRows()) r.key], openAfter);
+        // The tool again: closed by default.
+        await tester.tap(find.byKey(const ValueKey('ribbon-Measure')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(flyout, findsNothing);
+        expect(tab, findsOneWidget);
+        expect(tester.takeException(), isNull);
+      });
+
+      testWidgets('it does not overlap the picker prompt card: the tab sits below it', (tester) async {
+        bigWindow(tester);
+        await pumpScreen(tester, layout: desktop());
+        await tester.tap(find.byKey(const ValueKey('ribbon-Merge')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        final card = find.text('Select bodies to merge (2 needed)');
+        expect(card, findsOneWidget);
+        expect(tab, findsOneWidget);
+        final cardRect = tester.getRect(find.ancestor(of: card, matching: find.byType(Material)).first);
+        final tabRect = tester.getRect(tab);
+        expect(tabRect.top, greaterThanOrEqualTo(cardRect.bottom), reason: 'below the card');
+        await tester.tap(tab);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+        final flyRect = tester.getRect(flyout);
+        expect(flyRect.top, greaterThanOrEqualTo(cardRect.bottom));
+        expect(cardRect.overlaps(flyRect), isFalse);
+        expect(tester.takeException(), isNull);
+      });
     });
 
     testWidgets('the Options menu holds the settings, and View is only the ribbon tab', (tester) async {
