@@ -53,6 +53,7 @@ from app.document.extrude import (
     basis_normal,
     basis_point_to_world,
     compute_part_bodies,
+    excluded_with_own_id,
     resolve_subshape_from_bodies,
     select_profiles,
     wire_for_profile,
@@ -831,5 +832,5 @@ def resolve_sweep(
             detail="sketch_feature_id does not refer to a SketchFeature in this Part",
         )
     all_excluded = excluded_feature_ids | {feature.id}
-    bodies = compute_part_bodies(part, all_excluded)
+    bodies = compute_part_bodies(part, excluded_with_own_id(part, feature.id, excluded_feature_ids)) # (the cached path when the Feature is not in the Part yet; `all_excluded` itself still goes on, as before: it is what keeps this validation out of the provenance cache)
     return resolve_sweep_from_bodies(feature, sketch_feature, part, bodies, all_excluded)

@@ -75,6 +75,7 @@ from app.document.extrude import (
     arc_axis,
     basis_point_to_world,
     compute_part_bodies,
+    excluded_with_own_id,
     resolve_subshape_from_bodies,
     select_profiles,
     wire_for_profile,
@@ -1080,7 +1081,7 @@ def resolve_loft(
     exactly (computes `bodies` as if `feature` weren't in `part.features`
     yet)."""
     all_excluded = excluded_feature_ids | {feature.id}
-    bodies = compute_part_bodies(part, all_excluded)
+    bodies = compute_part_bodies(part, excluded_with_own_id(part, feature.id, excluded_feature_ids)) # (see resolve_sweep)
     return resolve_loft_from_bodies(feature, part, bodies, all_excluded)
 
 

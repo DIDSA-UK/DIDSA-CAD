@@ -93,7 +93,12 @@ same stages yourself: settle the parts and your assumptions with the user,
 then write every plan. For your FINAL reply, deliver ONE .zip file (if your
 chat app cannot create files, give each file's content in its own fenced
 ```json block, headed by its file name, and the user will zip them) holding
-only these JSON files, each containing only JSON:
+only these JSON files, each containing only JSON. If the files are too long
+for one reply (a long plan can be cut off silently), do not squeeze them:
+send the manifest first, then one file per message, each headed by its file
+name, and wait for the user to say "next". Never send a file you have not
+finished writing, and re-read every plan's numbers against the part it
+describes before sending it.
 
 - `00_manifest.json` - the part_manifest exactly as described below
   ("kind": "part_manifest"), one entry per distinct part. Give every part a

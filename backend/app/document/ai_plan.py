@@ -866,8 +866,10 @@ def _handle_extrude(v: _PlanValidator, step: ExtrudeStep) -> None:
         target_body_ids=target_body_ids,
         profile_refs=profile_refs,
     )
+    # Before add_feature: the Body set without this Feature is then just the Part as it stands, which takes the cached path
+    # (a non-empty exclusion set would rebuild the whole history for every extrude in the plan).
+    bodies_so_far = compute_part_bodies(v.part, frozenset())
     v.part.add_feature(feature)
-    bodies_so_far = compute_part_bodies(v.part, frozenset({feature.id}))
     try:
         result = resolve_feature_tool_shape(v.part, bodies_so_far, feature.id, frozenset())
     except HTTPException:

@@ -346,7 +346,51 @@ const String revolveVocabularyText = '''
 const String sweepVocabularyText = '''
 - sweep: {local_id, kind:"sweep", sketch_feature_id, path_refs (at least
   one local_id, ordered), mode:"boss"|"cut", target_body_ids?,
-  profile_refs?}''';
+  profile_refs?}
+  WHERE THE PROFILE GOES (the most common Sweep mistake, and one the plan
+  check will NOT catch): the profile is swept exactly where you drew it -
+  it is never moved onto the path for you. So the profile Sketch must lie
+  in the plane PERPENDICULAR to the path's FIRST segment, at that segment's
+  START point, with the profile centred on that point. A path that starts
+  at the origin and runs along a world axis simply uses the matching fixed
+  plane with the shape centred at (0, 0) (Example 5). For any other start
+  point, emit a create_plane step first - plane_type
+  "normal_to_line_at_point", line_ref = the path's first sketch_line,
+  point_ref = that line's START point - anchor the profile Sketch to it
+  with plane_feature_id, and draw the profile centred at local (0, 0),
+  which is exactly the path's start point, square to the path (Example 6).
+  A profile drawn on a fixed plane away from the path's start, or not
+  square to the path, produces a solid shifted or skewed by that
+  difference - often several mm out of place, with no error at all.
+  Before finalizing, check for EVERY sweep: (1) the profile centre, in world
+  space (use the plane table above), equals the path's start point; (2) the
+  profile plane's normal is the direction of the path's first segment.
+  PATH RULES: list path_refs in travel order, each segment starting where
+  the previous one ended - reuse the SAME sketch_point as the shared
+  end/start so they meet exactly. Round every bend with a tangent
+  sketch_arc (any bend angle - see "Rounded corners drawn IN a Sketch"
+  below), never with a run of short straight chords: chords shorter than
+  the profile's radius make the corner cuts overlap, so the sweep fails or
+  self-intersects, and the plan swells to hundreds of steps. A bend radius
+  must be larger than the profile's outer radius. A lone circle or ellipse
+  can be a path only when it is the whole path.
+  MANY SIMILAR SWEPT SOLIDS (wires, cables, tubes, pipes in one Part):
+  one sweep per wire, each its own Body (no target_body_ids, and do not
+  merge them just to tidy up - fusing wires that touch or overlap is the
+  most fragile step there is). Two solids must not overlap unless they are
+  meant to be one joined solid, so give each wire its own lane: keep the
+  centre-lines at least one diameter plus 0.1 mm apart everywhere except
+  where they deliberately end on the same pad or pin. A fixed-plane Sketch
+  always passes through the origin, so a path drawn on XZ lies in the
+  plane Y = 0 - to put a wire in another lane, sweep it in its own
+  coordinates and then give it a move_body step (delta = the lane offset;
+  make_copy: true to keep the original too), or sketch on a create_plane
+  three_points plane at the offset you need. Wires that cross in a plan
+  view must change lane (offset in the third axis) at the crossing. Keep
+  one Part's plan compact: every sweep is another solid to build, check and
+  draw, so a Part with dozens of wires is slow to work with. Where the
+  individual strands do not matter, model one fat bundle tube per bus, or
+  split the wires over several Parts, instead of every strand.''';
 
 /// `LoftStep` vocabulary (`ai_tool_groups.dart`'s `'loft'` group).
 const String loftVocabularyText = '''
@@ -596,10 +640,31 @@ other), with fillet radius r:
    sweeps the long way around the circle instead of the small corner, which
    is the second most common way this goes wrong (a direction mistake,
    independent of step 2's center-placement mistake - check both).
-This only covers a 90-degree corner (D1 perpendicular to D2); for any other
-angle between the segments, use a Fillet feature on the downstream Body
-instead of working out the general (non-90-degree) tangent-circle geometry
-by hand.
+The steps above are the 90-degree case. For ANY other bend (a path corner
+is not always square), use the general form - a Fillet on the finished Body
+does NOT help for a Sweep path, which has to be tangent in the Sketch itself.
+Let C be the corner, D1 the incoming and D2 the outgoing unit directions,
+theta the turn angle between them (0 < theta < 180, degrees; theta = 0 is
+no bend at all), and r the bend radius:
+1. Tangent length t = r * tan(theta / 2). incoming_tangent_point = C - t*D1
+   and outgoing_tangent_point = C + t*D2. (At theta = 90, t = r, the case
+   above.)
+2. Let N be the unit normal of D1 on the side the path turns towards: for a
+   left (CCW) turn N = (-D1.y, D1.x); for a right (CW) turn N =
+   (D1.y, -D1.x). The arc's CENTER is incoming_tangent_point + r*N. (At 90
+   degrees this equals C + r*(D2 - D1).)
+3. Arc direction (the counter-clockwise rule): for a left (CCW) turn the arc
+   starts at the incoming tangent point and ends at the outgoing one; for a
+   right (CW) turn it is swapped - start_point_id is the OUTGOING tangent
+   point and end_point_id the INCOMING one.
+4. Both legs must be long enough: the length of each straight segment must
+   be at least the sum of the tangent lengths t at its two ends (a segment
+   between two bends needs t_left + t_right). If not, reduce r or move the
+   corner.
+5. Write the corner and every tangent point from these formulas to at least
+   six decimal places, never typed from rounded values, and run the same
+   MANDATORY CHECK: the centre must be exactly r from BOTH straight lines
+   and r from both arc end points. Example 6 is a worked 45-degree bend.
 Sanity-check every sketch_arc corner this way before finalizing your plan:
 (a) does the center pass the step 2 distance check above for BOTH segments,
 and (b) does the arc as you've defined it (start to end, going CCW) trace
@@ -1328,7 +1393,60 @@ describes. There is no second sweep/cut step for c_inner - referencing it
 again would fail `invalid_profile_ref`, since it was never an
 independently selectable profile to begin with. The same "one boss step,
 two nested circles, no second cut" pattern applies just as well to a bent
-path (more path_refs entries) or to Extrude/Revolve instead of Sweep.)''';
+path (more path_refs entries) or to Extrude/Revolve instead of Sweep.)
+
+Example 6 - a bent 3mm wire (Sweep along a path with a 45-degree tangent
+bend, profile placed on the path's start), plus a second identical wire in
+its own lane 4mm away:
+
+User: "A 3mm diameter wire: 40mm straight along X, a 45 degree left bend of
+10mm radius, then 30mm along the new direction measured from the corner.
+Add a second identical wire 4mm above it."
+
+Assistant (final message, nothing else in it):
+```json
+{
+  "version": 1,
+  "steps": [
+    { "local_id": "skp", "kind": "sketch", "plane": "XY" },
+    { "local_id": "pA", "kind": "sketch_point", "sketch_feature_id": "skp", "x": 0, "y": 0 },
+    { "local_id": "pT1", "kind": "sketch_point", "sketch_feature_id": "skp", "x": 35.857864, "y": 0 },
+    { "local_id": "pO", "kind": "sketch_point", "sketch_feature_id": "skp", "x": 35.857864, "y": 10 },
+    { "local_id": "pT2", "kind": "sketch_point", "sketch_feature_id": "skp", "x": 42.928932, "y": 2.928932 },
+    { "local_id": "pB", "kind": "sketch_point", "sketch_feature_id": "skp", "x": 61.213203, "y": 21.213203 },
+    { "local_id": "leg1", "kind": "sketch_line", "sketch_feature_id": "skp",
+      "start_point_id": "pA", "end_point_id": "pT1" },
+    { "local_id": "bend", "kind": "sketch_arc", "sketch_feature_id": "skp",
+      "center_point_id": "pO", "start_point_id": "pT1", "end_point_id": "pT2" },
+    { "local_id": "leg2", "kind": "sketch_line", "sketch_feature_id": "skp",
+      "start_point_id": "pT2", "end_point_id": "pB" },
+    { "local_id": "pl1", "kind": "create_plane", "plane_type": "normal_to_line_at_point",
+      "line_ref": "leg1", "point_ref": "pA" },
+    { "local_id": "skc", "kind": "sketch", "plane_feature_id": "pl1" },
+    { "local_id": "pc", "kind": "sketch_point", "sketch_feature_id": "skc", "x": 0, "y": 0 },
+    { "local_id": "wire", "kind": "sketch_circle", "sketch_feature_id": "skc",
+      "center_point_id": "pc", "radius": 1.5 },
+    { "local_id": "w1", "kind": "sweep", "sketch_feature_id": "skc",
+      "path_refs": ["leg1", "bend", "leg2"], "mode": "boss" },
+    { "local_id": "w2", "kind": "move_body", "body_id": "w1", "delta": [0, 0, 4], "make_copy": true }
+  ]
+}
+```
+(how the numbers were derived, from the user's own values: the corner C is
+at (40, 0); D1 = (1, 0); the path turns left by theta = 45 degrees, so D2 =
+(cos 45, sin 45); with r = 10, t = 10*tan(22.5) = 4.142136, so the incoming
+tangent point pT1 = C - t*D1 = (35.857864, 0) and the outgoing one pT2 = C +
+t*D2 = (42.928932, 2.928932); a left turn, so N = (0, 1) and the centre pO =
+pT1 + 10*N = (35.857864, 10); the far end pB = C + 30*D2 = (61.213203,
+21.213203). Checks: pO is 10 from pT1 and from pT2, and 10 from both
+straight lines; the arc runs counter-clockwise from pT1 (-90 degrees) to pT2
+(-45 degrees), the short 45-degree way; leg1 is 35.86 long and leg2 25.86,
+both longer than t. The profile Sketch is anchored to pl1, the plane normal
+to leg1 at its start pA, with the circle centred at local (0, 0) - so the
+wire's cross-section starts exactly on the path, square to it. The bend
+radius 10 is larger than the wire radius 1.5. w2 is a copy of w1 moved 4mm
+in Z (a different lane, so the two wires never overlap); a later step that
+names w2 means that copy, and the original stays w1.)''';
 
 /// Locked: `ai_plan_detection.dart`'s `detectPlanInAssistantText` depends
 /// structurally on the model actually honouring this instruction - never
