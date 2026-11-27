@@ -3053,6 +3053,18 @@ def _apply_feature_to_bodies(
     reference_history.end_step(feature.id, before, bodies)
 
 
+def excluded_with_own_id(part: Part, feature_id: str, excluded_feature_ids: frozenset[str]) -> frozenset[str]:
+    """`excluded_feature_ids` plus `feature_id`, but only when that Feature is already in `part.features`.
+
+    The `resolve_sweep`/`resolve_revolve`/`resolve_loft` entry points validate a Feature *before* it is added, so excluding its own id
+    was a no-op on the result - yet any non-empty exclusion set takes `compute_part_bodies`' uncached path, which rebuilds every earlier
+    Feature from scratch. Validating N sweeps one after another (an AI plan, a harness) then rebuilt the whole history each time, a cost
+    quadratic in N. With the Feature absent the exclusion changes nothing, so the empty set (and the checkpoint cache) is used instead."""
+    if any(f.id == feature_id for f in part.features):
+        return excluded_feature_ids | {feature_id}
+    return excluded_feature_ids
+
+
 def compute_part_bodies(
     part: Part, excluded_feature_ids: frozenset[str] = frozenset()
 ) -> dict[str, TopoDS_Shape]:

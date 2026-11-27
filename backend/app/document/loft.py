@@ -75,6 +75,7 @@ from app.document.extrude import (
     arc_axis,
     basis_point_to_world,
     compute_part_bodies,
+    excluded_with_own_id,
     resolve_subshape_from_bodies,
     select_profiles,
     wire_for_profile,
@@ -1079,7 +1080,7 @@ def resolve_loft(
     `app.document.sweep.resolve_sweep`'s own self-exclusion convention
     exactly (computes `bodies` as if `feature` weren't in `part.features`
     yet)."""
-    all_excluded = excluded_feature_ids | {feature.id}
+    all_excluded = excluded_with_own_id(part, feature.id, excluded_feature_ids)
     bodies = compute_part_bodies(part, all_excluded)
     return resolve_loft_from_bodies(feature, part, bodies, all_excluded)
 
