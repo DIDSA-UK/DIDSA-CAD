@@ -387,10 +387,10 @@ const String sweepVocabularyText = '''
   make_copy: true to keep the original too), or sketch on a create_plane
   three_points plane at the offset you need. Wires that cross in a plan
   view must change lane (offset in the third axis) at the crossing. Keep
-  one Part's plan compact - the whole history is rebuilt to check each
-  sweep, so checking time grows quickly with the number of sweeps: for a
-  large bundle, model one fat bundle tube per bus, or split the wires over
-  several Parts, instead of one plan with dozens of sweeps.''';
+  one Part's plan compact: every sweep is another solid to build, check and
+  draw, so a Part with dozens of wires is slow to work with. Where the
+  individual strands do not matter, model one fat bundle tube per bus, or
+  split the wires over several Parts, instead of every strand.''';
 
 /// `LoftStep` vocabulary (`ai_tool_groups.dart`'s `'loft'` group).
 const String loftVocabularyText = '''
@@ -653,9 +653,10 @@ no bend at all), and r the bend radius:
    left (CCW) turn N = (-D1.y, D1.x); for a right (CW) turn N =
    (D1.y, -D1.x). The arc's CENTER is incoming_tangent_point + r*N. (At 90
    degrees this equals C + r*(D2 - D1).)
-3. Direction rule exactly as in step 3 above: a left turn starts the arc at
-   the incoming tangent point and ends at the outgoing one; a right turn
-   swaps them.
+3. Arc direction (the counter-clockwise rule): for a left (CCW) turn the arc
+   starts at the incoming tangent point and ends at the outgoing one; for a
+   right (CW) turn it is swapped - start_point_id is the OUTGOING tangent
+   point and end_point_id the INCOMING one.
 4. Both legs must be long enough: the length of each straight segment must
    be at least the sum of the tangent lengths t at its two ends (a segment
    between two bends needs t_left + t_right). If not, reduce r or move the

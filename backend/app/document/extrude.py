@@ -3054,7 +3054,9 @@ def _apply_feature_to_bodies(
 
 
 def excluded_with_own_id(part: Part, feature_id: str, excluded_feature_ids: frozenset[str]) -> frozenset[str]:
-    """`excluded_feature_ids` plus `feature_id`, but only when that Feature is already in `part.features`.
+    """`excluded_feature_ids` plus `feature_id`, but only when that Feature is already in `part.features`. For the `compute_part_bodies` call
+    ONLY: the `_from_bodies` resolvers must still be given the full `excluded | {feature_id}`, because a non-empty set is also what stops them
+    recording edge provenance (`_record_feature_edge_provenance`) for a Feature that is only being validated.
 
     The `resolve_sweep`/`resolve_revolve`/`resolve_loft` entry points validate a Feature *before* it is added, so excluding its own id
     was a no-op on the result - yet any non-empty exclusion set takes `compute_part_bodies`' uncached path, which rebuilds every earlier

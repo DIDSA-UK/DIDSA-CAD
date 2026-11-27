@@ -1080,8 +1080,8 @@ def resolve_loft(
     `app.document.sweep.resolve_sweep`'s own self-exclusion convention
     exactly (computes `bodies` as if `feature` weren't in `part.features`
     yet)."""
-    all_excluded = excluded_with_own_id(part, feature.id, excluded_feature_ids)
-    bodies = compute_part_bodies(part, all_excluded)
+    all_excluded = excluded_feature_ids | {feature.id}
+    bodies = compute_part_bodies(part, excluded_with_own_id(part, feature.id, excluded_feature_ids)) # (see resolve_sweep)
     return resolve_loft_from_bodies(feature, part, bodies, all_excluded)
 
 
